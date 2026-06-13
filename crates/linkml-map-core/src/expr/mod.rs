@@ -9,11 +9,12 @@ pub mod lexer;
 pub mod parser;
 
 pub use error::{ExprError, ExprResult};
-pub use eval::{eval_expr, eval_expr_with_mapping, Bindings};
+pub use eval::{eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr, Bindings, ParsedExpr};
+pub use parser::Ast;
 
 #[cfg(test)]
 mod tests {
-    use super::eval::{eval_expr, eval_expr_with_mapping, Bindings};
+    use super::eval::{eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr, Bindings};
     use crate::value::Value;
     use indexmap::IndexMap;
 
@@ -300,6 +301,49 @@ mod tests {
         // eval_expr_with_mapping: if expr == "None": return None
         let vars: Bindings = IndexMap::new();
         assert_eq!(eval_expr_with_mapping("None", &vars).unwrap(), Value::Null);
+    }
+
+    // === parse_expr / eval_parsed (cached-AST API) ========================
+
+    #[test]
+    fn parse_once_eval_many_matches_string_path() {
+        // A parsed AST evaluated against fresh bindings each time must give the
+        // same answer as the string path on every iteration.
+        let parsed = parse_expr("{x} + {y}").expect("parse failed");
+        for (x, y, want) in [(1i64, 2i64, 3i64), (10, 20, 30), (-5, 5, 0)] {
+            let mut vars: Bindings = IndexMap::new();
+            vars.insert("x".into(), Value::Int(x));
+            vars.insert("y".into(), Value::Int(y));
+            let cached = eval_parsed(&parsed, &vars).unwrap();
+            let string_path = eval_expr_with_mapping("{x} + {y}", &vars).unwrap();
+            assert_eq!(cached, Value::Int(want));
+            assert_eq!(cached, string_path);
+        }
+    }
+
+    #[test]
+    fn parsed_none_literal_short_circuit() {
+        // parse_expr("None") must reproduce the "None" short-circuit.
+        let parsed = parse_expr("None").unwrap();
+        let vars: Bindings = IndexMap::new();
+        assert_eq!(eval_parsed(&parsed, &vars).unwrap(), Value::Null);
+        assert_eq!(parsed.eval(&vars).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn parse_expr_propagates_parse_errors() {
+        // A syntactically invalid expr must error at parse time.
+        assert!(parse_expr("{1 + 2}").is_err());
+    }
+
+    #[test]
+    fn parsed_expr_is_send_sync_clone() {
+        // Compile-time assertion that ParsedExpr can cross thread boundaries
+        // and be shared via Arc across the pipeline workers.
+        fn assert_send_sync<T: Send + Sync + Clone>() {}
+        assert_send_sync::<super::ParsedExpr>();
+        let p = parse_expr("x + 1").unwrap();
+        let _clone = p.clone();
     }
 
     #[test]

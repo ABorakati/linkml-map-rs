@@ -22,17 +22,91 @@ use crate::value::Value;
 /// Variable bindings: name → value mapping.
 pub type Bindings = IndexMap<String, Value>;
 
+/// A parsed expression, ready to evaluate many times without re-parsing.
+///
+/// This is the core performance lever for the row pipeline: an `expr:` string
+/// is lexed + parsed exactly once into a [`ParsedExpr`], then evaluated against
+/// fresh [`Bindings`] for every row via [`eval_parsed`].
+///
+/// `ParsedExpr` wraps a plain-data [`Ast`] (no interior mutability, no borrows),
+/// so it is `Clone + Send + Sync` and can be shared across worker threads.
+///
+/// The `"None"` literal short-circuit of [`eval_expr_with_mapping`]
+/// (`if expr == "None": return None`) is preserved here: parsing the literal
+/// string `"None"` yields a [`ParsedExpr`] whose evaluation always returns
+/// [`Value::Null`], identical to the per-call string path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedExpr {
+    /// `None` encodes the `"None"` literal short-circuit; `Some(ast)` is the
+    /// parsed expression tree.
+    ast: Option<Ast>,
+}
+
+impl ParsedExpr {
+    /// Evaluate this pre-parsed expression against `vars`.
+    ///
+    /// Equivalent to [`eval_parsed`]; provided as a method for ergonomics.
+    pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
+        eval_parsed(self, vars)
+    }
+}
+
+/// Lex + parse `expr` once into a reusable [`ParsedExpr`].
+///
+/// The returned value can be evaluated repeatedly with [`eval_parsed`] (or
+/// [`ParsedExpr::eval`]) against different bindings, with no further parsing.
+/// Preserves the `"None"` literal short-circuit of [`eval_expr_with_mapping`].
+///
+/// ```
+/// use linkml_map_core::expr::{parse_expr, Bindings};
+/// use linkml_map_core::value::Value;
+///
+/// let parsed = parse_expr("{x} + {y}").unwrap();
+/// let mut vars = Bindings::new();
+/// vars.insert("x".into(), Value::Int(1));
+/// vars.insert("y".into(), Value::Int(2));
+/// assert_eq!(parsed.eval(&vars).unwrap(), Value::Int(3));
+///
+/// // Re-evaluate the same AST against fresh bindings, no re-parsing.
+/// vars.insert("x".into(), Value::Int(10));
+/// assert_eq!(parsed.eval(&vars).unwrap(), Value::Int(12));
+///
+/// // The "None" literal short-circuit is preserved.
+/// let none = parse_expr("None").unwrap();
+/// assert_eq!(none.eval(&Bindings::new()).unwrap(), Value::Null);
+/// ```
+pub fn parse_expr(expr: &str) -> ExprResult<ParsedExpr> {
+    if expr == "None" {
+        return Ok(ParsedExpr { ast: None });
+    }
+    let ast = parse(expr)?;
+    Ok(ParsedExpr { ast: Some(ast) })
+}
+
+/// Evaluate a pre-parsed expression against the given `bindings`.
+///
+/// This performs no parsing — it walks the cached [`Ast`] directly. Unbound
+/// names resolve to [`Value::Null`].
+pub fn eval_parsed(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
+    match &parsed.ast {
+        None => Ok(Value::Null),
+        Some(ast) => eval_ast(ast, vars),
+    }
+}
+
 /// Evaluate `expr` against the given variable `bindings`.
 ///
 /// Mirrors Python `eval_expr_with_mapping`, including the `"None"` literal
 /// short-circuit (`if expr == "None": return None`). Unbound names resolve to
 /// [`Value::Null`].
+///
+/// This is the convenience string-in path; it is exactly equivalent to
+/// `eval_parsed(&parse_expr(expr)?, vars)`. Hot paths that evaluate the same
+/// expression many times should call [`parse_expr`] once and reuse the
+/// resulting [`ParsedExpr`].
 pub fn eval_expr_with_mapping(expr: &str, vars: &Bindings) -> ExprResult<Value> {
-    if expr == "None" {
-        return Ok(Value::Null);
-    }
-    let ast = parse(expr)?;
-    eval_ast(&ast, vars)
+    let parsed = parse_expr(expr)?;
+    eval_parsed(&parsed, vars)
 }
 
 /// Convenience: evaluate against an empty binding set.

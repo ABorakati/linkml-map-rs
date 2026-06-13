@@ -20,13 +20,77 @@
 
 use indexmap::IndexMap;
 
+use std::borrow::Cow;
+use std::collections::HashMap;
+
 use crate::{
     datamodel::{ClassDerivation, CollectionType, SlotDerivation, TransformationSpecification},
     error::{Error, Result},
-    expr::{eval_expr_with_mapping, Bindings},
+    expr::{eval_expr_with_mapping, eval_parsed, parse_expr, Bindings, ExprResult, ParsedExpr},
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
+
+// ── Compiled expr cache ───────────────────────────────────────────────
+
+/// Pre-parsed `expr:` ASTs for an entire [`TransformationSpecification`],
+/// built once and reused across every row.
+///
+/// Each `expr:` string that appears on a class slot derivation or an enum
+/// derivation is lexed + parsed a single time into a [`ParsedExpr`]. The engine
+/// then evaluates the cached AST per row instead of re-parsing the string,
+/// which is the dominant per-row cost on expr-heavy specs.
+///
+/// `CompiledExprs` is plain data (`Send + Sync`), so a single instance can be
+/// shared across worker threads via `Arc`.
+#[derive(Debug, Clone, Default)]
+pub struct CompiledExprs {
+    /// `(class_derivation.name, slot_derivation.name)` → parsed slot `expr:`.
+    slot_exprs: HashMap<(String, String), ParsedExpr>,
+    /// `enum_derivation map key` → parsed enum-level `expr:`.
+    enum_exprs: HashMap<String, ParsedExpr>,
+}
+
+impl CompiledExprs {
+    /// Parse every `expr:` in `spec` once.
+    ///
+    /// Returns a parse error if any expression is syntactically invalid; this
+    /// surfaces malformed exprs at plan-build time rather than on the first row.
+    pub fn build(spec: &TransformationSpecification) -> ExprResult<Self> {
+        let mut slot_exprs = HashMap::new();
+        if let Some(cds) = &spec.class_derivations {
+            for cd in cds {
+                if let Some(sds) = &cd.slot_derivations {
+                    for (_, sd) in sds {
+                        if let Some(expr) = &sd.expr {
+                            let parsed = parse_expr(expr)?;
+                            slot_exprs.insert((cd.name.clone(), sd.name.clone()), parsed);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut enum_exprs = HashMap::new();
+        if let Some(eds) = &spec.enum_derivations {
+            for (key, ed) in eds {
+                if let Some(expr) = &ed.expr {
+                    enum_exprs.insert(key.clone(), parse_expr(expr)?);
+                }
+            }
+        }
+
+        Ok(Self {
+            slot_exprs,
+            enum_exprs,
+        })
+    }
+
+    fn slot(&self, class: &str, slot: &str) -> Option<&ParsedExpr> {
+        self.slot_exprs
+            .get(&(class.to_string(), slot.to_string()))
+    }
+}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -34,9 +98,14 @@ use crate::{
 ///
 /// Owns the spec; borrows source and target schema providers.
 pub struct ObjectTransformer<'s> {
-    spec: TransformationSpecification,
+    spec: Cow<'s, TransformationSpecification>,
     source_schema: Option<&'s dyn SchemaProvider>,
     target_schema: Option<&'s dyn SchemaProvider>,
+    /// Optional pre-parsed `expr:` ASTs. When present, the per-slot and
+    /// per-enum expr paths evaluate the cached AST instead of re-parsing the
+    /// `expr:` string on every call. When `None`, the engine falls back to the
+    /// string path (`eval_expr_with_mapping`), preserving existing behaviour.
+    compiled: Option<&'s CompiledExprs>,
 }
 
 impl<'s> ObjectTransformer<'s> {
@@ -51,10 +120,42 @@ impl<'s> ObjectTransformer<'s> {
         target_schema: Option<&'s dyn SchemaProvider>,
     ) -> Self {
         Self {
-            spec,
+            spec: Cow::Owned(spec),
             source_schema,
             target_schema,
+            compiled: None,
         }
+    }
+
+    /// Create a transformer that *borrows* the spec instead of owning it.
+    ///
+    /// This is the hot-path constructor for the row pipeline: it avoids deep-
+    /// cloning the whole [`TransformationSpecification`] for every row. The
+    /// resulting transformer is otherwise identical to one built with
+    /// [`ObjectTransformer::new`].
+    pub fn new_borrowed(
+        spec: &'s TransformationSpecification,
+        source_schema: Option<&'s dyn SchemaProvider>,
+        target_schema: Option<&'s dyn SchemaProvider>,
+    ) -> Self {
+        Self {
+            spec: Cow::Borrowed(spec),
+            source_schema,
+            target_schema,
+            compiled: None,
+        }
+    }
+
+    /// Attach a pre-built [`CompiledExprs`] so the engine evaluates cached
+    /// `expr:` ASTs instead of re-parsing strings per row.
+    ///
+    /// The cache must be built from the same spec this transformer holds
+    /// (keyed by class/slot derivation names). When no cache is attached, the
+    /// engine transparently falls back to the per-call string parse path, so
+    /// callers and tests that use [`ObjectTransformer::new`] are unaffected.
+    pub fn with_compiled_exprs(mut self, compiled: &'s CompiledExprs) -> Self {
+        self.compiled = Some(compiled);
+        self
     }
 
     /// Transform a single source object.
@@ -145,7 +246,13 @@ impl<'s> ObjectTransformer<'s> {
             (v, None)
         } else if let Some(expr) = &slot_deriv.expr {
             // 2. Expression.
-            let v = self.eval_expr_for_slot(expr, source_map, slot_name, source_type)?;
+            let v = self.eval_expr_for_slot(
+                expr,
+                source_map,
+                slot_name,
+                source_type,
+                &class_deriv.name,
+            )?;
             (v, None)
         } else if let Some(populated_from) = &slot_deriv.populated_from {
             // 3. populated_from — direct field copy.
@@ -223,6 +330,7 @@ impl<'s> ObjectTransformer<'s> {
         source_map: &IndexMap<String, Value>,
         slot_name: &str,
         source_type: &str,
+        class_name: &str,
     ) -> Result<Value> {
         // Build bindings from all source map keys.
         let mut bindings: Bindings = IndexMap::new();
@@ -231,7 +339,14 @@ impl<'s> ObjectTransformer<'s> {
             bindings.insert(k.clone(), v.clone());
         }
 
-        eval_expr_with_mapping(expr, &bindings).map_err(|e| Error::ExprEval {
+        // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
+        // cache is attached and holds this (class, slot). Falls back to the
+        // string parse path otherwise (identical result).
+        let result = match self.compiled.and_then(|c| c.slot(class_name, slot_name)) {
+            Some(parsed) => eval_parsed(parsed, &bindings),
+            None => eval_expr_with_mapping(expr, &bindings),
+        };
+        result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
             slot: slot_name.to_string(),
             cause: e.to_string(),
@@ -510,15 +625,13 @@ impl<'s> ObjectTransformer<'s> {
 
         for enum_name in enum_names {
             // Find a matching enum derivation for this enum name.
-            let enum_deriv = enum_derivations
-                .values()
-                .find(|ed| {
-                    ed.populated_from.as_deref() == Some(enum_name)
-                        || (ed.populated_from.is_none() && ed.name == *enum_name)
-                });
+            let enum_deriv = enum_derivations.iter().find(|(_, ed)| {
+                ed.populated_from.as_deref() == Some(enum_name)
+                    || (ed.populated_from.is_none() && ed.name == *enum_name)
+            });
 
-            let ed = match enum_deriv {
-                Some(e) => e,
+            let (ed_key, ed) = match enum_deriv {
+                Some((k, e)) => (k.as_str(), e),
                 None => continue,
             };
 
@@ -531,7 +644,13 @@ impl<'s> ObjectTransformer<'s> {
                     }
                 }
                 bindings.insert("NULL".to_string(), Value::Null);
-                if let Ok(v) = eval_expr_with_mapping(expr, &bindings) {
+                // Cached-AST fast path mirrors the slot path; falls back to the
+                // string parse when no compiled cache is attached.
+                let evaled = match self.compiled.and_then(|c| c.enum_exprs.get(ed_key)) {
+                    Some(parsed) => eval_parsed(parsed, &bindings),
+                    None => eval_expr_with_mapping(expr, &bindings),
+                };
+                if let Ok(v) = evaled {
                     if !v.is_null() {
                         return Ok(v);
                     }
@@ -930,6 +1049,53 @@ mod tests {
         let result = engine.map_object(&src, Some("Person")).unwrap();
         let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
         assert_eq!(out["age_str"], Value::Str("33 years".into()));
+    }
+
+    // ── Test 2b: cached-AST expr path matches the string path ─────────────────
+
+    #[test]
+    fn test_compiled_exprs_matches_string_path() {
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("age_str".into(), SlotDerivation {
+            name: "age_str".into(),
+            expr: Some("str(age_in_years) + \" years\"".into()),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Agent".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        // Build the compiled cache once; the engine borrows it.
+        let compiled = CompiledExprs::build(&spec).expect("compile exprs");
+
+        for age in [0i64, 33, 100] {
+            let mut m = IndexMap::new();
+            m.insert("age_in_years".into(), Value::Int(age));
+            let src = Value::Map(m);
+
+            // String path (no cache).
+            let string_engine = ObjectTransformer::new(spec.clone(), Some(&schema), None);
+            let string_out = string_engine.map_object(&src, Some("Person")).unwrap();
+
+            // Cached-AST path.
+            let cached_engine = ObjectTransformer::new(spec.clone(), Some(&schema), None)
+                .with_compiled_exprs(&compiled);
+            let cached_out = cached_engine.map_object(&src, Some("Person")).unwrap();
+
+            assert_eq!(cached_out, string_out, "cached/string mismatch at age={age}");
+            if let Value::Map(om) = &cached_out {
+                assert_eq!(om["age_str"], Value::Str(format!("{age} years")));
+            } else {
+                panic!("expected Map");
+            }
+        }
     }
 
     // ── Test 3: constant value ────────────────────────────────────────────────

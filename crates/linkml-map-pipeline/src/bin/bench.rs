@@ -14,8 +14,11 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use linkml_map_core::value::Value;
 use linkml_map_io::{write_vec, Format};
-use linkml_map_pipeline::PipelineConfig;
+use linkml_map_pipeline::{CompiledPlan, PipelineConfig};
+use std::sync::Arc;
+use std::time::Instant;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -119,7 +122,106 @@ async fn main() -> Result<()> {
 
     println!();
     println!("Note: run with --release for production-representative numbers.");
-    println!("Note: expr AST re-parsing is per-row in current engine (follow-up: plan.rs).");
+    println!("Note: the table above is end-to-end (JSONL read + transform + write).");
+    println!("      The serial reader/writer caps throughput on this tiny-per-row fixture.");
+
+    // ── Transform-only microbenchmark ─────────────────────────────────────────
+    // Isolates per-row CPU (the cached-AST lever) from the serial I/O path:
+    // generate rows in memory, then time ONLY plan.transform across rayon
+    // threads. Compares the string-parse path (BEFORE) vs cached-AST (AFTER).
+    transform_only_bench(&fixture, n_rows)?;
 
     Ok(())
+}
+
+/// Microbenchmark the transform step alone (no I/O), comparing the per-row
+/// string-parse path against the cached-AST path at 1/2/4/8 threads.
+fn transform_only_bench(fixture: &std::path::Path, n_rows: usize) -> Result<()> {
+    let plan = Arc::new(CompiledPlan::load(
+        &fixture.join("transform/qv-to-scalar.transform.yaml"),
+        &fixture.join("source/quantity_value.yaml"),
+        &fixture.join("target/quantity_value_flat.yaml"),
+        Some("Person"),
+    )?);
+
+    // Build N rows in memory once.
+    let make_val = |pairs: &[(&str, Value)]| -> Value {
+        let obj = serde_json::Value::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), serde_json::to_value(v).unwrap()))
+                .collect(),
+        );
+        serde_json::from_value(obj).unwrap()
+    };
+    let rows: Vec<Value> = (0..n_rows)
+        .map(|i| {
+            let height = make_val(&[
+                ("value", Value::Float(150.0 + (i as f64 % 100.0))),
+                ("unit", Value::Str("cm".into())),
+            ]);
+            make_val(&[("id", Value::Str(format!("P:{i}"))), ("height", height)])
+        })
+        .collect();
+
+    println!();
+    println!(
+        "=== Transform-only microbenchmark ({} expr: slot(s); {n_rows} rows) ===",
+        plan.expr_slot_count()
+    );
+    println!(
+        "{:<8} {:>16} {:>16} {:>10}",
+        "workers", "BEFORE rows/sec", "AFTER rows/sec", "speedup"
+    );
+    println!("{}", "-".repeat(54));
+
+    for &workers in &[1usize, 2, 4, 8] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()?;
+
+        // BEFORE: per-row string parse.
+        let before = pool.install(|| time_transform(&plan, &rows, /*cached=*/ false));
+        // AFTER: cached AST.
+        let after = pool.install(|| time_transform(&plan, &rows, /*cached=*/ true));
+
+        println!(
+            "{:<8} {:>16.0} {:>16.0} {:>9.2}x",
+            workers,
+            before,
+            after,
+            after / before
+        );
+    }
+    println!();
+    println!("BEFORE = transform_uncached (re-parses expr per row).");
+    println!("AFTER  = transform (evaluates the cached AST; expr parsed once at load).");
+
+    Ok(())
+}
+
+/// Run all rows through the (cached or uncached) transform on the current
+/// rayon pool and return rows/sec.
+fn time_transform(plan: &Arc<CompiledPlan>, rows: &[Value], cached: bool) -> f64 {
+    use rayon::prelude::*;
+    let start = Instant::now();
+    let processed: usize = rows
+        .par_iter()
+        .map(|row| {
+            let out = if cached {
+                plan.transform(row.clone())
+            } else {
+                plan.transform_uncached(row.clone())
+            };
+            // Touch the result so the optimizer cannot elide the work.
+            usize::from(out.is_ok())
+        })
+        .sum();
+    let elapsed = start.elapsed().as_secs_f64();
+    assert_eq!(processed, rows.len(), "all rows must transform");
+    if elapsed > 0.0 {
+        rows.len() as f64 / elapsed
+    } else {
+        f64::INFINITY
+    }
 }

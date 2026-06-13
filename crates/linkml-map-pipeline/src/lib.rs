@@ -17,12 +17,12 @@
 //! and the resolved source-class name.  All three are `Send + Sync` and shared
 //! via `Arc` across worker threads — no per-row re-parsing.
 //!
-//! **Expr AST caching note**: the current `linkml-map-core` evaluator
-//! (`eval_expr_with_mapping`) re-parses each `expr:` string on every call.
-//! The parsed `TransformationSpecification` (including raw expr strings) is
-//! already shared via `Arc<CompiledPlan>`, so there is no per-row YAML/JSON
-//! parsing.  A dedicated expr-AST cache (parse once, store compiled AST in
-//! `CompiledPlan`, evaluate N times) is a follow-up tracked in `plan.rs`.
+//! **Expr AST caching**: every slot/enum `expr:` string in the spec is lexed +
+//! parsed exactly once at [`CompiledPlan::load`] into a [`CompiledExprs`] and
+//! shared via `Arc<CompiledPlan>`.  Each per-row [`ObjectTransformer`] is built
+//! `with_compiled_exprs`, so workers evaluate the cached AST instead of
+//! re-parsing the expr string on every row.  This removes the per-row parse
+//! cost that previously dominated CPU and capped thread scaling.
 
 use std::{
     path::Path,
@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
     datamodel::TransformationSpecification,
-    engine::ObjectTransformer,
+    engine::{CompiledExprs, ObjectTransformer},
     schema::SchemaProvider,
     value::Value,
 };
@@ -114,14 +114,16 @@ pub struct PipelineStats {
 /// Holds the parsed spec and both providers.  Shared via `Arc` across worker
 /// threads — zero per-row schema/spec parsing overhead.
 ///
-/// **Expr AST follow-up**: `linkml-map-core::expr::eval_expr_with_mapping`
-/// currently re-parses expr strings on each invocation.  A future
-/// `CompiledPlan::compiled_exprs: IndexMap<(class, slot), ExprAst>` field
-/// (populated here) would eliminate that cost.  Tracking item: `plan.rs`.
+/// **Expr AST cache**: `compiled_exprs` holds every slot/enum `expr:` parsed
+/// once at [`CompiledPlan::load`].  The per-row transformer is built
+/// `with_compiled_exprs(&self.compiled_exprs)`, so no expr string is re-parsed
+/// per row — the dominant per-row cost on expr-heavy specs.
 pub struct CompiledPlan {
     spec: TransformationSpecification,
     source_provider: SchemaViewProvider,
     target_provider: SchemaViewProvider,
+    /// Pre-parsed `expr:` ASTs, shared (by borrow) into every per-row engine.
+    compiled_exprs: CompiledExprs,
     /// Resolved source class name (empty string = let engine decide per row).
     source_class: Option<String>,
 }
@@ -133,6 +135,22 @@ unsafe impl Send for CompiledPlan {}
 unsafe impl Sync for CompiledPlan {}
 
 impl CompiledPlan {
+    /// Number of `expr:` derivations in the spec (slots with an `expr:`).
+    /// Benchmarks use this to confirm the fixture actually exercises the cache.
+    pub fn expr_slot_count(&self) -> usize {
+        self.spec
+            .class_derivations
+            .as_ref()
+            .map(|cds| {
+                cds.iter()
+                    .filter_map(|cd| cd.slot_derivations.as_ref())
+                    .flat_map(|sds| sds.values())
+                    .filter(|sd| sd.expr.is_some())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Load spec + schemas from disk; resolve source class.
     pub fn load(
         spec_path: &Path,
@@ -152,6 +170,12 @@ impl CompiledPlan {
         let spec = load_transform_spec(spec_path)
             .with_context(|| format!("loading spec {}", spec_path.display()))?;
 
+        // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
+        // surface here at plan-build time rather than per row.
+        let compiled_exprs = CompiledExprs::build(&spec)
+            .map_err(|e| anyhow::anyhow!("compiling expr ASTs: {e}"))
+            .with_context(|| format!("compiling exprs from spec {}", spec_path.display()))?;
+
         // Resolve the source class once
         let source_class = source_class_hint.map(str::to_owned).or_else(|| {
             // Try first class_derivation's populated_from, then its name
@@ -168,14 +192,35 @@ impl CompiledPlan {
             spec,
             source_provider,
             target_provider,
+            compiled_exprs,
             source_class,
         })
     }
 
     /// Transform one row.  Called from rayon worker threads.
-    fn transform(&self, row: Value) -> Result<Value> {
-        let engine = ObjectTransformer::new(
-            self.spec.clone(),
+    ///
+    /// Public so benchmarks can isolate per-row transform throughput from the
+    /// reader/writer I/O path.
+    pub fn transform(&self, row: Value) -> Result<Value> {
+        // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(&self.source_provider as &dyn SchemaProvider),
+            Some(&self.target_provider as &dyn SchemaProvider),
+        )
+        .with_compiled_exprs(&self.compiled_exprs);
+        engine
+            .map_object(&row, self.source_class.as_deref())
+            .map_err(|e| anyhow::anyhow!("transform error: {e}"))
+    }
+
+    /// Transform one row WITHOUT the cached-AST fast path (re-parses each
+    /// `expr:` string per call). Benchmark-only: used to measure the BEFORE
+    /// (string-parse) baseline against [`CompiledPlan::transform`] in-process.
+    /// Still borrows the spec, so the only difference is expr parsing.
+    pub fn transform_uncached(&self, row: Value) -> Result<Value> {
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
             Some(&self.source_provider as &dyn SchemaProvider),
             Some(&self.target_provider as &dyn SchemaProvider),
         );

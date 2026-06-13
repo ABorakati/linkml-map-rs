@@ -1,15 +1,156 @@
-use clap::Parser;
+//! `linkml-tr-rs` — LinkML transformation engine CLI (Rust port of `linkml-tr`).
+//!
+//! # Subcommands
+//!
+//! - `map-data`      — run the concurrent pipeline over a source data file.
+//! - `derive-schema` — derive a target schema from a transformation spec
+//!                     (stub: not yet implemented in the Rust port).
+
+use std::process;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use linkml_map_cli::{parse_format_str, run_map_data_config, MapDataConfig};
+
+// ── Top-level CLI ─────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "linkml-tr-rs")]
-#[command(version = "0.1.0")]
-#[command(about = "LinkML transformation engine (Rust)", long_about = None)]
-struct Args {
-    // Parser will auto-generate --version from command attributes
+#[command(
+    name = "linkml-tr-rs",
+    version = "0.1.0",
+    about = "LinkML transformation engine (Rust port of linkml-tr)",
+    long_about = None,
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
+#[derive(Subcommand)]
+enum Commands {
+    /// Transform a source data file using a LinkML transformation spec.
+    MapData(MapDataArgs),
+    /// Derive a target schema from a transformation spec.
+    DeriveSchema(DeriveSchemaArgs),
+}
+
+// ── map-data ──────────────────────────────────────────────────────────────────
+
+#[derive(Parser)]
+struct MapDataArgs {
+    /// Transformation specification YAML file (-T / --specification).
+    #[arg(short = 'T', long = "specification", value_name = "SPEC_YAML")]
+    spec: String,
+
+    /// Source LinkML schema YAML file.
+    #[arg(short = 's', long = "source-schema", value_name = "SCHEMA_YAML")]
+    source_schema: String,
+
+    /// Target LinkML schema YAML file (defaults to source schema when omitted).
+    #[arg(long = "target-schema", value_name = "TARGET_YAML")]
+    target_schema: Option<String>,
+
+    /// Output file path.  Required (stdout streaming is not yet supported).
+    #[arg(short = 'o', long = "output", value_name = "OUT_FILE")]
+    output: String,
+
+    /// Source class name hint.
+    /// When omitted, the engine resolves from the first class_derivation.
+    #[arg(long = "source-class", value_name = "CLASS")]
+    source_class: Option<String>,
+
+    /// Input format override.
+    /// One of: auto, csv, tsv, json, jsonl, yaml.
+    /// Defaults to auto-detection from the input file extension.
+    #[arg(long = "input-format", value_name = "FMT", default_value = "auto")]
+    input_format: String,
+
+    /// Output format override.
+    /// One of: auto, csv, tsv, json, jsonl, yaml.
+    /// Defaults to auto-detection from the output file extension.
+    #[arg(long = "output-format", value_name = "FMT", default_value = "auto")]
+    output_format: String,
+
+    /// Number of rayon worker threads.
+    /// 0 (default) uses the rayon global pool size (≈ number of logical CPUs).
+    #[arg(long = "workers", value_name = "N", default_value_t = 0)]
+    workers: usize,
+
+    /// Write output rows in the same order as the input (default: ordered).
+    /// Pass --unordered for maximum throughput (output order undefined).
+    #[arg(long = "unordered", default_value_t = false)]
+    unordered: bool,
+
+    /// Input data file.
+    #[arg(value_name = "INPUT_FILE")]
+    input: String,
+}
+
+// ── derive-schema ─────────────────────────────────────────────────────────────
+
+#[derive(Parser)]
+struct DeriveSchemaArgs {
+    /// Transformation specification YAML file.
+    #[arg(short = 'T', long = "specification", value_name = "SPEC_YAML")]
+    spec: String,
+
+    /// Source LinkML schema YAML file.
+    #[arg(short = 's', long = "source-schema", value_name = "SCHEMA_YAML")]
+    source_schema: String,
+}
+
+// ── Subcommand dispatch ───────────────────────────────────────────────────────
+
+async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
+    // Validate format strings early (before building config) so we get a
+    // clean error message rather than a confusing anyhow chain.
+    parse_format_str(&args.input_format)?;
+    parse_format_str(&args.output_format)?;
+
+    let cfg = MapDataConfig {
+        spec: args.spec,
+        source_schema: args.source_schema,
+        target_schema: args.target_schema,
+        output: args.output,
+        source_class: args.source_class,
+        input_format: args.input_format,
+        output_format: args.output_format,
+        workers: args.workers,
+        unordered: args.unordered,
+        input: args.input,
+    };
+
+    run_map_data_config(cfg).await?;
+    Ok(())
+}
+
+fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> ! {
+    // derive-schema is not yet implemented in the Rust port.
+    // The Python `linkml-tr` CLI supports this via schema_maker; the Rust
+    // engine does not yet expose a derive path that reads a transform spec
+    // and emits a target schema YAML.
+    eprintln!(
+        "linkml-tr-rs derive-schema: spec={} source-schema={}",
+        args.spec, args.source_schema
+    );
+    eprintln!(
+        "error: derive-schema is not yet implemented in the Rust port.\n\
+         Use the Python `linkml-tr` CLI instead:\n\
+         \n\
+         \tlinkml-tr derive-schema -T {} -s {}\n",
+        args.spec, args.source_schema
+    );
+    process::exit(1);
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let _args = Args::parse();
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::MapData(args) => dispatch_map_data(args).await?,
+        Commands::DeriveSchema(ref args) => dispatch_derive_schema(args),
+    }
     Ok(())
 }
