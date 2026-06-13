@@ -15,10 +15,12 @@
 //!   slot.  Bindings are built from the source object's map keys.
 //! - Recursion happens via `map_object` — nested class-ranged slots recurse
 //!   into the same engine instance.
-//! - Pivot / unit-conversion / join / FK / stringification / offset are **not**
-//!   ported in this wave (noted below under NOT PORTED).
+//! - Pivot / join / offset are **not** ported in this wave (noted below under
+//!   NOT PORTED). FK, stringification and `unit_conversion:` ARE ported
+//!   (`unit_conversion` via the dependency-free [`units`] dimensional table).
 
 pub mod object_index;
+pub mod units;
 pub use object_index::ObjectIndex;
 
 use indexmap::IndexMap;
@@ -284,6 +286,14 @@ impl<'s> ObjectTransformer<'s> {
             // 1. Constant value.
             let v = json_to_value(const_val);
             (v, None)
+        } else if slot_deriv.unit_conversion.is_some() {
+            // 1b. unit_conversion — dimensional magnitude conversion.
+            //     Mirrors Python `ObjectTransformer._perform_unit_conversion`.
+            //     Returns the converted scalar (or a {magnitude, unit} map when
+            //     target_magnitude_slot is set); leaves the value unchanged when
+            //     the conversion is impossible (unknown / cross-dimension units).
+            let v = self.perform_unit_conversion(slot_deriv, source_map, source_type)?;
+            (v, None)
         } else if let Some(expr) = &slot_deriv.expr {
             // 2. Expression.
             let v = self.eval_expr_for_slot(
@@ -373,6 +383,177 @@ impl<'s> ObjectTransformer<'s> {
         }
 
         Ok(v)
+    }
+
+    /// Perform a `unit_conversion:` slot derivation.
+    ///
+    /// Mirrors Python `ObjectTransformer._perform_unit_conversion`:
+    ///
+    /// - The magnitude is read from `populated_from` (scalar input) or, when
+    ///   `source_unit_slot` is set, from a structured `{magnitude, unit}` map
+    ///   via `source_magnitude_slot` / `source_unit_slot`.
+    /// - The source unit is taken from (in priority order) the structured
+    ///   value's unit slot, then the spec's `source_unit`, then the schema
+    ///   slot's `unit` annotation. A mismatch between an explicit spec unit
+    ///   and the schema unit is an error, matching Python.
+    /// - The magnitude is converted to `target_unit` via [`units::convert`].
+    /// - When `target_magnitude_slot` is set the result is a
+    ///   `{target_magnitude_slot: value, target_unit_slot: unit}` map;
+    ///   otherwise the bare converted scalar is returned.
+    ///
+    /// Divergence from Python (pragmatic, dependency-free table): when the
+    /// units are unknown to the table or dimensionally incompatible (incl.
+    /// molar↔mass), the magnitude is returned **unchanged** rather than
+    /// raising — the value is preserved and the caller can flag it. A
+    /// non-numeric magnitude returns `Null` when `none_if_non_numeric` is set,
+    /// otherwise the original value is returned unchanged.
+    fn perform_unit_conversion(
+        &self,
+        slot_deriv: &SlotDerivation,
+        source_map: &IndexMap<String, Value>,
+        source_type: &str,
+    ) -> Result<Value> {
+        let uc = slot_deriv
+            .unit_conversion
+            .as_ref()
+            .expect("caller guarantees unit_conversion is Some");
+
+        // Locate the raw source value. Prefer populated_from, else same-name.
+        let src_key = slot_deriv
+            .populated_from
+            .as_deref()
+            .unwrap_or(slot_deriv.name.as_str());
+        let curr_v = match source_map.get(src_key) {
+            Some(v) if !v.is_null() => v,
+            _ => return Ok(Value::Null),
+        };
+
+        // Schema-declared source unit (the SlotDef carries the resolved unit
+        // string — ucum_code / symbol / etc. — if any).
+        let schema_unit: Option<String> = self.source_schema.and_then(|ss| {
+            ss.induced_slot(src_key, source_type)
+                .ok()
+                .and_then(|s| s.unit.clone())
+        });
+        let spec_unit = uc.source_unit.clone();
+
+        if let (Some(su), Some(pu)) = (&schema_unit, &spec_unit) {
+            if su != pu {
+                return Err(Error::SlotTransform {
+                    class: source_type.to_string(),
+                    slot: slot_deriv.name.clone(),
+                    cause: format!(
+                        "mismatch in source units for slot '{src_key}': schema unit \
+                         '{su}' vs. transformation spec '{pu}'"
+                    ),
+                });
+            }
+        }
+        // Resolved 'from' unit from schema or spec (may still be overridden by
+        // a structured value's unit slot below).
+        let mut from_unit: Option<String> = schema_unit.clone().or_else(|| spec_unit.clone());
+
+        // Extract magnitude (scalar vs structured {value, unit}).
+        let magnitude_val: &Value = if let Some(unit_slot) = &uc.source_unit_slot {
+            // Structured input.
+            let map = match curr_v {
+                Value::Map(m) => m,
+                _ => {
+                    return Err(Error::SlotTransform {
+                        class: source_type.to_string(),
+                        slot: slot_deriv.name.clone(),
+                        cause: format!(
+                            "source_unit_slot set but value for '{src_key}' is not a map"
+                        ),
+                    })
+                }
+            };
+            match map.get(unit_slot) {
+                Some(Value::Str(u)) if !u.is_empty() => {
+                    if let Some(fu) = &from_unit {
+                        if u != fu {
+                            return Err(Error::SlotTransform {
+                                class: source_type.to_string(),
+                                slot: slot_deriv.name.clone(),
+                                cause: format!(
+                                    "value unit '{u}' does not match expected '{fu}' \
+                                     for slot '{src_key}'"
+                                ),
+                            });
+                        }
+                    }
+                    from_unit = Some(u.clone());
+                }
+                _ => {
+                    return Err(Error::SlotTransform {
+                        class: source_type.to_string(),
+                        slot: slot_deriv.name.clone(),
+                        cause: format!(
+                            "missing unit in structured value for slot '{src_key}'"
+                        ),
+                    })
+                }
+            }
+            let mag_slot = uc.source_magnitude_slot.as_deref().unwrap_or("value");
+            match map.get(mag_slot) {
+                Some(m) => m,
+                None => {
+                    return Err(Error::SlotTransform {
+                        class: source_type.to_string(),
+                        slot: slot_deriv.name.clone(),
+                        cause: format!(
+                            "missing magnitude in structured value for slot '{src_key}'"
+                        ),
+                    })
+                }
+            }
+        } else {
+            curr_v
+        };
+
+        // Coerce magnitude to f64.
+        let magnitude = match magnitude_val.try_numeric() {
+            Some(m) => m,
+            None => {
+                if uc.none_if_non_numeric.unwrap_or(false) {
+                    return Ok(Value::Null);
+                }
+                // No numeric magnitude and not told to null it: leave unchanged.
+                return Ok(curr_v.clone());
+            }
+        };
+
+        // Determine target unit (defaults to the source unit → identity).
+        let to_unit = uc
+            .target_unit
+            .clone()
+            .or_else(|| from_unit.clone());
+
+        let (result, out_unit) = match (&from_unit, &to_unit) {
+            (Some(fu), Some(tu)) => match units::convert(magnitude, fu, tu) {
+                Some(r) => (r, tu.clone()),
+                None => {
+                    // Unknown / incompatible units (incl. molar↔mass):
+                    // leave the magnitude unchanged.
+                    (magnitude, fu.clone())
+                }
+            },
+            // No units resolvable at all: pass the magnitude through.
+            _ => (magnitude, from_unit.clone().unwrap_or_default()),
+        };
+
+        let result_val = float_to_value(result);
+
+        if let Some(tgt_mag_slot) = &uc.target_magnitude_slot {
+            let mut out = IndexMap::new();
+            out.insert(tgt_mag_slot.clone(), result_val);
+            if let Some(tgt_unit_slot) = &uc.target_unit_slot {
+                out.insert(tgt_unit_slot.clone(), Value::Str(out_unit));
+            }
+            Ok(Value::Map(out))
+        } else {
+            Ok(result_val)
+        }
     }
 
     /// Apply URI expansion or CURIE compression to a value based on the
@@ -991,6 +1172,15 @@ impl<'s> ObjectTransformer<'s> {
 }
 
 // ── Utility fns ───────────────────────────────────────────────────────────────
+
+/// Wrap a converted magnitude as a [`Value`].
+///
+/// Python `convert_units` always returns a float, so unit-conversion results
+/// are emitted as [`Value::Float`] to match that observable behaviour (even for
+/// whole numbers like `1.0`).
+fn float_to_value(f: f64) -> Value {
+    Value::Float(f)
+}
 
 /// Convert a `serde_json::Value` (used in SlotDerivation.value) to our `Value`.
 fn json_to_value(j: &serde_json::Value) -> Value {
@@ -2042,5 +2232,214 @@ mod tests {
         assert_eq!(via_object, via_container);
         let out = match via_container { Value::Map(m) => m, _ => panic!() };
         assert_eq!(out["name"], Value::Str("Alice".into()));
+    }
+
+    // ── unit_conversion tests ────────────────────────────────────────
+
+    /// Source schema with a height slot whose schema unit annotation is `in`.
+    fn make_measure_schema() -> InMemorySchema {
+        InMemorySchemaBuilder::new()
+            .add_type("float")
+            .add_type("string")
+            .add_class(ClassDef {
+                name: "Obs".into(), tree_root: true, is_a: None, mixins: vec![],
+            })
+            .add_slot("Obs", SlotDef {
+                name: "height_in".into(), range: RangeKind::Type("float".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: Some("in".into()), any_of_enums: vec![],
+            })
+            .add_slot("Obs", SlotDef {
+                name: "glucose".into(), range: RangeKind::Type("float".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .build()
+    }
+
+    /// Convert height (schema unit `in`) to cm via target_unit only.
+    #[test]
+    fn unit_conversion_schema_unit_to_cm() {
+        let schema = make_measure_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("height_cm".into(), SlotDerivation {
+            name: "height_cm".into(),
+            populated_from: Some("height_in".into()),
+            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                target_unit: Some("cm".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "ObsOut".into(),
+                populated_from: Some("Obs".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let mut m = IndexMap::new();
+        m.insert("height_in".into(), Value::Float(10.0));
+        let out = match engine.map_object(&Value::Map(m), Some("Obs")).unwrap() {
+            Value::Map(m) => m, _ => panic!(),
+        };
+        // 10 in = 25.4 cm
+        match out["height_cm"] {
+            Value::Float(f) => assert!((f - 25.4).abs() < 1e-6, "got {f}"),
+            ref other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    /// Convert using spec source_unit + target_unit (no schema unit).
+    #[test]
+    fn unit_conversion_spec_units_mg_to_g() {
+        let schema = make_measure_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("dose_g".into(), SlotDerivation {
+            name: "dose_g".into(),
+            populated_from: Some("glucose".into()),
+            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                source_unit: Some("mg".into()),
+                target_unit: Some("g".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "ObsOut".into(),
+                populated_from: Some("Obs".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let mut m = IndexMap::new();
+        m.insert("glucose".into(), Value::Float(2500.0));
+        let out = match engine.map_object(&Value::Map(m), Some("Obs")).unwrap() {
+            Value::Map(m) => m, _ => panic!(),
+        };
+        match out["dose_g"] {
+            Value::Float(f) => assert!((f - 2.5).abs() < 1e-9, "got {f}"),
+            ref other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    /// Incompatible / unknown units leave the magnitude unchanged.
+    #[test]
+    fn unit_conversion_incompatible_passthrough() {
+        let schema = make_measure_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("out".into(), SlotDerivation {
+            name: "out".into(),
+            populated_from: Some("glucose".into()),
+            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                source_unit: Some("mmol/L".into()),
+                target_unit: Some("mg/dL".into()), // needs molecular weight
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "ObsOut".into(),
+                populated_from: Some("Obs".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let mut m = IndexMap::new();
+        m.insert("glucose".into(), Value::Float(5.0));
+        let out = match engine.map_object(&Value::Map(m), Some("Obs")).unwrap() {
+            Value::Map(m) => m, _ => panic!(),
+        };
+        // Unchanged magnitude (no MW available), emitted as Float.
+        match out["out"] {
+            Value::Float(f) => assert!((f - 5.0).abs() < 1e-9, "got {f}"),
+            ref other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    /// Structured {value, unit} input with target_magnitude_slot output.
+    #[test]
+    fn unit_conversion_structured_value_and_output_map() {
+        // No schema (units come entirely from the structured value + spec).
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("height".into(), SlotDerivation {
+            name: "height".into(),
+            populated_from: Some("height".into()),
+            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                target_unit: Some("m".into()),
+                source_unit_slot: Some("unit".into()),
+                source_magnitude_slot: Some("value".into()),
+                target_magnitude_slot: Some("value".into()),
+                target_unit_slot: Some("unit".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Out".into(),
+                populated_from: Some("Rec".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let mut inner = IndexMap::new();
+        inner.insert("value".into(), Value::Float(150.0));
+        inner.insert("unit".into(), Value::Str("cm".into()));
+        let mut m = IndexMap::new();
+        m.insert("height".into(), Value::Map(inner));
+        let out = match engine.map_object(&Value::Map(m), Some("Rec")).unwrap() {
+            Value::Map(m) => m, _ => panic!(),
+        };
+        let hm = match &out["height"] { Value::Map(m) => m, other => panic!("{other:?}") };
+        match hm["value"] {
+            Value::Float(f) => assert!((f - 1.5).abs() < 1e-9, "got {f}"),
+            ref other => panic!("expected Float, got {other:?}"),
+        }
+        assert_eq!(hm["unit"], Value::Str("m".into()));
+    }
+
+    /// Non-numeric magnitude with none_if_non_numeric returns Null.
+    #[test]
+    fn unit_conversion_non_numeric_none() {
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("out".into(), SlotDerivation {
+            name: "out".into(),
+            populated_from: Some("v".into()),
+            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                source_unit: Some("cm".into()),
+                target_unit: Some("m".into()),
+                none_if_non_numeric: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Out".into(),
+                populated_from: Some("Rec".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let mut m = IndexMap::new();
+        m.insert("v".into(), Value::Str("not-a-number".into()));
+        let out = match engine.map_object(&Value::Map(m), Some("Rec")).unwrap() {
+            Value::Map(m) => m, _ => panic!(),
+        };
+        assert_eq!(out["out"], Value::Null);
     }
 }
