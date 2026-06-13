@@ -7,6 +7,7 @@ pub mod error;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+pub mod stmt;
 
 pub use error::{ExprError, ExprResult};
 pub use eval::{eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr, Bindings, ParsedExpr};
@@ -454,5 +455,158 @@ mod tests {
             ev("person.address.street", &[("person", Value::Map(person))]),
             s("Main St")
         );
+    }
+
+    // === single-expression subscript + comprehension (fast path) ==========
+
+    #[test]
+    fn subscript_on_list_and_string() {
+        let xs = Value::List(vec![s("a"), s("b"), s("c")]);
+        assert_eq!(ev("xs[0]", &[("xs", xs.clone())]), s("a"));
+        assert_eq!(ev("xs[2]", &[("xs", xs.clone())]), s("c"));
+        // negative index
+        assert_eq!(ev("xs[-1]", &[("xs", xs)]), s("c"));
+        // string subscript
+        assert_eq!(ev("name[0]", &[("name", s("fred"))]), s("f"));
+    }
+
+    #[test]
+    fn list_comprehension_for_in_if() {
+        // [x for x in xs if x > 2]  →  [3, 4]
+        let xs = Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]);
+        assert_eq!(
+            ev("[x for x in xs if x > 2]", &[("xs", xs)]),
+            Value::List(vec![Value::Int(3), Value::Int(4)])
+        );
+    }
+
+    #[test]
+    fn comprehension_attribute_is_per_element() {
+        // events with event_name + date; pull dates where name matches.
+        let mk = |name: &str, date: &str| {
+            let mut m = IndexMap::new();
+            m.insert("event_name".to_string(), s(name));
+            m.insert("important_event_date".to_string(), s(date));
+            Value::Map(m)
+        };
+        let events = Value::List(vec![
+            mk("BIRTH", "1990-01-01"),
+            mk("PASSED_DRIVING_TEST", "2014-03-31"),
+        ]);
+        assert_eq!(
+            ev(
+                "[x.important_event_date for x in events if str(x.event_name) == \"PASSED_DRIVING_TEST\"]",
+                &[("events", events)]
+            ),
+            Value::List(vec![s("2014-03-31")])
+        );
+    }
+
+    #[test]
+    fn empty_comprehension_yields_empty_list() {
+        let xs = Value::List(vec![Value::Int(1)]);
+        assert_eq!(
+            ev("[x for x in xs if x > 99]", &[("xs", xs)]),
+            Value::List(vec![])
+        );
+        // comprehension over Null iterable → empty list
+        assert_eq!(
+            ev("[x for x in xs if x]", &[("xs", Value::Null)]),
+            Value::List(vec![])
+        );
+    }
+
+    // === multi-statement programs (asteval-style `target` contract) =======
+
+    /// Build the personinfo-style `src` object with a list of life events.
+    fn src_with_events(events: Vec<(&str, &str)>) -> Bindings {
+        let mut binds: Bindings = IndexMap::new();
+        let evs: Vec<Value> = events
+            .into_iter()
+            .map(|(name, date)| {
+                let mut m = IndexMap::new();
+                m.insert("event_name".to_string(), s(name));
+                m.insert("important_event_date".to_string(), s(date));
+                Value::Map(m)
+            })
+            .collect();
+        let mut src = IndexMap::new();
+        src.insert("has_important_life_events".to_string(), Value::List(evs));
+        binds.insert("src".to_string(), Value::Map(src));
+        binds
+    }
+
+    #[test]
+    fn program_assignment_then_target() {
+        // `target` symbol is the result; assignment binds it.
+        let vars: Bindings = IndexMap::new();
+        let parsed = parse_expr("d = 5\ntarget = d + 1").unwrap();
+        assert!(parsed.is_program(), "should route to the program path");
+        assert_eq!(parsed.eval(&vars).unwrap(), Value::Int(6));
+    }
+
+    #[test]
+    fn program_target_unset_returns_null() {
+        // If `target` is never assigned (guard did not fire), result is Null.
+        let vars = src_with_events(vec![("BIRTH", "1990-01-01")]);
+        let expr = "d_test = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == \"DEATH\"]\nif len(d_test):\n    target = d_test[0]";
+        let parsed = parse_expr(expr).unwrap();
+        assert!(parsed.is_program());
+        assert_eq!(parsed.eval(&vars).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn program_driving_since_block() {
+        // The full personinfo `driving_since` block: comprehension + len guard
+        // + subscript [0].
+        let vars = src_with_events(vec![
+            ("BIRTH", "1990-01-01"),
+            ("PASSED_DRIVING_TEST", "2014-03-31"),
+            ("FIRST_CAR_ACCIDENT", "2015-01-25"),
+        ]);
+        let expr = "d_test = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == \"PASSED_DRIVING_TEST\"]\nif len(d_test):\n    target = d_test[0]";
+        let parsed = parse_expr(expr).unwrap();
+        assert_eq!(parsed.eval(&vars).unwrap(), s("2014-03-31"));
+    }
+
+    #[test]
+    fn program_single_line_if_first_event() {
+        // `first_known_event`: indented single-statement body referencing a
+        // subscripted attribute path.
+        let vars = src_with_events(vec![("BIRTH", "1990-01-01")]);
+        let expr =
+            "if src.has_important_life_events:\n  target = src.has_important_life_events[0].important_event_date";
+        let parsed = parse_expr(expr).unwrap();
+        assert_eq!(parsed.eval(&vars).unwrap(), s("1990-01-01"));
+    }
+
+    #[test]
+    fn program_missing_src_attr_is_null_not_distributed() {
+        // In object mode, `src.<missing>` returns Null (DynObj semantics),
+        // never distributing over the map's values into a list.
+        let mut binds: Bindings = IndexMap::new();
+        let mut src = IndexMap::new();
+        src.insert("id".to_string(), s("P:002"));
+        src.insert("name".to_string(), s("Alison"));
+        binds.insert("src".to_string(), Value::Map(src));
+        let expr = "death_dates = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == \"DEATH\"]\nif len(death_dates):\n  target = death_dates[0]";
+        let parsed = parse_expr(expr).unwrap();
+        // No life-events key → comprehension over Null → [] → target unset → Null.
+        assert_eq!(parsed.eval(&binds).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn single_expr_still_takes_fast_path() {
+        // A plain expression must NOT be classified as a program.
+        let parsed = parse_expr("str({age_in_years}) + ' years'").unwrap();
+        assert!(!parsed.is_program(), "single expr must keep the fast path");
+        let mut vars: Bindings = IndexMap::new();
+        vars.insert("age_in_years".to_string(), Value::Int(33));
+        assert_eq!(parsed.eval(&vars).unwrap(), s("33 years"));
     }
 }

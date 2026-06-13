@@ -672,6 +672,19 @@ impl<'s> ObjectTransformer<'s> {
             bindings.insert(k.clone(), bound);
         }
 
+        // Bind the whole source object as `src`, mirroring the asteval
+        // `usersyms={"src": ctxt_obj, ...}` contract used by linkml-map's
+        // multi-statement (`expr:`) blocks. Multi-statement specs read
+        // `src.<slot>`; single-expression specs bind slot names directly and
+        // do not need `src`, but binding it is harmless (it only shadows a
+        // literal `src` source slot, which the schemas do not define).
+        let src_obj: IndexMap<String, Value> = bindings
+            .iter()
+            .filter(|(k, _)| k.as_str() != "NULL")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        bindings.insert("src".to_string(), Value::Map(src_obj));
+
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
         // string parse path otherwise (identical result).

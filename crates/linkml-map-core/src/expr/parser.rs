@@ -71,6 +71,18 @@ pub enum Ast {
     },
     /// List literal `[a, b, c]`.
     List(Vec<Ast>),
+    /// Subscript `value[index]`.
+    Subscript {
+        value: Box<Ast>,
+        index: Box<Ast>,
+    },
+    /// List comprehension `[elt for var in iter (if cond)?]`.
+    ListComp {
+        elt: Box<Ast>,
+        var: String,
+        iter: Box<Ast>,
+        cond: Option<Box<Ast>>,
+    },
     /// Tuple literal `(a, b)` — used for `case((cond, val), ...)` pairs.
     Tuple(Vec<Ast>),
     /// Function call `name(args...)`.
@@ -407,6 +419,16 @@ impl Parser {
                         attr,
                     };
                 }
+                Token::LBracket => {
+                    // Subscript: value[index].
+                    self.next();
+                    let index = self.parse_expr()?;
+                    self.expect(Token::RBracket)?;
+                    node = Ast::Subscript {
+                        value: Box::new(node),
+                        index: Box::new(index),
+                    };
+                }
                 _ => break,
             }
         }
@@ -456,7 +478,48 @@ impl Parser {
                 }
             }
             Token::LBracket => {
-                let elts = self.parse_arg_list(Token::RBracket)?;
+                // Empty list.
+                if *self.peek() == Token::RBracket {
+                    self.next();
+                    return Ok(Ast::List(vec![]));
+                }
+                let first = self.parse_expr()?;
+                // List comprehension: `[elt for var in iter (if cond)?]`.
+                if matches!(self.peek(), Token::Name(kw) if kw == "for") {
+                    self.next(); // consume `for`
+                    let var = match self.next() {
+                        Token::Name(n) => n,
+                        other => {
+                            return Err(ExprError::Parse(format!(
+                                "expected loop variable after 'for', found {other:?}"
+                            )))
+                        }
+                    };
+                    self.expect(Token::In)?;
+                    let iter = self.parse_or()?;
+                    let cond = if matches!(self.peek(), Token::Name(kw) if kw == "if") {
+                        self.next(); // consume `if`
+                        Some(Box::new(self.parse_or()?))
+                    } else {
+                        None
+                    };
+                    self.expect(Token::RBracket)?;
+                    return Ok(Ast::ListComp {
+                        elt: Box::new(first),
+                        var,
+                        iter: Box::new(iter),
+                        cond,
+                    });
+                }
+                // Plain list literal: collect remaining comma-separated elements.
+                let mut elts = vec![first];
+                while *self.peek() == Token::Comma {
+                    self.next();
+                    if *self.peek() == Token::RBracket {
+                        break;
+                    }
+                    elts.push(self.parse_expr()?);
+                }
                 self.expect(Token::RBracket)?;
                 Ok(Ast::List(elts))
             }

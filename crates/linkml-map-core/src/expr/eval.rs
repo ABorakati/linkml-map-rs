@@ -17,6 +17,7 @@ use indexmap::IndexMap;
 
 use super::error::{ExprError, ExprResult};
 use super::parser::{parse, Ast, BinOp, BoolOp, CmpOp, UnOp};
+use super::stmt::{is_multi_statement, parse_program, Program};
 use crate::value::Value;
 
 /// Variable bindings: name → value mapping.
@@ -37,9 +38,20 @@ pub type Bindings = IndexMap<String, Value>;
 /// [`Value::Null`], identical to the per-call string path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedExpr {
-    /// `None` encodes the `"None"` literal short-circuit; `Some(ast)` is the
-    /// parsed expression tree.
-    ast: Option<Ast>,
+    inner: ParsedInner,
+}
+
+/// Internal representation: a single cached expression (the fast path), the
+/// `"None"` literal short-circuit, or a multi-statement program (the
+/// `asteval`-style block path).
+#[derive(Debug, Clone, PartialEq)]
+enum ParsedInner {
+    /// `"None"` literal short-circuit — always evaluates to [`Value::Null`].
+    NoneLiteral,
+    /// A single parsed expression tree (the common case + fast path).
+    Single(Ast),
+    /// A multi-statement program (`target = ...` blocks, `if`, comprehensions).
+    Program(Program),
 }
 
 impl ParsedExpr {
@@ -49,6 +61,19 @@ impl ParsedExpr {
     pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
         eval_parsed(self, vars)
     }
+
+    /// True when this was parsed as a multi-statement program (the
+    /// `asteval`-style block path), as opposed to a single expression.
+    pub fn is_program(&self) -> bool {
+        matches!(self.inner, ParsedInner::Program(_))
+    }
+}
+
+/// Evaluate a single AST node against `vars`. Exposed for the statement
+/// interpreter (`super::stmt`), which reuses the full expression semantics for
+/// every sub-expression in a program.
+pub fn eval_ast_public(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
+    eval_ast(node, vars)
 }
 
 /// Lex + parse `expr` once into a reusable [`ParsedExpr`].
@@ -77,20 +102,33 @@ impl ParsedExpr {
 /// ```
 pub fn parse_expr(expr: &str) -> ExprResult<ParsedExpr> {
     if expr == "None" {
-        return Ok(ParsedExpr { ast: None });
+        return Ok(ParsedExpr {
+            inner: ParsedInner::NoneLiteral,
+        });
+    }
+    // Multi-statement (`asteval`-style) blocks route to the statement parser;
+    // single expressions keep the cached single-AST fast path untouched.
+    if is_multi_statement(expr) {
+        let program = parse_program(expr)?;
+        return Ok(ParsedExpr {
+            inner: ParsedInner::Program(program),
+        });
     }
     let ast = parse(expr)?;
-    Ok(ParsedExpr { ast: Some(ast) })
+    Ok(ParsedExpr {
+        inner: ParsedInner::Single(ast),
+    })
 }
 
 /// Evaluate a pre-parsed expression against the given `bindings`.
 ///
-/// This performs no parsing — it walks the cached [`Ast`] directly. Unbound
-/// names resolve to [`Value::Null`].
+/// This performs no parsing — it walks the cached [`Ast`]/program directly.
+/// Unbound names resolve to [`Value::Null`].
 pub fn eval_parsed(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
-    match &parsed.ast {
-        None => Ok(Value::Null),
-        Some(ast) => eval_ast(ast, vars),
+    match &parsed.inner {
+        ParsedInner::NoneLiteral => Ok(Value::Null),
+        ParsedInner::Single(ast) => eval_ast(ast, vars),
+        ParsedInner::Program(program) => with_object_attr_mode(|| program.eval(vars)),
     }
 }
 
@@ -141,6 +179,49 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             Ok(Value::List(out))
         }
 
+        Ast::Subscript { value, index } => {
+            let obj = eval_ast(value, vars)?;
+            let idx = eval_ast(index, vars)?;
+            eval_subscript(&obj, &idx)
+        }
+
+        Ast::ListComp {
+            elt,
+            var,
+            iter,
+            cond,
+        } => {
+            let iterable = eval_ast(iter, vars)?;
+            // Python iterates lists by element, dicts by *keys*, None → empty.
+            let items: Vec<Value> = match iterable {
+                Value::List(items) => items,
+                Value::Map(m) => m.into_iter().map(|(k, _)| Value::Str(k)).collect(),
+                Value::Null => Vec::new(),
+                other => {
+                    return Err(ExprError::Eval(format!(
+                        "'{}' object is not iterable",
+                        type_name(&other)
+                    )))
+                }
+            };
+            // Evaluate against a child scope that shadows the loop variable.
+            // The loop var binds a single element, so attribute access on it is
+            // per-element (a scalar field read on a single Map), not the list
+            // auto-distribution used in plain exprs.
+            let mut scope = vars.clone();
+            let mut out = Vec::new();
+            for item in items {
+                scope.insert(var.clone(), item);
+                if let Some(c) = cond {
+                    if !eval_ast(c, &scope)?.is_truthy() {
+                        continue;
+                    }
+                }
+                out.push(eval_ast(elt, &scope)?);
+            }
+            Ok(Value::List(out))
+        }
+
         Ast::Tuple(elts) => {
             // Tuples are only meaningful as case() pair arguments; represent as
             // a list so the evaluator can index into them.
@@ -182,7 +263,93 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
     }
 }
 
+// --- subscript (mirrors Python __getitem__ for list/str/dict) ---
+
+fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
+    match obj {
+        Value::List(items) => {
+            let i = match idx {
+                Value::Int(i) => *i,
+                Value::Bool(b) => *b as i64,
+                other => {
+                    return Err(ExprError::Eval(format!(
+                        "list indices must be integers, not {}",
+                        type_name(other)
+                    )))
+                }
+            };
+            let len = items.len() as i64;
+            let resolved = if i < 0 { len + i } else { i };
+            if resolved < 0 || resolved >= len {
+                return Err(ExprError::Eval("list index out of range".into()));
+            }
+            Ok(items[resolved as usize].clone())
+        }
+        Value::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            let i = match idx {
+                Value::Int(i) => *i,
+                Value::Bool(b) => *b as i64,
+                other => {
+                    return Err(ExprError::Eval(format!(
+                        "string indices must be integers, not {}",
+                        type_name(other)
+                    )))
+                }
+            };
+            let len = chars.len() as i64;
+            let resolved = if i < 0 { len + i } else { i };
+            if resolved < 0 || resolved >= len {
+                return Err(ExprError::Eval("string index out of range".into()));
+            }
+            Ok(Value::Str(chars[resolved as usize].to_string()))
+        }
+        Value::Map(m) => {
+            let key = match idx {
+                Value::Str(k) => k.clone(),
+                other => py_str(other),
+            };
+            match m.get(&key) {
+                Some(v) => Ok(v.clone()),
+                None => Err(ExprError::Eval(format!("KeyError: {key:?}"))),
+            }
+        }
+        Value::Null => Err(ExprError::Eval(
+            "'NoneType' object is not subscriptable".into(),
+        )),
+        other => Err(ExprError::Eval(format!(
+            "'{}' object is not subscriptable",
+            type_name(other)
+        ))),
+    }
+}
+
 // --- attribute distribution (mirrors _distributed_getattr) ---
+
+thread_local! {
+    /// When set, attribute access on a `Map` uses *object* semantics:
+    /// a missing key returns [`Value::Null`] (Python `DynObj.__getattr__`),
+    /// instead of distributing over the map's values.
+    ///
+    /// The multi-statement (`asteval`-style) program path binds `src` to a
+    /// single object whose attributes are read via native `getattr`, where a
+    /// missing attribute yields `None`. The single-expression path keeps the
+    /// historical dict-value distribution (off by default). See
+    /// [`with_object_attr_mode`].
+    static OBJECT_ATTR_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with object-attribute semantics enabled, restoring the prior mode
+/// afterwards (nesting-safe).
+pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
+    OBJECT_ATTR_MODE.with(|m| {
+        let prev = m.get();
+        m.set(true);
+        let out = f();
+        m.set(prev);
+        out
+    })
+}
 
 fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
@@ -199,23 +366,23 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
             Ok(Value::List(out))
         }
         Value::Map(m) => {
-            // Python distributes over dict *values*, EXCEPT when the attribute
-            // is itself a key of the map (getattr on a plain dict in linkml's
-            // DynObj world resolves keys). The Python helper distributes over
-            // values for a bare dict; however object access on a single object
-            // (DynObj) reads the attribute. We model objects as Map and read
-            // the key directly when present, matching object.attr lookups
-            // (person.name). When the key is absent we distribute over values,
-            // matching container.persons.name where the value is a list.
+            // A present key resolves directly in both modes (object.attr).
             if let Some(v) = m.get(attr) {
-                Ok(v.clone())
-            } else {
-                let mut out = Vec::with_capacity(m.len());
-                for v in m.values() {
-                    out.push(distributed_getattr(v, attr)?);
-                }
-                Ok(Value::List(out))
+                return Ok(v.clone());
             }
+            // Missing key:
+            //  * object mode (multi-statement `src.attr`): return None, exactly
+            //    like Python's `DynObj.__getattr__` (vars(self).get(p, None)).
+            //  * default (single-expr) mode: distribute over the map's values,
+            //    matching `_distributed_getattr` over a bare dict.
+            if OBJECT_ATTR_MODE.with(|c| c.get()) {
+                return Ok(Value::Null);
+            }
+            let mut out = Vec::with_capacity(m.len());
+            for v in m.values() {
+                out.push(distributed_getattr(v, attr)?);
+            }
+            Ok(Value::List(out))
         }
         Value::Null => Ok(Value::Null),
         // A scalar has no attributes; Python getattr would raise AttributeError.
