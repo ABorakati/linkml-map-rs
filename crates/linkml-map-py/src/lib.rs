@@ -182,6 +182,20 @@ fn load_schema_provider(schema_path: &str) -> PyResult<SchemaViewProvider> {
         .map_err(|e| PyValueError::new_err(format!("Failed to load schema '{schema_path}': {e}")))
 }
 
+/// Load the SOURCE schema, applying the spec's `source_schema_patches` (if any)
+/// before indexing. Patches only ever augment the source schema (e.g. adding FK
+/// `range`s missing from auto-generated schemas); the target schema is untouched.
+fn load_source_provider(
+    schema_path: &str,
+    spec: &TransformationSpecification,
+) -> PyResult<SchemaViewProvider> {
+    let path = std::path::Path::new(schema_path);
+    SchemaViewProvider::load_from_path_with_patch(path, spec.source_schema_patches.as_ref())
+        .map_err(|e| {
+            PyValueError::new_err(format!("Failed to load source schema '{schema_path}': {e}"))
+        })
+}
+
 // ── Core transform logic ──────────────────────────────────────────────────────
 
 /// Inner implementation shared by `Transformer.transform` and the free function.
@@ -246,8 +260,8 @@ impl PyTransformer {
         source_class: Option<String>,
     ) -> PyResult<Self> {
         // Eagerly validate files exist and parse; fail fast in __init__.
-        let _source = load_schema_provider(&source_schema)?;
         let spec_parsed = load_spec(&spec)?;
+        let _source = load_source_provider(&source_schema, &spec_parsed)?;
         if let Some(ref ts) = target_schema {
             let _target = load_schema_provider(ts)?;
         }
@@ -262,7 +276,7 @@ impl PyTransformer {
 
     /// Transform a single Python dict and return the result as a dict.
     fn transform(&self, py: Python<'_>, obj: Bound<'_, PyAny>) -> PyResult<PyObject> {
-        let source = load_schema_provider(&self.source_schema_path)?;
+        let source = load_source_provider(&self.source_schema_path, &self.spec)?;
         let target_opt: Option<SchemaViewProvider> = self.target_schema_path
             .as_deref()
             .map(load_schema_provider)
@@ -281,7 +295,7 @@ impl PyTransformer {
     /// Transform a list of Python dicts and return a list of result dicts.
     fn transform_many(&self, py: Python<'_>, objs: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<PyObject>> {
         // Load schemas once for the batch.
-        let source = load_schema_provider(&self.source_schema_path)?;
+        let source = load_source_provider(&self.source_schema_path, &self.spec)?;
         let target_opt: Option<SchemaViewProvider> = self.target_schema_path
             .as_deref()
             .map(load_schema_provider)
@@ -344,7 +358,7 @@ fn transform_object(
     source_class: Option<String>,
 ) -> PyResult<PyObject> {
     let spec_parsed = load_spec(&spec)?;
-    let source = load_schema_provider(&source_schema)?;
+    let source = load_source_provider(&source_schema, &spec_parsed)?;
     let target_opt: Option<SchemaViewProvider> = target_schema
         .as_deref()
         .map(load_schema_provider)
@@ -390,7 +404,7 @@ fn transform_objects(
     source_class: Option<String>,
 ) -> PyResult<Vec<PyObject>> {
     let spec_parsed = load_spec(&spec)?;
-    let source = load_schema_provider(&source_schema)?;
+    let source = load_source_provider(&source_schema, &spec_parsed)?;
     let target_opt: Option<SchemaViewProvider> = target_schema
         .as_deref()
         .map(load_schema_provider)
