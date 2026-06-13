@@ -1,0 +1,44 @@
+id: https://example.org/clinmin
+name: clinmin
+description: >-
+  Minimal anonymized clinical source schema for a portable OMOP-mapping end-to-end
+  regression. Covers the representative field shapes the pipeline must handle:
+  an identifier, a demographic enum, a numeric measurement, a coded diagnosis,
+  a Yes/No presence flag, and an event date.
+prefixes:
+  linkml: https://w3id.org/linkml/
+default_range: string
+imports:
+  - linkml:types
+classes:
+  PatientRow:
+    description: One row per patient.
+    attributes:
+      patient_id:
+        identifier: true
+        description: Patient identifier.
+      sex:
+        description: Sex of patient.
+        range: SexEnum
+      creatinine:
+        description: Serum creatinine measurement.
+        range: float
+      diabetes:
+        description: Diabetes diagnosis flag.
+        range: YesNoEnum
+      sample_date:
+        description: Date the sample was taken.
+        range: date
+enums:
+  SexEnum:
+    permissible_values:
+      "1":
+        description: Male
+      "2":
+        description: Female
+  YesNoEnum:
+    permissible_values:
+      "1":
+        description: "No"
+      "2":
+        description: "Yes"
