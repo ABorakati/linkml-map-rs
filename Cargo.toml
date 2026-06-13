@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-cli"]
+# linkml-map-py requires Python interpreter and maturin; exclude from default cargo build
+# Use: maturin build -C crates/linkml-map-py
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+indexmap = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v5"] }
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+csv-async = { version = "1", features = ["tokio"] }
+rayon = "1"
+clap = { version = "4", features = ["derive"] }
+pyo3 = { version = "0.23", features = ["extension-module"] }

@@ -1,0 +1,20 @@
+[package]
+name = "linkml-map-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "linkml-tr-rs"
+path = "src/main.rs"
+
+[dependencies]
+linkml-map-core = { path = "../linkml-map-core" }
+linkml-map-io = { path = "../linkml-map-io" }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
