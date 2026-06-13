@@ -131,6 +131,11 @@ async fn main() -> Result<()> {
     // threads. Compares the string-parse path (BEFORE) vs cached-AST (AFTER).
     transform_only_bench(&fixture, n_rows)?;
 
+    // ── FK parallel microbenchmark ────────────────────────────────────────────
+    // Shows that FK transforms still parallelize: index is built once, each
+    // row transform only reads from it (Arc<ObjectIndex>, no lock contention).
+    fk_parallel_bench(n_rows)?;
+
     Ok(())
 }
 
@@ -196,6 +201,280 @@ fn transform_only_bench(fixture: &std::path::Path, n_rows: usize) -> Result<()> 
     println!();
     println!("BEFORE = transform_uncached (re-parses expr per row).");
     println!("AFTER  = transform (evaluates the cached AST; expr parsed once at load).");
+
+    Ok(())
+}
+
+/// FK parallel microbenchmark.
+///
+/// Builds ONE `ObjectIndex` over a synthetic container (N entities), then fans
+/// out M mapping-row transforms across 1/2/4/8 rayon threads each sharing
+/// `Arc<ObjectIndex>`.  Reports rows/sec to show parallelization holds.
+///
+/// The critical property: `ObjectIndex` is `Send + Sync` (no locking), so
+/// all threads read the same index simultaneously without contention.
+fn fk_parallel_bench(n_rows: usize) -> Result<()> {
+    use linkml_map_core::{
+        datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification},
+        engine::{CompiledExprs, ObjectIndex, ObjectTransformer},
+        schema::{
+            ClassDef, InMemorySchema, InMemorySchemaBuilder, RangeKind, SchemaProvider, SlotDef,
+        },
+        value::Value,
+    };
+    use indexmap::IndexMap;
+    use rayon::prelude::*;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    // ── Schema: Container { entities: {Entity}, mappings: [Mapping] }
+    //           Mapping  { subject: Entity, predicate: string }
+    //           Entity   { id: string (identifier), name: string }
+    let schema: InMemorySchema = InMemorySchemaBuilder::new()
+        .add_type("string")
+        .add_class(ClassDef {
+            name: "Container".into(),
+            tree_root: true,
+            is_a: None,
+            mixins: vec![],
+        })
+        .add_slot(
+            "Container",
+            SlotDef {
+                name: "entities".into(),
+                range: RangeKind::Class("Entity".into()),
+                multivalued: true,
+                required: false,
+                identifier: false,
+                key: false,
+                unit: None,
+                any_of_enums: vec![],
+            },
+        )
+        .add_slot(
+            "Container",
+            SlotDef {
+                name: "mappings".into(),
+                range: RangeKind::Class("Mapping".into()),
+                multivalued: true,
+                required: false,
+                identifier: false,
+                key: false,
+                unit: None,
+                any_of_enums: vec![],
+            },
+        )
+        .add_class(ClassDef {
+            name: "Mapping".into(),
+            tree_root: false,
+            is_a: None,
+            mixins: vec![],
+        })
+        .add_slot(
+            "Mapping",
+            SlotDef {
+                name: "subject".into(),
+                range: RangeKind::Class("Entity".into()),
+                multivalued: false,
+                required: false,
+                identifier: false,
+                key: false,
+                unit: None,
+                any_of_enums: vec![],
+            },
+        )
+        .add_slot(
+            "Mapping",
+            SlotDef {
+                name: "predicate".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false,
+                required: false,
+                identifier: false,
+                key: false,
+                unit: None,
+                any_of_enums: vec![],
+            },
+        )
+        .add_class(ClassDef {
+            name: "Entity".into(),
+            tree_root: false,
+            is_a: None,
+            mixins: vec![],
+        })
+        .add_slot(
+            "Entity",
+            SlotDef {
+                name: "id".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false,
+                required: true,
+                identifier: true,
+                key: false,
+                unit: None,
+                any_of_enums: vec![],
+            },
+        )
+        .add_slot(
+            "Entity",
+            SlotDef {
+                name: "name".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false,
+                required: false,
+                identifier: false,
+                key: false,
+                unit: None,
+                any_of_enums: vec![],
+            },
+        )
+        .build();
+
+    // ── Spec: Mapping → FlatMapping (subject.id, subject.name) via FK exprs
+    let mut mapping_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+    mapping_slots.insert(
+        "subject_id".into(),
+        SlotDerivation {
+            name: "subject_id".into(),
+            expr: Some("subject.id".into()),
+            ..Default::default()
+        },
+    );
+    mapping_slots.insert(
+        "subject_name".into(),
+        SlotDerivation {
+            name: "subject_name".into(),
+            expr: Some("subject.name".into()),
+            ..Default::default()
+        },
+    );
+    mapping_slots.insert(
+        "predicate_id".into(),
+        SlotDerivation {
+            name: "predicate_id".into(),
+            populated_from: Some("predicate".into()),
+            ..Default::default()
+        },
+    );
+
+    let spec = TransformationSpecification {
+        class_derivations: Some(vec![ClassDerivation {
+            name: "Mapping".into(),
+            populated_from: Some("Mapping".into()),
+            slot_derivations: Some(mapping_slots),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let compiled_exprs =
+        CompiledExprs::build(&spec).map_err(|e| anyhow::anyhow!("compile exprs: {e}"))?;
+
+    // ── Synthesize N_ENTITIES entities + n_rows mapping rows
+    let n_entities: usize = (n_rows / 100).max(20).min(1000);
+
+    let entities_json: serde_json::Value = {
+        let mut obj = serde_json::Map::new();
+        for i in 0..n_entities {
+            obj.insert(
+                format!("E:{i}"),
+                serde_json::json!({ "name": format!("entity_{i}") }),
+            );
+        }
+        serde_json::Value::Object(obj)
+    };
+    let mappings_json: serde_json::Value = serde_json::Value::Array(
+        (0..n_rows)
+            .map(|j| {
+                serde_json::json!({
+                    "subject": format!("E:{}", j % n_entities),
+                    "predicate": format!("P:{j}"),
+                })
+            })
+            .collect(),
+    );
+    let container_json = serde_json::json!({
+        "entities": entities_json,
+        "mappings": mappings_json,
+    });
+    let container: Value = serde_json::from_value(container_json).unwrap();
+
+    // Build index ONCE — this is the key invariant: one build, N parallel reads.
+    let t_idx = Instant::now();
+    let index = Arc::new(ObjectIndex::build(
+        &container,
+        Some("Container"),
+        Some(&schema as &dyn SchemaProvider),
+    ));
+    let idx_ms = t_idx.elapsed().as_millis();
+
+    let mappings: Vec<Value> = match &container {
+        Value::Map(m) => match m.get("mappings") {
+            Some(Value::List(l)) => l.clone(),
+            _ => panic!("expected mappings list"),
+        },
+        _ => panic!("expected container map"),
+    };
+
+    let spec = Arc::new(spec);
+    let compiled_exprs = Arc::new(compiled_exprs);
+    let schema = Arc::new(schema);
+
+    println!();
+    println!(
+        "=== FK parallel microbenchmark ({n_rows} rows, {n_entities} entities, index built in {idx_ms}ms) ==="
+    );
+    println!(
+        "{:<10} {:>14} {:>12}",
+        "workers", "rows/sec", "elapsed_ms"
+    );
+    println!("{}", "-".repeat(40));
+
+    for &workers in &[1usize, 2, 4, 8] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .map_err(|e| anyhow::anyhow!("rayon pool: {e}"))?;
+
+        let spec2 = Arc::clone(&spec);
+        let compiled2 = Arc::clone(&compiled_exprs);
+        let schema2 = Arc::clone(&schema);
+        let index2 = Arc::clone(&index);
+        let rows2 = mappings.clone();
+
+        let (rows_per_sec, elapsed_ms) = pool.install(move || {
+            let start = Instant::now();
+            let _: Vec<Value> = rows2
+                .par_iter()
+                .map(|row| {
+                    let engine = ObjectTransformer::new_borrowed(
+                        &spec2,
+                        Some(schema2.as_ref() as &dyn SchemaProvider),
+                        None,
+                    )
+                    .with_compiled_exprs(&compiled2);
+                    engine
+                        .map_object_with_index(row, Some("Mapping"), &index2)
+                        .expect("FK transform failed")
+                })
+                .collect();
+            let elapsed = start.elapsed();
+            let rps = if elapsed.as_secs_f64() > 0.0 {
+                rows2.len() as f64 / elapsed.as_secs_f64()
+            } else {
+                f64::INFINITY
+            };
+            (rps, elapsed.as_millis())
+        });
+
+        println!(
+            "{:<10} {:>14.0} {:>12}",
+            workers, rows_per_sec, elapsed_ms
+        );
+    }
+    println!();
+    println!("Note: all workers share one Arc<ObjectIndex> built once before the loop.");
+    println!("      Index reads are lock-free (Send+Sync HashMap, no interior mutability).");
 
     Ok(())
 }

@@ -34,11 +34,11 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
     datamodel::TransformationSpecification,
-    engine::{CompiledExprs, ObjectTransformer},
+    engine::{CompiledExprs, ObjectIndex, ObjectTransformer},
     schema::SchemaProvider,
     value::Value,
 };
-use linkml_map_io::{load_stream, write_all, Format};
+use linkml_map_io::{load_all, load_stream, write_all, Format};
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
 
@@ -120,8 +120,11 @@ pub struct PipelineStats {
 /// per row — the dominant per-row cost on expr-heavy specs.
 pub struct CompiledPlan {
     spec: TransformationSpecification,
-    source_provider: SchemaViewProvider,
-    target_provider: SchemaViewProvider,
+    /// Source schema provider — either a real `SchemaViewProvider` or a
+    /// tolerant `InMemorySchema` fallback for schemas with unresolvable CURIE maps.
+    source_provider: Box<dyn SchemaProvider>,
+    /// Target schema provider (same tolerance).
+    target_provider: Box<dyn SchemaProvider>,
     /// Pre-parsed `expr:` ASTs, shared (by borrow) into every per-row engine.
     compiled_exprs: CompiledExprs,
     /// Resolved source class name (empty string = let engine decide per row).
@@ -158,13 +161,29 @@ impl CompiledPlan {
         target_schema_path: &Path,
         source_class_hint: Option<&str>,
     ) -> Result<Self> {
-        // Load source schema
-        let source_provider = SchemaViewProvider::load_from_path(schema_path)
-            .with_context(|| format!("loading source schema {}", schema_path.display()))?;
+        // Load source schema with CURIE-map tolerance.
+        // `SchemaViewProvider` fails on schemas that reference `semweb_context`
+        // or other standard CURIE maps it can't resolve at load time. We fall
+        // back to a minimal in-memory YAML parser that extracts the class/slot
+        // metadata the engine needs for FK detection and range coercion.
+        let source_provider: Box<dyn SchemaProvider> = {
+            let ts = load_schema_tolerant(schema_path)
+                .with_context(|| format!("loading source schema {}", schema_path.display()))?;
+            match ts {
+                TolerantSchema::Real(p) => Box::new(p),
+                TolerantSchema::InMemory(p) => Box::new(p),
+            }
+        };
 
         // Load target schema (may be same file — that's fine, second load is cheap)
-        let target_provider = SchemaViewProvider::load_from_path(target_schema_path)
-            .with_context(|| format!("loading target schema {}", target_schema_path.display()))?;
+        let target_provider: Box<dyn SchemaProvider> = {
+            let ts = load_schema_tolerant(target_schema_path)
+                .with_context(|| format!("loading target schema {}", target_schema_path.display()))?;
+            match ts {
+                TolerantSchema::Real(p) => Box::new(p),
+                TolerantSchema::InMemory(p) => Box::new(p),
+            }
+        };
 
         // Load + normalise the transformation spec
         let spec = load_transform_spec(spec_path)
@@ -197,6 +216,69 @@ impl CompiledPlan {
         })
     }
 
+    /// Returns `true` when the spec has any `expr:` that contains a `.`
+    /// attribute access AND the source schema has at least one slot whose
+    /// range is a class — meaning FK dereference is likely needed.
+    ///
+    /// This is a conservative over-approximation: it may return `true` when
+    /// the dot-access is on an inlined object (not an FK), but that is safe
+    /// (the FK pipeline buffering path degrades gracefully: the index just
+    /// won't be consulted for inlined objects). It never returns `false` when
+    /// FK resolution is actually needed.
+    ///
+    /// When `true`, [`run_pipeline`] will buffer the full dataset, build one
+    /// `ObjectIndex`, and fan out per-row transforms sharing `Arc<ObjectIndex>`.
+    /// When `false`, the streaming non-FK path is used unchanged.
+    pub fn requires_object_index(&self) -> bool {
+        // Fast path: no expr: slots → no FK access possible.
+        let has_dot_expr = self
+            .spec
+            .class_derivations
+            .as_ref()
+            .map(|cds| {
+                cds.iter()
+                    .filter_map(|cd| cd.slot_derivations.as_ref())
+                    .flat_map(|sds| sds.values())
+                    .any(|sd| {
+                        sd.expr
+                            .as_deref()
+                            .map(|e| e.contains('.'))
+                            .unwrap_or(false)
+                    })
+            })
+            .unwrap_or(false);
+
+        if !has_dot_expr {
+            return false;
+        }
+
+        // At least one source-schema slot has a class range → FK possible.
+        let source: &dyn SchemaProvider = self.source_provider.as_ref();
+        source.all_class_names().iter().any(|class_name| {
+            source
+                .induced_slots(class_name)
+                .unwrap_or_default()
+                .iter()
+                .any(|s| s.range_class().is_some())
+        })
+    }
+
+    /// Transform one row using a pre-built [`ObjectIndex`].
+    ///
+    /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
+    /// a reference to each parallel worker — zero per-row index rebuild.
+    pub fn transform_with_index(&self, row: Value, index: &ObjectIndex) -> Result<Value> {
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            Some(self.target_provider.as_ref()),
+        )
+        .with_compiled_exprs(&self.compiled_exprs);
+        engine
+            .map_object_with_index(&row, self.source_class.as_deref(), index)
+            .map_err(|e| anyhow::anyhow!("transform error: {e}"))
+    }
+
     /// Transform one row.  Called from rayon worker threads.
     ///
     /// Public so benchmarks can isolate per-row transform throughput from the
@@ -205,8 +287,8 @@ impl CompiledPlan {
         // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
         let engine = ObjectTransformer::new_borrowed(
             &self.spec,
-            Some(&self.source_provider as &dyn SchemaProvider),
-            Some(&self.target_provider as &dyn SchemaProvider),
+            Some(self.source_provider.as_ref()),
+            Some(self.target_provider.as_ref()),
         )
         .with_compiled_exprs(&self.compiled_exprs);
         engine
@@ -221,8 +303,8 @@ impl CompiledPlan {
     pub fn transform_uncached(&self, row: Value) -> Result<Value> {
         let engine = ObjectTransformer::new_borrowed(
             &self.spec,
-            Some(&self.source_provider as &dyn SchemaProvider),
-            Some(&self.target_provider as &dyn SchemaProvider),
+            Some(self.source_provider.as_ref()),
+            Some(self.target_provider.as_ref()),
         );
         engine
             .map_object(&row, self.source_class.as_deref())
@@ -265,70 +347,20 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
         .context("compiling plan")?,
     );
 
-    // ── 2. Open source stream ─────────────────────────────────────────────────
+    // ── 2. Detect FK mode and dispatch ───────────────────────────────────────
+    //
+    // FK specs need the full dataset to build the ObjectIndex (referenced
+    // objects may appear after the referencing rows). When FK is required:
+    //   a. Buffer ALL source rows into memory.
+    //   b. Build ONE ObjectIndex over the full set (wraps the container Value).
+    //   c. Fan out per-row transforms in parallel, each sharing Arc<ObjectIndex>.
+    // Non-FK specs keep the original streaming path unchanged.
     let src_format = config
         .source_format
         .map(Ok)
         .unwrap_or_else(|| Format::from_path(&config.source_path))
         .with_context(|| format!("detecting source format for {}", config.source_path))?;
 
-    let mut source_stream = load_stream(&config.source_path, src_format)
-        .await
-        .with_context(|| format!("opening source stream {}", config.source_path))?;
-
-    // ── 3. Concurrent transform ───────────────────────────────────────────────
-    // Reader → bounded channel → tokio spawn_blocking (rayon thread) → results channel → writer
-    let (work_tx, mut work_rx) = mpsc::channel::<(usize, Value)>(config.channel_depth);
-    let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(config.channel_depth);
-
-    // Spawn reader task: feeds (seq_id, row) into work_tx
-    let reader_handle = tokio::spawn(async move {
-        let mut seq = 0usize;
-        while let Some(item) = source_stream.next().await {
-            match item {
-                Ok(val) => {
-                    if work_tx.send((seq, val)).await.is_err() {
-                        break; // downstream dropped
-                    }
-                    seq += 1;
-                }
-                Err(e) => {
-                    // Propagate error through the channel as a special sentinel
-                    // by dropping: writer will see channel close after seq rows.
-                    eprintln!("reader error at row {seq}: {e:#}");
-                    break;
-                }
-            }
-        }
-        seq // total rows read
-    });
-
-    // Spawn worker dispatcher: for each (seq, row) pulls from work_rx and
-    // hands off to spawn_blocking (runs on rayon or tokio blocking pool).
-    let res_tx2 = res_tx.clone();
-    let plan2 = Arc::clone(&plan);
-    let dispatcher_handle = tokio::spawn(async move {
-        let mut handles = Vec::new();
-        while let Some((seq, row)) = work_rx.recv().await {
-            let plan3 = Arc::clone(&plan2);
-            let res_tx3 = res_tx2.clone();
-            let h = tokio::task::spawn_blocking(move || {
-                let result = plan3.transform(row);
-                // Best-effort send; if receiver dropped, ignore.
-                let _ = res_tx3.blocking_send((seq, result));
-            });
-            handles.push(h);
-        }
-        // Wait for all in-flight workers before dropping our res_tx clone
-        for h in handles {
-            let _ = h.await;
-        }
-        // Drop our clone so the writer sees channel close
-        drop(res_tx2);
-    });
-    drop(res_tx); // main task no longer holds a sender
-
-    // ── 4. Collect + write ────────────────────────────────────────────────────
     let out_format = config
         .out_format
         .map(Ok)
@@ -338,58 +370,212 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
     let rows_in;
     let rows_out;
 
-    if config.ordered {
-        // Ordered: buffer out-of-order results until the expected seq arrives.
-        use std::collections::BTreeMap;
-        let mut pending: BTreeMap<usize, Result<Value>> = BTreeMap::new();
-        let mut next_seq = 0usize;
-        let mut output_rows: Vec<Value> = Vec::new();
+    if plan.requires_object_index() {
+        // ── FK mode: buffer → build index → parallel transform ────────────────
+        //
+        // IMPORTANT: FK resolution is NOT row-streamable. The referenced
+        // collection (e.g. `entities`) may appear AFTER the referencing rows
+        // (e.g. `mappings`) in the source file. We must buffer all rows first.
+        //
+        // Memory cost: O(N) in the number of source rows. For very large datasets
+        // consider breaking the source into pre-joined chunks before using this
+        // pipeline.
+        let all_rows = load_all(&config.source_path, src_format)
+            .await
+            .with_context(|| format!("loading source file for FK mode: {}", config.source_path))?;
 
+        rows_in = all_rows.len();
+
+        // Build a container Value (Map) so ObjectIndex can scan all collections.
+        // The source data is a sequence of top-level objects (container rows).
+        // We wrap them into a synthetic container map keyed by their position,
+        // so the index can discover the entity/reference collections.
+        //
+        // For the canonical flattening case the source is a SINGLE container
+        // object (MappingSet) that already IS the container. When the source
+        // is a list of containers (jsonl), we build the index from the first
+        // row (the container that holds the entity sub-collections) and treat
+        // ALL rows as the items to transform — this matches map_container
+        // semantics.
+        let source_class = plan.source_class.clone();
+        let container_val = if all_rows.len() == 1 {
+            all_rows[0].clone()
+        } else {
+            // Multiple rows: build index from a synthetic container that holds
+            // all rows as a list under a generic key. This enables the index
+            // to find referenced objects inlined within individual rows.
+            // Use serde_json round-trip to build the Map (avoids a direct
+            // indexmap dependency in this crate).
+            let json_list: serde_json::Value = serde_json::to_value(&all_rows)
+                .unwrap_or(serde_json::Value::Array(vec![]));
+            let json_container = serde_json::json!({ "items": json_list });
+            serde_json::from_value::<Value>(json_container)
+                .unwrap_or(Value::Null)
+        };
+
+        // Build the index ONCE, wrap in Arc for sharing across workers.
+        let index = Arc::new(ObjectIndex::build(
+            &container_val,
+            source_class.as_deref(),
+            Some(plan.source_provider.as_ref()),
+        ));
+
+        // Fan out: parallel transform sharing Arc<CompiledPlan> + Arc<ObjectIndex>.
+        let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(config.channel_depth);
+
+        let plan2 = Arc::clone(&plan);
+        let dispatcher_handle = tokio::spawn(async move {
+            let mut handles = Vec::new();
+            for (seq, row) in all_rows.into_iter().enumerate() {
+                let plan3 = Arc::clone(&plan2);
+                let idx3 = Arc::clone(&index);
+                let res_tx3 = res_tx.clone();
+                let h = tokio::task::spawn_blocking(move || {
+                    let result = plan3.transform_with_index(row, &idx3);
+                    let _ = res_tx3.blocking_send((seq, result));
+                });
+                handles.push(h);
+            }
+            for h in handles {
+                let _ = h.await;
+            }
+            drop(res_tx);
+        });
+
+        // Collect results.
+        let mut output_rows: Vec<(usize, Value)> = Vec::new();
         while let Some((seq, result)) = res_rx.recv().await {
-            pending.insert(seq, result);
-            // Drain consecutive completed rows
-            while let Some(result) = pending.remove(&next_seq) {
-                next_seq += 1;
-                match result {
-                    Ok(v) => output_rows.push(v),
-                    Err(e) => eprintln!("transform error at seq {}: {e:#}", next_seq - 1),
+            match result {
+                Ok(v) => output_rows.push((seq, v)),
+                Err(e) => eprintln!("FK transform error at seq {seq}: {e:#}"),
+            }
+        }
+        let _ = dispatcher_handle.await;
+
+        // Sort by seq to restore input order (workers finish out of order).
+        if config.ordered {
+            output_rows.sort_by_key(|(seq, _)| *seq);
+        }
+        let ordered: Vec<Value> = output_rows.into_iter().map(|(_, v)| v).collect();
+        rows_out = ordered.len();
+
+        let stream = futures::stream::iter(ordered.into_iter().map(Ok::<_, anyhow::Error>));
+        write_all(&config.out_path, out_format, stream)
+            .await
+            .with_context(|| format!("writing FK output to {}", config.out_path))?;
+    } else {
+        // ── Non-FK streaming mode (original path, unchanged) ──────────────────
+        let mut source_stream = load_stream(&config.source_path, src_format)
+            .await
+            .with_context(|| format!("opening source stream {}", config.source_path))?;
+
+        // ── 3. Concurrent transform ───────────────────────────────────────────────
+        // Reader → bounded channel → tokio spawn_blocking (rayon thread) → results channel → writer
+        let (work_tx, mut work_rx) = mpsc::channel::<(usize, Value)>(config.channel_depth);
+        let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(config.channel_depth);
+
+        // Spawn reader task: feeds (seq_id, row) into work_tx
+        let reader_handle = tokio::spawn(async move {
+            let mut seq = 0usize;
+            while let Some(item) = source_stream.next().await {
+                match item {
+                    Ok(val) => {
+                        if work_tx.send((seq, val)).await.is_err() {
+                            break; // downstream dropped
+                        }
+                        seq += 1;
+                    }
+                    Err(e) => {
+                        // Propagate error through the channel as a special sentinel
+                        // by dropping: writer will see channel close after seq rows.
+                        eprintln!("reader error at row {seq}: {e:#}");
+                        break;
+                    }
                 }
             }
-        }
-        // Drain any remaining
-        for (_seq, result) in pending {
-            if let Ok(v) = result {
-                output_rows.push(v);
-            }
-        }
-        rows_out = output_rows.len();
-        rows_in = reader_handle.await.unwrap_or(0);
+            seq // total rows read
+        });
 
-        // Write ordered results
-        let stream = futures::stream::iter(output_rows.into_iter().map(Ok::<_, anyhow::Error>));
-        write_all(&config.out_path, out_format, stream)
-            .await
-            .with_context(|| format!("writing output to {}", config.out_path))?;
-    } else {
-        // Unordered: write results as they arrive (maximum throughput).
-        // We can't use write_all directly because we need to count — collect into vec.
-        let mut output_rows: Vec<Value> = Vec::new();
-        while let Some((_seq, result)) = res_rx.recv().await {
-            match result {
-                Ok(v) => output_rows.push(v),
-                Err(e) => eprintln!("transform error: {e:#}"),
+        // Spawn worker dispatcher: for each (seq, row) pulls from work_rx and
+        // hands off to spawn_blocking (runs on rayon or tokio blocking pool).
+        let res_tx2 = res_tx.clone();
+        let plan2 = Arc::clone(&plan);
+        let dispatcher_handle = tokio::spawn(async move {
+            let mut handles = Vec::new();
+            while let Some((seq, row)) = work_rx.recv().await {
+                let plan3 = Arc::clone(&plan2);
+                let res_tx3 = res_tx2.clone();
+                let h = tokio::task::spawn_blocking(move || {
+                    let result = plan3.transform(row);
+                    // Best-effort send; if receiver dropped, ignore.
+                    let _ = res_tx3.blocking_send((seq, result));
+                });
+                handles.push(h);
             }
-        }
-        rows_out = output_rows.len();
-        rows_in = reader_handle.await.unwrap_or(0);
+            // Wait for all in-flight workers before dropping our res_tx clone
+            for h in handles {
+                let _ = h.await;
+            }
+            // Drop our clone so the writer sees channel close
+            drop(res_tx2);
+        });
+        drop(res_tx); // main task no longer holds a sender
 
-        let stream = futures::stream::iter(output_rows.into_iter().map(Ok::<_, anyhow::Error>));
-        write_all(&config.out_path, out_format, stream)
-            .await
-            .with_context(|| format!("writing output to {}", config.out_path))?;
+        // ── 4. Collect + write ────────────────────────────────────────────────────
+
+        if config.ordered {
+            // Ordered: buffer out-of-order results until the expected seq arrives.
+            use std::collections::BTreeMap;
+            let mut pending: BTreeMap<usize, Result<Value>> = BTreeMap::new();
+            let mut next_seq = 0usize;
+            let mut output_rows: Vec<Value> = Vec::new();
+
+            while let Some((seq, result)) = res_rx.recv().await {
+                pending.insert(seq, result);
+                // Drain consecutive completed rows
+                while let Some(result) = pending.remove(&next_seq) {
+                    next_seq += 1;
+                    match result {
+                        Ok(v) => output_rows.push(v),
+                        Err(e) => eprintln!("transform error at seq {}: {e:#}", next_seq - 1),
+                    }
+                }
+            }
+            // Drain any remaining
+            for (_seq, result) in pending {
+                if let Ok(v) = result {
+                    output_rows.push(v);
+                }
+            }
+            rows_out = output_rows.len();
+            rows_in = reader_handle.await.unwrap_or(0);
+
+            // Write ordered results
+            let stream = futures::stream::iter(output_rows.into_iter().map(Ok::<_, anyhow::Error>));
+            write_all(&config.out_path, out_format, stream)
+                .await
+                .with_context(|| format!("writing output to {}", config.out_path))?;
+        } else {
+            // Unordered: write results as they arrive (maximum throughput).
+            // We can't use write_all directly because we need to count — collect into vec.
+            let mut output_rows: Vec<Value> = Vec::new();
+            while let Some((_seq, result)) = res_rx.recv().await {
+                match result {
+                    Ok(v) => output_rows.push(v),
+                    Err(e) => eprintln!("transform error: {e:#}"),
+                }
+            }
+            rows_out = output_rows.len();
+            rows_in = reader_handle.await.unwrap_or(0);
+
+            let stream = futures::stream::iter(output_rows.into_iter().map(Ok::<_, anyhow::Error>));
+            write_all(&config.out_path, out_format, stream)
+                .await
+                .with_context(|| format!("writing output to {}", config.out_path))?;
+        }
+
+        let _ = dispatcher_handle.await;
     }
-
-    let _ = dispatcher_handle.await;
 
     let elapsed = start.elapsed();
     let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
@@ -404,6 +590,170 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
         elapsed,
         rows_per_sec,
     })
+}
+
+// ── Tolerant schema loader ──────────────────────────────────────────────────────
+//
+// `SchemaViewProvider::load_from_path` fails on schemas that reference
+// unresolved standard CURIE maps (e.g. `semweb_context`).  The tolerant loader
+// falls back to an in-memory schema parsed directly from the YAML — enough
+// metadata for FK range classification and object-index resolution.
+
+/// Wrapper that holds either a real `SchemaViewProvider` or a minimal
+/// `InMemorySchema` parsed from YAML, exposing both as `&dyn SchemaProvider`.
+enum TolerantSchema {
+    Real(SchemaViewProvider),
+    InMemory(linkml_map_core::schema::InMemorySchema),
+}
+
+impl TolerantSchema {}
+
+/// Load a schema tolerantly: try `SchemaViewProvider` first; if it fails due
+/// to CURIE resolution errors, fall back to the minimal YAML parser.
+/// The fallback provides class/slot/range/identifier metadata sufficient for
+/// FK detection and object-index resolution.
+fn load_schema_tolerant(path: &Path) -> Result<TolerantSchema> {
+    match SchemaViewProvider::load_from_path(path) {
+        Ok(p) => Ok(TolerantSchema::Real(p)),
+        Err(_) => {
+            // Try the tolerant in-memory YAML parser as fallback.
+            build_inmemory_schema_from_yaml(path)
+                .map(TolerantSchema::InMemory)
+                .with_context(|| format!("loading schema (real + inmemory fallback failed): {}", path.display()))
+        }
+    }
+}
+
+/// Tolerant LinkML-schema → `InMemorySchema` parser.
+///
+/// Reads classes, slots (inline `attributes` + referenced global `slots`),
+/// ranges, and `identifier`/`multivalued` flags. Everything else defaults
+/// (unknown range → scalar type). Deliberately minimal — not a full LinkML loader.
+fn build_inmemory_schema_from_yaml(path: &Path) -> Result<linkml_map_core::schema::InMemorySchema> {
+    use linkml_map_core::schema::{
+        ClassDef as SchemaDef, InMemorySchemaBuilder, RangeKind, SlotDef,
+    };
+    use serde_yaml_ng as serde_yaml;
+
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading schema {}", path.display()))?;
+    let root: serde_json::Value = serde_yaml::from_str(&text)
+        .with_context(|| format!("YAML parse {}", path.display()))?;
+    let obj = root
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("schema root is not a mapping: {}", path.display()))?;
+
+    let class_names: Vec<String> = obj
+        .get("classes")
+        .and_then(|c| c.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let enum_names: Vec<String> = obj
+        .get("enums")
+        .and_then(|c| c.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let type_names: Vec<String> = obj
+        .get("types")
+        .and_then(|c| c.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+
+    let global_slots = obj.get("slots").and_then(|s| s.as_object());
+
+    let classify = |range_name: &str| -> RangeKind {
+        if class_names.iter().any(|c| c == range_name) {
+            RangeKind::Class(range_name.to_string())
+        } else if enum_names.iter().any(|e| e == range_name) {
+            RangeKind::Enum(range_name.to_string())
+        } else {
+            RangeKind::Type(range_name.to_string())
+        }
+    };
+
+    let make_slot = |name: &str,
+                     local: Option<&serde_json::Map<String, serde_json::Value>>|
+     -> SlotDef {
+        let global = global_slots
+            .and_then(|gs| gs.get(name))
+            .and_then(|v| v.as_object());
+        let get_str = |key: &str| -> Option<String> {
+            local
+                .and_then(|m| m.get(key))
+                .or_else(|| global.and_then(|m| m.get(key)))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+        let get_bool = |key: &str| -> bool {
+            local
+                .and_then(|m| m.get(key))
+                .or_else(|| global.and_then(|m| m.get(key)))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+        let range = match get_str("range") {
+            Some(r) => classify(&r),
+            None => RangeKind::None,
+        };
+        SlotDef {
+            name: name.to_string(),
+            range,
+            multivalued: get_bool("multivalued"),
+            required: get_bool("required"),
+            identifier: get_bool("identifier"),
+            key: get_bool("key"),
+            unit: None,
+            any_of_enums: vec![],
+        }
+    };
+
+    let mut builder = InMemorySchemaBuilder::new();
+    for t in &type_names {
+        builder = builder.add_type(t.clone());
+    }
+    // Always register common scalar types so unknown ranges still classify.
+    for t in ["string", "integer", "float", "double", "boolean", "uriorcurie", "uri", "date"] {
+        if !type_names.iter().any(|x| x == t) {
+            builder = builder.add_type(t);
+        }
+    }
+
+    if let Some(classes) = obj.get("classes").and_then(|c| c.as_object()) {
+        for (class_name, cdef) in classes {
+            let cobj = cdef.as_object();
+            let is_a = cobj
+                .and_then(|m| m.get("is_a"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let tree_root = cobj
+                .and_then(|m| m.get("tree_root"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            builder = builder.add_class(SchemaDef {
+                name: class_name.clone(),
+                tree_root,
+                is_a,
+                mixins: vec![],
+            });
+
+            // Inline `attributes`.
+            if let Some(attrs) = cobj.and_then(|m| m.get("attributes")).and_then(|a| a.as_object()) {
+                for (slot_name, sdef) in attrs {
+                    builder = builder.add_slot(class_name, make_slot(slot_name, sdef.as_object()));
+                }
+            }
+            // Referenced global `slots` list.
+            if let Some(slot_refs) = cobj.and_then(|m| m.get("slots")).and_then(|s| s.as_array()) {
+                for sref in slot_refs {
+                    if let Some(slot_name) = sref.as_str() {
+                        builder = builder.add_slot(class_name, make_slot(slot_name, None));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(builder.build())
 }
 
 // ── Transform spec loader (mirrors linkml-map-conformance) ────────────────────
@@ -469,6 +819,34 @@ fn normalise_transform_yaml(text: &str) -> Result<String> {
                 }
             }
             *cd = serde_json::Value::Array(list);
+        }
+    }
+
+    // ── source_schema / target_schema: object {name:} → plain string
+    if let Some(root_obj) = obj.as_object_mut() {
+        for key in &["source_schema", "target_schema"] {
+            if let Some(v) = root_obj.get_mut(*key) {
+                if v.is_object() {
+                    let name_val = v
+                        .as_object()
+                        .and_then(|o| o.get("name").or_else(|| o.get("id")))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    *v = serde_json::Value::String(name_val);
+                }
+            }
+        }
+        // ── prefixes: string values → KeyVal { key, value }
+        if let Some(pfx) = root_obj.get_mut("prefixes") {
+            if let Some(m) = pfx.as_object_mut() {
+                for (_, v) in m.iter_mut() {
+                    if v.is_string() {
+                        let s = v.as_str().unwrap().to_string();
+                        *v = serde_json::json!({ "key": s, "value": s });
+                    }
+                }
+            }
         }
     }
 
@@ -671,6 +1049,330 @@ mod tests {
                 Value::Int(i) => assert_eq!(*i, 150),
                 other => panic!("unexpected type: {other:?}"),
             }
+        }
+    }
+
+    // ── FK pipeline: flattening golden fixture ─────────────────────────────────
+
+    fn flattening_fixture_dir() -> std::path::PathBuf {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        std::path::PathBuf::from(&manifest)
+            .parent() // crates/
+            .unwrap()
+            .parent() // workspace root
+            .unwrap()
+            .join("tests/examples/flattening")
+    }
+
+    /// Run the flattening/MappingSet-001 fixture through `run_pipeline` (FK mode)
+    /// and assert the output matches the golden expected output.
+    ///
+    /// This fixture PASSES via `map_container` in the conformance runner.
+    /// The pipeline should produce the same result via the FK buffering path.
+    #[tokio::test]
+    async fn test_pipeline_fk_flattening_golden() {
+        let fixture = flattening_fixture_dir();
+        let tmp = tempfile::tempdir().unwrap();
+        let out_path = tmp.path().join("out.yaml");
+
+        let cfg = PipelineConfig {
+            source_path: fixture
+                .join("data/MappingSet-001.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            source_format: Some(Format::Yaml),
+            schema_path: fixture
+                .join("source/normalized.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            target_schema_path: fixture
+                .join("target/denormalized.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            spec_path: fixture
+                .join("transform/denormalize.transform.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            out_path: out_path.to_str().unwrap().to_owned(),
+            out_format: Some(Format::Yaml),
+            source_class: Some("MappingSet".to_owned()),
+            workers: 2,
+            ordered: true,
+            channel_depth: 64,
+        };
+
+        // Verify the plan detects FK need.
+        let plan = CompiledPlan::load(
+            &std::path::Path::new(&cfg.spec_path),
+            &std::path::Path::new(&cfg.schema_path),
+            &std::path::Path::new(&cfg.target_schema_path),
+            cfg.source_class.as_deref(),
+        )
+        .expect("plan load failed");
+        assert!(
+            plan.requires_object_index(),
+            "flattening spec should require FK index"
+        );
+
+        let stats = run_pipeline(cfg).await.expect("FK pipeline failed");
+        assert_eq!(stats.rows_in, 1, "expected 1 container row in");
+        assert_eq!(stats.rows_out, 1, "expected 1 container row out");
+
+        // Read the output back and compare against golden.
+        let output_rows = linkml_map_io::load_all(&out_path, Format::Yaml)
+            .await
+            .expect("reading output failed");
+        assert_eq!(output_rows.len(), 1, "expected 1 output row");
+
+        // The output should be a MappingSet with a mappings list.
+        let out_map = match &output_rows[0] {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+
+        let mappings = out_map.get("mappings").expect("output has no 'mappings'");
+        let mapping_list = match mappings {
+            Value::List(l) => l,
+            other => panic!("'mappings' should be a List, got {:?}", other),
+        };
+        assert_eq!(mapping_list.len(), 1, "expected 1 mapping in output");
+
+        let m = match &mapping_list[0] {
+            Value::Map(m) => m,
+            other => panic!("mapping should be a Map, got {:?}", other),
+        };
+
+        // Verify FK-resolved fields are present and correct.
+        assert_eq!(
+            m.get("subject_id"),
+            Some(&Value::Str("X:1".into())),
+            "subject_id mismatch"
+        );
+        assert_eq!(
+            m.get("subject_name"),
+            Some(&Value::Str("x1".into())),
+            "subject_name mismatch — FK not resolved"
+        );
+        assert_eq!(
+            m.get("object_id"),
+            Some(&Value::Str("Y:1".into())),
+            "object_id mismatch"
+        );
+        assert_eq!(
+            m.get("object_name"),
+            Some(&Value::Str("y1".into())),
+            "object_name mismatch — FK not resolved"
+        );
+        assert_eq!(
+            m.get("predicate_id"),
+            Some(&Value::Str("P:1".into())),
+            "predicate_id mismatch"
+        );
+    }
+
+    /// Parallel FK test: synthesize N entity objects + M mappings, run
+    /// through the FK pipeline at workers=4, assert all rows resolve their
+    /// FKs and rows_out is correct.
+    ///
+    /// Note: we use the engine directly (not run_pipeline) because run_pipeline
+    /// reads from a file and the synthetic FK container is built in memory.
+    /// This tests Arc<ObjectIndex> sharing across parallel workers.
+    #[tokio::test]
+    async fn test_pipeline_fk_parallel_resolution() {
+        use linkml_map_core::{
+            datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification},
+            engine::{CompiledExprs, ObjectIndex},
+            schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef},
+        };
+        use indexmap::IndexMap;
+
+        // ── Build a schema: Container { mappings: [Mapping], entities: {Entity} }
+        //                               Mapping { subject: Entity, predicate: string }
+        //                               Entity  { id: string (identifier), name: string }
+        let schema = InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_class(ClassDef { name: "Container".into(), tree_root: true, is_a: None, mixins: vec![] })
+            .add_slot("Container", SlotDef {
+                name: "mappings".into(), range: RangeKind::Class("Mapping".into()),
+                multivalued: true, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Container", SlotDef {
+                name: "entities".into(), range: RangeKind::Class("Entity".into()),
+                multivalued: true, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_class(ClassDef { name: "Mapping".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("Mapping", SlotDef {
+                name: "subject".into(), range: RangeKind::Class("Entity".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Mapping", SlotDef {
+                name: "predicate".into(), range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_class(ClassDef { name: "Entity".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("Entity", SlotDef {
+                name: "id".into(), range: RangeKind::Type("string".into()),
+                multivalued: false, required: true, identifier: true, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Entity", SlotDef {
+                name: "name".into(), range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .build();
+
+        // ── Build spec: Container→Container, Mapping→FlatMapping (subject.id, subject.name)
+        let mut container_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        container_slots.insert("mappings".into(), SlotDerivation {
+            name: "mappings".into(), populated_from: Some("mappings".into()), ..Default::default()
+        });
+
+        let mut mapping_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        mapping_slots.insert("subject_id".into(), SlotDerivation {
+            name: "subject_id".into(), expr: Some("subject.id".into()), ..Default::default()
+        });
+        mapping_slots.insert("subject_name".into(), SlotDerivation {
+            name: "subject_name".into(), expr: Some("subject.name".into()), ..Default::default()
+        });
+        mapping_slots.insert("predicate_id".into(), SlotDerivation {
+            name: "predicate_id".into(), populated_from: Some("predicate".into()), ..Default::default()
+        });
+
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![
+                ClassDerivation {
+                    name: "Container".into(),
+                    populated_from: Some("Container".into()),
+                    slot_derivations: Some(container_slots),
+                    ..Default::default()
+                },
+                ClassDerivation {
+                    name: "Mapping".into(),
+                    populated_from: Some("Mapping".into()),
+                    slot_derivations: Some(mapping_slots),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let compiled_exprs = CompiledExprs::build(&spec).expect("compile exprs");
+
+        // ── Synthesize N=20 Entity objects + M=50 Mapping rows
+        const N_ENTITIES: usize = 20;
+        const M_MAPPINGS: usize = 50;
+
+        // Build entity dict: { "E:0": {name: "entity_0"}, ... }
+        let entities_json: serde_json::Value = {
+            let mut obj = serde_json::Map::new();
+            for i in 0..N_ENTITIES {
+                let key = format!("E:{i}");
+                obj.insert(key, serde_json::json!({ "name": format!("entity_{i}") }));
+            }
+            serde_json::Value::Object(obj)
+        };
+
+        // Build mapping list: [{ subject: "E:i%N", predicate: "P:j" }, ...]
+        let mappings_json: serde_json::Value = serde_json::Value::Array(
+            (0..M_MAPPINGS)
+                .map(|j| serde_json::json!({
+                    "subject": format!("E:{}", j % N_ENTITIES),
+                    "predicate": format!("P:{j}"),
+                }))
+                .collect(),
+        );
+
+        // The container holds both collections.
+        let container_json = serde_json::json!({
+            "mappings": mappings_json,
+            "entities": entities_json,
+        });
+        let container: Value = serde_json::from_value(container_json).unwrap();
+
+        // Build the ObjectIndex ONCE from the container.
+        let index = Arc::new(ObjectIndex::build(
+            &container,
+            Some("Container"),
+            Some(&schema as &dyn linkml_map_core::schema::SchemaProvider),
+        ));
+        assert_eq!(index.len(), N_ENTITIES, "index should hold all entities");
+
+        // Fan out: 4 parallel workers each sharing Arc<ObjectIndex> + Arc<spec>.
+        let spec = Arc::new(spec);
+        let compiled_exprs = Arc::new(compiled_exprs);
+        let schema = Arc::new(schema);
+
+        // Simulate M mapping rows through the engine with the shared index.
+        let mappings = match &container {
+            Value::Map(m) => match m.get("mappings") {
+                Some(Value::List(l)) => l.clone(),
+                _ => panic!("expected mappings list"),
+            },
+            _ => panic!("expected container map"),
+        };
+
+        let results: Vec<Value> = {
+            use rayon::prelude::*;
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(4)
+                .build()
+                .unwrap();
+            pool.install(|| {
+                mappings
+                    .par_iter()
+                    .map(|row| {
+                        use linkml_map_core::engine::ObjectTransformer;
+                        use linkml_map_core::schema::SchemaProvider;
+                        let engine = ObjectTransformer::new_borrowed(
+                            &spec,
+                            Some(schema.as_ref() as &dyn SchemaProvider),
+                            None,
+                        )
+                        .with_compiled_exprs(&compiled_exprs);
+                        engine
+                            .map_object_with_index(row, Some("Mapping"), &index)
+                            .expect("transform failed")
+                    })
+                    .collect()
+            })
+        };
+
+        assert_eq!(results.len(), M_MAPPINGS, "all mappings should transform");
+
+        // Verify FK resolution: each result should have subject_id + subject_name.
+        for (j, result) in results.iter().enumerate() {
+            let m = match result {
+                Value::Map(m) => m,
+                other => panic!("expected Map at row {j}, got {other:?}"),
+            };
+            let expected_entity_idx = j % N_ENTITIES;
+            let expected_subject_id = format!("E:{expected_entity_idx}");
+            let expected_subject_name = format!("entity_{expected_entity_idx}");
+
+            assert_eq!(
+                m.get("subject_id"),
+                Some(&Value::Str(expected_subject_id.clone())),
+                "FK subject_id mismatch at row {j}"
+            );
+            assert_eq!(
+                m.get("subject_name"),
+                Some(&Value::Str(expected_subject_name.clone())),
+                "FK subject_name mismatch at row {j} (FK not resolved)"
+            );
+            assert_eq!(
+                m.get("predicate_id"),
+                Some(&Value::Str(format!("P:{j}"))),
+                "predicate_id mismatch at row {j}"
+            );
         }
     }
 

@@ -552,6 +552,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+ "indexmap",
  "linkml-map-core",
  "linkml-map-io",
  "linkml-map-schemaview",

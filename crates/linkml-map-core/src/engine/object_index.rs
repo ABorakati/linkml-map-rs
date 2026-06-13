@@ -45,6 +45,11 @@ use std::collections::HashMap;
 use crate::{schema::SchemaProvider, value::Value};
 
 /// An index over a source container, mapping identifiers to their objects.
+///
+/// `ObjectIndex` is `Send + Sync` — its fields contain only `String` and
+/// [`Value`] (which are themselves `Send + Sync`), so a single built index
+/// can be wrapped in `Arc` and shared across rayon / tokio worker threads
+/// without any per-row cloning of the index data.
 #[derive(Debug, Default, Clone)]
 pub struct ObjectIndex {
     /// Flat `identifier -> resolved object` (object carries its id field).
@@ -52,6 +57,13 @@ pub struct ObjectIndex {
     /// Typed `(class_name, identifier) -> resolved object`.
     by_class_id: HashMap<(String, String), Value>,
 }
+
+// Compile-time proof that ObjectIndex is Send + Sync.
+// Value contains only String/bool/i64/f64/Vec/IndexMap — all Send+Sync.
+const _: () = {
+    fn _assert_send_sync<T: Send + Sync>() {}
+    fn _check() { _assert_send_sync::<ObjectIndex>(); }
+};
 
 impl ObjectIndex {
     /// Build an index by scanning a container object's collections.
@@ -161,6 +173,11 @@ impl ObjectIndex {
     /// True if the index holds no objects.
     pub fn is_empty(&self) -> bool {
         self.by_id.is_empty()
+    }
+
+    /// Number of objects in the flat index.
+    pub fn len(&self) -> usize {
+        self.by_id.len()
     }
 }
 

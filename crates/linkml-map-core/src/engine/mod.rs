@@ -173,6 +173,25 @@ impl<'s> ObjectTransformer<'s> {
         self.map_object_with_type(source_obj, &source_type, None)
     }
 
+    /// Transform a single source object with a pre-built [`ObjectIndex`].
+    ///
+    /// This is the FK-pipeline entry point: the caller builds the index ONCE
+    /// (from the full buffered dataset), wraps it in `Arc`, and hands a
+    /// reference into every parallel worker. Each worker calls this method
+    /// instead of [`map_object`], paying zero per-row index-rebuild cost.
+    ///
+    /// When `index.is_empty()`, the call degrades to [`map_object`].
+    pub fn map_object_with_index(
+        &self,
+        source_obj: &Value,
+        source_type: Option<&str>,
+        index: &ObjectIndex,
+    ) -> Result<Value> {
+        let source_type = self.resolve_source_type(source_type)?;
+        let idx_ref = if index.is_empty() { None } else { Some(index) };
+        self.map_object_with_type(source_obj, &source_type, idx_ref)
+    }
+
     /// Transform a whole source **container**, resolving foreign-key references.
     ///
     /// This is the FK-aware entry point. Unlike [`ObjectTransformer::map_object`]
