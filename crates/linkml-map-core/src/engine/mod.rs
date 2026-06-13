@@ -319,7 +319,66 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
+        // ── URI / CURIE coercion (applied after other coercions) ──────────────
+        //
+        // When the slot derivation declares `range: uri` or `range: uriorcurie`,
+        // expand any CURIE value to a full URI using the source schema's prefix
+        // map.  When `range: curie`, compress an absolute URI to a CURIE.
+        // This mirrors Python `ObjectTransformer._coerce_uri` behaviour.
+        if !v.is_null() {
+            if let Some(target_range) = slot_deriv.range.as_deref() {
+                v = self.coerce_uri_curie(v, target_range);
+            }
+        }
+
         Ok(v)
+    }
+
+    /// Apply URI expansion or CURIE compression to a value based on the
+    /// target range name.
+    ///
+    /// - `"uri"` / `"uriorcurie"` → expand CURIEs to full URIs (already-
+    ///   absolute URIs pass through unchanged).
+    /// - `"curie"` → compress full URIs to CURIEs (already-CURIE strings
+    ///   pass through unchanged).
+    ///
+    /// Lists are mapped element-wise.  Non-string scalars and maps are
+    /// returned unchanged.  When the schema provider cannot perform the
+    /// conversion (unknown prefix / no prefix map), the value is returned
+    /// unchanged (safe no-op).
+    fn coerce_uri_curie(&self, v: Value, target_range: &str) -> Value {
+        match target_range {
+            "uri" | "uriorcurie" => self.apply_to_strings(v, |s| {
+                if let Some(ss) = self.source_schema {
+                    ss.expand_curie(s).unwrap_or_else(|| s.to_owned())
+                } else {
+                    s.to_owned()
+                }
+            }),
+            "curie" => self.apply_to_strings(v, |s| {
+                if let Some(ss) = self.source_schema {
+                    ss.compress_uri(s).unwrap_or_else(|| s.to_owned())
+                } else {
+                    s.to_owned()
+                }
+            }),
+            _ => v,
+        }
+    }
+
+    /// Map a string-transform function over a [`Value`], applying it to every
+    /// string leaf while leaving non-string scalars and maps unchanged.
+    fn apply_to_strings<F>(&self, v: Value, f: F) -> Value
+    where
+        F: Fn(&str) -> String + Copy,
+    {
+        match v {
+            Value::Str(s) => Value::Str(f(&s)),
+            Value::List(items) => {
+                Value::List(items.into_iter().map(|i| self.apply_to_strings(i, f)).collect())
+            }
+            other => other,
+        }
     }
 
     // ── Expression evaluation ─────────────────────────────────────────────────

@@ -192,6 +192,34 @@ pub trait SchemaProvider: Send + Sync {
             .into_iter()
             .find(|name| self.get_class(name).map(|c| c.tree_root).unwrap_or(false))
     }
+
+    // ── CURIE / URI coercion helpers ─────────────────────────────────────────
+
+    /// Expand a CURIE (e.g. `"P:1"`) to a full URI using the schema's prefix map.
+    ///
+    /// Returns `None` if the prefix is unknown or the provider has no prefix
+    /// map.  Already-absolute URIs (starting with a scheme like `https://`)
+    /// are also returned as `None` so the caller leaves them unchanged.
+    ///
+    /// The engine calls this when the target slot's `range` is `uri` or
+    /// `uriorcurie`.  The default implementation is a safe no-op returning
+    /// `None`; override in providers that carry a prefix map.
+    fn expand_curie(&self, curie: &str) -> Option<String> {
+        let _ = curie;
+        None
+    }
+
+    /// Compress a full URI (e.g. `"https://example.org/foo"`) to a CURIE
+    /// (e.g. `"example:foo"`) using the schema's prefix map.
+    ///
+    /// Returns `None` if no matching URI prefix exists or the provider has no
+    /// prefix map.  The engine calls this when the target slot's `range` is
+    /// `curie`.  The default implementation is a safe no-op returning `None`;
+    /// override in providers that carry a prefix map.
+    fn compress_uri(&self, uri: &str) -> Option<String> {
+        let _ = uri;
+        None
+    }
 }
 
 // ── InMemorySchema ────────────────────────────────────────────────────────────

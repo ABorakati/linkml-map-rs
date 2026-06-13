@@ -363,6 +363,26 @@ impl SchemaProvider for SchemaViewProvider {
     fn all_type_names(&self) -> Vec<String> {
         self.all_type_names_internal()
     }
+
+    // ── CURIE / URI coercion ─────────────────────────────────────────────────
+
+    fn expand_curie(&self, curie: &str) -> Option<String> {
+        // Already an absolute URI — nothing to expand.
+        if curie.contains("://") {
+            return None;
+        }
+        let conv = self.sv.converter();
+        conv.expand(curie).ok()
+    }
+
+    fn compress_uri(&self, uri: &str) -> Option<String> {
+        // Already looks like a CURIE (no scheme) — nothing to compress.
+        if !uri.contains("://") {
+            return None;
+        }
+        let conv = self.sv.converter();
+        conv.compress(uri).ok()
+    }
 }
 
 // ── Built-in type recognition ─────────────────────────────────────────────────
