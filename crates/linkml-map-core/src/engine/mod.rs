@@ -260,6 +260,34 @@ impl<'s> ObjectTransformer<'s> {
         Ok(Value::Map(tgt_attrs))
     }
 
+    /// Like [`map_object_with_type`] but takes an explicit [`ClassDerivation`]
+    /// instead of looking it up from the spec.  Used by `derive_nested_objects`
+    /// where the derivation comes directly from the `object_derivations` field.
+    fn map_object_internal(
+        &self,
+        source_map: &IndexMap<String, Value>,
+        source_type: &str,
+        class_deriv: &ClassDerivation,
+        index: Option<&ObjectIndex>,
+    ) -> Result<Value> {
+        let empty_map = IndexMap::new();
+        let slot_derivations = class_deriv.slot_derivations.as_ref().unwrap_or(&empty_map);
+
+        let mut tgt_attrs: IndexMap<String, Value> = IndexMap::new();
+        for (_, slot_deriv) in slot_derivations {
+            let slot_name = slot_deriv.name.as_str();
+            let v = self
+                .derive_slot(slot_deriv, source_map, source_type, class_deriv, index)
+                .map_err(|e| Error::SlotTransform {
+                    class: class_deriv.name.clone(),
+                    slot: slot_name.to_string(),
+                    cause: e.to_string(),
+                })?;
+            tgt_attrs.insert(slot_name.to_string(), v);
+        }
+        Ok(Value::Map(tgt_attrs))
+    }
+
     /// Derive the value for a single slot derivation.
     fn derive_slot(
         &self,
@@ -345,10 +373,18 @@ impl<'s> ObjectTransformer<'s> {
             }
             (found_v, found_ssd)
         } else if slot_deriv.object_derivations.is_some() {
-            // 5. object_derivations — not fully ported (requires target schemaview for
-            //    multivalued check on target slot). Return Null for now.
-            //    See NOT PORTED section in module docs.
-            (Value::Null, None)
+            // 5. object_derivations — fully ported.
+            //    Recurse into each ObjectDerivation's class_derivations, then
+            //    decide multivalued/scalar from the TARGET slot (mirrors Python
+            //    `_derive_nested_objects` which calls `target_schemaview.induced_slot`).
+            let v = self.derive_nested_objects(
+                slot_deriv,
+                source_map,
+                source_type,
+                class_deriv,
+                index,
+            )?;
+            (v, None)
         } else {
             // 6. Implicit same-name copy.
             let raw = source_map.get(slot_name).cloned().unwrap_or(Value::Null);
@@ -367,6 +403,9 @@ impl<'s> ObjectTransformer<'s> {
                 if let Some(target_range) = slot_deriv.range.as_deref() {
                     v = coerce_datatype(v, target_range);
                 }
+                // Reshape list↔compact-dict per `dictionary_key` / `cast_collection_as`.
+                // Mirrors Python `ObjectTransformer._reshape_collection`.
+                v = self.reshape_collection(v, slot_deriv, ssd)?;
             }
         }
 
@@ -855,6 +894,203 @@ impl<'s> ObjectTransformer<'s> {
         self.map_object_with_type(v, source_type, index)
     }
 
+    // ── Collection reshape (dictionary_key / cast_collection_as) ─────────────
+
+    /// Mirror of Python `ObjectTransformer._reshape_collection`.
+    ///
+    /// Two directions:
+    ///
+    /// **List → compact dict** (keyed dict):
+    ///   Triggered by `dictionary_key: <slot>` on the SlotDerivation.
+    ///   Each element of the list becomes a value in the dict, keyed by the
+    ///   element's `dictionary_key` field.  The key field is dropped from
+    ///   the stored value (Python: `del v1[slot_derivation.dictionary_key]`).
+    ///   If `dictionary_key` is absent but `cast_collection_as:
+    ///   MultiValuedDict` is set, the source range class's identifier/key
+    ///   slot is used as the key (via `SchemaProvider::identifier_slot`).
+    ///
+    /// **Compact dict → list** (unkey):
+    ///   Triggered by `cast_collection_as: MultiValuedList` on a dict value.
+    ///   Each `(k, v)` pair is re-emitted as `{…v, <id_slot>: k}` when the
+    ///   range class has an identifier slot, otherwise as bare `v` values.
+    ///   Mirrors Python: `[{**v1, src_rng_id_slot.name: k} for k, v1 in v.items()]`.
+    fn reshape_collection(
+        &self,
+        v: Value,
+        sd: &SlotDerivation,
+        source_slot: &SlotDef,
+    ) -> Result<Value> {
+        // ── List → keyed dict ────────────────────────────────────────────────
+        //
+        // If `dictionary_key` is explicitly set, use it directly.
+        // If only `cast_collection_as: MultiValuedDict` is set, fall back to
+        // the identifier slot of the source range class.
+        let dict_key: Option<String> = if let Some(dk) = &sd.dictionary_key {
+            Some(dk.clone())
+        } else if sd
+            .cast_collection_as
+            .as_ref()
+            .map(|c| matches!(c, CollectionType::MultiValuedDict))
+            .unwrap_or(false)
+        {
+            // Try to find the identifier slot from the source range class.
+            if let Some(range_class) = source_slot.range_class() {
+                if let Some(src_schema) = self.source_schema {
+                    src_schema
+                        .identifier_slot(range_class)
+                        .ok()
+                        .flatten()
+                        .map(|s| s.name)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(key_slot) = dict_key {
+            if let Value::List(items) = v {
+                let mut result: IndexMap<String, Value> = IndexMap::new();
+                for item in items {
+                    if let Value::Map(mut m) = item {
+                        let key_val = m
+                            .shift_remove(&key_slot)
+                            .map(|kv| value_to_string_key(&kv))
+                            .unwrap_or_default();
+                        result.insert(key_val, Value::Map(m));
+                    }
+                    // Non-map items in a list being keyed: skip (no key to extract).
+                }
+                return Ok(Value::Map(result));
+            }
+        }
+
+        // ── Keyed dict → list ────────────────────────────────────────────────
+        if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as {
+            if let Value::Map(m) = v {
+                // Look up the identifier slot of the source range class so we
+                // can re-inject the key into each value object.
+                let id_slot_name: Option<String> =
+                    if let Some(range_class) = source_slot.range_class() {
+                        self.source_schema
+                            .and_then(|ss| ss.identifier_slot(range_class).ok())
+                            .flatten()
+                            .map(|s| s.name)
+                    } else {
+                        None
+                    };
+
+                let list: Vec<Value> = m
+                    .into_iter()
+                    .map(|(k, val)| {
+                        if let Some(ref id_slot) = id_slot_name {
+                            // Re-inject key into the value map.
+                            if let Value::Map(mut inner) = val {
+                                inner.insert(id_slot.clone(), Value::Str(k));
+                                Value::Map(inner)
+                            } else {
+                                val
+                            }
+                        } else {
+                            // No identifier slot — return bare values.
+                            val
+                        }
+                    })
+                    .collect();
+                return Ok(Value::List(list));
+            }
+        }
+
+        Ok(v)
+    }
+
+    // ── Nested object derivations ─────────────────────────────────────────────
+
+    /// Mirror of Python `ObjectTransformer._derive_nested_objects`.
+    ///
+    /// For each [`ObjectDerivation`] in `slot_deriv.object_derivations`,
+    /// iterates its `class_derivations` map and recursively transforms
+    /// `source_map` using each `ClassDerivation`.  The resulting objects are
+    /// collected into a `Vec`.
+    ///
+    /// Cardinality is decided from the **target slot** (not the source), as
+    /// Python does via `target_schemaview.induced_slot(slot, target_class)`:
+    /// - If `target_schema` is available and the induced target slot is
+    ///   `multivalued`, the whole `Vec` is returned as `Value::List`.
+    /// - If exactly one object was produced and the target slot is
+    ///   single-valued (or no target schema is loaded), the single object is
+    ///   returned directly.
+    /// - An empty `Vec` always yields `Value::Null`.
+    ///
+    /// After collecting, `reshape_collection` is **not** called here — the
+    /// `dictionary_key` / `cast_collection_as` path in `derive_slot` only
+    /// fires when a `source_slot_def` is present (populated_from path).
+    /// Object-derivation slots that additionally need dict reshape should be
+    /// expressed via `dictionary_key` on the outer slot; callers may chain
+    /// that separately.
+    fn derive_nested_objects(
+        &self,
+        slot_deriv: &SlotDerivation,
+        source_map: &IndexMap<String, Value>,
+        source_type: &str,
+        class_deriv: &ClassDerivation,
+        index: Option<&ObjectIndex>,
+    ) -> Result<Value> {
+        let obj_derivations = match &slot_deriv.object_derivations {
+            Some(v) => v,
+            None => return Ok(Value::Null),
+        };
+
+        let mut derived: Vec<Value> = Vec::new();
+
+        for obj_deriv in obj_derivations {
+            if let Some(cls_derivations) = &obj_deriv.class_derivations {
+                for (_target_cls, cls_deriv) in cls_derivations {
+                    // `populated_from` on the ClassDerivation tells us which
+                    // source class to use.  When absent, fall back to the outer
+                    // source_type (same-class derivation).
+                    let effective_source_type = cls_deriv
+                        .populated_from
+                        .as_deref()
+                        .unwrap_or(source_type);
+
+                    // Recursively transform the same source map using the
+                    // nested ClassDerivation.
+                    let nested = self.map_object_internal(
+                        source_map,
+                        effective_source_type,
+                        cls_deriv,
+                        index,
+                    )?;
+                    derived.push(nested);
+                }
+            }
+        }
+
+        if derived.is_empty() {
+            return Ok(Value::Null);
+        }
+
+        // Decide cardinality from the target schema slot when available,
+        // mirroring Python: `target_class_slot = self.target_schemaview.induced_slot(slot, target_type)`
+        let target_multivalued = self
+            .target_schema
+            .and_then(|ts| ts.induced_slot(&slot_deriv.name, &class_deriv.name).ok())
+            .map(|s| s.multivalued)
+            .unwrap_or(false); // default: single-valued when no target schema
+
+        if target_multivalued {
+            Ok(Value::List(derived))
+        } else {
+            // Single-valued: return first; if >1 that's a schema mismatch but
+            // we follow Python and return the first without erroring.
+            Ok(derived.into_iter().next().unwrap_or(Value::Null))
+        }
+    }
+
     // ── Cardinality coercion ──────────────────────────────────────────────────
 
     /// Mirror of Python `_coerce_cardinality`.
@@ -874,7 +1110,18 @@ impl<'s> ObjectTransformer<'s> {
                 return self.multivalued_to_single(items, slot_deriv);
             }
         } else if self.is_coerce_to_multivalued(slot_deriv, class_deriv, source_multivalued) {
-            if !matches!(&v, Value::Null) && !matches!(&v, Value::List(_)) {
+            // Do NOT wrap a Map when reshape_collection will later convert it
+            // (MultiValuedList: dict→list; MultiValuedDict / dictionary_key:
+            // list→dict). Wrapping the Map in a 1-element List here would
+            // prevent reshape_collection from seeing the dict structure.
+            let reshape_will_handle = matches!(
+                slot_deriv.cast_collection_as,
+                Some(CollectionType::MultiValuedList) | Some(CollectionType::MultiValuedDict)
+            ) || slot_deriv.dictionary_key.is_some();
+            let is_map = matches!(&v, Value::Map(_));
+            if !matches!(&v, Value::Null) && !matches!(&v, Value::List(_))
+                && !(reshape_will_handle && is_map)
+            {
                 return Ok(self.single_to_multivalued(v, slot_deriv)?);
             }
         }
@@ -888,12 +1135,13 @@ impl<'s> ObjectTransformer<'s> {
         source_multivalued: bool,
     ) -> bool {
         if let Some(cast_as) = &sd.cast_collection_as {
-            if matches!(
-                cast_as,
-                CollectionType::MultiValued
-                    | CollectionType::MultiValuedDict
-                    | CollectionType::MultiValuedList
-            ) {
+            // MultiValuedDict and MultiValuedList are handled entirely by
+            // reshape_collection (dictionary_key keying / compact-dict unkey).
+            // They must NOT trigger the scalar→list wrap here because the
+            // value at this point is a Map (dict) or List (list), not a bare
+            // scalar, and wrapping it would produce a 1-element list instead of
+            // letting reshape_collection do the structural conversion.
+            if matches!(cast_as, CollectionType::MultiValued) {
                 return true;
             }
         }
@@ -2441,5 +2689,394 @@ mod tests {
             Value::Map(m) => m, _ => panic!(),
         };
         assert_eq!(out["out"], Value::Null);
+    }
+
+    // ── reshape_collection tests ──────────────────────────────────────────────
+
+    /// Helper: build a two-class schema with identifier slots used by reshape tests.
+    fn build_reshape_schema() -> InMemorySchema {
+        use crate::schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef};
+        InMemorySchemaBuilder::new()
+            .add_type("string")
+            // "Item" class with identifier slot "id"
+            .add_class(ClassDef { name: "Item".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("Item", SlotDef {
+                name: "id".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false, required: true, identifier: true, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Item", SlotDef {
+                name: "value".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            // "Container" class with a multivalued "items" slot (range: Item)
+            .add_class(ClassDef { name: "Container".into(), tree_root: true, is_a: None, mixins: vec![] })
+            .add_slot("Container", SlotDef {
+                name: "items".into(),
+                range: RangeKind::Class("Item".into()),
+                multivalued: true, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .build()
+    }
+
+    /// List of objects → keyed dict via explicit `dictionary_key`.
+    ///
+    /// Python equivalent:
+    ///   `v = {v1["id"]: v1 for v1 in v}; for v1 in v.values(): del v1["id"]`
+    #[test]
+    fn reshape_list_to_dict_via_dictionary_key() {
+        let schema = build_reshape_schema();
+
+        // SlotDerivation for "items" with dictionary_key = "id"
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("items".into(), SlotDerivation {
+            name: "items".into(),
+            populated_from: Some("items".into()),
+            dictionary_key: Some("id".into()),
+            ..Default::default()
+        });
+        // Identity class derivation for "Item" so map_value_by_range can recurse.
+        let mut item_slot_derivs: IndexMap<String, SlotDerivation> = IndexMap::new();
+        item_slot_derivs.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
+        item_slot_derivs.insert("value".into(), SlotDerivation { name: "value".into(), ..Default::default() });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![
+                ClassDerivation {
+                    name: "Container".into(),
+                    populated_from: Some("Container".into()),
+                    slot_derivations: Some(slots),
+                    ..Default::default()
+                },
+                ClassDerivation {
+                    name: "Item".into(),
+                    populated_from: Some("Item".into()),
+                    slot_derivations: Some(item_slot_derivs),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        // Source: [{id: "a", value: "alpha"}, {id: "b", value: "beta"}]
+        let mut item_a = IndexMap::new();
+        item_a.insert("id".into(), Value::Str("a".into()));
+        item_a.insert("value".into(), Value::Str("alpha".into()));
+        let mut item_b = IndexMap::new();
+        item_b.insert("id".into(), Value::Str("b".into()));
+        item_b.insert("value".into(), Value::Str("beta".into()));
+        let mut src = IndexMap::new();
+        src.insert(
+            "items".into(),
+            Value::List(vec![Value::Map(item_a), Value::Map(item_b)]),
+        );
+
+        let result = engine.map_object(&Value::Map(src), Some("Container")).unwrap();
+        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+
+        // Result should be a dict keyed by "id", with "id" dropped from values.
+        let items_val = &out["items"];
+        let dict = match items_val {
+            Value::Map(m) => m,
+            other => panic!("expected Map (keyed dict), got {other:?}"),
+        };
+        assert_eq!(dict.len(), 2);
+        let val_a = match dict.get("a") {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Map for key 'a', got {other:?}"),
+        };
+        // "id" key must have been dropped from the value
+        assert!(!val_a.contains_key("id"), "key 'id' should be dropped from value");
+        assert_eq!(val_a["value"], Value::Str("alpha".into()));
+
+        let val_b = match dict.get("b") {
+            Some(Value::Map(m)) => m,
+            other => panic!("expected Map for key 'b', got {other:?}"),
+        };
+        assert!(!val_b.contains_key("id"), "key 'id' should be dropped from value");
+        assert_eq!(val_b["value"], Value::Str("beta".into()));
+    }
+
+    /// Keyed dict → list round-trip via `cast_collection_as: MultiValuedList`.
+    ///
+    /// Python equivalent:
+    ///   `[{**v1, id_slot: k} for k, v1 in v.items()]`
+    ///   where id_slot = schema identifier slot name ("id").
+    #[test]
+    fn reshape_dict_to_list_via_cast_collection_as() {
+        let schema = build_reshape_schema();
+
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("items".into(), SlotDerivation {
+            name: "items".into(),
+            populated_from: Some("items".into()),
+            cast_collection_as: Some(CollectionType::MultiValuedList),
+            ..Default::default()
+        });
+        // Identity class derivation for "Item" so map_value_by_range can recurse.
+        let mut item_slot_derivs2: IndexMap<String, SlotDerivation> = IndexMap::new();
+        item_slot_derivs2.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
+        item_slot_derivs2.insert("value".into(), SlotDerivation { name: "value".into(), ..Default::default() });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![
+                ClassDerivation {
+                    name: "Container".into(),
+                    populated_from: Some("Container".into()),
+                    slot_derivations: Some(slots),
+                    ..Default::default()
+                },
+                ClassDerivation {
+                    name: "Item".into(),
+                    populated_from: Some("Item".into()),
+                    slot_derivations: Some(item_slot_derivs2),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        // Source: {a: {value: "alpha"}, b: {value: "beta"}}
+        let mut val_a = IndexMap::new();
+        val_a.insert("value".into(), Value::Str("alpha".into()));
+        let mut val_b = IndexMap::new();
+        val_b.insert("value".into(), Value::Str("beta".into()));
+        let mut items_dict = IndexMap::new();
+        items_dict.insert("a".into(), Value::Map(val_a));
+        items_dict.insert("b".into(), Value::Map(val_b));
+        let mut src = IndexMap::new();
+        src.insert("items".into(), Value::Map(items_dict));
+
+        let result = engine.map_object(&Value::Map(src), Some("Container")).unwrap();
+        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+
+        let items_val = &out["items"];
+        let list = match items_val {
+            Value::List(v) => v,
+            other => panic!("expected List, got {other:?}"),
+        };
+        assert_eq!(list.len(), 2);
+
+        // Each element should be a map with the key re-injected as "id".
+        for item in list {
+            let m = match item {
+                Value::Map(m) => m,
+                other => panic!("expected Map element, got {other:?}"),
+            };
+            assert!(m.contains_key("id"), "re-injected 'id' key must be present");
+            assert!(m.contains_key("value"));
+        }
+        // Check specific entries (insertion order preserved via IndexMap).
+        let m0 = match &list[0] { Value::Map(m) => m, _ => panic!() };
+        assert_eq!(m0["id"], Value::Str("a".into()));
+        assert_eq!(m0["value"], Value::Str("alpha".into()));
+        let m1 = match &list[1] { Value::Map(m) => m, _ => panic!() };
+        assert_eq!(m1["id"], Value::Str("b".into()));
+        assert_eq!(m1["value"], Value::Str("beta".into()));
+    }
+
+    // ── object_derivations tests ──────────────────────────────────────────────
+
+    /// Single nested object produced by `object_derivations`.
+    ///
+    /// Source class has flat fields; the transform produces a nested target
+    /// class by picking fields via an explicit ClassDerivation inside
+    /// `object_derivations`.
+    #[test]
+    fn object_derivations_single_nested() {
+        use crate::schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef};
+
+        // Source: flat Person {first: "Ada", last: "Lovelace", age: 36}
+        // Target: Person { full_name: <nested FullName>, age: 36 }
+        // FullName { first: "Ada", last: "Lovelace" }
+
+        // Build a target schema that says `full_name` is single-valued.
+        let target_schema = InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_type("integer")
+            .add_class(ClassDef { name: "Person".into(), tree_root: true, is_a: None, mixins: vec![] })
+            .add_slot("Person", SlotDef {
+                name: "full_name".into(),
+                range: RangeKind::Class("FullName".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Person", SlotDef {
+                name: "age".into(),
+                range: RangeKind::Type("integer".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_class(ClassDef { name: "FullName".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("FullName", SlotDef {
+                name: "first".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("FullName", SlotDef {
+                name: "last".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .build();
+
+        // Build the nested ClassDerivation for FullName.
+        let mut fullname_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        fullname_slots.insert("first".into(), SlotDerivation {
+            name: "first".into(),
+            populated_from: Some("first".into()),
+            ..Default::default()
+        });
+        fullname_slots.insert("last".into(), SlotDerivation {
+            name: "last".into(),
+            populated_from: Some("last".into()),
+            ..Default::default()
+        });
+        let fullname_cls_deriv = ClassDerivation {
+            name: "FullName".into(),
+            populated_from: Some("Person".into()),
+            slot_derivations: Some(fullname_slots),
+            ..Default::default()
+        };
+        let mut inner_cls_derivs: IndexMap<String, ClassDerivation> = IndexMap::new();
+        inner_cls_derivs.insert("FullName".into(), fullname_cls_deriv);
+
+        let obj_deriv = crate::datamodel::ObjectDerivation {
+            class_derivations: Some(inner_cls_derivs),
+            ..Default::default()
+        };
+
+        // Outer spec: Person → Person with full_name via object_derivations, age direct.
+        let mut outer_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        outer_slots.insert("full_name".into(), SlotDerivation {
+            name: "full_name".into(),
+            object_derivations: Some(vec![obj_deriv]),
+            ..Default::default()
+        });
+        outer_slots.insert("age".into(), SlotDerivation {
+            name: "age".into(),
+            populated_from: Some("age".into()),
+            ..Default::default()
+        });
+
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(outer_slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let engine = ObjectTransformer::new(spec, None, Some(&target_schema));
+
+        let mut src = IndexMap::new();
+        src.insert("first".into(), Value::Str("Ada".into()));
+        src.insert("last".into(), Value::Str("Lovelace".into()));
+        src.insert("age".into(), Value::Int(36));
+
+        let result = engine.map_object(&Value::Map(src), Some("Person")).unwrap();
+        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+
+        // age passes through directly
+        assert_eq!(out["age"], Value::Int(36));
+
+        // full_name should be a single Map (not a List), because target schema says single-valued
+        let fn_val = match &out["full_name"] {
+            Value::Map(m) => m,
+            other => panic!("expected Map for full_name, got {other:?}"),
+        };
+        assert_eq!(fn_val["first"], Value::Str("Ada".into()));
+        assert_eq!(fn_val["last"], Value::Str("Lovelace".into()));
+    }
+
+    /// Multivalued `object_derivations`: target slot is multivalued, result is List.
+    #[test]
+    fn object_derivations_multivalued_from_target_schema() {
+        use crate::schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef};
+
+        // Target schema: Container.tags is multivalued (List of Tag).
+        let target_schema = InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_class(ClassDef { name: "Container".into(), tree_root: true, is_a: None, mixins: vec![] })
+            .add_slot("Container", SlotDef {
+                name: "tags".into(),
+                range: RangeKind::Class("Tag".into()),
+                multivalued: true,  // <-- key: forces List output
+                required: false, identifier: false, key: false, unit: None, any_of_enums: vec![],
+            })
+            .add_class(ClassDef { name: "Tag".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("Tag", SlotDef {
+                name: "label".into(),
+                range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .build();
+
+        // ObjectDerivation with a single ClassDerivation for Tag.
+        let mut tag_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        tag_slots.insert("label".into(), SlotDerivation {
+            name: "label".into(),
+            populated_from: Some("tag".into()),
+            ..Default::default()
+        });
+        let tag_cls_deriv = ClassDerivation {
+            name: "Tag".into(),
+            populated_from: Some("Container".into()),
+            slot_derivations: Some(tag_slots),
+            ..Default::default()
+        };
+        let mut inner: IndexMap<String, ClassDerivation> = IndexMap::new();
+        inner.insert("Tag".into(), tag_cls_deriv);
+
+        let obj_deriv = crate::datamodel::ObjectDerivation {
+            class_derivations: Some(inner),
+            ..Default::default()
+        };
+
+        let mut outer_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        outer_slots.insert("tags".into(), SlotDerivation {
+            name: "tags".into(),
+            object_derivations: Some(vec![obj_deriv]),
+            ..Default::default()
+        });
+
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Container".into(),
+                populated_from: Some("Container".into()),
+                slot_derivations: Some(outer_slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let engine = ObjectTransformer::new(spec, None, Some(&target_schema));
+
+        let mut src = IndexMap::new();
+        src.insert("tag".into(), Value::Str("rust".into()));
+
+        let result = engine.map_object(&Value::Map(src), Some("Container")).unwrap();
+        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+
+        // tags must be a List because target slot is multivalued
+        let tags = match &out["tags"] {
+            Value::List(v) => v,
+            other => panic!("expected List for tags (multivalued target), got {other:?}"),
+        };
+        assert_eq!(tags.len(), 1, "one ObjectDerivation → one element");
+        let tag0 = match &tags[0] {
+            Value::Map(m) => m,
+            other => panic!("expected Map in tags list, got {other:?}"),
+        };
+        assert_eq!(tag0["label"], Value::Str("rust".into()));
     }
 }
