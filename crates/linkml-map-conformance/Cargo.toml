@@ -1,0 +1,21 @@
+[package]
+name = "linkml-map-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "End-to-end conformance / parity runner for the linkml-map Rust port"
+
+[dependencies]
+linkml-map-core    = { path = "../linkml-map-core" }
+linkml-map-schemaview = { path = "../linkml-map-schemaview" }
+linkml-map-io      = { path = "../linkml-map-io" }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+serde_yaml_ng      = { workspace = true }
+indexmap           = { workspace = true }
+anyhow             = { workspace = true }
+tokio              = { workspace = true }
+walkdir            = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
