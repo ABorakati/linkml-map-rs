@@ -205,7 +205,7 @@ impl<'s> ObjectTransformer<'s> {
         if let Some(ssd) = &source_slot_def {
             if !v.is_null() {
                 v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref())?;
-                v = self.coerce_cardinality(v, slot_deriv, class_deriv)?;
+                v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
                 if let Some(target_range) = slot_deriv.range.as_deref() {
                     v = coerce_datatype(v, target_range);
                 }
@@ -283,6 +283,10 @@ impl<'s> ObjectTransformer<'s> {
                             .collect();
                         return Ok(Value::List(mapped?));
                     }
+                    // Scalar value on a multivalued enum slot: map then wrap in a
+                    // one-element list (mirror of Python single→multivalued).
+                    let mapped = self.transform_enum(v, &[enum_name.clone()], v)?;
+                    return Ok(Value::List(vec![mapped]));
                 }
                 self.transform_enum(v, &[enum_name.clone()], v)
             }
@@ -366,20 +370,30 @@ impl<'s> ObjectTransformer<'s> {
         v: Value,
         slot_deriv: &SlotDerivation,
         class_deriv: &ClassDerivation,
+        source_multivalued: bool,
     ) -> Result<Value> {
-        if self.is_coerce_to_multivalued(slot_deriv, class_deriv) {
-            if !matches!(&v, Value::Null) && !matches!(&v, Value::List(_)) {
-                return Ok(self.single_to_multivalued(v, slot_deriv)?);
-            }
-        } else if self.is_coerce_to_singlevalued(slot_deriv, class_deriv) {
+        // Explicit single-valued intent (stringification join, cast SingleValued,
+        // or a single-valued target slot) takes precedence over the implicit
+        // "source is multivalued" signal, so a multivalued source can still be
+        // collapsed (e.g. joined) into one value.
+        if self.is_coerce_to_singlevalued(slot_deriv, class_deriv) {
             if let Value::List(items) = v {
                 return self.multivalued_to_single(items, slot_deriv);
+            }
+        } else if self.is_coerce_to_multivalued(slot_deriv, class_deriv, source_multivalued) {
+            if !matches!(&v, Value::Null) && !matches!(&v, Value::List(_)) {
+                return Ok(self.single_to_multivalued(v, slot_deriv)?);
             }
         }
         Ok(v)
     }
 
-    fn is_coerce_to_multivalued(&self, sd: &SlotDerivation, cd: &ClassDerivation) -> bool {
+    fn is_coerce_to_multivalued(
+        &self,
+        sd: &SlotDerivation,
+        cd: &ClassDerivation,
+        source_multivalued: bool,
+    ) -> bool {
         if let Some(cast_as) = &sd.cast_collection_as {
             if matches!(
                 cast_as,
@@ -403,6 +417,13 @@ impl<'s> ObjectTransformer<'s> {
                     return true;
                 }
             }
+        }
+        // Fallback: when the source slot is multivalued and no explicit
+        // single-valued directive applied, treat the target as multivalued too
+        // (a scalar value is wrapped in a one-element list). Mirrors Python
+        // single→multivalued coercion and works without a loaded target schema.
+        if source_multivalued {
+            return true;
         }
         false
     }

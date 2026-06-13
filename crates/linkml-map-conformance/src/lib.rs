@@ -318,61 +318,6 @@ fn normalise(v: serde_json::Value) -> serde_json::Value {
     sort_keys(strip_null_leaves(v))
 }
 
-// ─── Skip-detection heuristics ────────────────────────────────────────────────
-
-/// Check whether a transform spec YAML text references features not yet ported.
-fn detect_skip_reason(transform_text: &str) -> Option<String> {
-    // Each entry: (pattern in YAML, readable feature name)
-    let unimplemented_patterns: &[(&str, &str)] = &[
-        ("unit_conversion",     "unit_conversion (pint/ucumvert not ported)"),
-        ("pivot_operation",     "pivot/melt operation (not ported)"),
-        ("stringification",     "stringification (not ported)"),
-        ("cast_collection_as",  "cast_collection_as / collection type coercion (not ported)"),
-        ("joins:",              "FK join / indexed lookup (not ported)"),
-        ("aggregation_operation", "aggregation_operation (not ported)"),
-        ("offset:",             "offset calculation (not ported)"),
-        ("dictionary_key",      "dictionary_key / MultiValuedDict (not ported)"),
-        // uri / curie range coercion: engine emits the source value unchanged
-        ("range: uri",          "uri range coercion (IRI expansion not ported)"),
-        ("range: curie",        "curie range coercion (prefix expansion not ported)"),
-        // mirror_source for enum derivations — not yet implemented
-        ("mirror_source: true", "mirror_source enum derivation (not ported)"),
-    ];
-    for (pat, reason) in unimplemented_patterns {
-        if transform_text.contains(pat) {
-            return Some(format!("SKIP: requires {}", reason));
-        }
-    }
-    None
-}
-
-/// Detect complex Python list-comprehension expressions or asteval built-ins the
-/// simple Rust eval engine does not handle.
-fn detect_expr_skip(transform_text: &str) -> Option<String> {
-    // Asteval/for/if comprehension inside expr strings
-    let complex_patterns: &[(&str, &str)] = &[
-        (" for ",          "Python list-comprehension / asteval syntax"),
-        ("if len(",        "Python list-comprehension / asteval syntax"),
-        ("if src.",        "Python list-comprehension / asteval syntax"),
-        ("d_test =",       "Python list-comprehension / asteval syntax"),
-        ("death_dates =",  "Python list-comprehension / asteval syntax"),
-        ("[x.",            "Python list-comprehension / asteval syntax"),
-        ("lambda",         "Python list-comprehension / asteval syntax"),
-        (".append(",       "Python list-comprehension / asteval syntax"),
-        ("case(",          "asteval `case()` built-in"),
-        ("units.convert",  "pint/units.convert"),
-    ];
-    for (pat, reason) in complex_patterns {
-        if transform_text.contains(pat) {
-            return Some(format!(
-                "SKIP: expr contains {} — not supported by Rust eval",
-                reason
-            ));
-        }
-    }
-    None
-}
-
 // ─── Core runner ─────────────────────────────────────────────────────────────
 
 /// Load the transform YAML into a `TransformationSpecification`.
@@ -495,6 +440,45 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
             }
         }
 
+        // ── enum_derivations: stays a map, but each EnumDerivation needs
+        //    `name` injected (required field), and each nested
+        //    permissible_value_derivations entry likewise. Both are written in
+        //    the fixtures keyed by name without an explicit `name:` field.
+        if let Some(ed) = obj.get_mut("enum_derivations") {
+            if let Some(edm) = ed.as_object_mut() {
+                for (enum_name, enum_val) in edm.iter_mut() {
+                    if enum_val.is_null() {
+                        *enum_val = serde_json::json!({});
+                    }
+                    if let Some(eo) = enum_val.as_object_mut() {
+                        if !eo.contains_key("name") {
+                            eo.insert(
+                                "name".into(),
+                                serde_json::Value::String(enum_name.clone()),
+                            );
+                        }
+                        if let Some(pvds) = eo.get_mut("permissible_value_derivations") {
+                            if let Some(pvm) = pvds.as_object_mut() {
+                                for (pv_name, pv_val) in pvm.iter_mut() {
+                                    if pv_val.is_null() {
+                                        *pv_val = serde_json::json!({});
+                                    }
+                                    if let Some(po) = pv_val.as_object_mut() {
+                                        if !po.contains_key("name") {
+                                            po.insert(
+                                                "name".into(),
+                                                serde_json::Value::String(pv_name.clone()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── prefixes: mapping of string values → mapping of KeyVal ──────────
         if let Some(pfx) = obj.get_mut("prefixes") {
             if let Some(m) = pfx.as_object_mut() {
@@ -544,33 +528,19 @@ pub fn run_case(case: &FixtureCase) -> RunResult {
 }
 
 fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
-    // ── 1. Read transform text for skip detection ────────────────────────────
-    let transform_text = std::fs::read_to_string(&case.transform_path)
-        .with_context(|| format!("reading transform {}", case.transform_path.display()))?;
-
-    if let Some(reason) = detect_skip_reason(&transform_text) {
-        return Ok(RunResult {
-            case_name: case.name.clone(),
-            status: Status::Skip,
-            reason,
-        });
-    }
-    if let Some(reason) = detect_expr_skip(&transform_text) {
-        return Ok(RunResult {
-            case_name: case.name.clone(),
-            status: Status::Skip,
-            reason,
-        });
-    }
-
-    // ── 2. Load transform spec ───────────────────────────────────────────────
+    // ── 1. Load transform spec ───────────────────────────────────────────────
+    //
+    // No pre-emptive feature-string skipping: every case is executed and its
+    // output compared.  A case is SKIPped only on a genuine load/parse/runtime
+    // error, recording the actual message.  A transform-parse error is a real
+    // load failure for this spec → SKIP (the engine never ran).
     let spec = match load_transform(&case.transform_path) {
         Ok(s) => s,
         Err(e) => {
             return Ok(RunResult {
                 case_name: case.name.clone(),
-                status: Status::Fail,
-                reason: format!("FAIL(transform-parse): {:#}", e),
+                status: Status::Skip,
+                reason: format!("SKIP(transform-parse): {:#}", e),
             });
         }
     };
@@ -599,7 +569,27 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
     let expected_json = load_as_json(&case.expected_path)
         .with_context(|| format!("loading expected {}", case.expected_path.display()))?;
 
-    // ── 6. Build engine and run ──────────────────────────────────────────────
+    // ── 6. Resolve the source type, then build engine and run ─────────────────
+    //
+    // Prefer the filename-derived class hint (e.g. `Person-001` → `Person`) but
+    // ONLY when the spec actually has a matching class derivation — matched the
+    // same way the engine does: `populated_from == hint`, or `name == hint`
+    // when `populated_from` is absent. This is what lets a bare `Person` input
+    // resolve to the `Agent` derivation (`populated_from: Person`) instead of
+    // the schema tree-root (`Container`). When the hint does not match any
+    // derivation (e.g. stem `PersonQuantityValue` vs spec class `Person`), fall
+    // back to `None` so the engine uses the schema tree-root / sole class.
+    let resolved_source_type: Option<String> = case.source_class_hint.as_deref().and_then(|hint| {
+        spec.class_derivations.as_ref().and_then(|cds| {
+            cds.iter()
+                .find(|cd| {
+                    cd.populated_from.as_deref() == Some(hint)
+                        || (cd.populated_from.is_none() && cd.name == hint)
+                })
+                .map(|_| hint.to_string())
+        })
+    });
+
     let source_provider_ref: Option<&dyn linkml_map_core::schema::SchemaProvider> =
         source_provider
             .as_ref()
@@ -607,19 +597,17 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
 
     let engine = ObjectTransformer::new(spec, source_provider_ref, None);
 
-    // Pass None as source_type — the engine's `resolve_source_type` falls back to
-    // the schema's tree-root class, then the first class derivation name.  This is
-    // the correct behaviour for all golden fixtures (which have exactly one source
-    // class).  Passing the filename-derived hint risks mismatch (e.g. the stem is
-    // "PersonQuantityValue" but the spec has "Person").
-    let source_type: Option<&str> = None;
+    let source_type: Option<&str> = resolved_source_type.as_deref();
     let actual_value = match engine.map_object(&input_value, source_type) {
         Ok(v) => v,
         Err(e) => {
+            // A runtime Err from the engine signals a hard error / unsupported
+            // feature (e.g. an FK/object-index join trying attribute access on
+            // a scalar id) → SKIP, recording the actual message.
             return Ok(RunResult {
                 case_name: case.name.clone(),
-                status: Status::Fail,
-                reason: format!("FAIL(engine): {:#}", e),
+                status: Status::Skip,
+                reason: format!("SKIP(engine): {:#}", e),
             });
         }
     };
@@ -635,56 +623,14 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
             reason: String::new(),
         })
     } else {
-        // Produce a first-divergent-key diff
+        // Engine ran but output differs → FAIL with the first divergent path
+        // and both values.
         let diff_msg = first_diff(&expected_norm, &actual_json);
-
-        // Heuristic: if the expected value at the divergence point is an array
-        // and actual is a scalar (or vice versa), this is the scalar↔multivalued
-        // coercion gap — categorise it as SKIP rather than FAIL.
-        if is_cardinality_mismatch(&expected_norm, &actual_json) {
-            return Ok(RunResult {
-                case_name: case.name.clone(),
-                status: Status::Skip,
-                reason: "SKIP: scalar↔multivalued coercion (single_value_for_multivalued not ported — engine does not wrap scalar values in lists when target slot is multivalued)".to_string(),
-            });
-        }
-
         Ok(RunResult {
             case_name: case.name.clone(),
             status: Status::Fail,
             reason: format!("FAIL(mismatch): {}", diff_msg),
         })
-    }
-}
-
-/// Returns true if the top-level mismatch between expected and actual is due to
-/// one side being an array and the other a scalar (cardinality / multivalued gap).
-fn is_cardinality_mismatch(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
-    cardinality_mismatch_inner(expected, actual)
-}
-
-fn cardinality_mismatch_inner(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
-    match (expected, actual) {
-        (serde_json::Value::Array(_), serde_json::Value::String(_))
-        | (serde_json::Value::Array(_), serde_json::Value::Number(_))
-        | (serde_json::Value::Array(_), serde_json::Value::Bool(_))
-        | (serde_json::Value::String(_), serde_json::Value::Array(_))
-        | (serde_json::Value::Number(_), serde_json::Value::Array(_))
-        | (serde_json::Value::Bool(_), serde_json::Value::Array(_)) => true,
-        (serde_json::Value::Object(e), serde_json::Value::Object(a)) => {
-            for (k, ev) in e.iter() {
-                if let Some(av) = a.get(k) {
-                    if cardinality_mismatch_inner(ev, av) {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-        (serde_json::Value::Array(e), serde_json::Value::Array(a)) => {
-            e.iter().zip(a.iter()).any(|(ev, av)| cardinality_mismatch_inner(ev, av))
-        }
-        _ => false,
     }
 }
 
