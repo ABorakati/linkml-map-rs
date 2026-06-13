@@ -1,0 +1,26 @@
+[package]
+name = "linkml-map-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-throughput async+concurrent row-transformation pipeline for linkml-map"
+
+[dependencies]
+linkml-map-core       = { path = "../linkml-map-core" }
+linkml-map-schemaview = { path = "../linkml-map-schemaview" }
+linkml-map-io         = { path = "../linkml-map-io" }
+tokio                 = { workspace = true }
+futures               = { workspace = true }
+rayon                 = { workspace = true }
+anyhow                = { workspace = true }
+serde_json            = { workspace = true }
+serde_yaml_ng         = { workspace = true }
+tempfile              = { workspace = true }
+
+[[bin]]
+name = "pipeline-bench"
+path = "src/bin/bench.rs"
+
+[dev-dependencies]
+tokio     = { workspace = true }
+tempfile  = { workspace = true }

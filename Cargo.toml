@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-cli", "crates/linkml-map-schemaview", "crates/linkml-map-conformance"]
-# linkml-map-py requires Python interpreter and maturin; exclude from default cargo build
-# Use: maturin build -C crates/linkml-map-py
+members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-cli", "crates/linkml-map-schemaview", "crates/linkml-map-conformance", "crates/linkml-map-pipeline", "crates/linkml-map-py"]
+# linkml-map-py is a cdylib (maturin wheel); add to members so workspace deps resolve
+# Build wheel: maturin build -m crates/linkml-map-py/Cargo.toml
+# cargo build --lib -p linkml-map-py  also works (skips Python linking)
 
 [workspace.package]
 version = "0.1.0"
@@ -24,3 +25,4 @@ rayon = "1"
 clap = { version = "4", features = ["derive"] }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 walkdir = "2"
+tempfile = "3"
