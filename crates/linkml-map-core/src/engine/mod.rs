@@ -18,6 +18,9 @@
 //! - Pivot / unit-conversion / join / FK / stringification / offset are **not**
 //!   ported in this wave (noted below under NOT PORTED).
 
+pub mod object_index;
+pub use object_index::ObjectIndex;
+
 use indexmap::IndexMap;
 
 use std::borrow::Cow;
@@ -165,13 +168,49 @@ impl<'s> ObjectTransformer<'s> {
     /// class derivation's name.
     pub fn map_object(&self, source_obj: &Value, source_type: Option<&str>) -> Result<Value> {
         let source_type = self.resolve_source_type(source_type)?;
-        self.map_object_with_type(source_obj, &source_type)
+        self.map_object_with_type(source_obj, &source_type, None)
+    }
+
+    /// Transform a whole source **container**, resolving foreign-key references.
+    ///
+    /// This is the FK-aware entry point. Unlike [`ObjectTransformer::map_object`]
+    /// (single object / row-streamable), `map_container` first scans the entire
+    /// `container` to build an [`ObjectIndex`] keyed by identifier, then maps the
+    /// container with that index available to every nested `expr:` so an FK
+    /// scalar (e.g. `subject: "X:1"`) dereferences to its referenced object
+    /// (`{id: "X:1", name: "x1"}`) before attribute access (`subject.id`).
+    ///
+    /// When the spec does **not** dereference any FK-ranged slot, this is exactly
+    /// equivalent to [`ObjectTransformer::map_object`]: the index is built but
+    /// never consulted, so the result is identical and the (cheap) scan is the
+    /// only overhead.
+    ///
+    /// # Note on streaming
+    /// FK resolution needs the *whole* dataset (the referenced collection may
+    /// appear after the referencing rows), so FK specs are **not** row-
+    /// streamable. The concurrent pipeline keeps the streaming `map_object` path
+    /// for non-FK specs; wiring FK into the pipeline (build the index once, share
+    /// it across workers) is a follow-up.
+    pub fn map_container(&self, container: &Value, source_type: Option<&str>) -> Result<Value> {
+        let source_type = self.resolve_source_type(source_type)?;
+        let index = ObjectIndex::build(container, Some(&source_type), self.source_schema);
+        let idx_ref = if index.is_empty() { None } else { Some(&index) };
+        self.map_object_with_type(container, &source_type, idx_ref)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     /// Core recursive mapper — source type already resolved.
-    fn map_object_with_type(&self, source_obj: &Value, source_type: &str) -> Result<Value> {
+    ///
+    /// `index` carries the optional FK [`ObjectIndex`] down through nested
+    /// class-ranged recursion so deep `expr:` accesses can still dereference
+    /// foreign keys.
+    fn map_object_with_type(
+        &self,
+        source_obj: &Value,
+        source_type: &str,
+        index: Option<&ObjectIndex>,
+    ) -> Result<Value> {
         // Enum pass-through: if source_type is an enum, transform via enum derivation.
         if let Some(ss) = self.source_schema {
             if ss.all_enum_names().contains(&source_type.to_string()) {
@@ -207,7 +246,7 @@ impl<'s> ObjectTransformer<'s> {
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
             let v = self
-                .derive_slot(slot_deriv, source_map, source_type, &class_deriv)
+                .derive_slot(slot_deriv, source_map, source_type, &class_deriv, index)
                 .map_err(|e| Error::SlotTransform {
                     class: class_deriv.name.clone(),
                     slot: slot_name.to_string(),
@@ -226,6 +265,7 @@ impl<'s> ObjectTransformer<'s> {
         source_map: &IndexMap<String, Value>,
         source_type: &str,
         class_deriv: &ClassDerivation,
+        index: Option<&ObjectIndex>,
     ) -> Result<Value> {
         let slot_name = slot_deriv.name.as_str();
 
@@ -252,6 +292,7 @@ impl<'s> ObjectTransformer<'s> {
                 slot_name,
                 source_type,
                 &class_deriv.name,
+                index,
             )?;
             (v, None)
         } else if let Some(populated_from) = &slot_deriv.populated_from {
@@ -311,7 +352,7 @@ impl<'s> ObjectTransformer<'s> {
 
         if let Some(ssd) = &source_slot_def {
             if !v.is_null() {
-                v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref())?;
+                v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
                 v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
                 if let Some(target_range) = slot_deriv.range.as_deref() {
                     v = coerce_datatype(v, target_range);
@@ -390,12 +431,25 @@ impl<'s> ObjectTransformer<'s> {
         slot_name: &str,
         source_type: &str,
         class_name: &str,
+        index: Option<&ObjectIndex>,
     ) -> Result<Value> {
         // Build bindings from all source map keys.
         let mut bindings: Bindings = IndexMap::new();
         bindings.insert("NULL".to_string(), Value::Null);
         for (k, v) in source_map {
-            bindings.insert(k.clone(), v.clone());
+            // FK dereference: when this source slot holds a foreign key (a
+            // scalar identifier whose range is a class), replace the binding
+            // with the *referenced object* from the index so attribute access
+            // (`subject.id` / `subject.name`) resolves against the dereferenced
+            // entity rather than failing on a bare string. Distributes over a
+            // multivalued FK (list of ids → list of resolved objects).
+            let bound = match index {
+                Some(idx) if self.is_fk_slot(k, source_type, v, idx) => {
+                    self.deref_fk_value(k, source_type, v, idx)
+                }
+                _ => v.clone(),
+            };
+            bindings.insert(k.clone(), bound);
         }
 
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
@@ -412,6 +466,83 @@ impl<'s> ObjectTransformer<'s> {
         })
     }
 
+    /// Decide whether `(slot_name, value)` on `source_type` is a foreign-key
+    /// reference that should be dereferenced through the [`ObjectIndex`].
+    ///
+    /// Schema-first: when the source schema knows this slot and its range is a
+    /// **class**, a scalar value is treated as an FK (an inlined object — a
+    /// `Map` — is left as-is). When the schema is unavailable or does not know
+    /// the slot, fall back to a structural test: a scalar value (or list of
+    /// scalars) whose id(s) are present in the index.
+    fn is_fk_slot(
+        &self,
+        slot_name: &str,
+        source_type: &str,
+        value: &Value,
+        index: &ObjectIndex,
+    ) -> bool {
+        // An inlined object is never an FK scalar.
+        if matches!(value, Value::Map(_)) {
+            return false;
+        }
+        // Schema says range is a class → FK by definition.
+        if let Some(ss) = self.source_schema {
+            if let Ok(slot) = ss.induced_slot(slot_name, source_type) {
+                return slot.range_class().is_some();
+            }
+        }
+        // Fallback: scalar (or list of scalars) that the index can resolve.
+        match value {
+            Value::Str(s) => index.contains_id(s),
+            Value::Int(i) => index.contains_id(&i.to_string()),
+            Value::List(items) => items.iter().any(|it| match it {
+                Value::Str(s) => index.contains_id(s),
+                Value::Int(i) => index.contains_id(&i.to_string()),
+                _ => false,
+            }),
+            _ => false,
+        }
+    }
+
+    /// Resolve an FK value to its referenced object(s) via the index, keeping
+    /// the original value when no entry is found (so a dangling FK degrades to
+    /// the bare scalar rather than vanishing). Distributes over lists.
+    fn deref_fk_value(
+        &self,
+        slot_name: &str,
+        source_type: &str,
+        value: &Value,
+        index: &ObjectIndex,
+    ) -> Value {
+        let range_class: Option<String> = self.source_schema.and_then(|ss| {
+            ss.induced_slot(slot_name, source_type)
+                .ok()
+                .and_then(|s| s.range_class().map(|c| c.to_string()))
+        });
+
+        let resolve_one = |v: &Value| -> Value {
+            let id = match v {
+                Value::Str(s) => Some(s.clone()),
+                Value::Int(i) => Some(i.to_string()),
+                _ => None,
+            };
+            match id {
+                Some(id) => index
+                    .get(range_class.as_deref(), &id)
+                    .cloned()
+                    .unwrap_or_else(|| v.clone()),
+                None => v.clone(),
+            }
+        };
+
+        match value {
+            Value::List(items) => {
+                Value::List(items.iter().map(|it| resolve_one(it)).collect())
+            }
+            other => resolve_one(other),
+        }
+    }
+
     // ── Range-based value coercion ────────────────────────────────────────────
 
     /// Mirror of Python `_map_value_by_range`.
@@ -422,6 +553,7 @@ impl<'s> ObjectTransformer<'s> {
         v: &Value,
         source_slot: &SlotDef,
         target_range: Option<&str>,
+        index: Option<&ObjectIndex>,
     ) -> Result<Value> {
         let source_range = &source_slot.range;
 
@@ -476,6 +608,7 @@ impl<'s> ObjectTransformer<'s> {
                                         item,
                                         class_name,
                                         target_range_str.as_deref(),
+                                        index,
                                     )
                                 })
                                 .collect();
@@ -490,6 +623,7 @@ impl<'s> ObjectTransformer<'s> {
                                             item,
                                             class_name,
                                             target_range_str.as_deref(),
+                                            index,
                                         )?;
                                         Ok((k.clone(), r))
                                     })
@@ -505,6 +639,7 @@ impl<'s> ObjectTransformer<'s> {
                                 v,
                                 class_name,
                                 target_range_str.as_deref(),
+                                index,
                             )?;
                             Ok(Value::List(vec![inner]))
                         }
@@ -514,6 +649,7 @@ impl<'s> ObjectTransformer<'s> {
                         v,
                         class_name,
                         target_range_str.as_deref(),
+                        index,
                     )
                 }
             }
@@ -529,11 +665,13 @@ impl<'s> ObjectTransformer<'s> {
         v: &Value,
         source_type: &str,
         _target_range: Option<&str>,
+        index: Option<&ObjectIndex>,
     ) -> Result<Value> {
         // For now target_range is only meaningful for scalar type coercions,
         // which are handled by coerce_datatype. The recursive call just needs
-        // the source class to find its derivation.
-        self.map_object_with_type(v, source_type)
+        // the source class to find its derivation. The FK index is threaded
+        // through so nested class-ranged objects can still dereference FKs.
+        self.map_object_with_type(v, source_type, index)
     }
 
     // ── Cardinality coercion ──────────────────────────────────────────────────
@@ -1706,5 +1844,203 @@ mod tests {
         let result = engine.map_object(&Value::Map(m), Some("Person")).unwrap();
         let out = match result { Value::Map(m) => m, _ => panic!() };
         assert_eq!(out["name"], Value::Str("Alice, Smith".into()));
+    }
+
+    // ── FK object-index / flattening tests ────────────────────────────────────
+
+    /// Build the flattening source schema (normalized mappings model):
+    ///   MappingSet (tree_root): mappings -> Mapping[], entities -> Entity[]
+    ///   Mapping: subject -> Entity, object -> Entity, predicate
+    ///   Entity: id (identifier), name
+    fn make_mappings_norm_schema() -> InMemorySchema {
+        InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_class(ClassDef { name: "MappingSet".into(), tree_root: true, is_a: None, mixins: vec![] })
+            .add_slot("MappingSet", SlotDef {
+                name: "mappings".into(), range: RangeKind::Class("Mapping".into()),
+                multivalued: true, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("MappingSet", SlotDef {
+                name: "entities".into(), range: RangeKind::Class("Entity".into()),
+                multivalued: true, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_class(ClassDef { name: "Mapping".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("Mapping", SlotDef {
+                name: "subject".into(), range: RangeKind::Class("Entity".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Mapping", SlotDef {
+                name: "object".into(), range: RangeKind::Class("Entity".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Mapping", SlotDef {
+                name: "predicate".into(), range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_class(ClassDef { name: "Entity".into(), tree_root: false, is_a: None, mixins: vec![] })
+            .add_slot("Entity", SlotDef {
+                name: "id".into(), range: RangeKind::Type("string".into()),
+                multivalued: false, required: true, identifier: true, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .add_slot("Entity", SlotDef {
+                name: "name".into(), range: RangeKind::Type("string".into()),
+                multivalued: false, required: false, identifier: false, key: false,
+                unit: None, any_of_enums: vec![],
+            })
+            .build()
+    }
+
+    /// Build the flattening input container: one mapping referencing two
+    /// entities by id, plus an `entities` dict keyed by identifier.
+    fn make_mappings_norm_input() -> Value {
+        let mut x1 = IndexMap::new();
+        x1.insert("name".into(), Value::Str("x1".into()));
+        let mut y1 = IndexMap::new();
+        y1.insert("name".into(), Value::Str("y1".into()));
+        let mut entities = IndexMap::new();
+        entities.insert("X:1".into(), Value::Map(x1));
+        entities.insert("Y:1".into(), Value::Map(y1));
+
+        let mut mapping = IndexMap::new();
+        mapping.insert("subject".into(), Value::Str("X:1".into()));
+        mapping.insert("object".into(), Value::Str("Y:1".into()));
+        mapping.insert("predicate".into(), Value::Str("P:1".into()));
+
+        let mut root = IndexMap::new();
+        root.insert("mappings".into(), Value::List(vec![Value::Map(mapping)]));
+        root.insert("entities".into(), Value::Map(entities));
+        Value::Map(root)
+    }
+
+    #[test]
+    fn object_index_keys_dict_inlined_entities_by_id() {
+        let schema = make_mappings_norm_schema();
+        let input = make_mappings_norm_input();
+        let idx = ObjectIndex::build(&input, Some("MappingSet"), Some(&schema));
+        assert!(!idx.is_empty());
+        assert!(idx.contains_id("X:1"));
+        assert!(idx.contains_id("Y:1"));
+        // The resolved object carries its identifier slot back as a field.
+        let x = idx.get(Some("Entity"), "X:1").unwrap();
+        match x {
+            Value::Map(m) => {
+                assert_eq!(m["id"], Value::Str("X:1".into()));
+                assert_eq!(m["name"], Value::Str("x1".into()));
+            }
+            _ => panic!("expected map"),
+        }
+        // Flat fallback also resolves without the class hint.
+        assert!(idx.get(None, "Y:1").is_some());
+    }
+
+    #[test]
+    fn fk_expr_resolves_subject_name_and_id() {
+        // subject.id / subject.name / object.id / object.name flatten the FK.
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        for (slot, expr) in [
+            ("subject_id", "subject.id"),
+            ("subject_name", "subject.name"),
+            ("object_id", "object.id"),
+            ("object_name", "object.name"),
+        ] {
+            slots.insert(slot.into(), SlotDerivation {
+                name: slot.into(),
+                expr: Some(expr.into()),
+                ..Default::default()
+            });
+        }
+        // predicate_id is a plain copy (populated_from), not an FK.
+        slots.insert("predicate_id".into(), SlotDerivation {
+            name: "predicate_id".into(),
+            populated_from: Some("predicate".into()),
+            ..Default::default()
+        });
+
+        let mappings_slot = {
+            let mut m: IndexMap<String, SlotDerivation> = IndexMap::new();
+            m.insert("mappings".into(), SlotDerivation {
+                name: "mappings".into(),
+                populated_from: Some("mappings".into()),
+                ..Default::default()
+            });
+            m
+        };
+
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![
+                ClassDerivation {
+                    name: "MappingSet".into(),
+                    populated_from: Some("MappingSet".into()),
+                    slot_derivations: Some(mappings_slot),
+                    ..Default::default()
+                },
+                ClassDerivation {
+                    name: "Mapping".into(),
+                    populated_from: Some("Mapping".into()),
+                    slot_derivations: Some(slots),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let schema = make_mappings_norm_schema();
+        let input = make_mappings_norm_input();
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        // map_container builds the FK index and resolves the references.
+        let out = engine.map_container(&input, Some("MappingSet")).unwrap();
+        let mappings = match &out {
+            Value::Map(m) => match &m["mappings"] {
+                Value::List(items) => items.clone(),
+                _ => panic!("mappings not a list"),
+            },
+            _ => panic!("not a map"),
+        };
+        assert_eq!(mappings.len(), 1);
+        let row = match &mappings[0] { Value::Map(m) => m, _ => panic!() };
+        assert_eq!(row["subject_id"], Value::Str("X:1".into()));
+        assert_eq!(row["subject_name"], Value::Str("x1".into()));
+        assert_eq!(row["object_id"], Value::Str("Y:1".into()));
+        assert_eq!(row["object_name"], Value::Str("y1".into()));
+        assert_eq!(row["predicate_id"], Value::Str("P:1".into()));
+    }
+
+    #[test]
+    fn non_fk_spec_unaffected_by_index_path() {
+        // A spec with no FK access produces the same result via map_container as
+        // via map_object — the index is built but never consulted.
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert("name".into(), SlotDerivation {
+            name: "name".into(),
+            populated_from: Some("name".into()),
+            ..Default::default()
+        });
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let mut m = IndexMap::new();
+        m.insert("id".into(), Value::Str("P1".into()));
+        m.insert("name".into(), Value::Str("Alice".into()));
+        let input = Value::Map(m);
+        let via_object = engine.map_object(&input, Some("Person")).unwrap();
+        let via_container = engine.map_container(&input, Some("Person")).unwrap();
+        assert_eq!(via_object, via_container);
+        let out = match via_container { Value::Map(m) => m, _ => panic!() };
+        assert_eq!(out["name"], Value::Str("Alice".into()));
     }
 }
