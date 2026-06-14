@@ -139,8 +139,7 @@ fn has_top_level_assignment(src: &str) -> bool {
             '=' if depth == 0 => {
                 let prev = if i > 0 { Some(chars[i - 1]) } else { None };
                 let next = chars.get(i + 1).copied();
-                let part_of_cmp = matches!(prev, Some('=' | '!' | '<' | '>'))
-                    || next == Some('=');
+                let part_of_cmp = matches!(prev, Some('=' | '!' | '<' | '>')) || next == Some('=');
                 if !part_of_cmp {
                     return true;
                 }
@@ -416,8 +415,7 @@ fn split_assignment(text: &str) -> Option<(&str, &str)> {
             '=' if depth == 0 => {
                 let prev = if i > 0 { Some(chars[i - 1]) } else { None };
                 let next = chars.get(i + 1).copied();
-                let part_of_cmp =
-                    matches!(prev, Some('=' | '!' | '<' | '>')) || next == Some('=');
+                let part_of_cmp = matches!(prev, Some('=' | '!' | '<' | '>')) || next == Some('=');
                 if !part_of_cmp {
                     let lhs = &text[..char_byte_positions[i]];
                     let rhs = &text[char_byte_positions[i + 1]..];

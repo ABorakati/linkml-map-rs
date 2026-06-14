@@ -393,10 +393,7 @@ impl SchemaViewProvider {
     }
 
     /// Convert a `SlotView` (merged effective slot) into our `SlotDef`.
-    fn slot_view_to_def(
-        &self,
-        slot_view: &linkml_schemaview::schemaview::SlotView,
-    ) -> SlotDef {
+    fn slot_view_to_def(&self, slot_view: &linkml_schemaview::schemaview::SlotView) -> SlotDef {
         let def = slot_view.definition();
 
         // -- range --
@@ -411,21 +408,51 @@ impl SchemaViewProvider {
         let identifier = def.identifier.unwrap_or(false);
         let key = def.key.unwrap_or(false);
 
-        // -- unit: prefer ucum_code, fall back to symbol --
+        // -- unit: capture the metaslot scheme, mirroring Python's UnitSystem
+        //    dispatch (ucum_code → UCUM, iec61360code → IEC61360, else pint). --
         let unit = def.unit.as_ref().and_then(|u| {
-            u.ucum_code
-                .clone()
-                .or_else(|| u.symbol.clone())
-                .or_else(|| u.abbreviation.clone())
+            use linkml_map_core::schema::{UnitRef, UnitSystem};
+            if let Some(c) = u.ucum_code.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Ucum,
+                })
+            } else if let Some(c) = u.iec61360code.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Iec61360,
+                })
+            } else if let Some(c) = u.symbol.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Other,
+                })
+            } else if let Some(c) = u.abbreviation.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Other,
+                })
+            } else {
+                u.descriptive_name.clone().map(|c| UnitRef {
+                    code: c,
+                    system: UnitSystem::Other,
+                })
+            }
         });
 
         // -- any_of enums: scan any_of branches for enum ranges --
         let any_of_enums = self.collect_any_of_enums(def);
 
+        // -- inlined / inlined_as_list (needed for inverse-spec derivation) --
+        let inlined = def.inlined.unwrap_or(false);
+        let inlined_as_list = def.inlined_as_list.unwrap_or(false);
+
         SlotDef {
             name: slot_view.name.clone(),
             range,
             multivalued,
+            inlined,
+            inlined_as_list,
             required,
             identifier,
             key,
@@ -436,10 +463,7 @@ impl SchemaViewProvider {
 
     /// Scan the `any_of` expressions on a slot definition and return the names
     /// of any enum ranges found there.
-    fn collect_any_of_enums(
-        &self,
-        def: &linkml_meta::SlotDefinition,
-    ) -> Vec<String> {
+    fn collect_any_of_enums(&self, def: &linkml_meta::SlotDefinition) -> Vec<String> {
         let mut result = Vec::new();
         let Some(any_of) = &def.any_of else {
             return result;
@@ -534,7 +558,9 @@ impl SchemaProvider for SchemaViewProvider {
             .map_err(|e| SchemaError::Other(format!("{e:?}")))?;
 
         // Re-read the raw enum definition for descriptions and meanings.
-        let enum_def_raw = self.sv.get_enum_definition(&Identifier::Name(enum_name.to_owned()));
+        let enum_def_raw = self
+            .sv
+            .get_enum_definition(&Identifier::Name(enum_name.to_owned()));
 
         let pvs = pv_keys
             .iter()

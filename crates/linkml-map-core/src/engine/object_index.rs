@@ -62,7 +62,9 @@ pub struct ObjectIndex {
 // Value contains only String/bool/i64/f64/Vec/IndexMap — all Send+Sync.
 const _: () = {
     fn _assert_send_sync<T: Send + Sync>() {}
-    fn _check() { _assert_send_sync::<ObjectIndex>(); }
+    fn _check() {
+        _assert_send_sync::<ObjectIndex>();
+    }
 };
 
 impl ObjectIndex {
@@ -87,21 +89,27 @@ impl ObjectIndex {
         for (slot_name, slot_value) in map {
             // Determine the range class + identifier slot for this collection,
             // schema-first with a structural fallback.
-            let (range_class, id_slot): (Option<String>, Option<String>) = match (schema, container_type) {
-                (Some(sp), Some(ct)) => match sp.induced_slot(slot_name, ct) {
-                    Ok(slot) => {
-                        let rc = slot.range_class().map(|s| s.to_string());
-                        let id = rc.as_deref().and_then(|c| {
-                            sp.identifier_slot(c).ok().flatten().map(|s| s.name)
-                        });
-                        (rc, id)
-                    }
-                    Err(_) => (None, None),
-                },
-                _ => (None, None),
-            };
+            let (range_class, id_slot): (Option<String>, Option<String>) =
+                match (schema, container_type) {
+                    (Some(sp), Some(ct)) => match sp.induced_slot(slot_name, ct) {
+                        Ok(slot) => {
+                            let rc = slot.range_class().map(|s| s.to_string());
+                            let id = rc
+                                .as_deref()
+                                .and_then(|c| sp.identifier_slot(c).ok().flatten().map(|s| s.name));
+                            (rc, id)
+                        }
+                        Err(_) => (None, None),
+                    },
+                    _ => (None, None),
+                };
 
-            idx.index_collection(slot_value, range_class.as_deref(), id_slot.as_deref(), schema);
+            idx.index_collection(
+                slot_value,
+                range_class.as_deref(),
+                id_slot.as_deref(),
+                schema,
+            );
         }
 
         idx
@@ -147,7 +155,8 @@ impl ObjectIndex {
 
     fn insert(&mut self, range_class: Option<&str>, id: &str, obj: Value) {
         if let Some(rc) = range_class {
-            self.by_class_id.insert((rc.to_string(), id.to_string()), obj.clone());
+            self.by_class_id
+                .insert((rc.to_string(), id.to_string()), obj.clone());
         }
         // Flat index: first writer wins is fine (ids are unique). Don't clobber
         // a typed entry with a less-specific one.

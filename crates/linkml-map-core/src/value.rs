@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 /// resolves to [`Value::Null`] rather than an error (SQL-style semantics).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[derive(Default)]
 pub enum Value {
     /// Null / `None`.
+    #[default]
     Null,
     /// Boolean. Note: a `bool` is NOT considered numeric for coercion.
     Bool(bool),
@@ -27,12 +29,6 @@ pub enum Value {
     List(Vec<Value>),
     /// Ordered map (object/dict).
     Map(IndexMap<String, Value>),
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Value::Null
-    }
 }
 
 impl Value {
@@ -139,17 +135,12 @@ impl Value {
             (Int(a), Int(b)) => a == b,
             (Float(a), Float(b)) => a == b,
             (Bool(a), Int(b)) | (Int(b), Bool(a)) => (*a as i64) == *b,
-            (Bool(a), Float(b)) | (Float(b), Bool(a)) => {
-                (if *a { 1.0 } else { 0.0 }) == *b
-            }
+            (Bool(a), Float(b)) | (Float(b), Bool(a)) => (if *a { 1.0 } else { 0.0 }) == *b,
             (Int(a), Float(b)) | (Float(b), Int(a)) => (*a as f64) == *b,
             (Str(a), Str(b)) => a == b,
-            (List(a), List(b)) => {
-                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq(y))
-            }
+            (List(a), List(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq(y)),
             (Map(a), Map(b)) => {
-                a.len() == b.len()
-                    && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq(w)))
+                a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq(w)))
             }
             _ => false,
         }

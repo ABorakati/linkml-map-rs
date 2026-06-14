@@ -21,9 +21,7 @@ use indexmap::IndexMap;
 use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::ObjectTransformer,
-    schema::{
-        ClassDef, InMemorySchema, InMemorySchemaBuilder, RangeKind, SchemaProvider, SlotDef,
-    },
+    schema::{ClassDef, InMemorySchema, InMemorySchemaBuilder, RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
 use linkml_map_schemaview::SchemaViewProvider;
@@ -51,6 +49,8 @@ impl SchemaSource {
     }
 }
 use walkdir::WalkDir;
+
+mod compliance;
 
 // ─── Public data types ────────────────────────────────────────────────────────
 
@@ -214,11 +214,7 @@ fn collect_yaml_files(dir: &Path) -> Vec<PathBuf> {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
-            let ext = e
-                .path()
-                .extension()
-                .and_then(|x| x.to_str())
-                .unwrap_or("");
+            let ext = e.path().extension().and_then(|x| x.to_str()).unwrap_or("");
             ext == "yaml" || ext == "yml" || ext == "json"
         })
         .map(|e| e.path().to_path_buf())
@@ -294,8 +290,8 @@ fn load_source_schema(hint_path: &Path) -> anyhow::Result<SchemaSource> {
 fn build_inmemory_schema_from_yaml(path: &Path) -> anyhow::Result<InMemorySchema> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading schema {}", path.display()))?;
-    let root: serde_json::Value = serde_yaml::from_str(&text)
-        .with_context(|| format!("YAML parse {}", path.display()))?;
+    let root: serde_json::Value =
+        serde_yaml::from_str(&text).with_context(|| format!("YAML parse {}", path.display()))?;
     let obj = root
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("schema root is not a mapping: {}", path.display()))?;
@@ -331,48 +327,58 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> anyhow::Result<InMemorySchema
 
     // Build a SlotDef from a slot spec object + a fallback name + (optional)
     // global slot spec to merge defaults from.
-    let make_slot = |name: &str,
-                     local: Option<&serde_json::Map<String, serde_json::Value>>|
-     -> SlotDef {
-        let global = global_slots
-            .and_then(|gs| gs.get(name))
-            .and_then(|v| v.as_object());
-        let get_str = |key: &str| -> Option<String> {
-            local
-                .and_then(|m| m.get(key))
-                .or_else(|| global.and_then(|m| m.get(key)))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+    let make_slot =
+        |name: &str, local: Option<&serde_json::Map<String, serde_json::Value>>| -> SlotDef {
+            let global = global_slots
+                .and_then(|gs| gs.get(name))
+                .and_then(|v| v.as_object());
+            let get_str = |key: &str| -> Option<String> {
+                local
+                    .and_then(|m| m.get(key))
+                    .or_else(|| global.and_then(|m| m.get(key)))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            };
+            let get_bool = |key: &str| -> bool {
+                local
+                    .and_then(|m| m.get(key))
+                    .or_else(|| global.and_then(|m| m.get(key)))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            };
+            let range = match get_str("range") {
+                Some(r) => classify(&r),
+                None => RangeKind::None,
+            };
+            SlotDef {
+                name: name.to_string(),
+                range,
+                multivalued: get_bool("multivalued"),
+                required: get_bool("required"),
+                identifier: get_bool("identifier"),
+                key: get_bool("key"),
+                unit: None,
+                any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
+            }
         };
-        let get_bool = |key: &str| -> bool {
-            local
-                .and_then(|m| m.get(key))
-                .or_else(|| global.and_then(|m| m.get(key)))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        };
-        let range = match get_str("range") {
-            Some(r) => classify(&r),
-            None => RangeKind::None,
-        };
-        SlotDef {
-            name: name.to_string(),
-            range,
-            multivalued: get_bool("multivalued"),
-            required: get_bool("required"),
-            identifier: get_bool("identifier"),
-            key: get_bool("key"),
-            unit: None,
-            any_of_enums: vec![],
-        }
-    };
 
     let mut builder = InMemorySchemaBuilder::new();
     for t in &type_names {
         builder = builder.add_type(t.clone());
     }
     // Always register the common scalar types so unknown ranges still classify.
-    for t in ["string", "integer", "float", "double", "boolean", "uriorcurie", "uri", "date"] {
+    for t in [
+        "string",
+        "integer",
+        "float",
+        "double",
+        "boolean",
+        "uriorcurie",
+        "uri",
+        "date",
+    ] {
         if !type_names.iter().any(|x| x == t) {
             builder = builder.add_type(t);
         }
@@ -397,7 +403,10 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> anyhow::Result<InMemorySchema
             });
 
             // Inline `attributes` (each is a full slot def keyed by name).
-            if let Some(attrs) = cobj.and_then(|m| m.get("attributes")).and_then(|a| a.as_object()) {
+            if let Some(attrs) = cobj
+                .and_then(|m| m.get("attributes"))
+                .and_then(|a| a.as_object())
+            {
                 for (slot_name, sdef) in attrs {
                     builder = builder.add_slot(class_name, make_slot(slot_name, sdef.as_object()));
                 }
@@ -420,15 +429,13 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> anyhow::Result<InMemorySchema
 
 /// Load a YAML or JSON file as a `serde_json::Value` (common interchange).
 fn load_as_json(path: &Path) -> anyhow::Result<serde_json::Value> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let v: serde_json::Value = if ext == "json" {
-        serde_json::from_str(&text)
-            .with_context(|| format!("JSON parse: {}", path.display()))?
+        serde_json::from_str(&text).with_context(|| format!("JSON parse: {}", path.display()))?
     } else {
-        serde_yaml::from_str(&text)
-            .with_context(|| format!("YAML parse: {}", path.display()))?
+        serde_yaml::from_str(&text).with_context(|| format!("YAML parse: {}", path.display()))?
     };
     Ok(v)
 }
@@ -446,9 +453,7 @@ pub fn json_to_value(j: &serde_json::Value) -> Value {
             }
         }
         serde_json::Value::String(s) => Value::Str(s.clone()),
-        serde_json::Value::Array(arr) => {
-            Value::List(arr.iter().map(json_to_value).collect())
-        }
+        serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
         serde_json::Value::Object(map) => {
             let mut m = IndexMap::new();
             for (k, v) in map {
@@ -465,15 +470,11 @@ pub fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Int(i) => serde_json::Value::Number((*i).into()),
-        Value::Float(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         Value::Str(s) => serde_json::Value::String(s.clone()),
-        Value::List(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
+        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(m) => {
             let mut obj = serde_json::Map::new();
             for (k, v) in m {
@@ -528,7 +529,7 @@ fn strip_null_leaves(v: serde_json::Value) -> serde_json::Value {
 /// Normalise a JSON value for comparison:
 /// - strip null leaves
 /// - sort object keys
-fn normalise(v: serde_json::Value) -> serde_json::Value {
+pub(crate) fn normalise(v: serde_json::Value) -> serde_json::Value {
     sort_keys(strip_null_leaves(v))
 }
 
@@ -562,10 +563,10 @@ fn load_transform(path: &Path) -> anyhow::Result<TransformationSpecification> {
 /// But our `TransformationSpecification` deserialisers expect a list.
 /// Likewise `source_schema: { name: path }` vs `source_schema: "path"`.
 /// We normalise via a serde_json round-trip on the `serde_yaml_ng` AST.
-fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
+pub(crate) fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
     // Parse to serde_json::Value (via serde_yaml_ng)
-    let mut root: serde_json::Value = serde_yaml::from_str(text)
-        .context("YAML parse in normalise_transform_yaml")?;
+    let mut root: serde_json::Value =
+        serde_yaml::from_str(text).context("YAML parse in normalise_transform_yaml")?;
 
     if let Some(obj) = root.as_object_mut() {
         // ── class_derivations: mapping → Vec<ClassDerivation> ───────────────
@@ -616,7 +617,9 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
                                                 if !so.contains_key("name") {
                                                     so.insert(
                                                         "name".into(),
-                                                        serde_json::Value::String(slot_name.clone()),
+                                                        serde_json::Value::String(
+                                                            slot_name.clone(),
+                                                        ),
                                                     );
                                                 }
                                             }
@@ -666,10 +669,7 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
                     }
                     if let Some(eo) = enum_val.as_object_mut() {
                         if !eo.contains_key("name") {
-                            eo.insert(
-                                "name".into(),
-                                serde_json::Value::String(enum_name.clone()),
-                            );
+                            eo.insert("name".into(), serde_json::Value::String(enum_name.clone()));
                         }
                         if let Some(pvds) = eo.get_mut("permissible_value_derivations") {
                             if let Some(pvm) = pvds.as_object_mut() {
@@ -713,10 +713,7 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
                         if let Some(o) = agent.as_object_mut() {
                             if !o.contains_key("type") {
                                 // Default to Agent type
-                                o.insert(
-                                    "type".into(),
-                                    serde_json::Value::String("Agent".into()),
-                                );
+                                o.insert("type".into(), serde_json::Value::String("Agent".into()));
                             }
                         }
                     }
@@ -851,13 +848,15 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
 
 /// Walk two normalised JSON values and return a short description of the first
 /// divergence found.
-fn first_diff(expected: &serde_json::Value, actual: &serde_json::Value) -> String {
+pub(crate) fn first_diff(expected: &serde_json::Value, actual: &serde_json::Value) -> String {
     match (expected, actual) {
         (serde_json::Value::Object(e), serde_json::Value::Object(a)) => {
             // Keys in expected but missing in actual
             for (k, ev) in e.iter() {
                 match a.get(k) {
-                    None => return format!("key '{}' missing in actual (expected {:?})", k, short(ev)),
+                    None => {
+                        return format!("key '{}' missing in actual (expected {:?})", k, short(ev))
+                    }
                     Some(av) => {
                         if av != ev {
                             let inner = first_diff(ev, av);
@@ -910,15 +909,24 @@ impl ConformanceReport {
     }
 
     pub fn pass_count(&self) -> usize {
-        self.results.iter().filter(|r| r.status == Status::Pass).count()
+        self.results
+            .iter()
+            .filter(|r| r.status == Status::Pass)
+            .count()
     }
 
     pub fn fail_count(&self) -> usize {
-        self.results.iter().filter(|r| r.status == Status::Fail).count()
+        self.results
+            .iter()
+            .filter(|r| r.status == Status::Fail)
+            .count()
     }
 
     pub fn skip_count(&self) -> usize {
-        self.results.iter().filter(|r| r.status == Status::Skip).count()
+        self.results
+            .iter()
+            .filter(|r| r.status == Status::Skip)
+            .count()
     }
 
     pub fn total(&self) -> usize {
@@ -952,7 +960,9 @@ impl ConformanceReport {
 
         // ── Gap punch-list ────────────────────────────────────────────────────
         md.push_str("\n## Engine Gap Punch-List\n\n");
-        md.push_str("Gaps ranked by number of cases they block (SKIPs + FAILs that cite them).\n\n");
+        md.push_str(
+            "Gaps ranked by number of cases they block (SKIPs + FAILs that cite them).\n\n",
+        );
 
         let gaps = self.build_gap_punchlist();
         for (rank, (gap, count, cases)) in gaps.iter().enumerate() {
@@ -992,24 +1002,45 @@ impl ConformanceReport {
     fn build_gap_punchlist(&self) -> Vec<(String, usize, Vec<String>)> {
         // Patterns to recognise in reason strings → gap label
         let gap_patterns: &[(&str, &str)] = &[
-            ("unit_conversion",      "Unit conversion (pint/ucumvert)"),
-            ("asteval `case()`",     "asteval `case()` built-in (not ported to Rust eval)"),
-            ("list-comprehension",   "Python list-comprehension / asteval expressions"),
-            ("cast_collection_as",   "Collection-type coercion (MultiValuedDict/List)"),
-            ("pivot",               "Pivot / melt / unmelt operations"),
-            ("stringification",     "Stringification (delimiter / JSON / YAML)"),
-            ("FK join",             "FK join / indexed object lookup"),
-            ("aggregation",         "Aggregation operations"),
-            ("offset",              "Offset calculation"),
-            ("dictionary_key",      "Dictionary-key / dict-keyed collections"),
-            ("scalar↔multivalued", "Scalar↔multivalued coercion (single_value_for_multivalued)"),
-            ("mirror_source",       "mirror_source enum derivation"),
-            ("uri range",           "URI range coercion (IRI/CURIE expansion)"),
-            ("curie range",         "CURIE range coercion (prefix expansion)"),
-            ("schema-load",         "Schema load failure (import resolution / metamodel compat)"),
-            ("transform-parse",     "Transform spec parse error"),
-            ("engine",              "Engine runtime error (map_object failure)"),
-            ("mismatch",            "Output mismatch (engine ran but result differs from expected)"),
+            ("unit_conversion", "Unit conversion (pint/ucumvert)"),
+            (
+                "asteval `case()`",
+                "asteval `case()` built-in (not ported to Rust eval)",
+            ),
+            (
+                "list-comprehension",
+                "Python list-comprehension / asteval expressions",
+            ),
+            (
+                "cast_collection_as",
+                "Collection-type coercion (MultiValuedDict/List)",
+            ),
+            ("pivot", "Pivot / melt / unmelt operations"),
+            (
+                "stringification",
+                "Stringification (delimiter / JSON / YAML)",
+            ),
+            ("FK join", "FK join / indexed object lookup"),
+            ("aggregation", "Aggregation operations"),
+            ("offset", "Offset calculation"),
+            ("dictionary_key", "Dictionary-key / dict-keyed collections"),
+            (
+                "scalar↔multivalued",
+                "Scalar↔multivalued coercion (single_value_for_multivalued)",
+            ),
+            ("mirror_source", "mirror_source enum derivation"),
+            ("uri range", "URI range coercion (IRI/CURIE expansion)"),
+            ("curie range", "CURIE range coercion (prefix expansion)"),
+            (
+                "schema-load",
+                "Schema load failure (import resolution / metamodel compat)",
+            ),
+            ("transform-parse", "Transform spec parse error"),
+            ("engine", "Engine runtime error (map_object failure)"),
+            (
+                "mismatch",
+                "Output mismatch (engine ran but result differs from expected)",
+            ),
         ];
 
         let mut counts: IndexMap<&str, (usize, Vec<String>)> = IndexMap::new();
@@ -1101,7 +1132,10 @@ mod tests {
         for subdir_name in &["golden", "examples"] {
             let dir = root.join("tests").join(subdir_name);
             if !dir.exists() {
-                eprintln!("[conformance] directory not found, skipping: {}", dir.display());
+                eprintln!(
+                    "[conformance] directory not found, skipping: {}",
+                    dir.display()
+                );
                 continue;
             }
             let cases = discover_fixtures(&dir);

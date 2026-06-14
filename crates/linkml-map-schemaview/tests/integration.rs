@@ -28,8 +28,7 @@ fn simple_enum_path() -> std::path::PathBuf {
     //   C:\Users\abora\linkml-map-rs\crates\linkml-map-schemaview
     // Three levels up lands at C:\Users\abora, then into LinkML-MCP.
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .join("../../../LinkML-MCP/rust/src/schemaview/tests/data/simple_enum.yaml")
+    manifest.join("../../../LinkML-MCP/rust/src/schemaview/tests/data/simple_enum.yaml")
 }
 
 fn load_simple_enum() -> SchemaViewProvider {
@@ -97,8 +96,14 @@ fn file_all_class_names_contains_asset_and_signal() {
     let p = load_simple_enum();
     let mut names = p.all_class_names();
     names.sort();
-    assert!(names.contains(&"Asset".to_owned()), "expected Asset, got {names:?}");
-    assert!(names.contains(&"Signal".to_owned()), "expected Signal, got {names:?}");
+    assert!(
+        names.contains(&"Asset".to_owned()),
+        "expected Asset, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Signal".to_owned()),
+        "expected Signal, got {names:?}"
+    );
 }
 
 #[test]
@@ -146,7 +151,10 @@ fn file_signal_inherits_id_slot_from_asset() {
     let slots = p.induced_slots("Signal").unwrap();
     let names: Vec<&str> = slots.iter().map(|s| s.name.as_str()).collect();
     // Signal is_a Asset, so must inherit the 'id' slot
-    assert!(names.contains(&"id"), "Signal should inherit 'id' from Asset; got {names:?}");
+    assert!(
+        names.contains(&"id"),
+        "Signal should inherit 'id' from Asset; got {names:?}"
+    );
 }
 
 #[test]
@@ -164,14 +172,20 @@ fn file_get_enum_signal_types() {
     assert_eq!(e.name, "SignalTypes");
     assert_eq!(e.permissible_values.len(), 1);
     assert_eq!(e.permissible_values[0].text, "A");
-    assert_eq!(e.permissible_values[0].description.as_deref(), Some("example"));
+    assert_eq!(
+        e.permissible_values[0].description.as_deref(),
+        Some("example")
+    );
 }
 
 #[test]
 fn file_all_enum_names() {
     let p = load_simple_enum();
     let enums = p.all_enum_names();
-    assert!(enums.contains(&"SignalTypes".to_owned()), "expected SignalTypes, got {enums:?}");
+    assert!(
+        enums.contains(&"SignalTypes".to_owned()),
+        "expected SignalTypes, got {enums:?}"
+    );
 }
 
 #[test]
@@ -255,11 +269,19 @@ fn inline_get_enum_with_pvs() {
     let e = p.get_enum("StatusEnum").unwrap();
     assert_eq!(e.name, "StatusEnum");
     assert_eq!(e.permissible_values.len(), 2);
-    let texts: Vec<&str> = e.permissible_values.iter().map(|p| p.text.as_str()).collect();
+    let texts: Vec<&str> = e
+        .permissible_values
+        .iter()
+        .map(|p| p.text.as_str())
+        .collect();
     assert!(texts.contains(&"active"));
     assert!(texts.contains(&"inactive"));
 
-    let active = e.permissible_values.iter().find(|pv| pv.text == "active").unwrap();
+    let active = e
+        .permissible_values
+        .iter()
+        .find(|pv| pv.text == "active")
+        .unwrap();
     assert_eq!(active.description.as_deref(), Some("Currently active"));
     assert_eq!(active.meaning.as_deref(), Some("ex:Active"));
 }

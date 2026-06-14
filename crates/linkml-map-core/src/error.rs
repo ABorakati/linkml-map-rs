@@ -7,7 +7,6 @@ pub enum Error {
     Stub,
 
     // ── Engine errors ─────────────────────────────────────────────────────────
-
     /// The source type could not be resolved (not provided and not inferable).
     #[error("cannot resolve source type: {0}")]
     SourceTypeUnresolvable(String),
@@ -47,6 +46,16 @@ pub enum Error {
     /// Cardinality constraint violated (e.g. multiple values when single expected).
     #[error("cardinality error for slot '{slot}': {msg}")]
     Cardinality { slot: String, msg: String },
+
+    /// Unit conversion failed: an unknown unit or dimensionally incompatible
+    /// conversion. Mirrors Python `UndefinedUnitError` / `DimensionalityError`.
+    #[error("unit conversion error for slot '{slot}': {msg}")]
+    UnitConversion { slot: String, msg: String },
+
+    /// A transformation specification could not be inverted (e.g. a non-trivial
+    /// expression with no reverse). Mirrors Python `NonInvertibleSpecificationError`.
+    #[error("non-invertible specification: {0}")]
+    NonInvertible(String),
 
     /// Wrap any other error with context.
     #[error("transformation error in '{class}.{slot}': {cause}")]

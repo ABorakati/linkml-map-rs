@@ -37,6 +37,8 @@
 //! (`mg/dL`, `g/m2`).  Pure unit *annotations* in `{...}` (e.g. `{Cre}`) are
 //! stripped, matching the Python behaviour where they carry no dimension.
 
+use crate::schema::UnitSystem;
+
 /// A physical dimension. Conversion is only defined within one dimension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Dimension {
@@ -64,6 +66,7 @@ enum ScalarDim {
     Mass,
     Volume,
     AmountOfSubstance,
+    Time,
 }
 
 /// Affine spec for one unit: `base = value * factor + offset`.
@@ -104,11 +107,17 @@ fn strip_annotation(tok: &str) -> &str {
     tok
 }
 
-/// Resolve a single (non-ratio) scalar unit token to its spec.
+/// Resolve a single (non-ratio) scalar unit token to its spec, under the given
+/// unit `system`.
 ///
-/// Returns `None` for unknown tokens.
-fn scalar_spec(tok: &str) -> Option<UnitSpec> {
+/// UCUM-only spellings (the terse `a`/`mo` time codes, bracketed `m[H2O]` /
+/// `mm[Hg]` forms, and the `Cel` temperature code) are only recognised when
+/// `system == Ucum`; under any other system they are unknown — mirroring
+/// ucumvert-vs-pint coverage in the Python implementation. Returns `None` for
+/// unknown tokens.
+fn scalar_spec(tok: &str, system: UnitSystem) -> Option<UnitSpec> {
     let t = strip_annotation(tok);
+    let ucum = system == UnitSystem::Ucum;
     use Dimension as D;
     let spec = match t {
         // ── Length (base: metre) ──────────────────────────────────────────
@@ -140,7 +149,9 @@ fn scalar_spec(tok: &str) -> Option<UnitSpec> {
         // ── Temperature (base: kelvin) ────────────────────────────────────
         // base = value*factor + offset  (offset is the value at 0 of this unit)
         "K" | "kelvin" => UnitSpec::affine(D::Temperature, 1.0, 0.0),
-        "Cel" | "degC" | "celsius" | "°C" => UnitSpec::affine(D::Temperature, 1.0, 273.15),
+        "degC" | "celsius" | "°C" => UnitSpec::affine(D::Temperature, 1.0, 273.15),
+        // `Cel` is the UCUM spelling (pint uses degC).
+        "Cel" if ucum => UnitSpec::affine(D::Temperature, 1.0, 273.15),
         "degF" | "fahrenheit" | "°F" => {
             UnitSpec::affine(D::Temperature, 5.0 / 9.0, 273.15 - 32.0 * 5.0 / 9.0)
         }
@@ -152,6 +163,12 @@ fn scalar_spec(tok: &str) -> Option<UnitSpec> {
         "h" | "hr" | "hour" => UnitSpec::linear(D::Time, 3600.0),
         "d" | "day" => UnitSpec::linear(D::Time, 86400.0),
         "wk" | "week" => UnitSpec::linear(D::Time, 604800.0),
+        // UCUM calendar year = 365.25 d; month = year/12 (so 1 a == 12 mo exactly).
+        // Full-word spellings exist in pint too; the terse `a`/`mo` codes are UCUM-only.
+        "year" | "yr" | "annum" => UnitSpec::linear(D::Time, 31_557_600.0),
+        "month" => UnitSpec::linear(D::Time, 2_629_800.0),
+        "a" if ucum => UnitSpec::linear(D::Time, 31_557_600.0),
+        "mo" if ucum => UnitSpec::linear(D::Time, 2_629_800.0),
 
         // ── Pressure (base: pascal) ───────────────────────────────────────
         "Pa" | "pascal" => UnitSpec::linear(D::Pressure, 1.0),
@@ -159,8 +176,11 @@ fn scalar_spec(tok: &str) -> Option<UnitSpec> {
         "hPa" => UnitSpec::linear(D::Pressure, 100.0),
         "mbar" => UnitSpec::linear(D::Pressure, 100.0),
         "bar" => UnitSpec::linear(D::Pressure, 100000.0),
-        "mm[Hg]" | "mmHg" => UnitSpec::linear(D::Pressure, 133.322_387_415),
-        "cm[H2O]" | "cmH2O" => UnitSpec::linear(D::Pressure, 98.0665),
+        "mmHg" => UnitSpec::linear(D::Pressure, 133.322_387_415),
+        "cmH2O" => UnitSpec::linear(D::Pressure, 98.0665),
+        // Bracketed UCUM spellings.
+        "mm[Hg]" if ucum => UnitSpec::linear(D::Pressure, 133.322_387_415),
+        "cm[H2O]" if ucum => UnitSpec::linear(D::Pressure, 98.0665),
 
         // ── Amount of substance (base: mole) ──────────────────────────────
         "mol" | "mole" => UnitSpec::linear(D::AmountOfSubstance, 1.0),
@@ -183,37 +203,97 @@ fn scalar_dim_of(dim: Dimension) -> Option<ScalarDim> {
         Dimension::Mass => ScalarDim::Mass,
         Dimension::Volume => ScalarDim::Volume,
         Dimension::AmountOfSubstance => ScalarDim::AmountOfSubstance,
+        Dimension::Time => ScalarDim::Time,
         _ => return None,
     })
 }
 
-/// Resolve any unit token — scalar or simple `num/den` ratio — to a spec.
-fn unit_spec(tok: &str) -> Option<UnitSpec> {
+/// Resolve any unit token — scalar, `num/den` ratio, or UCUM dot-product
+/// (`m.s-1`) — to a spec, under the given unit `system`. The UCUM dot-product
+/// form is only parsed under `system == Ucum` (pint does not use it).
+fn unit_spec(tok: &str, system: UnitSystem) -> Option<UnitSpec> {
     let t = strip_annotation(tok);
-    if let Some((num_s, den_s)) = split_ratio(t) {
-        let num = scalar_spec(num_s)?;
-        let den = scalar_spec(den_s)?;
-        let num_dim = scalar_dim_of(num.dimension)?;
-        let den_dim = scalar_dim_of(den.dimension)?;
-        // A ratio is affine-free: combined factor = num.factor / den.factor.
-        // (Both legs are linear; we never build a ratio from temperature.)
-        return Some(UnitSpec::linear(
-            Dimension::Ratio(RatioDim {
-                num: num_dim,
-                den: den_dim,
-            }),
-            num.factor / den.factor,
-        ));
+    // UCUM multiplicative form, e.g. `m.s-1` (== m/s) — UCUM-only syntax.
+    if t.contains('.') {
+        if system != UnitSystem::Ucum {
+            return None;
+        }
+        return parse_ucum_product(t, system);
     }
-    scalar_spec(t)
+    if let Some((num_s, den_s)) = split_ratio(t) {
+        return make_ratio(num_s, den_s, system);
+    }
+    scalar_spec(t, system)
+}
+
+/// Build a `num/den` ratio spec from two scalar unit tokens.
+fn make_ratio(num_s: &str, den_s: &str, system: UnitSystem) -> Option<UnitSpec> {
+    let num = scalar_spec(num_s, system)?;
+    let den = scalar_spec(den_s, system)?;
+    let num_dim = scalar_dim_of(num.dimension)?;
+    let den_dim = scalar_dim_of(den.dimension)?;
+    // A ratio is affine-free: combined factor = num.factor / den.factor.
+    // (Both legs are linear; we never build a ratio from temperature.)
+    Some(UnitSpec::linear(
+        Dimension::Ratio(RatioDim {
+            num: num_dim,
+            den: den_dim,
+        }),
+        num.factor / den.factor,
+    ))
+}
+
+/// Parse a UCUM multiplicative token like `m.s-1` (= m/s). Only exponents of
+/// ±1 are supported (a single numerator unit, optionally over a single
+/// denominator unit); anything else returns `None`.
+fn parse_ucum_product(tok: &str, system: UnitSystem) -> Option<UnitSpec> {
+    let mut num: Vec<&str> = Vec::new();
+    let mut den: Vec<&str> = Vec::new();
+    for part in tok.split('.') {
+        let (base, exp) = split_exponent(part)?;
+        match exp {
+            1 => num.push(base),
+            -1 => den.push(base),
+            _ => return None,
+        }
+    }
+    match (num.as_slice(), den.as_slice()) {
+        ([n], [d]) => make_ratio(n, d, system),
+        ([n], []) => scalar_spec(n, system),
+        _ => None,
+    }
+}
+
+/// Split a UCUM unit-atom into `(base, exponent)`. `s-1` → `("s", -1)`,
+/// `m` → `("m", 1)`, `m2` → `("m", 2)`.
+fn split_exponent(part: &str) -> Option<(&str, i32)> {
+    let bytes = part.as_bytes();
+    let mut i = part.len();
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    if i == part.len() {
+        // No trailing digits → implicit exponent 1.
+        return Some((part, 1));
+    }
+    let (base_end, sign) = if i > 0 && (bytes[i - 1] == b'-' || bytes[i - 1] == b'+') {
+        (i - 1, if bytes[i - 1] == b'-' { -1 } else { 1 })
+    } else {
+        (i, 1)
+    };
+    let mag: i32 = part[i..].parse().ok()?;
+    let base = &part[..base_end];
+    if base.is_empty() {
+        return None;
+    }
+    Some((base, sign * mag))
 }
 
 /// Split a `num/den` ratio token. Only a single `/` is supported.
 /// Returns `None` if there is no `/` or more than one.
 fn split_ratio(tok: &str) -> Option<(&str, &str)> {
-    let mut parts = tok.splitn(2, '/');
-    let num = parts.next()?;
-    let den = parts.next()?;
+    let (num, den) = tok.split_once('/')?;
+
     if den.contains('/') {
         return None;
     }
@@ -223,24 +303,54 @@ fn split_ratio(tok: &str) -> Option<(&str, &str)> {
     Some((num, den))
 }
 
+/// Why a conversion could not be performed. Mirrors the two Python error
+/// classes the upstream suite distinguishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConvError {
+    /// A unit token is not in the table / not parseable (`UndefinedUnitError`).
+    Undefined(String),
+    /// Both units are known but in different dimensions (`DimensionalityError`),
+    /// including molar↔mass (no molecular weight in the token).
+    Dimensionality(String, String),
+}
+
+/// Convert `value` from `from_unit` to `to_unit`, distinguishing failure modes.
+///
+/// `Ok(converted)` when both units are known and dimensionally compatible
+/// (identity `from == to` returns the value unchanged); otherwise an
+/// [`ConvError`] naming the offending unit(s).
+pub fn convert_checked(
+    value: f64,
+    from_unit: &str,
+    to_unit: &str,
+    system: UnitSystem,
+) -> Result<f64, ConvError> {
+    if from_unit == to_unit {
+        return Ok(value);
+    }
+    let from =
+        unit_spec(from_unit, system).ok_or_else(|| ConvError::Undefined(from_unit.to_string()))?;
+    let to = unit_spec(to_unit, system).ok_or_else(|| ConvError::Undefined(to_unit.to_string()))?;
+    if from.dimension != to.dimension {
+        return Err(ConvError::Dimensionality(
+            from_unit.to_string(),
+            to_unit.to_string(),
+        ));
+    }
+    // base = value*from.factor + from.offset; then invert through `to`.
+    let base = value * from.factor + from.offset;
+    Ok((base - to.offset) / to.factor)
+}
+
 /// Convert `value` from `from_unit` to `to_unit`.
 ///
 /// Returns `Some(converted)` when both units are known and dimensionally
 /// compatible; returns `None` for unknown units, cross-dimension conversion,
 /// or molar↔mass conversion (see module docs). Identity (`from == to`) returns
-/// the value unchanged.
+/// the value unchanged. Resolves tokens under the full UCUM table (`system =
+/// Ucum`); use [`convert_checked`] to pass an explicit unit system.
 pub fn convert(value: f64, from_unit: &str, to_unit: &str) -> Option<f64> {
-    if from_unit == to_unit {
-        return Some(value);
-    }
-    let from = unit_spec(from_unit)?;
-    let to = unit_spec(to_unit)?;
-    if from.dimension != to.dimension {
-        return None;
-    }
-    // base = value*from.factor + from.offset; then invert through `to`.
-    let base = value * from.factor + from.offset;
-    Some((base - to.offset) / to.factor)
+    convert_checked(value, from_unit, to_unit, UnitSystem::Ucum).ok()
 }
 
 #[cfg(test)]
@@ -321,6 +431,40 @@ mod tests {
     #[test]
     fn identity_passthrough() {
         approx(convert(42.5, "mg/dL", "mg/dL").unwrap(), 42.5);
+    }
+
+    #[test]
+    fn time_year_to_month() {
+        // 1 a == 12 mo exactly.
+        approx(convert(10.0, "a", "mo").unwrap(), 120.0);
+        approx(convert(24.0, "mo", "a").unwrap(), 2.0);
+    }
+
+    #[test]
+    fn velocity_ratio_and_ucum_dot() {
+        approx(convert(1.0, "m/s", "cm/s").unwrap(), 100.0);
+        // UCUM dot-product form m.s-1 == m/s.
+        approx(convert(1.0, "m.s-1", "cm.s-1").unwrap(), 100.0);
+    }
+
+    #[test]
+    fn checked_distinguishes_error_kinds() {
+        assert_eq!(
+            convert_checked(1.0, "pinknoodles", "m", UnitSystem::Ucum),
+            Err(ConvError::Undefined("pinknoodles".into()))
+        );
+        // m (length) → ml (volume): same-name-prefix but different dimension.
+        assert!(matches!(
+            convert_checked(1.0, "m", "ml", UnitSystem::Ucum),
+            Err(ConvError::Dimensionality(_, _))
+        ));
+        // UCUM-only `a` is undefined under the non-UCUM (pint) system.
+        assert_eq!(
+            convert_checked(10.0, "a", "mo", UnitSystem::Other),
+            Err(ConvError::Undefined("a".into()))
+        );
+        // …but converts under UCUM.
+        assert!(convert_checked(10.0, "a", "mo", UnitSystem::Ucum).is_ok());
     }
 
     #[test]
