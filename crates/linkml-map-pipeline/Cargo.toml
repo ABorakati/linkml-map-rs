@@ -26,6 +26,10 @@ path = "src/bin/bench.rs"
 name = "bench-vs-python"
 path = "src/bin/bench_vs_python.rs"
 
+[[bin]]
+name = "bench-e2e"
+path = "src/bin/bench_e2e.rs"
+
 [dev-dependencies]
 tokio     = { workspace = true }
 tempfile  = { workspace = true }

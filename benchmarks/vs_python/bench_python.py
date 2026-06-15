@@ -51,34 +51,64 @@ def make_rows(n):
     ]
 
 
-def main():
-    n_rows = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
+def transform_only(n_rows):
     mapper = load_mapper()
     rows = make_rows(n_rows)
-
-    # Warm up (JIT-free, but primes caches / induced_slot memoization).
-    for r in rows[: min(100, n_rows)]:
+    for r in rows[: min(100, n_rows)]:  # warm up
         mapper.map_object(r)
-
     start = time.perf_counter()
-    ok = 0
-    for r in rows:
-        out = mapper.map_object(r)
-        ok += 1 if out is not None else 0
+    ok = sum(1 for r in rows if mapper.map_object(r) is not None)
     elapsed = time.perf_counter() - start
-
     assert ok == n_rows, f"transformed {ok}/{n_rows}"
     rps = n_rows / elapsed if elapsed > 0 else float("inf")
+    print(json.dumps({"impl": "python", "mode": "transform", "n_rows": n_rows,
+                      "elapsed_s": elapsed, "rows_per_sec": rps}))
+    print(f"[python transform] {n_rows} rows in {elapsed:.3f}s = {rps:,.0f} rows/sec",
+          file=sys.stderr)
 
-    print(
-        json.dumps(
-            {"impl": "python", "n_rows": n_rows, "elapsed_s": elapsed, "rows_per_sec": rps}
-        )
-    )
-    print(
-        f"[python] {n_rows} rows in {elapsed:.3f}s = {rps:,.0f} rows/sec (single thread)",
-        file=sys.stderr,
-    )
+
+def gen(path, n_rows):
+    """Write N source rows as JSONL for the shared end-to-end input."""
+    with open(path, "w") as f:
+        for r in make_rows(n_rows):
+            f.write(json.dumps(r) + "\n")
+    print(f"[gen] wrote {n_rows} rows to {path}", file=sys.stderr)
+
+
+def e2e(src, out):
+    """End-to-end: read JSONL file -> build mapper -> transform -> write JSONL.
+
+    Times EVERYTHING (schema/spec load + read + transform + write), matching how
+    the Rust pipeline is timed — i.e. the real cost of running the tool on a file.
+    """
+    start = time.perf_counter()
+    mapper = load_mapper()  # SchemaView + spec parse (one-time, counted)
+    n = 0
+    with open(src) as fin, open(out, "w") as fout:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            o = mapper.map_object(json.loads(line))
+            o = {k: v for k, v in (o or {}).items() if v is not None}
+            fout.write(json.dumps(o) + "\n")
+            n += 1
+    elapsed = time.perf_counter() - start
+    rps = n / elapsed if elapsed > 0 else float("inf")
+    print(json.dumps({"impl": "python", "mode": "e2e", "n_rows": n,
+                      "elapsed_s": elapsed, "rows_per_sec": rps}))
+    print(f"[python e2e] {n} rows (read+transform+write) in {elapsed:.3f}s = {rps:,.0f} rows/sec",
+          file=sys.stderr)
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "gen":
+        gen(args[1], int(args[2]))
+    elif args and args[0] == "e2e":
+        e2e(args[1], args[2])
+    else:
+        transform_only(int(args[0]) if args else 100_000)
 
 
 if __name__ == "__main__":

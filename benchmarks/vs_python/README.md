@@ -28,9 +28,13 @@ It creates a local venv, `pip install`s `linkml-map`, builds the Rust bench in
 cargo build); re-runs are fast.
 
 Pieces, if you want them separately:
-- `bench_python.py [N]` — Python side, emits one JSON line.
+- `bench_python.py [N]` — Python transform-only, one JSON line.
+- `bench_python.py gen <SRC> <N>` — write N source rows as JSONL (shared input).
+- `bench_python.py e2e <SRC> <OUT>` — Python end-to-end over a JSONL file.
 - `cargo run --release -p linkml-map-pipeline --bin bench-vs-python [N]` — Rust
-  side, emits two JSON lines (`rust-1thread`, `rust-Ncore`).
+  transform-only (`rust-1thread`, `rust-Ncore`).
+- `cargo run --release -p linkml-map-pipeline --bin bench-e2e <SRC>` — Rust
+  end-to-end via `run_pipeline` (`rust-e2e-1thread`, `rust-e2e-Ncore`).
 
 ## Reading the numbers
 
@@ -45,15 +49,40 @@ Two comparisons matter:
 
 ### Example (16-core machine, 50k rows)
 
-| impl          | workers | rows/sec | speedup vs Python |
-|---------------|--------:|---------:|------------------:|
-| python        |       1 |    4,347 |              1.0× |
-| rust-1thread  |       1 |   55,553 |          **12.8×** |
-| rust-Ncore    |      16 |  316,227 |          **72.7×** |
+**Transform-only** (per-row engine CPU, no I/O):
 
-Single-thread ≈ **13×** (pure engine speed); all-cores ≈ **73×** (engine +
-multicore). Absolute numbers vary by CPU and core count; the per-thread ratio
-is the most portable figure.
+| impl          | workers | rows/sec | speedup |
+|---------------|--------:|---------:|--------:|
+| python        |       1 |    7,442 |    1.0× |
+| rust-1thread  |       1 |  113,819 | **15.3×** |
+| rust-Ncore    |      16 |  423,596 | **56.9×** |
+
+**End-to-end** (read JSONL → transform → write JSONL):
+
+| impl              | workers | rows/sec | speedup |
+|-------------------|--------:|---------:|--------:|
+| python            |       1 |    6,009 |    1.0× |
+| rust-e2e-1thread  |       1 |   38,583 | **6.4×** |
+| rust-e2e-Ncore    |      16 |   36,778 |  6.1×   |
+
+Two different stories, and the contrast is the point:
+
+- **Transform-only is CPU-bound** → cores scale it (15× → 57×). This is the pure
+  engine win.
+- **End-to-end on tiny rows is I/O-bound** → the serial JSONL reader/parser +
+  writer is the bottleneck, so extra transform threads add nothing (`Ncore` ≈
+  `1thread`, even marginally slower from coordination overhead). Rust is still
+  ~6× faster (native JSON parse/serialise + faster engine), but **multicore
+  can't beat a serial I/O wall.**
+
+Takeaway: parallelism helps only the CPU-bound part. If your rows are tiny and
+the job is dominated by reading/writing, you're I/O-bound and ~6× is the honest
+number; if per-row work is heavy (big nested objects, many exprs), the
+transform-only regime dominates and you get the larger multicore speedups.
+
+Absolute numbers vary by CPU, disk, and core count, and run-to-run (cold caches
+on the first run). The per-thread transform-only ratio is the most portable
+figure for raw engine speed.
 
 ## Caveats / fairness
 

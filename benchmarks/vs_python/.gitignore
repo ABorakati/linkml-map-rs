@@ -1,2 +1,5 @@
 .venv/
 __pycache__/
+source_*.jsonl
+*.jsonl
+*_out*.jsonl
