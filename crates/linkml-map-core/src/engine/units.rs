@@ -49,6 +49,16 @@ enum Dimension {
     Time,
     Pressure,
     AmountOfSubstance,
+    /// International units (IU) — arbitrary biological activity. Scales within
+    /// itself (IU↔mIU); cannot convert to mass without a substance-specific
+    /// potency, so it stays its own dimension.
+    Activity,
+    /// Enzyme catalytic activity (U = µmol/min, katal = mol/s).
+    EnzymeActivity,
+    /// Equivalents (Eq) — moles × valence. Bridges to molar only with a valence.
+    Equivalents,
+    /// Dimensionless counts (cells, particles): `10*9`, `/uL`, etc.
+    Count,
     /// A ratio `numerator_dimension / denominator_dimension`.
     Ratio(RatioDim),
 }
@@ -67,6 +77,10 @@ enum ScalarDim {
     Volume,
     AmountOfSubstance,
     Time,
+    Activity,
+    EnzymeActivity,
+    Equivalents,
+    Count,
 }
 
 /// Affine spec for one unit: `base = value * factor + offset`.
@@ -188,6 +202,37 @@ fn scalar_spec(tok: &str, system: UnitSystem) -> Option<UnitSpec> {
         "umol" | "µmol" => UnitSpec::linear(D::AmountOfSubstance, 1e-6),
         "nmol" => UnitSpec::linear(D::AmountOfSubstance, 1e-9),
         "pmol" => UnitSpec::linear(D::AmountOfSubstance, 1e-12),
+        "fmol" => UnitSpec::linear(D::AmountOfSubstance, 1e-15),
+
+        // ── International units (base: IU) — biological activity ───────────
+        "IU" | "[IU]" | "iU" => UnitSpec::linear(D::Activity, 1.0),
+        "mIU" => UnitSpec::linear(D::Activity, 1e-3),
+        "uIU" | "µIU" => UnitSpec::linear(D::Activity, 1e-6),
+        "kIU" => UnitSpec::linear(D::Activity, 1e3),
+        "MIU" => UnitSpec::linear(D::Activity, 1e6),
+
+        // ── Enzyme activity (base: U = µmol/min; 1 kat = 6e7 U) ────────────
+        "U" | "[U]" => UnitSpec::linear(D::EnzymeActivity, 1.0),
+        "mU" => UnitSpec::linear(D::EnzymeActivity, 1e-3),
+        "uU" | "µU" => UnitSpec::linear(D::EnzymeActivity, 1e-6),
+        "kU" => UnitSpec::linear(D::EnzymeActivity, 1e3),
+        "kat" => UnitSpec::linear(D::EnzymeActivity, 6e7),
+        "mkat" => UnitSpec::linear(D::EnzymeActivity, 6e4),
+        "ukat" | "µkat" => UnitSpec::linear(D::EnzymeActivity, 60.0),
+        "nkat" => UnitSpec::linear(D::EnzymeActivity, 0.06),
+
+        // ── Equivalents (base: Eq) ────────────────────────────────────────
+        "Eq" | "eq" => UnitSpec::linear(D::Equivalents, 1.0),
+        "mEq" | "meq" => UnitSpec::linear(D::Equivalents, 1e-3),
+        "uEq" | "µEq" | "ueq" => UnitSpec::linear(D::Equivalents, 1e-6),
+
+        // ── Counts (base: 1) — UCUM `10*N` factors + plain count ───────────
+        // (blood-count shorthands like `10*9/L` parse as Count/Volume ratios)
+        "1" | "count" | "{cells}" | "{#}" => UnitSpec::linear(D::Count, 1.0),
+        "10*3" | "10^3" => UnitSpec::linear(D::Count, 1e3),
+        "10*6" | "10^6" => UnitSpec::linear(D::Count, 1e6),
+        "10*9" | "10^9" => UnitSpec::linear(D::Count, 1e9),
+        "10*12" | "10^12" => UnitSpec::linear(D::Count, 1e12),
 
         _ => return None,
     };
@@ -204,6 +249,10 @@ fn scalar_dim_of(dim: Dimension) -> Option<ScalarDim> {
         Dimension::Volume => ScalarDim::Volume,
         Dimension::AmountOfSubstance => ScalarDim::AmountOfSubstance,
         Dimension::Time => ScalarDim::Time,
+        Dimension::Activity => ScalarDim::Activity,
+        Dimension::EnzymeActivity => ScalarDim::EnzymeActivity,
+        Dimension::Equivalents => ScalarDim::Equivalents,
+        Dimension::Count => ScalarDim::Count,
         _ => return None,
     })
 }
@@ -325,21 +374,110 @@ pub fn convert_checked(
     to_unit: &str,
     system: UnitSystem,
 ) -> Result<f64, ConvError> {
+    convert_checked_ex(value, from_unit, to_unit, system, None, None)
+}
+
+/// Like [`convert_checked`] but accepts an analyte `molecular_weight` (g/mol)
+/// and/or ion `valence`, enabling substance-specific bridges that are otherwise
+/// dimensionally incompatible:
+/// - **molar ↔ mass** via `molecular_weight` (e.g. glucose `mg/dL` ↔ `mmol/L`),
+/// - **equivalents ↔ molar** via `valence` (e.g. `mEq/L` ↔ `mmol/L`),
+/// - **equivalents ↔ mass** when both are given.
+///
+/// The bridge works for both bare scalars and `num/den` ratios that share the
+/// same denominator (the common lab-concentration case).
+pub fn convert_checked_ex(
+    value: f64,
+    from_unit: &str,
+    to_unit: &str,
+    system: UnitSystem,
+    molecular_weight: Option<f64>,
+    valence: Option<f64>,
+) -> Result<f64, ConvError> {
     if from_unit == to_unit {
         return Ok(value);
     }
     let from =
         unit_spec(from_unit, system).ok_or_else(|| ConvError::Undefined(from_unit.to_string()))?;
     let to = unit_spec(to_unit, system).ok_or_else(|| ConvError::Undefined(to_unit.to_string()))?;
-    if from.dimension != to.dimension {
-        return Err(ConvError::Dimensionality(
-            from_unit.to_string(),
-            to_unit.to_string(),
-        ));
+
+    if from.dimension == to.dimension {
+        // base = value*from.factor + from.offset; then invert through `to`.
+        let base = value * from.factor + from.offset;
+        return Ok((base - to.offset) / to.factor);
     }
-    // base = value*from.factor + from.offset; then invert through `to`.
-    let base = value * from.factor + from.offset;
-    Ok((base - to.offset) / to.factor)
+
+    // Different dimensions: attempt a substance bridge (mass/molar/equivalents).
+    if let Some(mult) = bridge_factor(from.dimension, to.dimension, molecular_weight, valence) {
+        // All bridgeable dimensions are linear (offset 0); the multiplier acts
+        // on the (numerator's) base value, leaving any shared denominator intact.
+        let base = value * from.factor * mult;
+        return Ok(base / to.factor);
+    }
+
+    Err(ConvError::Dimensionality(
+        from_unit.to_string(),
+        to_unit.to_string(),
+    ))
+}
+
+/// Multiplier `m` such that `to_base = from_base * m` when a substance bridge
+/// connects two otherwise-incompatible dimensions, or `None` if no bridge
+/// applies. Handles bare scalars and `num/den` ratios with a matching
+/// denominator (the numerator carries the mass/molar/equivalents identity).
+fn bridge_factor(
+    from: Dimension,
+    to: Dimension,
+    mw: Option<f64>,
+    valence: Option<f64>,
+) -> Option<f64> {
+    use ScalarDim as S;
+    // (numerator scalar dim, optional denominator dim)
+    fn parts(d: Dimension) -> Option<(ScalarDim, Option<ScalarDim>)> {
+        match d {
+            Dimension::Mass => Some((S::Mass, None)),
+            Dimension::AmountOfSubstance => Some((S::AmountOfSubstance, None)),
+            Dimension::Equivalents => Some((S::Equivalents, None)),
+            Dimension::Ratio(r) => Some((r.num, Some(r.den))),
+            _ => None,
+        }
+    }
+    let (f_num, f_den) = parts(from)?;
+    let (t_num, t_den) = parts(to)?;
+    if f_den != t_den {
+        return None; // denominators must match (both None, or same unit dim)
+    }
+    // mass ↔ amount via molecular weight (g → mol = g / mw)
+    if let Some(mw) = mw {
+        if mw > 0.0 {
+            match (f_num, t_num) {
+                (S::Mass, S::AmountOfSubstance) => return Some(1.0 / mw),
+                (S::AmountOfSubstance, S::Mass) => return Some(mw),
+                _ => {}
+            }
+        }
+    }
+    // equivalents ↔ amount via valence (Eq → mol = Eq / valence)
+    if let Some(v) = valence {
+        if v > 0.0 {
+            match (f_num, t_num) {
+                (S::Equivalents, S::AmountOfSubstance) => return Some(1.0 / v),
+                (S::AmountOfSubstance, S::Equivalents) => return Some(v),
+                _ => {}
+            }
+        }
+    }
+    // mass ↔ equivalents needs both (g → Eq = g/mw * valence)
+    if let (Some(mw), Some(v)) = (mw, valence) {
+        if mw > 0.0 && v > 0.0 {
+            match (f_num, t_num) {
+                (S::Mass, S::Equivalents) => return Some(v / mw),
+                (S::Equivalents, S::Mass) => return Some(mw / v),
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Convert `value` from `from_unit` to `to_unit`.
@@ -465,6 +603,61 @@ mod tests {
         );
         // …but converts under UCUM.
         assert!(convert_checked(10.0, "a", "mo", UnitSystem::Ucum).is_ok());
+    }
+
+    #[test]
+    fn medical_activity_enzyme_eq_counts() {
+        // International units scale within themselves.
+        approx(convert(1.0, "IU", "mIU").unwrap(), 1000.0);
+        approx(convert(1000.0, "uIU", "mIU").unwrap(), 1.0);
+        // Enzyme activity: 1 kat = 6e7 U; 1 ukat = 60 U.
+        approx(convert(6e7, "U", "kat").unwrap(), 1.0);
+        approx(convert(1.0, "ukat", "U").unwrap(), 60.0);
+        // Equivalents scale within.
+        approx(convert(1.0, "Eq", "mEq").unwrap(), 1000.0);
+        // Count concentrations (blood counts) as ratios.
+        approx(convert(1.0, "10*12/L", "10*9/L").unwrap(), 1000.0);
+        // Cross-dimension without a bridge is still refused.
+        assert!(convert(1.0, "IU", "mg").is_none());
+    }
+
+    #[test]
+    fn molar_mass_bridge_with_mw() {
+        // Glucose MW 180.16 g/mol: 90 mg/dL ≈ 4.996 mmol/L.
+        let f = convert_checked_ex(
+            90.0,
+            "mg/dL",
+            "mmol/L",
+            UnitSystem::Ucum,
+            Some(180.16),
+            None,
+        )
+        .unwrap();
+        assert!((f - 4.996).abs() < 0.01, "got {f}");
+        // Reverse: 5 mmol/L ≈ 90.08 mg/dL.
+        let b = convert_checked_ex(5.0, "mmol/L", "mg/dL", UnitSystem::Ucum, Some(180.16), None)
+            .unwrap();
+        assert!((b - 90.08).abs() < 0.5, "got {b}");
+        // Without molecular weight, the same conversion is a dimensionality error.
+        assert!(matches!(
+            convert_checked(1.0, "mg/dL", "mmol/L", UnitSystem::Ucum),
+            Err(ConvError::Dimensionality(_, _))
+        ));
+    }
+
+    #[test]
+    fn equivalents_molar_bridge_with_valence() {
+        // Na+ (valence 1): mEq/L == mmol/L.
+        approx(
+            convert_checked_ex(140.0, "mEq/L", "mmol/L", UnitSystem::Ucum, None, Some(1.0))
+                .unwrap(),
+            140.0,
+        );
+        // Ca2+ (valence 2): 2 mEq/L = 1 mmol/L.
+        approx(
+            convert_checked_ex(2.0, "mEq/L", "mmol/L", UnitSystem::Ucum, None, Some(2.0)).unwrap(),
+            1.0,
+        );
     }
 
     #[test]

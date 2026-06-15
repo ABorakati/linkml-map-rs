@@ -134,6 +134,18 @@ pub struct UnitConversionConfiguration {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub none_if_non_numeric: Option<bool>,
+
+    /// Molecular weight in g/mol, enabling molar↔mass bridging for an
+    /// analyte-specific conversion (e.g. glucose `mg/dL` ↔ `mmol/L`). Required
+    /// because the unit token alone does not identify the substance — the same
+    /// reason `pint` refuses without a substance context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub molecular_weight: Option<f64>,
+
+    /// Ion valence (charge number), enabling equivalents↔molar bridging
+    /// (e.g. `mEq/L` ↔ `mmol/L`): `mmol = mEq / valence`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valence: Option<f64>,
 }
 
 /// Configuration for offset calculations.

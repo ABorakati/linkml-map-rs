@@ -714,7 +714,14 @@ impl<'s> ObjectTransformer<'s> {
         let to_unit = uc.target_unit.clone().or_else(|| from_unit.clone());
 
         let (result, out_unit) = match (&from_unit, &to_unit) {
-            (Some(fu), Some(tu)) => match units::convert_checked(magnitude, fu, tu, unit_system) {
+            (Some(fu), Some(tu)) => match units::convert_checked_ex(
+                magnitude,
+                fu,
+                tu,
+                unit_system,
+                uc.molecular_weight,
+                uc.valence,
+            ) {
                 Ok(r) => (r, tu.clone()),
                 // Unknown unit / incompatible dimensions (incl. molar↔mass):
                 // raise, mirroring Python's UndefinedUnitError / DimensionalityError.

@@ -7,3 +7,14 @@ name = "linkml-map-rs"
 version = "0.1.0"
 description = "Rust async/concurrent port of linkml-map"
 requires-python = ">=3.8"
+
+# Optional: only needed for the `linkml_map` compatibility shim (SchemaView +
+# YAML dumping). The native `linkml_map_rs` API needs neither.
+[project.optional-dependencies]
+shim = ["linkml-runtime", "pyyaml"]
+
+[tool.maturin]
+# Ship the pure-Python `linkml_map` shim package next to the compiled
+# `linkml_map_rs` extension module.
+python-source = "python"
+module-name = "linkml_map_rs"

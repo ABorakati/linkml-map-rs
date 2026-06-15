@@ -73,17 +73,18 @@ fn value_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
 fn load_spec(spec_path: &str) -> PyResult<TransformationSpecification> {
     let yaml_str = std::fs::read_to_string(spec_path)
         .map_err(|e| PyValueError::new_err(format!("Cannot read spec file '{spec_path}': {e}")))?;
+    parse_spec_yaml(&yaml_str)
+}
 
+/// Parse a transform spec from a YAML string (the in-memory entry point used by
+/// the `linkml_map`-compatible shim, which dumps spec objects to YAML).
+fn parse_spec_yaml(yaml_str: &str) -> PyResult<TransformationSpecification> {
     // linkml-map transform specs write class_derivations as a YAML mapping
     // (ClassName -> body) rather than as a list.  Normalise before deserialising.
-    let normalised = normalise_transform_yaml(&yaml_str).map_err(|e| {
-        PyValueError::new_err(format!("Failed to normalise spec '{spec_path}': {e}"))
-    })?;
-
-    let spec: TransformationSpecification = serde_yaml_ng::from_str(&normalised)
-        .map_err(|e| PyValueError::new_err(format!("Failed to parse spec '{spec_path}': {e}")))?;
-
-    Ok(spec)
+    let normalised = normalise_transform_yaml(yaml_str)
+        .map_err(|e| PyValueError::new_err(format!("Failed to normalise spec: {e}")))?;
+    serde_yaml_ng::from_str(&normalised)
+        .map_err(|e| PyValueError::new_err(format!("Failed to parse spec: {e}")))
 }
 
 /// Normalise a linkml-map transform YAML into the canonical JSON shape that
@@ -246,11 +247,15 @@ fn run_transform(
 ///     Name of the source class.  When omitted the engine infers it from
 ///     the `tree_root: true` class in the source schema or from the first
 ///     class derivation in the spec.
-#[pyclass(name = "Transformer")]
+/// `unsendable`: holds a `SchemaViewProvider` (the wrapped `SchemaView` is not
+/// `Send`). Pinned to the creating thread, which is the normal single-threaded
+/// Python usage.
+#[pyclass(name = "Transformer", unsendable)]
 struct PyTransformer {
     spec: TransformationSpecification,
-    source_schema_path: String,
-    target_schema_path: Option<String>,
+    /// Loaded ONCE at construction — not reloaded per `transform` call.
+    source_provider: SchemaViewProvider,
+    target_provider: Option<SchemaViewProvider>,
     source_class: Option<String>,
 }
 
@@ -264,37 +269,82 @@ impl PyTransformer {
         target_schema: Option<String>,
         source_class: Option<String>,
     ) -> PyResult<Self> {
-        // Eagerly validate files exist and parse; fail fast in __init__.
         let spec_parsed = load_spec(&spec)?;
-        let _source = load_source_provider(&source_schema, &spec_parsed)?;
-        if let Some(ref ts) = target_schema {
-            let _target = load_schema_provider(ts)?;
-        }
-
+        let source_provider = load_source_provider(&source_schema, &spec_parsed)?;
+        let target_provider = target_schema
+            .as_deref()
+            .map(load_schema_provider)
+            .transpose()?;
         Ok(Self {
             spec: spec_parsed,
-            source_schema_path: source_schema,
-            target_schema_path: target_schema,
+            source_provider,
+            target_provider,
+            source_class,
+        })
+    }
+
+    /// Build from in-memory YAML strings (schema + spec), instead of file paths.
+    /// Used by the `linkml_map`-compatible shim, which dumps SchemaView / spec
+    /// objects to YAML. Schemas/spec are parsed once here.
+    #[staticmethod]
+    #[pyo3(signature = (source_schema_yaml, spec_yaml, target_schema_yaml=None, source_class=None))]
+    fn from_yaml(
+        source_schema_yaml: String,
+        spec_yaml: String,
+        target_schema_yaml: Option<String>,
+        source_class: Option<String>,
+    ) -> PyResult<Self> {
+        let spec = parse_spec_yaml(&spec_yaml)?;
+        let source_provider = SchemaViewProvider::from_yaml_str_with_patch(
+            &source_schema_yaml,
+            spec.source_schema_patches.as_ref(),
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to parse source schema YAML: {e}")))?;
+        let target_provider = target_schema_yaml
+            .as_deref()
+            .map(|y| {
+                SchemaViewProvider::from_yaml_str(y).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to parse target schema YAML: {e}"))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            spec,
+            source_provider,
+            target_provider,
             source_class,
         })
     }
 
     /// Transform a single Python dict and return the result as a dict.
     fn transform(&self, py: Python<'_>, obj: Bound<'_, PyAny>) -> PyResult<PyObject> {
-        let source = load_source_provider(&self.source_schema_path, &self.spec)?;
-        let target_opt: Option<SchemaViewProvider> = self
-            .target_schema_path
-            .as_deref()
-            .map(load_schema_provider)
-            .transpose()?;
-
         run_transform(
             py,
             &obj,
             &self.spec,
-            &source,
-            target_opt.as_ref(),
+            &self.source_provider,
+            self.target_provider.as_ref(),
             self.source_class.as_deref(),
+        )
+    }
+
+    /// Alias of [`transform`] matching the Python `ObjectTransformer.map_object`
+    /// method name (lets the `linkml_map` shim forward calls 1:1).
+    #[pyo3(signature = (obj, source_type=None))]
+    fn map_object(
+        &self,
+        py: Python<'_>,
+        obj: Bound<'_, PyAny>,
+        source_type: Option<String>,
+    ) -> PyResult<PyObject> {
+        let source_class = source_type.as_deref().or(self.source_class.as_deref());
+        run_transform(
+            py,
+            &obj,
+            &self.spec,
+            &self.source_provider,
+            self.target_provider.as_ref(),
+            source_class,
         )
     }
 
@@ -304,22 +354,14 @@ impl PyTransformer {
         py: Python<'_>,
         objs: Vec<Bound<'_, PyAny>>,
     ) -> PyResult<Vec<PyObject>> {
-        // Load schemas once for the batch.
-        let source = load_source_provider(&self.source_schema_path, &self.spec)?;
-        let target_opt: Option<SchemaViewProvider> = self
-            .target_schema_path
-            .as_deref()
-            .map(load_schema_provider)
-            .transpose()?;
-
         objs.iter()
             .map(|obj| {
                 run_transform(
                     py,
                     obj,
                     &self.spec,
-                    &source,
-                    target_opt.as_ref(),
+                    &self.source_provider,
+                    self.target_provider.as_ref(),
                     self.source_class.as_deref(),
                 )
             })
@@ -328,8 +370,14 @@ impl PyTransformer {
 
     fn __repr__(&self) -> String {
         format!(
-            "Transformer(source_schema={:?}, target_schema={:?}, source_class={:?})",
-            self.source_schema_path, self.target_schema_path, self.source_class,
+            "Transformer(classes={}, has_target={}, source_class={:?})",
+            self.spec
+                .class_derivations
+                .as_ref()
+                .map(|c| c.len())
+                .unwrap_or(0),
+            self.target_provider.is_some(),
+            self.source_class,
         )
     }
 }
