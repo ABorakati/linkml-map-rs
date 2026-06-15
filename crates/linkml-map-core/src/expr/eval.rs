@@ -722,6 +722,18 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
             _ => Ok(None),
         };
     }
+    // List concatenation: list + list → joined list (Python `+` on lists).
+    if let (List(a), List(b)) = (left, right) {
+        return match op {
+            BinOp::Add => {
+                let mut out = a.clone();
+                out.extend(b.iter().cloned());
+                Ok(Some(List(out)))
+            }
+            _ => Ok(None),
+        };
+    }
+
     // str * int  / int * str  → repetition
     if op == BinOp::Mul {
         if let (Str(s), Int(n)) = (left, right) {
@@ -911,17 +923,15 @@ fn call_function(name: &str, args: Vec<Value>) -> ExprResult<Value> {
         // list-functions: take the list directly, null-safe (None arg → None).
         "max" => list_func_reduce(name, args, |items| reduce_minmax(items, true)),
         "min" => list_func_reduce(name, args, |items| reduce_minmax(items, false)),
-        "len" => {
-            null_safe_unary(args, "len", |v| match v {
-                Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-                Value::List(l) => Ok(Value::Int(l.len() as i64)),
-                Value::Map(m) => Ok(Value::Int(m.len() as i64)),
-                other => Err(ExprError::Eval(format!(
-                    "object of type '{}' has no len()",
-                    type_name(&other)
-                ))),
-            })
-        }
+        "len" => null_safe_unary(args, "len", |v| match v {
+            Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+            Value::List(l) => Ok(Value::Int(l.len() as i64)),
+            Value::Map(m) => Ok(Value::Int(m.len() as i64)),
+            other => Err(ExprError::Eval(format!(
+                "object of type '{}' has no len()",
+                type_name(&other)
+            ))),
+        }),
 
         // distributing scalar functions
         "str" => distributing(args, "str", |v| Ok(Value::Str(py_str(&v)))),
@@ -952,7 +962,9 @@ fn call_function(name: &str, args: Vec<Value>) -> ExprResult<Value> {
             Ok(Value::Bool(args[0].is_numeric()))
         }
 
-        other => Err(ExprError::Eval(format!("function '{other}' is not defined"))),
+        other => Err(ExprError::Eval(format!(
+            "function '{other}' is not defined"
+        ))),
     }
 }
 
@@ -997,7 +1009,9 @@ fn list_func_reduce(
 
 fn reduce_minmax(items: &[Value], want_max: bool) -> ExprResult<Value> {
     if items.is_empty() {
-        return Err(ExprError::Eval("max()/min() arg is an empty sequence".into()));
+        return Err(ExprError::Eval(
+            "max()/min() arg is an empty sequence".into(),
+        ));
     }
     let mut best = items[0].clone();
     for item in &items[1..] {

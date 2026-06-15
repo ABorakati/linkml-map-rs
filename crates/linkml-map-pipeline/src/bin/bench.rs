@@ -59,10 +59,7 @@ async fn main() -> Result<()> {
                 ("value", Value::Float(150.0 + (i as f64 % 100.0))),
                 ("unit", Value::Str("cm".into())),
             ]);
-            make_val(&[
-                ("id", Value::Str(format!("P:{i}"))),
-                ("height", height),
-            ])
+            make_val(&[("id", Value::Str(format!("P:{i}"))), ("height", height)])
         })
         .collect();
 
@@ -214,6 +211,7 @@ fn transform_only_bench(fixture: &std::path::Path, n_rows: usize) -> Result<()> 
 /// The critical property: `ObjectIndex` is `Send + Sync` (no locking), so
 /// all threads read the same index simultaneously without contention.
 fn fk_parallel_bench(n_rows: usize) -> Result<()> {
+    use indexmap::IndexMap;
     use linkml_map_core::{
         datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification},
         engine::{CompiledExprs, ObjectIndex, ObjectTransformer},
@@ -222,7 +220,6 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
         },
         value::Value,
     };
-    use indexmap::IndexMap;
     use rayon::prelude::*;
     use std::sync::Arc;
     use std::time::Instant;
@@ -249,6 +246,8 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
                 key: false,
                 unit: None,
                 any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
             },
         )
         .add_slot(
@@ -262,6 +261,8 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
                 key: false,
                 unit: None,
                 any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
             },
         )
         .add_class(ClassDef {
@@ -281,6 +282,8 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
                 key: false,
                 unit: None,
                 any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
             },
         )
         .add_slot(
@@ -294,6 +297,8 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
                 key: false,
                 unit: None,
                 any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
             },
         )
         .add_class(ClassDef {
@@ -313,6 +318,8 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
                 key: false,
                 unit: None,
                 any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
             },
         )
         .add_slot(
@@ -326,6 +333,8 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
                 key: false,
                 unit: None,
                 any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
             },
         )
         .build();
@@ -424,10 +433,7 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
     println!(
         "=== FK parallel microbenchmark ({n_rows} rows, {n_entities} entities, index built in {idx_ms}ms) ==="
     );
-    println!(
-        "{:<10} {:>14} {:>12}",
-        "workers", "rows/sec", "elapsed_ms"
-    );
+    println!("{:<10} {:>14} {:>12}", "workers", "rows/sec", "elapsed_ms");
     println!("{}", "-".repeat(40));
 
     for &workers in &[1usize, 2, 4, 8] {
@@ -467,10 +473,7 @@ fn fk_parallel_bench(n_rows: usize) -> Result<()> {
             (rps, elapsed.as_millis())
         });
 
-        println!(
-            "{:<10} {:>14.0} {:>12}",
-            workers, rows_per_sec, elapsed_ms
-        );
+        println!("{:<10} {:>14.0} {:>12}", workers, rows_per_sec, elapsed_ms);
     }
     println!();
     println!("Note: all workers share one Arc<ObjectIndex> built once before the loop.");

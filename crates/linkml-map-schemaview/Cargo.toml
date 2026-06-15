@@ -9,6 +9,7 @@ linkml-map-core = { path = "../linkml-map-core" }
 schemaview = { path = "../../../LinkML-MCP/rust/src/schemaview", default-features = false, features = [] }
 linkml_meta = { path = "../../../LinkML-MCP/rust/src/metamodel" }
 serde_yaml = "0.9"
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 

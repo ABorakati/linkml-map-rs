@@ -4,8 +4,8 @@
 //! transform specifications from YAML. The structs mirror the Python dataclasses
 //! in linkml_map.datamodel.transformer_model.
 
-use serde::{Deserialize, Serialize};
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 
 /// Collection type for slot derivations.
 ///
@@ -751,8 +751,8 @@ mod tests {
 }
         "#;
 
-        let spec: TransformationSpecification = serde_json::from_str(json)
-            .expect("Failed to deserialize simple transformation spec");
+        let spec: TransformationSpecification =
+            serde_json::from_str(json).expect("Failed to deserialize simple transformation spec");
 
         assert_eq!(spec.id, Some("test-spec-1".to_string()));
         assert_eq!(spec.title, Some("Test Transformation".to_string()));

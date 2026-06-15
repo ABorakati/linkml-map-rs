@@ -47,8 +47,22 @@ impl SchemaViewProvider {
     /// Schemas that import remote URLs (e.g. `linkml:types`) will fail unless
     /// the `resolve` feature is enabled on the backend crate.
     pub fn load_from_path(path: &Path) -> anyhow::Result<Self> {
-        let schema = linkml_schemaview::io::from_yaml(path)
+        Self::load_from_path_with_patch(path, None)
+    }
+
+    /// Load a LinkML schema YAML from a file path, applying an optional
+    /// `source_schema_patches` block (LinkML-shaped JSON) before the schema is
+    /// indexed. See [`apply_schema_patch_to_definition`].
+    pub fn load_from_path_with_patch(
+        path: &Path,
+        patch: Option<&serde_json::Value>,
+    ) -> anyhow::Result<Self> {
+        let mut schema = linkml_schemaview::io::from_yaml(path)
             .map_err(|e| anyhow::anyhow!("failed to load schema from {}: {}", path.display(), e))?;
+
+        if let Some(patch) = patch {
+            apply_schema_patch_to_definition(&mut schema, patch)?;
+        }
 
         let primary_id = schema.id.clone();
         let mut sv = SchemaView::new();
@@ -63,8 +77,21 @@ impl SchemaViewProvider {
 
     /// Load a LinkML schema from a YAML string.
     pub fn from_yaml_str(yaml: &str) -> anyhow::Result<Self> {
-        let schema: linkml_meta::SchemaDefinition = serde_yaml::from_str(yaml)
+        Self::from_yaml_str_with_patch(yaml, None)
+    }
+
+    /// Load a LinkML schema from a YAML string, applying an optional
+    /// `source_schema_patches` block before indexing.
+    pub fn from_yaml_str_with_patch(
+        yaml: &str,
+        patch: Option<&serde_json::Value>,
+    ) -> anyhow::Result<Self> {
+        let mut schema: linkml_meta::SchemaDefinition = serde_yaml::from_str(yaml)
             .map_err(|e| anyhow::anyhow!("failed to parse schema YAML: {}", e))?;
+
+        if let Some(patch) = patch {
+            apply_schema_patch_to_definition(&mut schema, patch)?;
+        }
 
         let primary_id = schema.id.clone();
         let mut sv = SchemaView::new();
@@ -76,6 +103,189 @@ impl SchemaViewProvider {
             primary_schema_id: primary_id,
         })
     }
+}
+
+// ── source_schema_patches support ──────────────────────────────────────────────
+
+type JsonMap = serde_json::Map<String, serde_json::Value>;
+
+/// Apply a `source_schema_patches` block (LinkML-shaped JSON) to a parsed
+/// [`linkml_meta::SchemaDefinition`] in place.
+///
+/// Mirrors the Python `linkml_map.utils.schema_patch.apply_schema_patch`
+/// semantics: it is **additive** — append `slots`, create-or-update `attributes`,
+/// `classes`, `slots`, `enums`, `types`, `subsets`; append unique `imports`; set
+/// `prefixes`; and set the scalar header fields (`id`, `name`, `description`,
+/// `default_prefix`). Its main use is augmenting auto-generated source schemas
+/// (which lack foreign-key `range`s) so object joins resolve.
+///
+/// Implemented as a serde_json round-trip so it stays faithful to the metamodel
+/// without enumerating every field by hand.
+pub fn apply_schema_patch_to_definition(
+    schema: &mut linkml_meta::SchemaDefinition,
+    patch: &serde_json::Value,
+) -> anyhow::Result<()> {
+    if patch.is_null() {
+        return Ok(());
+    }
+    let patch_obj = patch
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("source_schema_patches must be a mapping/object"))?;
+
+    let mut doc = serde_json::to_value(&*schema)
+        .map_err(|e| anyhow::anyhow!("failed to serialise source schema for patching: {e}"))?;
+    {
+        let doc_obj = doc
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("source schema did not serialise to a JSON object"))?;
+        merge_schema_patch(doc_obj, patch_obj);
+    }
+    *schema = serde_json::from_value(doc)
+        .map_err(|e| anyhow::anyhow!("failed to apply source_schema_patches: {e}"))?;
+    Ok(())
+}
+
+fn merge_schema_patch(doc: &mut JsonMap, patch: &JsonMap) {
+    use serde_json::Value;
+
+    // Scalar header fields: set.
+    for field in ["id", "name", "description", "default_prefix"] {
+        if let Some(v) = patch.get(field) {
+            doc.insert(field.to_string(), v.clone());
+        }
+    }
+
+    // imports: append unique.
+    if let Some(Value::Array(imports)) = patch.get("imports") {
+        let arr = doc
+            .entry("imports".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(a) = arr.as_array_mut() {
+            for imp in imports {
+                if !a.contains(imp) {
+                    a.push(imp.clone());
+                }
+            }
+        }
+    }
+
+    // prefixes: create-or-set per prefix.
+    if let Some(Value::Object(prefixes)) = patch.get("prefixes") {
+        let target = doc
+            .entry("prefixes".to_string())
+            .or_insert_with(|| Value::Object(JsonMap::new()));
+        if let Some(t) = target.as_object_mut() {
+            for (name, pdef) in prefixes {
+                t.insert(name.clone(), pdef.clone());
+            }
+        }
+    }
+
+    // classes: create-or-merge, with slot append + attribute merge.
+    if let Some(Value::Object(classes)) = patch.get("classes") {
+        let target = doc
+            .entry("classes".to_string())
+            .or_insert_with(|| Value::Object(JsonMap::new()));
+        if let Some(t) = target.as_object_mut() {
+            for (cname, cpatch) in classes {
+                let entry = t
+                    .entry(cname.clone())
+                    .or_insert_with(|| Value::Object(named_object(cname)));
+                merge_class_patch(entry, cpatch);
+            }
+        }
+    }
+
+    // Simple create-or-update definition maps. The patch uses LinkML names; the
+    // serialised SchemaDefinition names top-level slots `slot_definitions`
+    // (serde alias `slots`), so map that one key. The rest match 1:1.
+    for (patch_key, doc_key) in [
+        ("slots", "slot_definitions"),
+        ("enums", "enums"),
+        ("types", "types"),
+        ("subsets", "subsets"),
+    ] {
+        if let Some(Value::Object(items)) = patch.get(patch_key) {
+            let target = doc
+                .entry(doc_key.to_string())
+                .or_insert_with(|| Value::Object(JsonMap::new()));
+            if let Some(t) = target.as_object_mut() {
+                for (name, pdef) in items {
+                    match t.get_mut(name) {
+                        Some(existing) => set_fields(existing, pdef),
+                        None => {
+                            let mut created = Value::Object(named_object(name));
+                            set_fields(&mut created, pdef);
+                            t.insert(name.clone(), created);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn merge_class_patch(class: &mut serde_json::Value, cpatch: &serde_json::Value) {
+    use serde_json::Value;
+    let (Some(cobj), Some(cp)) = (class.as_object_mut(), cpatch.as_object()) else {
+        return;
+    };
+    for (key, val) in cp {
+        match key.as_str() {
+            "slots" => {
+                let arr = cobj
+                    .entry("slots".to_string())
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                if let (Some(a), Some(ps)) = (arr.as_array_mut(), val.as_array()) {
+                    for s in ps {
+                        if !a.contains(s) {
+                            a.push(s.clone());
+                        }
+                    }
+                }
+            }
+            "attributes" => {
+                let attrs = cobj
+                    .entry("attributes".to_string())
+                    .or_insert_with(|| Value::Object(JsonMap::new()));
+                if let (Some(am), Some(pm)) = (attrs.as_object_mut(), val.as_object()) {
+                    for (an, ad) in pm {
+                        match am.get_mut(an) {
+                            Some(existing) => set_fields(existing, ad),
+                            None => {
+                                let mut created = Value::Object(named_object(an));
+                                set_fields(&mut created, ad);
+                                am.insert(an.clone(), created);
+                            }
+                        }
+                    }
+                }
+            }
+            // Other class-level fields (is_a, mixins, tree_root, ...) are set.
+            _ => {
+                cobj.insert(key.clone(), val.clone());
+            }
+        }
+    }
+}
+
+/// Shallow-set each field from `patch` onto `target` (mirrors Python `setattr`).
+fn set_fields(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    if let (Some(t), Some(p)) = (target.as_object_mut(), patch.as_object()) {
+        for (k, v) in p {
+            t.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+/// A fresh JSON object carrying the required `name` field.
+fn named_object(name: &str) -> JsonMap {
+    let mut m = JsonMap::new();
+    m.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    m
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -183,10 +393,7 @@ impl SchemaViewProvider {
     }
 
     /// Convert a `SlotView` (merged effective slot) into our `SlotDef`.
-    fn slot_view_to_def(
-        &self,
-        slot_view: &linkml_schemaview::schemaview::SlotView,
-    ) -> SlotDef {
+    fn slot_view_to_def(&self, slot_view: &linkml_schemaview::schemaview::SlotView) -> SlotDef {
         let def = slot_view.definition();
 
         // -- range --
@@ -201,21 +408,51 @@ impl SchemaViewProvider {
         let identifier = def.identifier.unwrap_or(false);
         let key = def.key.unwrap_or(false);
 
-        // -- unit: prefer ucum_code, fall back to symbol --
+        // -- unit: capture the metaslot scheme, mirroring Python's UnitSystem
+        //    dispatch (ucum_code → UCUM, iec61360code → IEC61360, else pint). --
         let unit = def.unit.as_ref().and_then(|u| {
-            u.ucum_code
-                .clone()
-                .or_else(|| u.symbol.clone())
-                .or_else(|| u.abbreviation.clone())
+            use linkml_map_core::schema::{UnitRef, UnitSystem};
+            if let Some(c) = u.ucum_code.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Ucum,
+                })
+            } else if let Some(c) = u.iec61360code.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Iec61360,
+                })
+            } else if let Some(c) = u.symbol.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Other,
+                })
+            } else if let Some(c) = u.abbreviation.clone() {
+                Some(UnitRef {
+                    code: c,
+                    system: UnitSystem::Other,
+                })
+            } else {
+                u.descriptive_name.clone().map(|c| UnitRef {
+                    code: c,
+                    system: UnitSystem::Other,
+                })
+            }
         });
 
         // -- any_of enums: scan any_of branches for enum ranges --
         let any_of_enums = self.collect_any_of_enums(def);
 
+        // -- inlined / inlined_as_list (needed for inverse-spec derivation) --
+        let inlined = def.inlined.unwrap_or(false);
+        let inlined_as_list = def.inlined_as_list.unwrap_or(false);
+
         SlotDef {
             name: slot_view.name.clone(),
             range,
             multivalued,
+            inlined,
+            inlined_as_list,
             required,
             identifier,
             key,
@@ -226,10 +463,7 @@ impl SchemaViewProvider {
 
     /// Scan the `any_of` expressions on a slot definition and return the names
     /// of any enum ranges found there.
-    fn collect_any_of_enums(
-        &self,
-        def: &linkml_meta::SlotDefinition,
-    ) -> Vec<String> {
+    fn collect_any_of_enums(&self, def: &linkml_meta::SlotDefinition) -> Vec<String> {
         let mut result = Vec::new();
         let Some(any_of) = &def.any_of else {
             return result;
@@ -324,7 +558,9 @@ impl SchemaProvider for SchemaViewProvider {
             .map_err(|e| SchemaError::Other(format!("{e:?}")))?;
 
         // Re-read the raw enum definition for descriptions and meanings.
-        let enum_def_raw = self.sv.get_enum_definition(&Identifier::Name(enum_name.to_owned()));
+        let enum_def_raw = self
+            .sv
+            .get_enum_definition(&Identifier::Name(enum_name.to_owned()));
 
         let pvs = pv_keys
             .iter()
@@ -417,4 +653,75 @@ fn is_builtin_type(name: &str) -> bool {
             | "Uri"
             | "Uriorcurie"
     )
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+    use linkml_map_core::schema::{RangeKind, SchemaProvider};
+
+    const SCHEMA: &str = r#"
+id: https://example.org/s
+name: s
+prefixes:
+  linkml: https://w3id.org/linkml/
+default_range: string
+classes:
+  Donor:
+    attributes:
+      donor_id:
+        identifier: true
+        range: string
+  Row:
+    attributes:
+      DONOR_ID:
+        range: string
+"#;
+
+    #[test]
+    fn patch_adds_fk_range() {
+        // Without a patch, DONOR_ID resolves to a scalar type, not a class.
+        let plain = SchemaViewProvider::from_yaml_str(SCHEMA).unwrap();
+        let s0 = plain.induced_slot("DONOR_ID", "Row").unwrap();
+        assert!(
+            !matches!(s0.range, RangeKind::Class(_)),
+            "unpatched range should not be a class: {:?}",
+            s0.range
+        );
+
+        // The patch points DONOR_ID at the Donor class (the FK the inferred
+        // schema lacked); the object join can now resolve.
+        let patch = serde_json::json!({
+            "classes": { "Row": { "attributes": { "DONOR_ID": { "range": "Donor" } } } }
+        });
+        let patched = SchemaViewProvider::from_yaml_str_with_patch(SCHEMA, Some(&patch)).unwrap();
+        let s1 = patched.induced_slot("DONOR_ID", "Row").unwrap();
+        assert!(
+            matches!(s1.range, RangeKind::Class(ref c) if c == "Donor"),
+            "patched range should be Class(Donor): {:?}",
+            s1.range
+        );
+    }
+
+    #[test]
+    fn patch_creates_new_class_with_attribute() {
+        // A patch can introduce a class the inferred schema never had, with its
+        // own attributes — e.g. a lookup table referenced by an FK range.
+        let patch = serde_json::json!({
+            "classes": { "Extra": { "attributes": { "note": { "range": "string" } } } }
+        });
+        let patched = SchemaViewProvider::from_yaml_str_with_patch(SCHEMA, Some(&patch)).unwrap();
+        assert!(patched.all_class_names().iter().any(|c| c == "Extra"));
+        let slot = patched.induced_slot("note", "Extra").unwrap();
+        assert_eq!(slot.name, "note");
+    }
+
+    #[test]
+    fn null_patch_is_noop() {
+        let mut schema: linkml_meta::SchemaDefinition = serde_yaml::from_str(SCHEMA).unwrap();
+        apply_schema_patch_to_definition(&mut schema, &serde_json::Value::Null).unwrap();
+        assert!(schema.classes.as_ref().unwrap().contains_key("Row"));
+    }
 }

@@ -15,9 +15,12 @@
 //!   slot.  Bindings are built from the source object's map keys.
 //! - Recursion happens via `map_object` — nested class-ranged slots recurse
 //!   into the same engine instance.
-//! - Pivot / join / offset are **not** ported in this wave (noted below under
-//!   NOT PORTED). FK, stringification and `unit_conversion:` ARE ported
-//!   (`unit_conversion` via the dependency-free [`units`] dimensional table).
+//! - FK join, stringification, `unit_conversion:`, `object_derivations:`,
+//!   `offset:`, `aggregation_operation:` and `pivot_operation:` (melt/unmelt)
+//!   ARE ported (`unit_conversion` via the dependency-free [`units`] table).
+//!   Aggregation has no Python `ObjectTransformer` reference — its semantics are
+//!   defined in [`apply_aggregation`]. Spec→Python/SQL compilation and
+//!   JSON-schema target validation are intentionally out of scope.
 
 pub mod object_index;
 pub mod units;
@@ -29,7 +32,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::{
-    datamodel::{ClassDerivation, CollectionType, SlotDerivation, TransformationSpecification},
+    datamodel::{
+        AggregationOperation, AggregationType, ClassDerivation, CollectionType,
+        InvalidValueHandlingStrategy, Offset, PivotDirectionType, PivotOperation,
+        SerializationSyntaxType, SlotDerivation, TransformationSpecification,
+    },
     error::{Error, Result},
     expr::{eval_expr_with_mapping, eval_parsed, parse_expr, Bindings, ExprResult, ParsedExpr},
     schema::{RangeKind, SchemaProvider, SlotDef},
@@ -92,8 +99,7 @@ impl CompiledExprs {
     }
 
     fn slot(&self, class: &str, slot: &str) -> Option<&ParsedExpr> {
-        self.slot_exprs
-            .get(&(class.to_string(), slot.to_string()))
+        self.slot_exprs.get(&(class.to_string(), slot.to_string()))
     }
 }
 
@@ -258,6 +264,12 @@ impl<'s> ObjectTransformer<'s> {
         // Find the matching class derivation(s).
         let class_deriv = self.get_class_derivation(source_type)?;
 
+        // Class-level pivot (melt/unmelt) replaces per-slot derivation entirely.
+        // Mirrors Python `ObjectTransformer._perform_pivot_operation`.
+        if let Some(pivot) = &class_deriv.pivot_operation {
+            return self.perform_pivot(pivot, source_map);
+        }
+
         // Per-slot iteration.
         let empty_map = IndexMap::new();
         let slot_derivations = class_deriv.slot_derivations.as_ref().unwrap_or(&empty_map);
@@ -307,6 +319,95 @@ impl<'s> ObjectTransformer<'s> {
         Ok(Value::Map(tgt_attrs))
     }
 
+    // ── Pivot (melt / unmelt) ─────────────────────────────────────────────────
+
+    /// Dispatch a class-level `pivot_operation`. Mirrors Python
+    /// `ObjectTransformer._perform_pivot_operation`.
+    fn perform_pivot(
+        &self,
+        pivot: &PivotOperation,
+        source_map: &IndexMap<String, Value>,
+    ) -> Result<Value> {
+        match pivot.direction {
+            PivotDirectionType::Melt => self.perform_melt(pivot, source_map),
+            PivotDirectionType::Unmelt => self.perform_unmelt(pivot, source_map),
+        }
+    }
+
+    /// Wide → EAV/long. `{height: 1.8, weight: 75}` → `[{variable: height,
+    /// value: 1.8}, {variable: weight, value: 75}]`. Mirrors `_perform_melt`.
+    fn perform_melt(
+        &self,
+        pivot: &PivotOperation,
+        source_map: &IndexMap<String, Value>,
+    ) -> Result<Value> {
+        let id_slots: Vec<String> = pivot.id_slots.clone().unwrap_or_default();
+
+        // Which slots to melt: explicit source_slots, else inferred from the
+        // unmelt_to_class' target slots, else every non-ID slot.
+        let slots_to_melt: Vec<String> = if let Some(ss) = &pivot.source_slots {
+            ss.clone()
+        } else if let (Some(cls), Some(ts)) = (&pivot.unmelt_to_class, self.target_schema) {
+            ts.induced_slots(cls)
+                .map(|v| v.into_iter().map(|s| s.name).collect())
+                .unwrap_or_default()
+        } else {
+            source_map
+                .keys()
+                .filter(|k| !id_slots.contains(k))
+                .cloned()
+                .collect()
+        };
+
+        // Base record carries the ID slots into every melted record.
+        let mut base = IndexMap::new();
+        for id in &id_slots {
+            if let Some(v) = source_map.get(id) {
+                base.insert(id.clone(), v.clone());
+            }
+        }
+
+        let mut results = Vec::new();
+        for sname in &slots_to_melt {
+            if let Some(v) = source_map.get(sname) {
+                if !v.is_null() {
+                    let mut rec = base.clone();
+                    rec.insert(pivot.variable_slot.clone(), Value::Str(sname.clone()));
+                    rec.insert(pivot.value_slot.clone(), v.clone());
+                    results.push(Value::Map(rec));
+                }
+            }
+        }
+        Ok(Value::List(results))
+    }
+
+    /// EAV/long → wide. A single EAV record, or a slot holding a list of EAV
+    /// records, is collapsed into one wide object. Mirrors `_perform_unmelt`.
+    fn perform_unmelt(
+        &self,
+        pivot: &PivotOperation,
+        source_map: &IndexMap<String, Value>,
+    ) -> Result<Value> {
+        // The source object is itself one EAV record.
+        if source_map.contains_key(&pivot.variable_slot)
+            && source_map.contains_key(&pivot.value_slot)
+        {
+            return Ok(unmelt_single_record(pivot, source_map));
+        }
+        // Otherwise find a multivalued slot holding EAV records.
+        for v in source_map.values() {
+            if let Value::List(items) = v {
+                if let Some(Value::Map(first)) = items.first() {
+                    if first.contains_key(&pivot.variable_slot) {
+                        return Ok(unmelt_collection(pivot, items));
+                    }
+                }
+            }
+        }
+        // Nothing to unmelt → pass through.
+        Ok(Value::Map(source_map.clone()))
+    }
+
     /// Derive the value for a single slot derivation.
     fn derive_slot(
         &self,
@@ -324,7 +425,7 @@ impl<'s> ObjectTransformer<'s> {
         // 2. `expr:`
         // 3. `populated_from:` (direct field copy + value_mappings)
         // 4. `sources:` (first non-null wins)
-        // 5. `object_derivations:` (not ported — see NOT PORTED section)
+        // 5. `object_derivations:` (nested object derivation — ported)
         // 6. implicit same-name copy
         //
         // After obtaining v, apply range coercion + cardinality reshaping.
@@ -341,6 +442,15 @@ impl<'s> ObjectTransformer<'s> {
             //     the conversion is impossible (unknown / cross-dimension units).
             let v = self.perform_unit_conversion(slot_deriv, source_map, source_type)?;
             (v, None)
+        } else if let Some(agg) = &slot_deriv.aggregation_operation {
+            // 1c. aggregation_operation — reduce a multivalued source to a scalar
+            //     (or a collection, for List/Set/Array). Read the source list from
+            //     `populated_from` (else the same-name slot). Returning `None` for
+            //     the source slot def skips the normal multivalued re-coercion.
+            let src_key = slot_deriv.populated_from.as_deref().unwrap_or(slot_name);
+            let raw = source_map.get(src_key).cloned().unwrap_or(Value::Null);
+            let v = apply_aggregation(agg, raw, slot_name)?;
+            (v, None)
         } else if let Some(expr) = &slot_deriv.expr {
             // 2. Expression.
             let v = self.eval_expr_for_slot(
@@ -354,7 +464,10 @@ impl<'s> ObjectTransformer<'s> {
             (v, None)
         } else if let Some(populated_from) = &slot_deriv.populated_from {
             // 3. populated_from — direct field copy.
-            let raw = source_map.get(populated_from).cloned().unwrap_or(Value::Null);
+            let raw = source_map
+                .get(populated_from)
+                .cloned()
+                .unwrap_or(Value::Null);
             // Apply value_mappings if present and value is non-null.
             let mapped = if let Some(vm) = &slot_deriv.value_mappings {
                 if !raw.is_null() {
@@ -371,9 +484,9 @@ impl<'s> ObjectTransformer<'s> {
                 raw
             };
             // Source slot def for range/cardinality coercion.
-            let ssd = self.source_schema.and_then(|ss| {
-                ss.induced_slot(populated_from, source_type).ok()
-            });
+            let ssd = self
+                .source_schema
+                .and_then(|ss| ss.induced_slot(populated_from, source_type).ok());
             (mapped, ssd)
         } else if let Some(sources) = &slot_deriv.sources {
             // 4. sources — first non-null wins.
@@ -382,9 +495,9 @@ impl<'s> ObjectTransformer<'s> {
             for src_slot in sources {
                 let candidate = source_map.get(src_slot).cloned().unwrap_or(Value::Null);
                 if !candidate.is_null() {
-                    let ssd = self.source_schema.and_then(|ss| {
-                        ss.induced_slot(src_slot, source_type).ok()
-                    });
+                    let ssd = self
+                        .source_schema
+                        .and_then(|ss| ss.induced_slot(src_slot, source_type).ok());
                     found_v = candidate;
                     found_ssd = ssd;
                     break;
@@ -407,9 +520,9 @@ impl<'s> ObjectTransformer<'s> {
         } else {
             // 6. Implicit same-name copy.
             let raw = source_map.get(slot_name).cloned().unwrap_or(Value::Null);
-            let ssd = self.source_schema.and_then(|ss| {
-                ss.induced_slot(slot_name, source_type).ok()
-            });
+            let ssd = self
+                .source_schema
+                .and_then(|ss| ss.induced_slot(slot_name, source_type).ok());
             (raw, ssd)
         };
 
@@ -440,6 +553,14 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
+        // ── Offset (longitudinal baseline ± offset_value * offset_field) ──────
+        //    Mirrors Python `ObjectTransformer._apply_offset`.
+        if let Some(off) = &slot_deriv.offset {
+            if !v.is_null() {
+                v = apply_offset(off, v, source_map);
+            }
+        }
+
         Ok(v)
     }
 
@@ -454,17 +575,18 @@ impl<'s> ObjectTransformer<'s> {
     ///   value's unit slot, then the spec's `source_unit`, then the schema
     ///   slot's `unit` annotation. A mismatch between an explicit spec unit
     ///   and the schema unit is an error, matching Python.
-    /// - The magnitude is converted to `target_unit` via [`units::convert`].
+    /// - The magnitude is converted to `target_unit` via
+    ///   [`units::convert_checked`].
     /// - When `target_magnitude_slot` is set the result is a
     ///   `{target_magnitude_slot: value, target_unit_slot: unit}` map;
     ///   otherwise the bare converted scalar is returned.
     ///
-    /// Divergence from Python (pragmatic, dependency-free table): when the
-    /// units are unknown to the table or dimensionally incompatible (incl.
-    /// molar↔mass), the magnitude is returned **unchanged** rather than
-    /// raising — the value is preserved and the caller can flag it. A
-    /// non-numeric magnitude returns `Null` when `none_if_non_numeric` is set,
-    /// otherwise the original value is returned unchanged.
+    /// When a unit is unknown to the table or the conversion is dimensionally
+    /// incompatible (incl. molar↔mass, which needs a molecular weight not present
+    /// in the token), an [`Error::UnitConversion`] is raised — matching Python's
+    /// `UndefinedUnitError` / `DimensionalityError`. A non-numeric magnitude
+    /// returns `Null` when `none_if_non_numeric` is set, otherwise the original
+    /// value is returned unchanged.
     fn perform_unit_conversion(
         &self,
         slot_deriv: &SlotDerivation,
@@ -487,12 +609,21 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         // Schema-declared source unit (the SlotDef carries the resolved unit
-        // string — ucum_code / symbol / etc. — if any).
-        let schema_unit: Option<String> = self.source_schema.and_then(|ss| {
+        // code plus the metaslot scheme — ucum_code / symbol / etc. — if any).
+        let schema_unit_ref: Option<crate::schema::UnitRef> = self.source_schema.and_then(|ss| {
             ss.induced_slot(src_key, source_type)
                 .ok()
                 .and_then(|s| s.unit.clone())
         });
+        // The unit system used for conversion follows the source slot's
+        // metaslot (Python derives it the same way); units supplied only via the
+        // spec or a structured value carry no metaslot, so default to `Other`
+        // (a plain pint registry).
+        let unit_system = schema_unit_ref
+            .as_ref()
+            .map(|u| u.system)
+            .unwrap_or(crate::schema::UnitSystem::Other);
+        let schema_unit: Option<String> = schema_unit_ref.as_ref().map(|u| u.code.clone());
         let spec_unit = uc.source_unit.clone();
 
         if let (Some(su), Some(pu)) = (&schema_unit, &spec_unit) {
@@ -546,9 +677,7 @@ impl<'s> ObjectTransformer<'s> {
                     return Err(Error::SlotTransform {
                         class: source_type.to_string(),
                         slot: slot_deriv.name.clone(),
-                        cause: format!(
-                            "missing unit in structured value for slot '{src_key}'"
-                        ),
+                        cause: format!("missing unit in structured value for slot '{src_key}'"),
                     })
                 }
             }
@@ -582,18 +711,24 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         // Determine target unit (defaults to the source unit → identity).
-        let to_unit = uc
-            .target_unit
-            .clone()
-            .or_else(|| from_unit.clone());
+        let to_unit = uc.target_unit.clone().or_else(|| from_unit.clone());
 
         let (result, out_unit) = match (&from_unit, &to_unit) {
-            (Some(fu), Some(tu)) => match units::convert(magnitude, fu, tu) {
-                Some(r) => (r, tu.clone()),
-                None => {
-                    // Unknown / incompatible units (incl. molar↔mass):
-                    // leave the magnitude unchanged.
-                    (magnitude, fu.clone())
+            (Some(fu), Some(tu)) => match units::convert_checked(magnitude, fu, tu, unit_system) {
+                Ok(r) => (r, tu.clone()),
+                // Unknown unit / incompatible dimensions (incl. molar↔mass):
+                // raise, mirroring Python's UndefinedUnitError / DimensionalityError.
+                Err(units::ConvError::Undefined(u)) => {
+                    return Err(Error::UnitConversion {
+                        slot: slot_deriv.name.clone(),
+                        msg: format!("undefined unit '{u}'"),
+                    })
+                }
+                Err(units::ConvError::Dimensionality(f, t)) => {
+                    return Err(Error::UnitConversion {
+                        slot: slot_deriv.name.clone(),
+                        msg: format!("cannot convert '{f}' to '{t}': incompatible dimensions"),
+                    })
                 }
             },
             // No units resolvable at all: pass the magnitude through.
@@ -654,9 +789,12 @@ impl<'s> ObjectTransformer<'s> {
     {
         match v {
             Value::Str(s) => Value::Str(f(&s)),
-            Value::List(items) => {
-                Value::List(items.into_iter().map(|i| self.apply_to_strings(i, f)).collect())
-            }
+            Value::List(items) => Value::List(
+                items
+                    .into_iter()
+                    .map(|i| self.apply_to_strings(i, f))
+                    .collect(),
+            ),
             other => other,
         }
     }
@@ -788,9 +926,7 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         match value {
-            Value::List(items) => {
-                Value::List(items.iter().map(|it| resolve_one(it)).collect())
-            }
+            Value::List(items) => Value::List(items.iter().map(&resolve_one).collect()),
             other => resolve_one(other),
         }
     }
@@ -835,9 +971,7 @@ impl<'s> ObjectTransformer<'s> {
                     if let Value::List(items) = v {
                         let mapped: Result<Vec<Value>> = items
                             .iter()
-                            .map(|item| {
-                                self.transform_enum(item, &[enum_name.clone()], item)
-                            })
+                            .map(|item| self.transform_enum(item, &[enum_name.clone()], item))
                             .collect();
                         return Ok(Value::List(mapped?));
                     }
@@ -1084,10 +1218,8 @@ impl<'s> ObjectTransformer<'s> {
                     // `populated_from` on the ClassDerivation tells us which
                     // source class to use.  When absent, fall back to the outer
                     // source_type (same-class derivation).
-                    let effective_source_type = cls_deriv
-                        .populated_from
-                        .as_deref()
-                        .unwrap_or(source_type);
+                    let effective_source_type =
+                        cls_deriv.populated_from.as_deref().unwrap_or(source_type);
 
                     // Recursively transform the same source map using the
                     // nested ClassDerivation.
@@ -1151,10 +1283,11 @@ impl<'s> ObjectTransformer<'s> {
                 Some(CollectionType::MultiValuedList) | Some(CollectionType::MultiValuedDict)
             ) || slot_deriv.dictionary_key.is_some();
             let is_map = matches!(&v, Value::Map(_));
-            if !matches!(&v, Value::Null) && !matches!(&v, Value::List(_))
+            if !matches!(&v, Value::Null)
+                && !matches!(&v, Value::List(_))
                 && !(reshape_will_handle && is_map)
             {
-                return Ok(self.single_to_multivalued(v, slot_deriv)?);
+                return self.single_to_multivalued(v, slot_deriv);
             }
         }
         Ok(v)
@@ -1248,11 +1381,26 @@ impl<'s> ObjectTransformer<'s> {
     }
 
     fn multivalued_to_single(&self, items: Vec<Value>, sd: &SlotDerivation) -> Result<Value> {
-        // Stringification: join with delimiter.
+        // Stringification: join with delimiter, or serialise via a syntax.
         if let Some(s) = &sd.stringification {
             if let Some(delim) = &s.delimiter {
-                let parts: Vec<String> = items.iter().map(|v| value_to_string_key(v)).collect();
+                let parts: Vec<String> = items.iter().map(value_to_string_key).collect();
                 return Ok(Value::Str(parts.join(delim)));
+            }
+            if let Some(syntax) = &s.syntax {
+                let list = Value::List(items);
+                let out = match syntax {
+                    SerializationSyntaxType::Json => py_json(&list),
+                    SerializationSyntaxType::Yaml => yaml_flow(&list),
+                    SerializationSyntaxType::Turtle => {
+                        return Err(Error::SlotTransform {
+                            class: String::new(),
+                            slot: sd.name.clone(),
+                            cause: "TURTLE stringification not supported".into(),
+                        })
+                    }
+                };
+                return Ok(Value::Str(out));
             }
         }
         if items.len() > 1 {
@@ -1500,38 +1648,326 @@ fn value_to_string_key(v: &Value) -> String {
     }
 }
 
+// ── Offset / aggregation / pivot helpers ──────────────────────────────────────
+
+/// Apply an [`Offset`]: `value ± offset_value * source[offset_field]`.
+/// Mirrors Python `_apply_offset` — a missing/non-numeric offset field, or a
+/// non-numeric base value, leaves the value unchanged.
+fn apply_offset(off: &Offset, value: Value, source_map: &IndexMap<String, Value>) -> Value {
+    let off_field_val = match source_map
+        .get(&off.offset_field)
+        .and_then(Value::try_numeric)
+    {
+        Some(n) => n,
+        None => return value,
+    };
+    let base = match value.try_numeric() {
+        Some(n) => n,
+        None => return value,
+    };
+    let delta = off.offset_value * off_field_val;
+    let result = if off.offset_reverse.unwrap_or(false) {
+        base - delta
+    } else {
+        base + delta
+    };
+    float_to_value(result)
+}
+
+/// Reduce a (multivalued) source value to an aggregate per [`AggregationType`].
+///
+/// LinkML's Python `ObjectTransformer` does not implement aggregation (it is a
+/// datamodel-only construct there); these semantics are defined here. The source
+/// is treated as a list (a scalar becomes a one-element list, null an empty one).
+/// `Count`/`List`/`Array`/`Set` work on any element type; the arithmetic
+/// operators coerce elements to numbers, honouring `invalid_value_handling`
+/// (falling back to `null_handling`): `Ignore` skips, `TreatAsZero` substitutes
+/// 0, `ErrorOut` raises.
+fn apply_aggregation(agg: &AggregationOperation, value: Value, slot: &str) -> Result<Value> {
+    let items: Vec<Value> = match value {
+        Value::List(items) => items,
+        Value::Null => vec![],
+        other => vec![other],
+    };
+
+    let strategy = agg
+        .invalid_value_handling
+        .clone()
+        .or_else(|| agg.null_handling.clone())
+        .unwrap_or(InvalidValueHandlingStrategy::Ignore);
+
+    let numbers = || -> Result<Vec<f64>> {
+        let mut out = Vec::new();
+        for it in &items {
+            match it.try_numeric() {
+                Some(n) => out.push(n),
+                None => match strategy {
+                    InvalidValueHandlingStrategy::Ignore => {}
+                    InvalidValueHandlingStrategy::TreatAsZero => out.push(0.0),
+                    InvalidValueHandlingStrategy::ErrorOut => {
+                        return Err(Error::SlotTransform {
+                            class: String::new(),
+                            slot: slot.to_string(),
+                            cause: "non-numeric value in aggregation".into(),
+                        });
+                    }
+                },
+            }
+        }
+        Ok(out)
+    };
+
+    use AggregationType as A;
+    let v = match agg.operator {
+        A::Count => Value::Int(items.len() as i64),
+        A::List | A::Array => Value::List(items),
+        A::Set => {
+            let mut seen = std::collections::HashSet::new();
+            let mut out = Vec::new();
+            for it in items {
+                if seen.insert(value_to_string_key(&it)) {
+                    out.push(it);
+                }
+            }
+            Value::List(out)
+        }
+        A::Sum => {
+            let n = numbers()?;
+            let all_int = items.iter().all(|v| matches!(v, Value::Int(_)));
+            let sum: f64 = n.iter().sum();
+            if all_int {
+                Value::Int(sum as i64)
+            } else {
+                float_to_value(sum)
+            }
+        }
+        A::Average => {
+            let n = numbers()?;
+            if n.is_empty() {
+                Value::Null
+            } else {
+                Value::Float(n.iter().sum::<f64>() / n.len() as f64)
+            }
+        }
+        A::Min | A::Max => {
+            // Return the original element with the min/max numeric value.
+            let mut best: Option<(f64, &Value)> = None;
+            for it in &items {
+                if let Some(n) = it.try_numeric() {
+                    let take = match best {
+                        None => true,
+                        Some((b, _)) => {
+                            if matches!(agg.operator, A::Min) {
+                                n < b
+                            } else {
+                                n > b
+                            }
+                        }
+                    };
+                    if take {
+                        best = Some((n, it));
+                    }
+                }
+            }
+            best.map(|(_, v)| v.clone()).unwrap_or(Value::Null)
+        }
+        A::Median => {
+            let mut n = numbers()?;
+            if n.is_empty() {
+                Value::Null
+            } else {
+                n.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let mid = n.len() / 2;
+                if n.len() % 2 == 1 {
+                    float_to_value(n[mid])
+                } else {
+                    Value::Float((n[mid - 1] + n[mid]) / 2.0)
+                }
+            }
+        }
+        A::Variance | A::StdDev => {
+            let n = numbers()?;
+            if n.is_empty() {
+                Value::Null
+            } else {
+                let mean = n.iter().sum::<f64>() / n.len() as f64;
+                let var = n.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n.len() as f64;
+                Value::Float(if matches!(agg.operator, A::StdDev) {
+                    var.sqrt()
+                } else {
+                    var
+                })
+            }
+        }
+        A::Mode => {
+            // Most frequent element (first to reach the max count wins).
+            let mut counts: IndexMap<String, (usize, Value)> = IndexMap::new();
+            for it in items {
+                let key = value_to_string_key(&it);
+                counts.entry(key).or_insert((0, it)).0 += 1;
+            }
+            counts
+                .into_iter()
+                .max_by_key(|(_, (c, _))| *c)
+                .map(|(_, (_, v))| v)
+                .unwrap_or(Value::Null)
+        }
+        A::Custom => {
+            return Err(Error::SlotTransform {
+                class: String::new(),
+                slot: slot.to_string(),
+                cause: "CUSTOM aggregation is not supported".into(),
+            });
+        }
+    };
+    Ok(v)
+}
+
+/// Fill a `slot_name_template` (`{variable}` / `{unit}` placeholders).
+fn fill_template(template: &str, variable: &str, unit: &str) -> String {
+    template
+        .replace("{variable}", variable)
+        .replace("{unit}", unit)
+}
+
+/// Unmelt one EAV record `{variable: x, value: v[, unit: u]}` into `{x: v}`
+/// (slot name from the template). Mirrors Python `_unmelt_single_record`.
+fn unmelt_single_record(pivot: &PivotOperation, record: &IndexMap<String, Value>) -> Value {
+    let mut result = IndexMap::new();
+    for id in pivot.id_slots.iter().flatten() {
+        if let Some(v) = record.get(id) {
+            result.insert(id.clone(), v.clone());
+        }
+    }
+    let variable = match record.get(&pivot.variable_slot) {
+        Some(v) if !v.is_null() => value_to_string_key(v),
+        _ => return Value::Map(result),
+    };
+    let value = record
+        .get(&pivot.value_slot)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let unit = pivot
+        .unit_slot
+        .as_ref()
+        .and_then(|u| record.get(u))
+        .map(value_to_string_key)
+        .unwrap_or_default();
+    let target = fill_template(&pivot.slot_name_template, &variable, &unit);
+    result.insert(target, value);
+    Value::Map(result)
+}
+
+/// Unmelt a list of EAV records into one wide object. Mirrors `_unmelt_collection`.
+fn unmelt_collection(pivot: &PivotOperation, records: &[Value]) -> Value {
+    let mut result = IndexMap::new();
+    for rec in records {
+        let Value::Map(rec) = rec else { continue };
+        let variable = match rec.get(&pivot.variable_slot) {
+            Some(v) if !v.is_null() => value_to_string_key(v),
+            _ => continue,
+        };
+        let value = rec.get(&pivot.value_slot).cloned().unwrap_or(Value::Null);
+        let unit = pivot
+            .unit_slot
+            .as_ref()
+            .and_then(|u| rec.get(u))
+            .map(value_to_string_key)
+            .unwrap_or_default();
+        let target = fill_template(&pivot.slot_name_template, &variable, &unit);
+        result.insert(target, value);
+    }
+    // Carry ID slots from the first record (assumed constant across records).
+    if let Some(Value::Map(first)) = records.first() {
+        for id in pivot.id_slots.iter().flatten() {
+            if let Some(v) = first.get(id) {
+                result.insert(id.clone(), v.clone());
+            }
+        }
+    }
+    Value::Map(result)
+}
+
+/// Serialise a [`Value`] to a JSON string matching Python `json.dumps` default
+/// spacing (`", "` between items, `": "` in objects) — the form the upstream
+/// `stringification: {syntax: JSON}` cases expect.
+fn py_json(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        // serde_json gives correct JSON string escaping + quoting.
+        Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}")),
+        Value::List(items) => {
+            let inner: Vec<String> = items.iter().map(py_json).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Map(m) => {
+            let inner: Vec<String> = m
+                .iter()
+                .map(|(k, val)| {
+                    let key = serde_json::to_string(k).unwrap_or_else(|_| format!("{k:?}"));
+                    format!("{key}: {}", py_json(val))
+                })
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+    }
+}
+
+/// Serialise a [`Value`] to a YAML *flow* string (`[a, b]`), matching the
+/// upstream `stringification: {syntax: YAML}` cases. Scalars are emitted bare.
+fn yaml_flow(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Str(s) => s.clone(),
+        Value::List(items) => {
+            let inner: Vec<String> = items.iter().map(yaml_flow).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Map(m) => {
+            let inner: Vec<String> = m
+                .iter()
+                .map(|(k, val)| format!("{k}: {}", yaml_flow(val)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+    }
+}
+
 /// Mirror of Python `Transformer._coerce_datatype`.
 ///
 /// Recursively converts scalar values to the named target range type.
 /// Unknown range names are passed through unchanged.
 fn coerce_datatype(v: Value, target_range: &str) -> Value {
     match v {
-        Value::List(items) => {
-            Value::List(items.into_iter().map(|i| coerce_datatype(i, target_range)).collect())
-        }
-        Value::Map(m) => {
-            Value::Map(m.into_iter().map(|(k, i)| (k, coerce_datatype(i, target_range))).collect())
-        }
+        Value::List(items) => Value::List(
+            items
+                .into_iter()
+                .map(|i| coerce_datatype(i, target_range))
+                .collect(),
+        ),
+        Value::Map(m) => Value::Map(
+            m.into_iter()
+                .map(|(k, i)| (k, coerce_datatype(i, target_range)))
+                .collect(),
+        ),
         scalar => match target_range {
             "integer" | "int" => match &scalar {
                 Value::Int(_) => scalar,
                 Value::Float(f) => Value::Int(*f as i64),
-                Value::Str(s) => s
-                    .trim()
-                    .parse::<i64>()
-                    .map(Value::Int)
-                    .unwrap_or(scalar),
+                Value::Str(s) => s.trim().parse::<i64>().map(Value::Int).unwrap_or(scalar),
                 Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
                 _ => scalar,
             },
             "float" | "double" => match &scalar {
                 Value::Float(_) => scalar,
                 Value::Int(i) => Value::Float(*i as f64),
-                Value::Str(s) => s
-                    .trim()
-                    .parse::<f64>()
-                    .map(Value::Float)
-                    .unwrap_or(scalar),
+                Value::Str(s) => s.trim().parse::<f64>().map(Value::Float).unwrap_or(scalar),
                 Value::Bool(b) => Value::Float(if *b { 1.0 } else { 0.0 }),
                 _ => scalar,
             },
@@ -1561,8 +1997,14 @@ fn coerce_datatype(v: Value, target_range: &str) -> Value {
 mod tests {
     use super::*;
     use crate::{
-        datamodel::{ClassDerivation, KeyVal, PermissibleValueDerivation, EnumDerivation, SlotDerivation, TransformationSpecification},
-        schema::{ClassDef, EnumDef, InMemorySchema, InMemorySchemaBuilder, PermissibleValue, RangeKind, SlotDef},
+        datamodel::{
+            ClassDerivation, EnumDerivation, KeyVal, PermissibleValueDerivation, SlotDerivation,
+            TransformationSpecification,
+        },
+        schema::{
+            ClassDef, EnumDef, InMemorySchema, InMemorySchemaBuilder, PermissibleValue, RangeKind,
+            SlotDef,
+        },
     };
     use indexmap::IndexMap;
 
@@ -1576,66 +2018,190 @@ mod tests {
             .add_enum(EnumDef {
                 name: "GenderType".into(),
                 permissible_values: vec![
-                    PermissibleValue { text: "male".into(), description: None, meaning: None },
-                    PermissibleValue { text: "female".into(), description: None, meaning: None },
-                    PermissibleValue { text: "nonbinary man".into(), description: None, meaning: None },
+                    PermissibleValue {
+                        text: "male".into(),
+                        description: None,
+                        meaning: None,
+                    },
+                    PermissibleValue {
+                        text: "female".into(),
+                        description: None,
+                        meaning: None,
+                    },
+                    PermissibleValue {
+                        text: "nonbinary man".into(),
+                        description: None,
+                        meaning: None,
+                    },
                 ],
             })
-            .add_class(ClassDef { name: "Person".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("Person", SlotDef {
-                name: "id".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: true, identifier: true, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Person".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Person", SlotDef {
-                name: "name".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "id".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: true,
+                    identifier: true,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "name".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "age_in_years".into(),
+                    range: RangeKind::Type("integer".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "gender".into(),
+                    range: RangeKind::Enum("GenderType".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "aliases".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "Address".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Person", SlotDef {
-                name: "age_in_years".into(), range: RangeKind::Type("integer".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Person", SlotDef {
-                name: "gender".into(), range: RangeKind::Enum("GenderType".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Person", SlotDef {
-                name: "aliases".into(), range: RangeKind::Type("string".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_class(ClassDef { name: "Address".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Address", SlotDef {
-                name: "street".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Address", SlotDef {
-                name: "city".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Person", SlotDef {
-                name: "current_address".into(), range: RangeKind::Class("Address".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Person", SlotDef {
-                name: "friends".into(), range: RangeKind::Class("Person".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
+            .add_slot(
+                "Address",
+                SlotDef {
+                    name: "street".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Address",
+                SlotDef {
+                    name: "city".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "current_address".into(),
+                    range: RangeKind::Class("Address".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "friends".into(),
+                    range: RangeKind::Class("Person".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build()
     }
 
     /// Minimal spec: identity copy of `id` and `name`.
     fn make_identity_spec() -> TransformationSpecification {
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
-        slots.insert("name".into(), SlotDerivation { name: "name".into(), ..Default::default() });
+        slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                ..Default::default()
+            },
+        );
         TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -1660,16 +2226,22 @@ mod tests {
     fn test_populated_from_copy() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("id".into(), SlotDerivation {
-            name: "id".into(),
-            populated_from: Some("id".into()),
-            ..Default::default()
-        });
-        slots.insert("label".into(), SlotDerivation {
-            name: "label".into(),
-            populated_from: Some("name".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                populated_from: Some("id".into()),
+                ..Default::default()
+            },
+        );
+        slots.insert(
+            "label".into(),
+            SlotDerivation {
+                name: "label".into(),
+                populated_from: Some("name".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Agent".into(),
@@ -1683,7 +2255,10 @@ mod tests {
         let src = src_person("P:001", "Alice");
         let result = engine.map_object(&src, Some("Person")).unwrap();
 
-        let m = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let m = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(m["id"], Value::Str("P:001".into()));
         assert_eq!(m["label"], Value::Str("Alice".into()));
         assert!(!m.contains_key("name"), "source key should not appear");
@@ -1695,11 +2270,14 @@ mod tests {
     fn test_expr_derived_slot() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("age_str".into(), SlotDerivation {
-            name: "age_str".into(),
-            expr: Some("str(age_in_years) + \" years\"".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "age_str".into(),
+            SlotDerivation {
+                name: "age_str".into(),
+                expr: Some("str(age_in_years) + \" years\"".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Agent".into(),
@@ -1714,7 +2292,10 @@ mod tests {
         m.insert("age_in_years".into(), Value::Int(33));
         let src = Value::Map(m);
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(out["age_str"], Value::Str("33 years".into()));
     }
 
@@ -1724,11 +2305,14 @@ mod tests {
     fn test_compiled_exprs_matches_string_path() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("age_str".into(), SlotDerivation {
-            name: "age_str".into(),
-            expr: Some("str(age_in_years) + \" years\"".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "age_str".into(),
+            SlotDerivation {
+                name: "age_str".into(),
+                expr: Some("str(age_in_years) + \" years\"".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Agent".into(),
@@ -1756,7 +2340,10 @@ mod tests {
                 .with_compiled_exprs(&compiled);
             let cached_out = cached_engine.map_object(&src, Some("Person")).unwrap();
 
-            assert_eq!(cached_out, string_out, "cached/string mismatch at age={age}");
+            assert_eq!(
+                cached_out, string_out,
+                "cached/string mismatch at age={age}"
+            );
             if let Value::Map(om) = &cached_out {
                 assert_eq!(om["age_str"], Value::Str(format!("{age} years")));
             } else {
@@ -1771,11 +2358,14 @@ mod tests {
     fn test_constant_value() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("source".into(), SlotDerivation {
-            name: "source".into(),
-            value: Some(serde_json::json!("database")),
-            ..Default::default()
-        });
+        slots.insert(
+            "source".into(),
+            SlotDerivation {
+                name: "source".into(),
+                value: Some(serde_json::json!("database")),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -1788,7 +2378,10 @@ mod tests {
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
         let src = src_person("P:001", "Alice");
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(out["source"], Value::Str("database".into()));
     }
 
@@ -1798,15 +2391,30 @@ mod tests {
     fn test_value_mappings() {
         let schema = make_person_schema();
         let mut vm: IndexMap<String, KeyVal> = IndexMap::new();
-        vm.insert("M".into(), KeyVal { key: "M".into(), value: Some(serde_json::json!("male")) });
-        vm.insert("F".into(), KeyVal { key: "F".into(), value: Some(serde_json::json!("female")) });
+        vm.insert(
+            "M".into(),
+            KeyVal {
+                key: "M".into(),
+                value: Some(serde_json::json!("male")),
+            },
+        );
+        vm.insert(
+            "F".into(),
+            KeyVal {
+                key: "F".into(),
+                value: Some(serde_json::json!("female")),
+            },
+        );
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("sex".into(), SlotDerivation {
-            name: "sex".into(),
-            populated_from: Some("gender".into()),
-            value_mappings: Some(vm),
-            ..Default::default()
-        });
+        slots.insert(
+            "sex".into(),
+            SlotDerivation {
+                name: "sex".into(),
+                populated_from: Some("gender".into()),
+                value_mappings: Some(vm),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -1821,7 +2429,10 @@ mod tests {
         m.insert("gender".into(), Value::Str("M".into()));
         let src = Value::Map(m);
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(out["sex"], Value::Str("male".into()));
     }
 
@@ -1831,29 +2442,41 @@ mod tests {
     fn test_enum_pv_mapping() {
         let schema = make_person_schema();
         let mut pvds: IndexMap<String, PermissibleValueDerivation> = IndexMap::new();
-        pvds.insert("ACTIVE".into(), PermissibleValueDerivation {
-            name: "ACTIVE".into(),
-            populated_from: Some("active".into()),
-            ..Default::default()
-        });
-        pvds.insert("INACTIVE".into(), PermissibleValueDerivation {
-            name: "INACTIVE".into(),
-            populated_from: Some("inactive".into()),
-            ..Default::default()
-        });
+        pvds.insert(
+            "ACTIVE".into(),
+            PermissibleValueDerivation {
+                name: "ACTIVE".into(),
+                populated_from: Some("active".into()),
+                ..Default::default()
+            },
+        );
+        pvds.insert(
+            "INACTIVE".into(),
+            PermissibleValueDerivation {
+                name: "INACTIVE".into(),
+                populated_from: Some("inactive".into()),
+                ..Default::default()
+            },
+        );
         let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
-        enum_derivations.insert("StatusType".into(), EnumDerivation {
-            name: "StatusType".into(),
-            populated_from: Some("GenderType".into()),
-            permissible_value_derivations: Some(pvds),
-            ..Default::default()
-        });
+        enum_derivations.insert(
+            "StatusType".into(),
+            EnumDerivation {
+                name: "StatusType".into(),
+                populated_from: Some("GenderType".into()),
+                permissible_value_derivations: Some(pvds),
+                ..Default::default()
+            },
+        );
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("gender".into(), SlotDerivation {
-            name: "gender".into(),
-            populated_from: Some("gender".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "gender".into(),
+            SlotDerivation {
+                name: "gender".into(),
+                populated_from: Some("gender".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -1869,7 +2492,10 @@ mod tests {
         m.insert("gender".into(), Value::Str("active".into()));
         let src = Value::Map(m);
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         // "active" → "ACTIVE" via PV derivation.
         assert_eq!(out["gender"], Value::Str("ACTIVE".into()));
     }
@@ -1880,19 +2506,37 @@ mod tests {
     fn test_scalar_to_list_coercion() {
         let schema = make_person_schema();
         let target_schema = InMemorySchemaBuilder::new()
-            .add_class(ClassDef { name: "Agent".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("Agent", SlotDef {
-                name: "aliases".into(), range: RangeKind::Type("string".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Agent".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
+            .add_slot(
+                "Agent",
+                SlotDef {
+                    name: "aliases".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("aliases".into(), SlotDerivation {
-            name: "aliases".into(),
-            populated_from: Some("name".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "aliases".into(),
+            SlotDerivation {
+                name: "aliases".into(),
+                populated_from: Some("name".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Agent".into(),
@@ -1907,8 +2551,14 @@ mod tests {
         m.insert("name".into(), Value::Str("Alice".into()));
         let src = Value::Map(m);
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
-        assert_eq!(out["aliases"], Value::List(vec![Value::Str("Alice".into())]));
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
+        assert_eq!(
+            out["aliases"],
+            Value::List(vec![Value::Str("Alice".into())])
+        );
     }
 
     // ── Test 7: list → dict (identifier_slot key) cardinality ─────────────────
@@ -1921,12 +2571,15 @@ mod tests {
     fn test_list_to_single_coercion() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("name".into(), SlotDerivation {
-            name: "name".into(),
-            populated_from: Some("aliases".into()),
-            cast_collection_as: Some(CollectionType::SingleValued),
-            ..Default::default()
-        });
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                populated_from: Some("aliases".into()),
+                cast_collection_as: Some(CollectionType::SingleValued),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -1941,7 +2594,10 @@ mod tests {
         m.insert("aliases".into(), Value::List(vec![Value::Str("Al".into())]));
         let src = Value::Map(m);
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(out["name"], Value::Str("Al".into()));
     }
 
@@ -1952,16 +2608,37 @@ mod tests {
         let schema = make_person_schema();
         // Address passthrough.
         let mut addr_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        addr_slots.insert("street".into(), SlotDerivation { name: "street".into(), ..Default::default() });
-        addr_slots.insert("city".into(), SlotDerivation { name: "city".into(), ..Default::default() });
+        addr_slots.insert(
+            "street".into(),
+            SlotDerivation {
+                name: "street".into(),
+                ..Default::default()
+            },
+        );
+        addr_slots.insert(
+            "city".into(),
+            SlotDerivation {
+                name: "city".into(),
+                ..Default::default()
+            },
+        );
         // Person with current_address.
         let mut person_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        person_slots.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
-        person_slots.insert("current_address".into(), SlotDerivation {
-            name: "current_address".into(),
-            populated_from: Some("current_address".into()),
-            ..Default::default()
-        });
+        person_slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
+        person_slots.insert(
+            "current_address".into(),
+            SlotDerivation {
+                name: "current_address".into(),
+                populated_from: Some("current_address".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![
                 ClassDerivation {
@@ -1989,9 +2666,17 @@ mod tests {
         person.insert("id".into(), Value::Str("P:001".into()));
         person.insert("current_address".into(), Value::Map(addr));
 
-        let result = engine.map_object(&Value::Map(person), Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
-        let addr_out = match &out["current_address"] { Value::Map(m) => m, _ => panic!("expected nested Map") };
+        let result = engine
+            .map_object(&Value::Map(person), Some("Person"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
+        let addr_out = match &out["current_address"] {
+            Value::Map(m) => m,
+            _ => panic!("expected nested Map"),
+        };
         assert_eq!(addr_out["street"], Value::Str("1 Oak St".into()));
         assert_eq!(addr_out["city"], Value::Str("Oaktown".into()));
     }
@@ -2002,45 +2687,70 @@ mod tests {
     fn test_multivalued_nested_list() {
         let schema = make_person_schema();
         let mut person_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        person_slots.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
-        person_slots.insert("friends".into(), SlotDerivation {
-            name: "friends".into(),
-            populated_from: Some("friends".into()),
-            ..Default::default()
-        });
+        person_slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
+        person_slots.insert(
+            "friends".into(),
+            SlotDerivation {
+                name: "friends".into(),
+                populated_from: Some("friends".into()),
+                ..Default::default()
+            },
+        );
         // Friend class (same as Person for recursion).
         let mut friend_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        friend_slots.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
+        friend_slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
-            class_derivations: Some(vec![
-                ClassDerivation {
-                    name: "Person".into(),
-                    populated_from: Some("Person".into()),
-                    slot_derivations: Some(person_slots),
-                    ..Default::default()
-                },
-            ]),
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(person_slots),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
 
-        let mut f1 = IndexMap::new(); f1.insert("id".into(), Value::Str("P:002".into()));
-        let mut f2 = IndexMap::new(); f2.insert("id".into(), Value::Str("P:003".into()));
+        let mut f1 = IndexMap::new();
+        f1.insert("id".into(), Value::Str("P:002".into()));
+        let mut f2 = IndexMap::new();
+        f2.insert("id".into(), Value::Str("P:003".into()));
 
         let mut person = IndexMap::new();
         person.insert("id".into(), Value::Str("P:001".into()));
-        person.insert("friends".into(), Value::List(vec![
-            Value::Map(f1), Value::Map(f2),
-        ]));
+        person.insert(
+            "friends".into(),
+            Value::List(vec![Value::Map(f1), Value::Map(f2)]),
+        );
 
-        let result = engine.map_object(&Value::Map(person), Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let result = engine
+            .map_object(&Value::Map(person), Some("Person"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         if let Value::List(friends) = &out["friends"] {
             assert_eq!(friends.len(), 2);
             if let Value::Map(f) = &friends[0] {
                 assert_eq!(f["id"], Value::Str("P:002".into()));
-            } else { panic!("expected Map in list"); }
-        } else { panic!("expected List"); }
+            } else {
+                panic!("expected Map in list");
+            }
+        } else {
+            panic!("expected List");
+        }
     }
 
     // ── Test 10: implicit same-name copy (no populated_from) ─────────────────
@@ -2052,7 +2762,10 @@ mod tests {
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
         let src = src_person("P:042", "Bob");
         let result = engine.map_object(&src, None).unwrap(); // None → tree_root
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(out["id"], Value::Str("P:042".into()));
         assert_eq!(out["name"], Value::Str("Bob".into()));
     }
@@ -2063,11 +2776,14 @@ mod tests {
     fn test_null_expr() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("name".into(), SlotDerivation {
-            name: "name".into(),
-            expr: Some("NULL".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                expr: Some("NULL".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -2080,7 +2796,10 @@ mod tests {
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
         let src = src_person("P:001", "Alice");
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!("expected Map") };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
         assert_eq!(out["name"], Value::Null);
     }
 
@@ -2090,11 +2809,14 @@ mod tests {
     fn test_sources_first_wins() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("display_name".into(), SlotDerivation {
-            name: "display_name".into(),
-            sources: Some(vec!["name".into(), "id".into()]),
-            ..Default::default()
-        });
+        slots.insert(
+            "display_name".into(),
+            SlotDerivation {
+                name: "display_name".into(),
+                sources: Some(vec!["name".into(), "id".into()]),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -2108,14 +2830,20 @@ mod tests {
         // name is present → should win.
         let src = src_person("P:001", "Charlie");
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!() };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(out["display_name"], Value::Str("Charlie".into()));
 
         // name is absent → id wins.
         let mut m2 = IndexMap::new();
         m2.insert("id".into(), Value::Str("P:999".into()));
         let result2 = engine.map_object(&Value::Map(m2), Some("Person")).unwrap();
-        let out2 = match result2 { Value::Map(m) => m, _ => panic!() };
+        let out2 = match result2 {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(out2["display_name"], Value::Str("P:999".into()));
     }
 
@@ -2125,18 +2853,24 @@ mod tests {
     fn test_enum_mirror_source() {
         let schema = make_person_schema();
         let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
-        enum_derivations.insert("GenderType".into(), EnumDerivation {
-            name: "GenderType".into(),
-            populated_from: Some("GenderType".into()),
-            mirror_source: Some(true),
-            ..Default::default()
-        });
+        enum_derivations.insert(
+            "GenderType".into(),
+            EnumDerivation {
+                name: "GenderType".into(),
+                populated_from: Some("GenderType".into()),
+                mirror_source: Some(true),
+                ..Default::default()
+            },
+        );
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("gender".into(), SlotDerivation {
-            name: "gender".into(),
-            populated_from: Some("gender".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "gender".into(),
+            SlotDerivation {
+                name: "gender".into(),
+                populated_from: Some("gender".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -2151,7 +2885,10 @@ mod tests {
         let mut m = IndexMap::new();
         m.insert("gender".into(), Value::Str("nonbinary man".into()));
         let result = engine.map_object(&Value::Map(m), Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!() };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(out["gender"], Value::Str("nonbinary man".into()));
     }
 
@@ -2159,26 +2896,41 @@ mod tests {
 
     #[test]
     fn test_coerce_datatype_integer() {
-        assert_eq!(coerce_datatype(Value::Str("42".into()), "integer"), Value::Int(42));
+        assert_eq!(
+            coerce_datatype(Value::Str("42".into()), "integer"),
+            Value::Int(42)
+        );
         assert_eq!(coerce_datatype(Value::Float(3.7), "integer"), Value::Int(3));
         assert_eq!(coerce_datatype(Value::Int(5), "integer"), Value::Int(5));
     }
 
     #[test]
     fn test_coerce_datatype_float() {
-        assert_eq!(coerce_datatype(Value::Str("3.14".into()), "float"), Value::Float(3.14));
+        assert_eq!(
+            coerce_datatype(Value::Str("3.14".into()), "float"),
+            Value::Float(3.14)
+        );
         assert_eq!(coerce_datatype(Value::Int(2), "float"), Value::Float(2.0));
     }
 
     #[test]
     fn test_coerce_datatype_string() {
-        assert_eq!(coerce_datatype(Value::Int(99), "string"), Value::Str("99".into()));
+        assert_eq!(
+            coerce_datatype(Value::Int(99), "string"),
+            Value::Str("99".into())
+        );
     }
 
     #[test]
     fn test_coerce_datatype_bool() {
-        assert_eq!(coerce_datatype(Value::Str("true".into()), "boolean"), Value::Bool(true));
-        assert_eq!(coerce_datatype(Value::Int(0), "boolean"), Value::Bool(false));
+        assert_eq!(
+            coerce_datatype(Value::Str("true".into()), "boolean"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            coerce_datatype(Value::Int(0), "boolean"),
+            Value::Bool(false)
+        );
     }
 
     // ── Test 15: json_to_value round-trip ─────────────────────────────────────
@@ -2189,8 +2941,14 @@ mod tests {
         assert_eq!(json_to_value(&serde_json::json!(true)), Value::Bool(true));
         assert_eq!(json_to_value(&serde_json::json!(42)), Value::Int(42));
         assert_eq!(json_to_value(&serde_json::json!(3.14)), Value::Float(3.14));
-        assert_eq!(json_to_value(&serde_json::json!("hello")), Value::Str("hello".into()));
-        assert_eq!(json_to_value(&serde_json::json!([1, 2])), Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            json_to_value(&serde_json::json!("hello")),
+            Value::Str("hello".into())
+        );
+        assert_eq!(
+            json_to_value(&serde_json::json!([1, 2])),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
     }
 
     // ── Test 16: no class derivation → error ─────────────────────────────────
@@ -2212,13 +2970,22 @@ mod tests {
         let schema = make_person_schema();
         // Entity has id slot. Agent is_a Entity and adds label.
         let mut entity_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        entity_slots.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
+        entity_slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
         let mut agent_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        agent_slots.insert("label".into(), SlotDerivation {
-            name: "label".into(),
-            populated_from: Some("name".into()),
-            ..Default::default()
-        });
+        agent_slots.insert(
+            "label".into(),
+            SlotDerivation {
+                name: "label".into(),
+                populated_from: Some("name".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![
                 ClassDerivation {
@@ -2239,7 +3006,10 @@ mod tests {
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
         let src = src_person("P:001", "Dave");
         let result = engine.map_object(&src, Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!() };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         // Inherited from Entity.
         assert_eq!(out["id"], Value::Str("P:001".into()));
         // Own slot.
@@ -2252,16 +3022,19 @@ mod tests {
     fn test_string_split_to_list() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("aliases".into(), SlotDerivation {
-            name: "aliases".into(),
-            populated_from: Some("name".into()),
-            stringification: Some(crate::datamodel::StringificationConfiguration {
-                delimiter: Some("|".into()),
-                reversed: Some(true),
+        slots.insert(
+            "aliases".into(),
+            SlotDerivation {
+                name: "aliases".into(),
+                populated_from: Some("name".into()),
+                stringification: Some(crate::datamodel::StringificationConfiguration {
+                    delimiter: Some("|".into()),
+                    reversed: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -2275,10 +3048,18 @@ mod tests {
         let mut m = IndexMap::new();
         m.insert("name".into(), Value::Str("Alice|Bob|Carol".into()));
         let result = engine.map_object(&Value::Map(m), Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!() };
-        assert_eq!(out["aliases"], Value::List(vec![
-            Value::Str("Alice".into()), Value::Str("Bob".into()), Value::Str("Carol".into()),
-        ]));
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
+        assert_eq!(
+            out["aliases"],
+            Value::List(vec![
+                Value::Str("Alice".into()),
+                Value::Str("Bob".into()),
+                Value::Str("Carol".into()),
+            ])
+        );
     }
 
     // ── Test 19: list join to string (stringification delimiter) ─────────────
@@ -2287,16 +3068,19 @@ mod tests {
     fn test_list_join_to_string() {
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("name".into(), SlotDerivation {
-            name: "name".into(),
-            populated_from: Some("aliases".into()),
-            stringification: Some(crate::datamodel::StringificationConfiguration {
-                delimiter: Some(", ".into()),
-                reversed: Some(false),
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                populated_from: Some("aliases".into()),
+                stringification: Some(crate::datamodel::StringificationConfiguration {
+                    delimiter: Some(", ".into()),
+                    reversed: Some(false),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -2308,11 +3092,15 @@ mod tests {
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
         let mut m = IndexMap::new();
-        m.insert("aliases".into(), Value::List(vec![
-            Value::Str("Alice".into()), Value::Str("Smith".into()),
-        ]));
+        m.insert(
+            "aliases".into(),
+            Value::List(vec![Value::Str("Alice".into()), Value::Str("Smith".into())]),
+        );
         let result = engine.map_object(&Value::Map(m), Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, _ => panic!() };
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(out["name"], Value::Str("Alice, Smith".into()));
     }
 
@@ -2325,44 +3113,129 @@ mod tests {
     fn make_mappings_norm_schema() -> InMemorySchema {
         InMemorySchemaBuilder::new()
             .add_type("string")
-            .add_class(ClassDef { name: "MappingSet".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("MappingSet", SlotDef {
-                name: "mappings".into(), range: RangeKind::Class("Mapping".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "MappingSet".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("MappingSet", SlotDef {
-                name: "entities".into(), range: RangeKind::Class("Entity".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "MappingSet",
+                SlotDef {
+                    name: "mappings".into(),
+                    range: RangeKind::Class("Mapping".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "MappingSet",
+                SlotDef {
+                    name: "entities".into(),
+                    range: RangeKind::Class("Entity".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "Mapping".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_class(ClassDef { name: "Mapping".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Mapping", SlotDef {
-                name: "subject".into(), range: RangeKind::Class("Entity".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "Mapping",
+                SlotDef {
+                    name: "subject".into(),
+                    range: RangeKind::Class("Entity".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Mapping",
+                SlotDef {
+                    name: "object".into(),
+                    range: RangeKind::Class("Entity".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Mapping",
+                SlotDef {
+                    name: "predicate".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "Entity".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Mapping", SlotDef {
-                name: "object".into(), range: RangeKind::Class("Entity".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Mapping", SlotDef {
-                name: "predicate".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_class(ClassDef { name: "Entity".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Entity", SlotDef {
-                name: "id".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: true, identifier: true, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Entity", SlotDef {
-                name: "name".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
+            .add_slot(
+                "Entity",
+                SlotDef {
+                    name: "id".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: true,
+                    identifier: true,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Entity",
+                SlotDef {
+                    name: "name".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build()
     }
 
@@ -2419,26 +3292,35 @@ mod tests {
             ("object_id", "object.id"),
             ("object_name", "object.name"),
         ] {
-            slots.insert(slot.into(), SlotDerivation {
-                name: slot.into(),
-                expr: Some(expr.into()),
-                ..Default::default()
-            });
+            slots.insert(
+                slot.into(),
+                SlotDerivation {
+                    name: slot.into(),
+                    expr: Some(expr.into()),
+                    ..Default::default()
+                },
+            );
         }
         // predicate_id is a plain copy (populated_from), not an FK.
-        slots.insert("predicate_id".into(), SlotDerivation {
-            name: "predicate_id".into(),
-            populated_from: Some("predicate".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "predicate_id".into(),
+            SlotDerivation {
+                name: "predicate_id".into(),
+                populated_from: Some("predicate".into()),
+                ..Default::default()
+            },
+        );
 
         let mappings_slot = {
             let mut m: IndexMap<String, SlotDerivation> = IndexMap::new();
-            m.insert("mappings".into(), SlotDerivation {
-                name: "mappings".into(),
-                populated_from: Some("mappings".into()),
-                ..Default::default()
-            });
+            m.insert(
+                "mappings".into(),
+                SlotDerivation {
+                    name: "mappings".into(),
+                    populated_from: Some("mappings".into()),
+                    ..Default::default()
+                },
+            );
             m
         };
 
@@ -2474,7 +3356,10 @@ mod tests {
             _ => panic!("not a map"),
         };
         assert_eq!(mappings.len(), 1);
-        let row = match &mappings[0] { Value::Map(m) => m, _ => panic!() };
+        let row = match &mappings[0] {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(row["subject_id"], Value::Str("X:1".into()));
         assert_eq!(row["subject_name"], Value::Str("x1".into()));
         assert_eq!(row["object_id"], Value::Str("Y:1".into()));
@@ -2488,11 +3373,14 @@ mod tests {
         // via map_object — the index is built but never consulted.
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("name".into(), SlotDerivation {
-            name: "name".into(),
-            populated_from: Some("name".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                populated_from: Some("name".into()),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Person".into(),
@@ -2510,7 +3398,10 @@ mod tests {
         let via_object = engine.map_object(&input, Some("Person")).unwrap();
         let via_container = engine.map_container(&input, Some("Person")).unwrap();
         assert_eq!(via_object, via_container);
-        let out = match via_container { Value::Map(m) => m, _ => panic!() };
+        let out = match via_container {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(out["name"], Value::Str("Alice".into()));
     }
 
@@ -2522,18 +3413,44 @@ mod tests {
             .add_type("float")
             .add_type("string")
             .add_class(ClassDef {
-                name: "Obs".into(), tree_root: true, is_a: None, mixins: vec![],
+                name: "Obs".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Obs", SlotDef {
-                name: "height_in".into(), range: RangeKind::Type("float".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: Some("in".into()), any_of_enums: vec![],
-            })
-            .add_slot("Obs", SlotDef {
-                name: "glucose".into(), range: RangeKind::Type("float".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
+            .add_slot(
+                "Obs",
+                SlotDef {
+                    name: "height_in".into(),
+                    range: RangeKind::Type("float".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: Some(crate::schema::UnitRef {
+                        code: "in".into(),
+                        system: crate::schema::UnitSystem::Ucum,
+                    }),
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Obs",
+                SlotDef {
+                    name: "glucose".into(),
+                    range: RangeKind::Type("float".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build()
     }
 
@@ -2542,15 +3459,18 @@ mod tests {
     fn unit_conversion_schema_unit_to_cm() {
         let schema = make_measure_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("height_cm".into(), SlotDerivation {
-            name: "height_cm".into(),
-            populated_from: Some("height_in".into()),
-            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
-                target_unit: Some("cm".into()),
+        slots.insert(
+            "height_cm".into(),
+            SlotDerivation {
+                name: "height_cm".into(),
+                populated_from: Some("height_in".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    target_unit: Some("cm".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "ObsOut".into(),
@@ -2564,7 +3484,8 @@ mod tests {
         let mut m = IndexMap::new();
         m.insert("height_in".into(), Value::Float(10.0));
         let out = match engine.map_object(&Value::Map(m), Some("Obs")).unwrap() {
-            Value::Map(m) => m, _ => panic!(),
+            Value::Map(m) => m,
+            _ => panic!(),
         };
         // 10 in = 25.4 cm
         match out["height_cm"] {
@@ -2578,16 +3499,19 @@ mod tests {
     fn unit_conversion_spec_units_mg_to_g() {
         let schema = make_measure_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("dose_g".into(), SlotDerivation {
-            name: "dose_g".into(),
-            populated_from: Some("glucose".into()),
-            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
-                source_unit: Some("mg".into()),
-                target_unit: Some("g".into()),
+        slots.insert(
+            "dose_g".into(),
+            SlotDerivation {
+                name: "dose_g".into(),
+                populated_from: Some("glucose".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    source_unit: Some("mg".into()),
+                    target_unit: Some("g".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "ObsOut".into(),
@@ -2601,7 +3525,8 @@ mod tests {
         let mut m = IndexMap::new();
         m.insert("glucose".into(), Value::Float(2500.0));
         let out = match engine.map_object(&Value::Map(m), Some("Obs")).unwrap() {
-            Value::Map(m) => m, _ => panic!(),
+            Value::Map(m) => m,
+            _ => panic!(),
         };
         match out["dose_g"] {
             Value::Float(f) => assert!((f - 2.5).abs() < 1e-9, "got {f}"),
@@ -2609,21 +3534,25 @@ mod tests {
         }
     }
 
-    /// Incompatible / unknown units leave the magnitude unchanged.
+    /// Incompatible / unknown units now raise (parity with Python
+    /// `DimensionalityError`), rather than silently passing the value through.
     #[test]
-    fn unit_conversion_incompatible_passthrough() {
+    fn unit_conversion_incompatible_raises() {
         let schema = make_measure_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("out".into(), SlotDerivation {
-            name: "out".into(),
-            populated_from: Some("glucose".into()),
-            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
-                source_unit: Some("mmol/L".into()),
-                target_unit: Some("mg/dL".into()), // needs molecular weight
+        slots.insert(
+            "out".into(),
+            SlotDerivation {
+                name: "out".into(),
+                populated_from: Some("glucose".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    source_unit: Some("mmol/L".into()),
+                    target_unit: Some("mg/dL".into()), // needs molecular weight
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "ObsOut".into(),
@@ -2636,14 +3565,13 @@ mod tests {
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
         let mut m = IndexMap::new();
         m.insert("glucose".into(), Value::Float(5.0));
-        let out = match engine.map_object(&Value::Map(m), Some("Obs")).unwrap() {
-            Value::Map(m) => m, _ => panic!(),
-        };
-        // Unchanged magnitude (no MW available), emitted as Float.
-        match out["out"] {
-            Value::Float(f) => assert!((f - 5.0).abs() < 1e-9, "got {f}"),
-            ref other => panic!("expected Float, got {other:?}"),
-        }
+        // mmol/L → mg/dL is a dimensionality mismatch (molar↔mass) → error.
+        // (The slot-level UnitConversion error is wrapped by the outer handler.)
+        let err = engine.map_object(&Value::Map(m), Some("Obs")).unwrap_err();
+        assert!(
+            err.to_string().contains("incompatible dimensions"),
+            "expected a dimensionality error, got {err:?}"
+        );
     }
 
     /// Structured {value, unit} input with target_magnitude_slot output.
@@ -2651,19 +3579,22 @@ mod tests {
     fn unit_conversion_structured_value_and_output_map() {
         // No schema (units come entirely from the structured value + spec).
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("height".into(), SlotDerivation {
-            name: "height".into(),
-            populated_from: Some("height".into()),
-            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
-                target_unit: Some("m".into()),
-                source_unit_slot: Some("unit".into()),
-                source_magnitude_slot: Some("value".into()),
-                target_magnitude_slot: Some("value".into()),
-                target_unit_slot: Some("unit".into()),
+        slots.insert(
+            "height".into(),
+            SlotDerivation {
+                name: "height".into(),
+                populated_from: Some("height".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    target_unit: Some("m".into()),
+                    source_unit_slot: Some("unit".into()),
+                    source_magnitude_slot: Some("value".into()),
+                    target_magnitude_slot: Some("value".into()),
+                    target_unit_slot: Some("unit".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Out".into(),
@@ -2680,9 +3611,13 @@ mod tests {
         let mut m = IndexMap::new();
         m.insert("height".into(), Value::Map(inner));
         let out = match engine.map_object(&Value::Map(m), Some("Rec")).unwrap() {
-            Value::Map(m) => m, _ => panic!(),
+            Value::Map(m) => m,
+            _ => panic!(),
         };
-        let hm = match &out["height"] { Value::Map(m) => m, other => panic!("{other:?}") };
+        let hm = match &out["height"] {
+            Value::Map(m) => m,
+            other => panic!("{other:?}"),
+        };
         match hm["value"] {
             Value::Float(f) => assert!((f - 1.5).abs() < 1e-9, "got {f}"),
             ref other => panic!("expected Float, got {other:?}"),
@@ -2694,17 +3629,20 @@ mod tests {
     #[test]
     fn unit_conversion_non_numeric_none() {
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("out".into(), SlotDerivation {
-            name: "out".into(),
-            populated_from: Some("v".into()),
-            unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
-                source_unit: Some("cm".into()),
-                target_unit: Some("m".into()),
-                none_if_non_numeric: Some(true),
+        slots.insert(
+            "out".into(),
+            SlotDerivation {
+                name: "out".into(),
+                populated_from: Some("v".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    source_unit: Some("cm".into()),
+                    target_unit: Some("m".into()),
+                    none_if_non_numeric: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
                 name: "Out".into(),
@@ -2718,7 +3656,8 @@ mod tests {
         let mut m = IndexMap::new();
         m.insert("v".into(), Value::Str("not-a-number".into()));
         let out = match engine.map_object(&Value::Map(m), Some("Rec")).unwrap() {
-            Value::Map(m) => m, _ => panic!(),
+            Value::Map(m) => m,
+            _ => panic!(),
         };
         assert_eq!(out["out"], Value::Null);
     }
@@ -2731,27 +3670,64 @@ mod tests {
         InMemorySchemaBuilder::new()
             .add_type("string")
             // "Item" class with identifier slot "id"
-            .add_class(ClassDef { name: "Item".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Item", SlotDef {
-                name: "id".into(),
-                range: RangeKind::Type("string".into()),
-                multivalued: false, required: true, identifier: true, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Item".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Item", SlotDef {
-                name: "value".into(),
-                range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
+            .add_slot(
+                "Item",
+                SlotDef {
+                    name: "id".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: true,
+                    identifier: true,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Item",
+                SlotDef {
+                    name: "value".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             // "Container" class with a multivalued "items" slot (range: Item)
-            .add_class(ClassDef { name: "Container".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("Container", SlotDef {
-                name: "items".into(),
-                range: RangeKind::Class("Item".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Container".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
+            .add_slot(
+                "Container",
+                SlotDef {
+                    name: "items".into(),
+                    range: RangeKind::Class("Item".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build()
     }
 
@@ -2765,16 +3741,31 @@ mod tests {
 
         // SlotDerivation for "items" with dictionary_key = "id"
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("items".into(), SlotDerivation {
-            name: "items".into(),
-            populated_from: Some("items".into()),
-            dictionary_key: Some("id".into()),
-            ..Default::default()
-        });
+        slots.insert(
+            "items".into(),
+            SlotDerivation {
+                name: "items".into(),
+                populated_from: Some("items".into()),
+                dictionary_key: Some("id".into()),
+                ..Default::default()
+            },
+        );
         // Identity class derivation for "Item" so map_value_by_range can recurse.
         let mut item_slot_derivs: IndexMap<String, SlotDerivation> = IndexMap::new();
-        item_slot_derivs.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
-        item_slot_derivs.insert("value".into(), SlotDerivation { name: "value".into(), ..Default::default() });
+        item_slot_derivs.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
+        item_slot_derivs.insert(
+            "value".into(),
+            SlotDerivation {
+                name: "value".into(),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![
                 ClassDerivation {
@@ -2807,8 +3798,13 @@ mod tests {
             Value::List(vec![Value::Map(item_a), Value::Map(item_b)]),
         );
 
-        let result = engine.map_object(&Value::Map(src), Some("Container")).unwrap();
-        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+        let result = engine
+            .map_object(&Value::Map(src), Some("Container"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
 
         // Result should be a dict keyed by "id", with "id" dropped from values.
         let items_val = &out["items"];
@@ -2822,14 +3818,20 @@ mod tests {
             other => panic!("expected Map for key 'a', got {other:?}"),
         };
         // "id" key must have been dropped from the value
-        assert!(!val_a.contains_key("id"), "key 'id' should be dropped from value");
+        assert!(
+            !val_a.contains_key("id"),
+            "key 'id' should be dropped from value"
+        );
         assert_eq!(val_a["value"], Value::Str("alpha".into()));
 
         let val_b = match dict.get("b") {
             Some(Value::Map(m)) => m,
             other => panic!("expected Map for key 'b', got {other:?}"),
         };
-        assert!(!val_b.contains_key("id"), "key 'id' should be dropped from value");
+        assert!(
+            !val_b.contains_key("id"),
+            "key 'id' should be dropped from value"
+        );
         assert_eq!(val_b["value"], Value::Str("beta".into()));
     }
 
@@ -2843,16 +3845,31 @@ mod tests {
         let schema = build_reshape_schema();
 
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert("items".into(), SlotDerivation {
-            name: "items".into(),
-            populated_from: Some("items".into()),
-            cast_collection_as: Some(CollectionType::MultiValuedList),
-            ..Default::default()
-        });
+        slots.insert(
+            "items".into(),
+            SlotDerivation {
+                name: "items".into(),
+                populated_from: Some("items".into()),
+                cast_collection_as: Some(CollectionType::MultiValuedList),
+                ..Default::default()
+            },
+        );
         // Identity class derivation for "Item" so map_value_by_range can recurse.
         let mut item_slot_derivs2: IndexMap<String, SlotDerivation> = IndexMap::new();
-        item_slot_derivs2.insert("id".into(), SlotDerivation { name: "id".into(), ..Default::default() });
-        item_slot_derivs2.insert("value".into(), SlotDerivation { name: "value".into(), ..Default::default() });
+        item_slot_derivs2.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
+        item_slot_derivs2.insert(
+            "value".into(),
+            SlotDerivation {
+                name: "value".into(),
+                ..Default::default()
+            },
+        );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![
                 ClassDerivation {
@@ -2883,8 +3900,13 @@ mod tests {
         let mut src = IndexMap::new();
         src.insert("items".into(), Value::Map(items_dict));
 
-        let result = engine.map_object(&Value::Map(src), Some("Container")).unwrap();
-        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+        let result = engine
+            .map_object(&Value::Map(src), Some("Container"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
 
         let items_val = &out["items"];
         let list = match items_val {
@@ -2903,10 +3925,16 @@ mod tests {
             assert!(m.contains_key("value"));
         }
         // Check specific entries (insertion order preserved via IndexMap).
-        let m0 = match &list[0] { Value::Map(m) => m, _ => panic!() };
+        let m0 = match &list[0] {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(m0["id"], Value::Str("a".into()));
         assert_eq!(m0["value"], Value::Str("alpha".into()));
-        let m1 = match &list[1] { Value::Map(m) => m, _ => panic!() };
+        let m1 = match &list[1] {
+            Value::Map(m) => m,
+            _ => panic!(),
+        };
         assert_eq!(m1["id"], Value::Str("b".into()));
         assert_eq!(m1["value"], Value::Str("beta".into()));
     }
@@ -2930,46 +3958,98 @@ mod tests {
         let target_schema = InMemorySchemaBuilder::new()
             .add_type("string")
             .add_type("integer")
-            .add_class(ClassDef { name: "Person".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("Person", SlotDef {
-                name: "full_name".into(),
-                range: RangeKind::Class("FullName".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Person".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Person", SlotDef {
-                name: "age".into(),
-                range: RangeKind::Type("integer".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "full_name".into(),
+                    range: RangeKind::Class("FullName".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Person",
+                SlotDef {
+                    name: "age".into(),
+                    range: RangeKind::Type("integer".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "FullName".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_class(ClassDef { name: "FullName".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("FullName", SlotDef {
-                name: "first".into(),
-                range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("FullName", SlotDef {
-                name: "last".into(),
-                range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
+            .add_slot(
+                "FullName",
+                SlotDef {
+                    name: "first".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "FullName",
+                SlotDef {
+                    name: "last".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build();
 
         // Build the nested ClassDerivation for FullName.
         let mut fullname_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        fullname_slots.insert("first".into(), SlotDerivation {
-            name: "first".into(),
-            populated_from: Some("first".into()),
-            ..Default::default()
-        });
-        fullname_slots.insert("last".into(), SlotDerivation {
-            name: "last".into(),
-            populated_from: Some("last".into()),
-            ..Default::default()
-        });
+        fullname_slots.insert(
+            "first".into(),
+            SlotDerivation {
+                name: "first".into(),
+                populated_from: Some("first".into()),
+                ..Default::default()
+            },
+        );
+        fullname_slots.insert(
+            "last".into(),
+            SlotDerivation {
+                name: "last".into(),
+                populated_from: Some("last".into()),
+                ..Default::default()
+            },
+        );
         let fullname_cls_deriv = ClassDerivation {
             name: "FullName".into(),
             populated_from: Some("Person".into()),
@@ -2986,16 +4066,22 @@ mod tests {
 
         // Outer spec: Person → Person with full_name via object_derivations, age direct.
         let mut outer_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        outer_slots.insert("full_name".into(), SlotDerivation {
-            name: "full_name".into(),
-            object_derivations: Some(vec![obj_deriv]),
-            ..Default::default()
-        });
-        outer_slots.insert("age".into(), SlotDerivation {
-            name: "age".into(),
-            populated_from: Some("age".into()),
-            ..Default::default()
-        });
+        outer_slots.insert(
+            "full_name".into(),
+            SlotDerivation {
+                name: "full_name".into(),
+                object_derivations: Some(vec![obj_deriv]),
+                ..Default::default()
+            },
+        );
+        outer_slots.insert(
+            "age".into(),
+            SlotDerivation {
+                name: "age".into(),
+                populated_from: Some("age".into()),
+                ..Default::default()
+            },
+        );
 
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
@@ -3015,7 +4101,10 @@ mod tests {
         src.insert("age".into(), Value::Int(36));
 
         let result = engine.map_object(&Value::Map(src), Some("Person")).unwrap();
-        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+        let out = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
 
         // age passes through directly
         assert_eq!(out["age"], Value::Int(36));
@@ -3037,29 +4126,60 @@ mod tests {
         // Target schema: Container.tags is multivalued (List of Tag).
         let target_schema = InMemorySchemaBuilder::new()
             .add_type("string")
-            .add_class(ClassDef { name: "Container".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("Container", SlotDef {
-                name: "tags".into(),
-                range: RangeKind::Class("Tag".into()),
-                multivalued: true,  // <-- key: forces List output
-                required: false, identifier: false, key: false, unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Container".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_class(ClassDef { name: "Tag".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Tag", SlotDef {
-                name: "label".into(),
-                range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "Container",
+                SlotDef {
+                    name: "tags".into(),
+                    range: RangeKind::Class("Tag".into()),
+                    multivalued: true, // <-- key: forces List output
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "Tag".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
+            .add_slot(
+                "Tag",
+                SlotDef {
+                    name: "label".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build();
 
         // ObjectDerivation with a single ClassDerivation for Tag.
         let mut tag_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        tag_slots.insert("label".into(), SlotDerivation {
-            name: "label".into(),
-            populated_from: Some("tag".into()),
-            ..Default::default()
-        });
+        tag_slots.insert(
+            "label".into(),
+            SlotDerivation {
+                name: "label".into(),
+                populated_from: Some("tag".into()),
+                ..Default::default()
+            },
+        );
         let tag_cls_deriv = ClassDerivation {
             name: "Tag".into(),
             populated_from: Some("Container".into()),
@@ -3075,11 +4195,14 @@ mod tests {
         };
 
         let mut outer_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        outer_slots.insert("tags".into(), SlotDerivation {
-            name: "tags".into(),
-            object_derivations: Some(vec![obj_deriv]),
-            ..Default::default()
-        });
+        outer_slots.insert(
+            "tags".into(),
+            SlotDerivation {
+                name: "tags".into(),
+                object_derivations: Some(vec![obj_deriv]),
+                ..Default::default()
+            },
+        );
 
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
@@ -3096,8 +4219,13 @@ mod tests {
         let mut src = IndexMap::new();
         src.insert("tag".into(), Value::Str("rust".into()));
 
-        let result = engine.map_object(&Value::Map(src), Some("Container")).unwrap();
-        let out = match result { Value::Map(m) => m, other => panic!("expected Map, got {other:?}") };
+        let result = engine
+            .map_object(&Value::Map(src), Some("Container"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
 
         // tags must be a List because target slot is multivalued
         let tags = match &out["tags"] {
@@ -3110,5 +4238,195 @@ mod tests {
             other => panic!("expected Map in tags list, got {other:?}"),
         };
         assert_eq!(tag0["label"], Value::Str("rust".into()));
+    }
+}
+
+#[cfg(test)]
+mod op_tests {
+    //! Tests for offset / aggregation / pivot operations.
+    use super::*;
+    use crate::datamodel::{
+        AggregationOperation, AggregationType, ClassDerivation, Offset, PivotDirectionType,
+        PivotOperation, SlotDerivation, TransformationSpecification,
+    };
+
+    fn pivot(direction: PivotDirectionType) -> PivotOperation {
+        PivotOperation {
+            direction,
+            variable_slot: "variable".into(),
+            value_slot: "value".into(),
+            unmelt_to_class: None,
+            unmelt_to_slots: None,
+            unit_slot: None,
+            slot_name_template: "{variable}".into(),
+            source_slots: None,
+            id_slots: None,
+        }
+    }
+
+    fn run(spec: TransformationSpecification, src: IndexMap<String, Value>, ty: &str) -> Value {
+        ObjectTransformer::new(spec, None, None)
+            .map_object(&Value::Map(src), Some(ty))
+            .unwrap()
+    }
+
+    fn map(pairs: &[(&str, Value)]) -> IndexMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    fn class_with_slot(name: &str, sd: SlotDerivation) -> TransformationSpecification {
+        let mut slots = IndexMap::new();
+        slots.insert(sd.name.clone(), sd);
+        TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: name.into(),
+                populated_from: Some(name.into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn offset_adds_and_reverses() {
+        // result = base + offset_value * factor
+        let sd = SlotDerivation {
+            name: "out".into(),
+            populated_from: Some("base".into()),
+            offset: Some(Offset {
+                offset_value: 2.0,
+                offset_field: "factor".into(),
+                offset_reverse: None,
+            }),
+            ..Default::default()
+        };
+        let out = run(
+            class_with_slot("C", sd),
+            map(&[("base", Value::Int(10)), ("factor", Value::Int(3))]),
+            "C",
+        );
+        // 10 + 2*3 = 16
+        assert_eq!(out, Value::Map(map(&[("out", Value::Float(16.0))])));
+
+        let sd = SlotDerivation {
+            name: "out".into(),
+            populated_from: Some("base".into()),
+            offset: Some(Offset {
+                offset_value: 2.0,
+                offset_field: "factor".into(),
+                offset_reverse: Some(true),
+            }),
+            ..Default::default()
+        };
+        let out = run(
+            class_with_slot("C", sd),
+            map(&[("base", Value::Int(10)), ("factor", Value::Int(3))]),
+            "C",
+        );
+        // 10 - 2*3 = 4
+        assert_eq!(out, Value::Map(map(&[("out", Value::Float(4.0))])));
+    }
+
+    fn agg(op: AggregationType) -> AggregationOperation {
+        AggregationOperation {
+            operator: op,
+            null_handling: None,
+            invalid_value_handling: None,
+        }
+    }
+
+    #[test]
+    fn aggregation_operators() {
+        let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let cases = [
+            (AggregationType::Sum, Value::Int(6)),
+            (AggregationType::Count, Value::Int(3)),
+            (AggregationType::Average, Value::Float(2.0)),
+            (AggregationType::Min, Value::Int(1)),
+            (AggregationType::Max, Value::Int(3)),
+            (AggregationType::Median, Value::Float(2.0)),
+        ];
+        for (op, expected) in cases {
+            let sd = SlotDerivation {
+                name: "out".into(),
+                populated_from: Some("vals".into()),
+                aggregation_operation: Some(agg(op)),
+                ..Default::default()
+            };
+            let out = run(
+                class_with_slot("C", sd),
+                map(&[("vals", list.clone())]),
+                "C",
+            );
+            assert_eq!(out, Value::Map(map(&[("out", expected)])), "op mismatch");
+        }
+    }
+
+    #[test]
+    fn pivot_melt_to_eav() {
+        let mut pv = pivot(PivotDirectionType::Melt);
+        pv.source_slots = Some(vec!["height".into(), "weight".into()]);
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "C".into(),
+                populated_from: Some("C".into()),
+                pivot_operation: Some(pv),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let out = run(
+            spec,
+            map(&[
+                ("height", Value::Float(1.8)),
+                ("weight", Value::Float(75.0)),
+            ]),
+            "C",
+        );
+        assert_eq!(
+            out,
+            Value::List(vec![
+                Value::Map(map(&[
+                    ("variable", Value::Str("height".into())),
+                    ("value", Value::Float(1.8))
+                ])),
+                Value::Map(map(&[
+                    ("variable", Value::Str("weight".into())),
+                    ("value", Value::Float(75.0))
+                ])),
+            ])
+        );
+    }
+
+    #[test]
+    fn pivot_unmelt_collection_to_wide() {
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "C".into(),
+                populated_from: Some("C".into()),
+                pivot_operation: Some(pivot(PivotDirectionType::Unmelt)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let records = Value::List(vec![
+            Value::Map(map(&[
+                ("variable", Value::Str("h".into())),
+                ("value", Value::Float(1.8)),
+            ])),
+            Value::Map(map(&[
+                ("variable", Value::Str("w".into())),
+                ("value", Value::Float(75.0)),
+            ])),
+        ]);
+        let out = run(spec, map(&[("measurements", records)]), "C");
+        assert_eq!(
+            out,
+            Value::Map(map(&[("h", Value::Float(1.8)), ("w", Value::Float(75.0))]))
+        );
     }
 }

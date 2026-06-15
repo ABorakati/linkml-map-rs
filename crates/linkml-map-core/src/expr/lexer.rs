@@ -151,9 +151,9 @@ pub fn lex(src: &str) -> ExprResult<Vec<Token>> {
                 match raw.parse::<i64>() {
                     Ok(v) => tokens.push(Token::Int(v)),
                     Err(_) => {
-                        let f = raw.parse::<f64>().map_err(|_| {
-                            ExprError::Lex(format!("invalid int literal: {raw}"))
-                        })?;
+                        let f = raw
+                            .parse::<f64>()
+                            .map_err(|_| ExprError::Lex(format!("invalid int literal: {raw}")))?;
                         tokens.push(Token::Float(f));
                     }
                 }

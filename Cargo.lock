@@ -583,6 +583,7 @@ dependencies = [
  "linkml-map-core",
  "linkml_meta",
  "schemaview",
+ "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
 ]

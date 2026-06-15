@@ -47,6 +47,26 @@ pub struct EnumDef {
     pub permissible_values: Vec<PermissibleValue>,
 }
 
+/// Which unit metaslot a [`UnitRef`] came from. Mirrors the Python
+/// `UnitSystem` dispatch in `linkml_map.functions.unit_conversion`: `ucum_code`
+/// → UCUM (ucumvert registry), `iec61360code` → IEC61360, everything else
+/// (`symbol`/`abbreviation`/`descriptive_name`) → a plain pint registry that
+/// does not understand UCUM-only spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnitSystem {
+    Ucum,
+    Iec61360,
+    #[default]
+    Other,
+}
+
+/// A unit annotation plus the metaslot scheme it was declared under.
+#[derive(Debug, Clone)]
+pub struct UnitRef {
+    pub code: String,
+    pub system: UnitSystem,
+}
+
 /// Minimal projection of a LinkML `SlotDefinition` (induced / effective).
 ///
 /// All fields here reflect the *induced* (inheritance-resolved) value as the
@@ -59,14 +79,18 @@ pub struct SlotDef {
     pub range: RangeKind,
     /// True if the slot may hold multiple values (Python: `multivalued`).
     pub multivalued: bool,
+    /// True if a class-ranged value is inlined (nested) rather than referenced.
+    pub inlined: bool,
+    /// True if an inlined multivalued slot is serialised as a list (not a dict).
+    pub inlined_as_list: bool,
     /// True if the slot must be present (Python: `required`).
     pub required: bool,
     /// True if this slot is marked `identifier: true`.
     pub identifier: bool,
     /// True if this slot is marked `key: true` (unique within container).
     pub key: bool,
-    /// Unit annotation, if present (ucum_code / symbol / …).
-    pub unit: Option<String>,
+    /// Unit annotation, if present, with the metaslot it came from.
+    pub unit: Option<UnitRef>,
     /// Any-of enum names when range is None/Any but `any_of` declares enums.
     pub any_of_enums: Vec<String>,
 }
@@ -321,11 +345,7 @@ impl SchemaProvider for InMemorySchema {
             .classes
             .get(class_name)
             .ok_or_else(|| SchemaError::ClassNotFound(class_name.to_owned()))?;
-        Ok(record
-            .slots
-            .iter()
-            .find(|s| s.identifier || s.key)
-            .cloned())
+        Ok(record.slots.iter().find(|s| s.identifier || s.key).cloned())
     }
 
     fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef> {
@@ -418,6 +438,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .add_slot(
@@ -431,6 +453,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .add_slot(
@@ -444,6 +468,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .add_slot(
@@ -457,6 +483,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .add_slot(
@@ -470,6 +498,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .add_class(ClassDef {
@@ -489,6 +519,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .add_slot(
@@ -502,6 +534,8 @@ mod tests {
                     key: false,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .build()
@@ -634,6 +668,8 @@ mod tests {
                     key: true,
                     unit: None,
                     any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
                 },
             )
             .build();
@@ -737,6 +773,8 @@ mod tests {
                     name: "value".into(),
                     range: RangeKind::None,
                     multivalued: false,
+                    inlined: false,
+                    inlined_as_list: false,
                     required: false,
                     identifier: false,
                     key: false,

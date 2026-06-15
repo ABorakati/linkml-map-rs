@@ -177,8 +177,9 @@ impl CompiledPlan {
 
         // Load target schema (may be same file — that's fine, second load is cheap)
         let target_provider: Box<dyn SchemaProvider> = {
-            let ts = load_schema_tolerant(target_schema_path)
-                .with_context(|| format!("loading target schema {}", target_schema_path.display()))?;
+            let ts = load_schema_tolerant(target_schema_path).with_context(|| {
+                format!("loading target schema {}", target_schema_path.display())
+            })?;
             match ts {
                 TolerantSchema::Real(p) => Box::new(p),
                 TolerantSchema::InMemory(p) => Box::new(p),
@@ -199,11 +200,8 @@ impl CompiledPlan {
         let source_class = source_class_hint.map(str::to_owned).or_else(|| {
             // Try first class_derivation's populated_from, then its name
             spec.class_derivations.as_ref().and_then(|cds| {
-                cds.first().map(|cd| {
-                    cd.populated_from
-                        .clone()
-                        .unwrap_or_else(|| cd.name.clone())
-                })
+                cds.first()
+                    .map(|cd| cd.populated_from.clone().unwrap_or_else(|| cd.name.clone()))
             })
         });
 
@@ -239,12 +237,7 @@ impl CompiledPlan {
                 cds.iter()
                     .filter_map(|cd| cd.slot_derivations.as_ref())
                     .flat_map(|sds| sds.values())
-                    .any(|sd| {
-                        sd.expr
-                            .as_deref()
-                            .map(|e| e.contains('.'))
-                            .unwrap_or(false)
-                    })
+                    .any(|sd| sd.expr.as_deref().map(|e| e.contains('.')).unwrap_or(false))
             })
             .unwrap_or(false);
 
@@ -406,11 +399,10 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
             // to find referenced objects inlined within individual rows.
             // Use serde_json round-trip to build the Map (avoids a direct
             // indexmap dependency in this crate).
-            let json_list: serde_json::Value = serde_json::to_value(&all_rows)
-                .unwrap_or(serde_json::Value::Array(vec![]));
+            let json_list: serde_json::Value =
+                serde_json::to_value(&all_rows).unwrap_or(serde_json::Value::Array(vec![]));
             let json_container = serde_json::json!({ "items": json_list });
-            serde_json::from_value::<Value>(json_container)
-                .unwrap_or(Value::Null)
+            serde_json::from_value::<Value>(json_container).unwrap_or(Value::Null)
         };
 
         // Build the index ONCE, wrap in Arc for sharing across workers.
@@ -619,7 +611,12 @@ fn load_schema_tolerant(path: &Path) -> Result<TolerantSchema> {
             // Try the tolerant in-memory YAML parser as fallback.
             build_inmemory_schema_from_yaml(path)
                 .map(TolerantSchema::InMemory)
-                .with_context(|| format!("loading schema (real + inmemory fallback failed): {}", path.display()))
+                .with_context(|| {
+                    format!(
+                        "loading schema (real + inmemory fallback failed): {}",
+                        path.display()
+                    )
+                })
         }
     }
 }
@@ -637,8 +634,8 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> Result<linkml_map_core::schem
 
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading schema {}", path.display()))?;
-    let root: serde_json::Value = serde_yaml::from_str(&text)
-        .with_context(|| format!("YAML parse {}", path.display()))?;
+    let root: serde_json::Value =
+        serde_yaml::from_str(&text).with_context(|| format!("YAML parse {}", path.display()))?;
     let obj = root
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("schema root is not a mapping: {}", path.display()))?;
@@ -671,48 +668,58 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> Result<linkml_map_core::schem
         }
     };
 
-    let make_slot = |name: &str,
-                     local: Option<&serde_json::Map<String, serde_json::Value>>|
-     -> SlotDef {
-        let global = global_slots
-            .and_then(|gs| gs.get(name))
-            .and_then(|v| v.as_object());
-        let get_str = |key: &str| -> Option<String> {
-            local
-                .and_then(|m| m.get(key))
-                .or_else(|| global.and_then(|m| m.get(key)))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+    let make_slot =
+        |name: &str, local: Option<&serde_json::Map<String, serde_json::Value>>| -> SlotDef {
+            let global = global_slots
+                .and_then(|gs| gs.get(name))
+                .and_then(|v| v.as_object());
+            let get_str = |key: &str| -> Option<String> {
+                local
+                    .and_then(|m| m.get(key))
+                    .or_else(|| global.and_then(|m| m.get(key)))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            };
+            let get_bool = |key: &str| -> bool {
+                local
+                    .and_then(|m| m.get(key))
+                    .or_else(|| global.and_then(|m| m.get(key)))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            };
+            let range = match get_str("range") {
+                Some(r) => classify(&r),
+                None => RangeKind::None,
+            };
+            SlotDef {
+                name: name.to_string(),
+                range,
+                multivalued: get_bool("multivalued"),
+                required: get_bool("required"),
+                identifier: get_bool("identifier"),
+                key: get_bool("key"),
+                unit: None,
+                any_of_enums: vec![],
+                inlined: false,
+                inlined_as_list: false,
+            }
         };
-        let get_bool = |key: &str| -> bool {
-            local
-                .and_then(|m| m.get(key))
-                .or_else(|| global.and_then(|m| m.get(key)))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        };
-        let range = match get_str("range") {
-            Some(r) => classify(&r),
-            None => RangeKind::None,
-        };
-        SlotDef {
-            name: name.to_string(),
-            range,
-            multivalued: get_bool("multivalued"),
-            required: get_bool("required"),
-            identifier: get_bool("identifier"),
-            key: get_bool("key"),
-            unit: None,
-            any_of_enums: vec![],
-        }
-    };
 
     let mut builder = InMemorySchemaBuilder::new();
     for t in &type_names {
         builder = builder.add_type(t.clone());
     }
     // Always register common scalar types so unknown ranges still classify.
-    for t in ["string", "integer", "float", "double", "boolean", "uriorcurie", "uri", "date"] {
+    for t in [
+        "string",
+        "integer",
+        "float",
+        "double",
+        "boolean",
+        "uriorcurie",
+        "uri",
+        "date",
+    ] {
         if !type_names.iter().any(|x| x == t) {
             builder = builder.add_type(t);
         }
@@ -737,7 +744,10 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> Result<linkml_map_core::schem
             });
 
             // Inline `attributes`.
-            if let Some(attrs) = cobj.and_then(|m| m.get("attributes")).and_then(|a| a.as_object()) {
+            if let Some(attrs) = cobj
+                .and_then(|m| m.get("attributes"))
+                .and_then(|a| a.as_object())
+            {
                 for (slot_name, sdef) in attrs {
                     builder = builder.add_slot(class_name, make_slot(slot_name, sdef.as_object()));
                 }
@@ -969,10 +979,7 @@ mod tests {
                     ("value", Value::Float(150.0 + i as f64)),
                     ("unit", Value::Str("cm".into())),
                 ]);
-                make_map_val(&[
-                    ("id", Value::Str(format!("P:{i}"))),
-                    ("height", height),
-                ])
+                make_map_val(&[("id", Value::Str(format!("P:{i}"))), ("height", height)])
             })
             .collect();
 
@@ -1183,69 +1190,164 @@ mod tests {
     /// This tests Arc<ObjectIndex> sharing across parallel workers.
     #[tokio::test]
     async fn test_pipeline_fk_parallel_resolution() {
+        use indexmap::IndexMap;
         use linkml_map_core::{
             datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification},
             engine::{CompiledExprs, ObjectIndex},
             schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef},
         };
-        use indexmap::IndexMap;
 
         // ── Build a schema: Container { mappings: [Mapping], entities: {Entity} }
         //                               Mapping { subject: Entity, predicate: string }
         //                               Entity  { id: string (identifier), name: string }
         let schema = InMemorySchemaBuilder::new()
             .add_type("string")
-            .add_class(ClassDef { name: "Container".into(), tree_root: true, is_a: None, mixins: vec![] })
-            .add_slot("Container", SlotDef {
-                name: "mappings".into(), range: RangeKind::Class("Mapping".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_class(ClassDef {
+                name: "Container".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Container", SlotDef {
-                name: "entities".into(), range: RangeKind::Class("Entity".into()),
-                multivalued: true, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "Container",
+                SlotDef {
+                    name: "mappings".into(),
+                    range: RangeKind::Class("Mapping".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Container",
+                SlotDef {
+                    name: "entities".into(),
+                    range: RangeKind::Class("Entity".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "Mapping".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_class(ClassDef { name: "Mapping".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Mapping", SlotDef {
-                name: "subject".into(), range: RangeKind::Class("Entity".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
+            .add_slot(
+                "Mapping",
+                SlotDef {
+                    name: "subject".into(),
+                    range: RangeKind::Class("Entity".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Mapping",
+                SlotDef {
+                    name: "predicate".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_class(ClassDef {
+                name: "Entity".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
             })
-            .add_slot("Mapping", SlotDef {
-                name: "predicate".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_class(ClassDef { name: "Entity".into(), tree_root: false, is_a: None, mixins: vec![] })
-            .add_slot("Entity", SlotDef {
-                name: "id".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: true, identifier: true, key: false,
-                unit: None, any_of_enums: vec![],
-            })
-            .add_slot("Entity", SlotDef {
-                name: "name".into(), range: RangeKind::Type("string".into()),
-                multivalued: false, required: false, identifier: false, key: false,
-                unit: None, any_of_enums: vec![],
-            })
+            .add_slot(
+                "Entity",
+                SlotDef {
+                    name: "id".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: true,
+                    identifier: true,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .add_slot(
+                "Entity",
+                SlotDef {
+                    name: "name".into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
             .build();
 
         // ── Build spec: Container→Container, Mapping→FlatMapping (subject.id, subject.name)
         let mut container_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        container_slots.insert("mappings".into(), SlotDerivation {
-            name: "mappings".into(), populated_from: Some("mappings".into()), ..Default::default()
-        });
+        container_slots.insert(
+            "mappings".into(),
+            SlotDerivation {
+                name: "mappings".into(),
+                populated_from: Some("mappings".into()),
+                ..Default::default()
+            },
+        );
 
         let mut mapping_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        mapping_slots.insert("subject_id".into(), SlotDerivation {
-            name: "subject_id".into(), expr: Some("subject.id".into()), ..Default::default()
-        });
-        mapping_slots.insert("subject_name".into(), SlotDerivation {
-            name: "subject_name".into(), expr: Some("subject.name".into()), ..Default::default()
-        });
-        mapping_slots.insert("predicate_id".into(), SlotDerivation {
-            name: "predicate_id".into(), populated_from: Some("predicate".into()), ..Default::default()
-        });
+        mapping_slots.insert(
+            "subject_id".into(),
+            SlotDerivation {
+                name: "subject_id".into(),
+                expr: Some("subject.id".into()),
+                ..Default::default()
+            },
+        );
+        mapping_slots.insert(
+            "subject_name".into(),
+            SlotDerivation {
+                name: "subject_name".into(),
+                expr: Some("subject.name".into()),
+                ..Default::default()
+            },
+        );
+        mapping_slots.insert(
+            "predicate_id".into(),
+            SlotDerivation {
+                name: "predicate_id".into(),
+                populated_from: Some("predicate".into()),
+                ..Default::default()
+            },
+        );
 
         let spec = TransformationSpecification {
             class_derivations: Some(vec![
@@ -1284,10 +1386,12 @@ mod tests {
         // Build mapping list: [{ subject: "E:i%N", predicate: "P:j" }, ...]
         let mappings_json: serde_json::Value = serde_json::Value::Array(
             (0..M_MAPPINGS)
-                .map(|j| serde_json::json!({
-                    "subject": format!("E:{}", j % N_ENTITIES),
-                    "predicate": format!("P:{j}"),
-                }))
+                .map(|j| {
+                    serde_json::json!({
+                        "subject": format!("E:{}", j % N_ENTITIES),
+                        "predicate": format!("P:{j}"),
+                    })
+                })
                 .collect(),
         );
 
