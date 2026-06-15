@@ -39,9 +39,76 @@ single-threaded (GIL-bound), and interpreter-speed per row. This port keeps the
 **same spec language and output** while running natively and fanning rows across
 all cores — useful when transforming large datasets.
 
+## Installation
+
+### Python Bindings (Recommended Drop-in API)
+
+Install this **instead of** upstream `linkml-map` (existing imports will resolve to this optimized version).
+
+#### Option A: Direct Git Installation (No cloning required)
+
+Using **uv** (recommended):
+```bash
+uv pip install "git+https://github.com/ABorakati/linkml-map-rs.git#subdirectory=crates/linkml-map-py"
+```
+
+Using **pip**:
+```bash
+pip install "git+https://github.com/ABorakati/linkml-map-rs.git#subdirectory=crates/linkml-map-py"
+```
+
+#### Option B: From Source (Requires cloning)
+
+First, clone the repository:
+```bash
+git clone https://github.com/ABorakati/linkml-map-rs.git
+cd linkml-map-rs
+```
+
+Then install the package:
+
+Using **uv**:
+```bash
+uv pip install ./crates/linkml-map-py
+```
+
+Using **pip**:
+```bash
+pip install ./crates/linkml-map-py
+```
+
+---
+
+### CLI (Rust Binary)
+
+Install the command-line interface (`linkml-map`) from source.
+
+1. Clone the repository (if you haven't already):
+   ```bash
+   git clone https://github.com/ABorakati/linkml-map-rs.git
+   cd linkml-map-rs
+   ```
+2. Build and install the binary using Cargo:
+   ```bash
+   cargo install --path crates/linkml-map-cli
+   ```
+
+---
+
+### Rust Library
+
+To use the core engine as a dependency in your Rust project, add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+linkml-map-core = { git = "https://github.com/ABorakati/linkml-map-rs.git" }
+```
+
 ## Quickstart
 
 ### CLI
+
+Once the CLI is installed, you can run transformations directly:
 
 ```bash
 linkml-map map-data \
@@ -50,18 +117,6 @@ linkml-map map-data \
 ```
 
 ### Python (Recommended Drop-in API)
-
-Install this **instead of** upstream `linkml-map` (existing imports will resolve to this optimized version).
-
-**Local installation:**
-```bash
-pip install ./crates/linkml-map-py
-```
-
-**Direct Git installation:**
-```bash
-pip install "git+https://github.com/ABorakati/linkml-map-rs.git#subdirectory=crates/linkml-map-py"
-```
 
 Once installed, use it as you would standard `linkml-map`:
 
@@ -73,8 +128,6 @@ tr = ObjectTransformer(source_schemaview=SchemaView("source.yaml"),
                        specification=open("transform.yaml").read())
 out = tr.map_object({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 ```
-
-
 
 <details>
 <summary><b>Native Python API (Reference Only)</b></summary>
@@ -92,8 +145,9 @@ outs = t.transform_many([a, b])    # batch; schema/spec parsed once
 This is generally not needed as the recommended drop-in API has matching performance, but remains available for low-level direct Rust engine integration.
 </details>
 
-
 ### Rust
+
+Usage in Rust:
 
 ```rust
 use linkml_map_core::{engine::ObjectTransformer, value::Value};
