@@ -484,9 +484,10 @@ fn transform_objects(
 
 // ── Module ────────────────────────────────────────────────────────────────────
 
-/// linkml-map Rust transform engine — Python bindings.
+/// linkml-map Rust transform engine — compiled core, re-exported by the
+/// `linkml_map_rs` Python package (`python/linkml_map_rs/__init__.py`).
 #[pymodule]
-fn linkml_map_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTransformer>()?;
     m.add_function(wrap_pyfunction!(transform_object, m)?)?;
     m.add_function(wrap_pyfunction!(transform_objects, m)?)?;

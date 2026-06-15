@@ -1,0 +1,9 @@
+.venv/
+target/
+__pycache__/
+*.egg-info/
+.tmp_med/
+*.pyd
+*.pdb
+*.so
+uv.lock

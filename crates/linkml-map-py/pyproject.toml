@@ -14,7 +14,8 @@ requires-python = ">=3.8"
 shim = ["linkml-runtime", "pyyaml"]
 
 [tool.maturin]
-# Ship the pure-Python `linkml_map` shim package next to the compiled
-# `linkml_map_rs` extension module.
+# Compiled core is `linkml_map_rs._native`; the `linkml_map_rs` package
+# (python/linkml_map_rs/__init__.py) re-exports it, and the `linkml_map` shim
+# ships alongside.
+module-name = "linkml_map_rs._native"
 python-source = "python"
-module-name = "linkml_map_rs"
