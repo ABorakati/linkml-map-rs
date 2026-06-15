@@ -49,9 +49,9 @@ linkml-map map-data \
   --source data.jsonl --out out.jsonl --source-class Person
 ```
 
-### Python — drop-in (`import linkml_map`)
+### Python (Recommended Drop-in API)
 
-Install this **instead of** upstream `linkml-map`; existing imports resolve here:
+Install this **instead of** upstream `linkml-map`; existing imports resolve here. This drop-in shim is fully compatible with the standard `linkml-map` API and delivers matching performance:
 
 ```python
 from linkml_runtime import SchemaView
@@ -62,14 +62,23 @@ tr = ObjectTransformer(source_schemaview=SchemaView("source.yaml"),
 out = tr.map_object({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 ```
 
-### Python — native API (fastest)
+
+<details>
+<summary><b>Native Python API (Reference Only)</b></summary>
+
+A low-level native API is exported directly by the compiled binary (`linkml_map_rs`):
 
 ```python
 from linkml_map_rs import Transformer
+
 t = Transformer(source_schema="source.yaml", spec="transform.yaml")
-out  = t.transform(obj)            # one object
+out = t.transform(obj)            # one object
 outs = t.transform_many([a, b])    # batch; schema/spec parsed once
 ```
+
+This is generally not needed as the recommended drop-in API has matching performance, but remains available for low-level direct Rust engine integration.
+</details>
+
 
 ### Rust
 
