@@ -29,9 +29,15 @@ jobs:
     - name: Run Rust workspace tests
       run: cargo test --workspace --exclude linkml-map-py
 
-    - name: Build and install Python bindings
+    - name: Build Python wheels
+      uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        args: --release --out dist -m crates/linkml-map-py/Cargo.toml
+
+    - name: Install Python bindings
       run: |
-        pip install ./crates/linkml-map-py
+        pip install dist/*.whl
 
     - name: Run Python compliance tests
       run: |
