@@ -131,8 +131,6 @@ pub struct CompiledPlan {
     source_class: Option<String>,
 }
 
-
-
 impl CompiledPlan {
     /// Number of `expr:` derivations in the spec (slots with an `expr:`).
     /// Benchmarks use this to confirm the fixture actually exercises the cache.
@@ -157,13 +155,19 @@ impl CompiledPlan {
         target_schema_path: &Path,
         source_class_hint: Option<&str>,
     ) -> Result<Self> {
-        // Load source schema with CURIE-map tolerance.
+        // Load + normalise the transformation spec first so we can extract
+        // source_schema_patches before loading the source schema.
+        let spec = load_transform_spec(spec_path)
+            .with_context(|| format!("loading spec {}", spec_path.display()))?;
+
+        // Load source schema with CURIE-map tolerance, applying any
+        // source_schema_patches from the spec (e.g. FK range augmentation).
         // `SchemaViewProvider` fails on schemas that reference `semweb_context`
         // or other standard CURIE maps it can't resolve at load time. We fall
         // back to a minimal in-memory YAML parser that extracts the class/slot
         // metadata the engine needs for FK detection and range coercion.
         let source_provider: Box<dyn SchemaProvider> = {
-            let ts = load_schema_tolerant(schema_path)
+            let ts = load_schema_tolerant(schema_path, spec.source_schema_patches.as_ref())
                 .with_context(|| format!("loading source schema {}", schema_path.display()))?;
             match ts {
                 TolerantSchema::Real(p) => Box::new(p),
@@ -173,7 +177,7 @@ impl CompiledPlan {
 
         // Load target schema (may be same file — that's fine, second load is cheap)
         let target_provider: Box<dyn SchemaProvider> = {
-            let ts = load_schema_tolerant(target_schema_path).with_context(|| {
+            let ts = load_schema_tolerant(target_schema_path, None).with_context(|| {
                 format!("loading target schema {}", target_schema_path.display())
             })?;
             match ts {
@@ -181,10 +185,6 @@ impl CompiledPlan {
                 TolerantSchema::InMemory(p) => Box::new(p),
             }
         };
-
-        // Load + normalise the transformation spec
-        let spec = load_transform_spec(spec_path)
-            .with_context(|| format!("loading spec {}", spec_path.display()))?;
 
         // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
         // surface here at plan-build time rather than per row.
@@ -630,6 +630,14 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
         let _ = dispatcher_handle.await;
     }
 
+    if rows_out < rows_in {
+        anyhow::bail!(
+            "{} of {} rows failed to transform (see stderr for details)",
+            rows_in - rows_out,
+            rows_in
+        );
+    }
+
     let elapsed = start.elapsed();
     let rows_per_sec = if elapsed.as_secs_f64() > 0.0 {
         rows_out as f64 / elapsed.as_secs_f64()
@@ -785,10 +793,17 @@ impl TolerantSchema {}
 /// to CURIE resolution errors, fall back to the minimal YAML parser.
 /// The fallback provides class/slot/range/identifier metadata sufficient for
 /// FK detection and object-index resolution.
-fn load_schema_tolerant(path: &Path) -> Result<TolerantSchema> {
-    match SchemaViewProvider::load_from_path(path) {
+fn load_schema_tolerant(path: &Path, patch: Option<&serde_json::Value>) -> Result<TolerantSchema> {
+    match SchemaViewProvider::load_from_path_with_patch(path, patch) {
         Ok(p) => Ok(TolerantSchema::Real(p)),
         Err(_) => {
+            if patch.is_some() {
+                eprintln!(
+                    "warning: source_schema_patches could not be applied \
+                     (schema fell back to in-memory parser): {}",
+                    path.display()
+                );
+            }
             // Try the tolerant in-memory YAML parser as fallback.
             build_inmemory_schema_from_yaml(path)
                 .map(TolerantSchema::InMemory)
@@ -956,8 +971,7 @@ pub fn load_transform_spec(path: &Path) -> Result<TransformationSpecification> {
     let mut obj: serde_json::Value =
         serde_yaml_ng::from_str(&text).context("parsing transform YAML")?;
     linkml_map_core::datamodel::normalise_spec_json(&mut obj);
-    serde_json::from_value(obj)
-        .with_context(|| format!("parsing spec {}", path.display()))
+    serde_json::from_value(obj).with_context(|| format!("parsing spec {}", path.display()))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
