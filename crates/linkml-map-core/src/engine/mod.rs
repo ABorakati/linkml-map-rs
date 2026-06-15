@@ -22,18 +22,21 @@
 //!   defined in [`apply_aggregation`]. Spec→Python/SQL compilation and
 //!   JSON-schema target validation are intentionally out of scope.
 
+pub mod lookup_index;
 pub mod object_index;
 pub mod units;
+pub use lookup_index::{LookupIndex, LookupIndexRef};
 pub use object_index::ObjectIndex;
 
 use indexmap::IndexMap;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::{
     datamodel::{
-        AggregationOperation, AggregationType, ClassDerivation, CollectionType,
+        AggregationOperation, AggregationType, AliasedClass, ClassDerivation, CollectionType,
         InvalidValueHandlingStrategy, Offset, PivotDirectionType, PivotOperation,
         SerializationSyntaxType, SlotDerivation, TransformationSpecification,
     },
@@ -117,6 +120,13 @@ pub struct ObjectTransformer<'s> {
     /// `expr:` string on every call. When `None`, the engine falls back to the
     /// string path (`eval_expr_with_mapping`), preserving existing behaviour.
     compiled: Option<&'s CompiledExprs>,
+    /// Optional cross-table lookup index for join resolution.
+    ///
+    /// When set, `populated_from: "table.field"` and `{table.field}` expr
+    /// bindings resolve through this index.  Multi-row aggregation
+    /// (`aggregation_operation` + join) uses `lookup_rows` to collect all
+    /// matching rows before reducing.  Attach via [`with_lookup_index`].
+    lookup_index: Option<Arc<LookupIndex>>,
 }
 
 impl<'s> ObjectTransformer<'s> {
@@ -135,6 +145,7 @@ impl<'s> ObjectTransformer<'s> {
             source_schema,
             target_schema,
             compiled: None,
+            lookup_index: None,
         }
     }
 
@@ -154,7 +165,18 @@ impl<'s> ObjectTransformer<'s> {
             source_schema,
             target_schema,
             compiled: None,
+            lookup_index: None,
         }
+    }
+
+    /// Attach a pre-built [`LookupIndex`] for cross-table join resolution.
+    ///
+    /// Register secondary tables on the index before attaching it; the engine
+    /// then resolves `populated_from: "alias.field"` and `expr: "{alias.field}"`
+    /// references and supports multi-row aggregation over joined rows.
+    pub fn with_lookup_index(mut self, index: Arc<LookupIndex>) -> Self {
+        self.lookup_index = Some(index);
+        self
     }
 
     /// Attach a pre-built [`CompiledExprs`] so the engine evaluates cached
@@ -444,11 +466,50 @@ impl<'s> ObjectTransformer<'s> {
             (v, None)
         } else if let Some(agg) = &slot_deriv.aggregation_operation {
             // 1c. aggregation_operation — reduce a multivalued source to a scalar
-            //     (or a collection, for List/Set/Array). Read the source list from
-            //     `populated_from` (else the same-name slot). Returning `None` for
-            //     the source slot def skips the normal multivalued re-coercion.
+            //     (or a collection, for List/Set/Array).
+            //
+            // Join path (#188): when `populated_from` is "alias.field" and a
+            // LookupIndex is attached, gather ALL matching rows from the join
+            // table, pluck `field` from each, and aggregate over the resulting
+            // list.  Mirrors Python `_apply_aggregation_over_join`.
+            //
+            // Otherwise read the source list from `populated_from` (else same-
+            // name slot) and aggregate as before.
             let src_key = slot_deriv.populated_from.as_deref().unwrap_or(slot_name);
-            let raw = source_map.get(src_key).cloned().unwrap_or(Value::Null);
+            let raw = if let Some(dot) = src_key.find('.') {
+                let alias = &src_key[..dot];
+                let field = &src_key[dot + 1..];
+                if let (Some(li), Some(joins)) =
+                    (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
+                {
+                    if let Some(ac) = joins.get(alias) {
+                        let table = ac.class_named.as_deref().unwrap_or(alias);
+                        // Python: source_key or join_on
+                        let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
+                        if let Some(key_val) = key_val {
+                            let key_str = match key_val {
+                                Value::Str(s) => s.clone(),
+                                Value::Int(i) => i.to_string(),
+                                _ => String::new(),
+                            };
+                            let items: Vec<Value> = li
+                                .lookup_rows(table, &key_str)
+                                .iter()
+                                .filter_map(|row| row.get(field).cloned())
+                                .collect();
+                            Value::List(items)
+                        } else {
+                            Value::Null
+                        }
+                    } else {
+                        source_map.get(src_key).cloned().unwrap_or(Value::Null)
+                    }
+                } else {
+                    source_map.get(src_key).cloned().unwrap_or(Value::Null)
+                }
+            } else {
+                source_map.get(src_key).cloned().unwrap_or(Value::Null)
+            };
             let v = apply_aggregation(agg, raw, slot_name)?;
             (v, None)
         } else if let Some(expr) = &slot_deriv.expr {
@@ -458,7 +519,7 @@ impl<'s> ObjectTransformer<'s> {
                 source_map,
                 slot_name,
                 source_type,
-                &class_deriv.name,
+                class_deriv,
                 index,
             )?;
             (v, None)
@@ -466,8 +527,41 @@ impl<'s> ObjectTransformer<'s> {
             // 3. populated_from — direct field copy.
             // `_source_class` is a virtual slot that resolves to the source class
             // name itself, enabling value_mappings keyed by source class (#193).
+            // `"alias.field"` resolves via the LookupIndex join (#188).
             let raw = if populated_from == "_source_class" {
                 Value::Str(source_type.to_string())
+            } else if let Some(dot) = populated_from.find('.') {
+                let alias = &populated_from[..dot];
+                let field = &populated_from[dot + 1..];
+                if let (Some(li), Some(joins)) =
+                    (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
+                {
+                    if let Some(ac) = joins.get(alias) {
+                        let table = ac.class_named.as_deref().unwrap_or(alias);
+                        // Python: source_key or join_on
+                        source_map
+                            .get(join_source_key(ac).unwrap_or(""))
+                            .and_then(|kv| {
+                                let ks = match kv {
+                                    Value::Str(s) => s.clone(),
+                                    Value::Int(i) => i.to_string(),
+                                    _ => return None,
+                                };
+                                li.lookup_row(table, &ks)?.get(field).cloned()
+                            })
+                            .unwrap_or(Value::Null)
+                    } else {
+                        source_map
+                            .get(populated_from)
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    }
+                } else {
+                    source_map
+                        .get(populated_from)
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                }
             } else {
                 source_map
                     .get(populated_from)
@@ -838,9 +932,10 @@ impl<'s> ObjectTransformer<'s> {
         source_map: &IndexMap<String, Value>,
         slot_name: &str,
         source_type: &str,
-        class_name: &str,
+        class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
+        let class_name = class_deriv.name.as_str();
         // Build bindings from all source map keys.
         let mut bindings: Bindings = IndexMap::new();
         bindings.insert("NULL".to_string(), Value::Null);
@@ -863,6 +958,31 @@ impl<'s> ObjectTransformer<'s> {
                 _ => v.clone(),
             };
             bindings.insert(k.clone(), bound);
+        }
+
+        // Join bindings (#188): for each declared join alias, look up the
+        // matching row from the LookupIndex and bind the whole row map as
+        // `alias → Value::Map(row)`.  This lets expr: "{alias.field}" resolve
+        // via normal dot-access on the bound map without any parser changes.
+        if let (Some(li), Some(joins)) = (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
+        {
+            for (alias, ac) in joins {
+                // Python: source_key or join_on; skip binding when key spec absent.
+                let Some(sk) = join_source_key(ac) else {
+                    continue;
+                };
+                if let Some(key_val) = source_map.get(sk) {
+                    let key_str = match key_val {
+                        Value::Str(s) => s.clone(),
+                        Value::Int(i) => i.to_string(),
+                        _ => continue,
+                    };
+                    let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
+                    if let Some(row) = li.lookup_row(table, &key_str) {
+                        bindings.insert(alias.clone(), Value::Map(row.clone()));
+                    }
+                }
+            }
         }
 
         // Bind the whole source object as `src`, mirroring the asteval
@@ -1676,6 +1796,21 @@ fn json_to_value(j: &serde_json::Value) -> Value {
             Value::Map(m)
         }
     }
+}
+
+// ── Join key helpers (mirrors Python `_resolve_joined_row`) ──────────────────
+
+/// Source-side join key: `spec.source_key or spec.join_on`.
+///
+/// Returns `None` when neither is set — mirrors Python's ValueError
+/// "must specify 'join_on' or both 'source_key' and 'lookup_key'".
+fn join_source_key(ac: &AliasedClass) -> Option<&str> {
+    ac.source_key.as_deref().or(ac.join_on.as_deref())
+}
+
+/// Lookup-side join key: `spec.lookup_key or spec.join_on`.
+fn join_lookup_key(ac: &AliasedClass) -> Option<&str> {
+    ac.lookup_key.as_deref().or(ac.join_on.as_deref())
 }
 
 /// Convert a Value to a string for use as a map key (value_mappings lookups).
@@ -4625,5 +4760,228 @@ mod op_tests {
             out,
             Value::Map(map(&[("h", Value::Float(1.8)), ("w", Value::Float(75.0))]))
         );
+    }
+}
+
+#[cfg(test)]
+mod lookup_index_tests {
+    //! Tests for LookupIndex join wiring (#188).
+    use super::*;
+    use crate::datamodel::{
+        AggregationOperation, AggregationType, AliasedClass, ClassDerivation, SlotDerivation,
+        TransformationSpecification,
+    };
+    use crate::engine::lookup_index::LookupIndex;
+    use indexmap::IndexMap;
+    use std::sync::Arc;
+
+    fn get(v: &Value, key: &str) -> Value {
+        match v {
+            Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
+            _ => Value::Null,
+        }
+    }
+
+    fn imap(pairs: &[(&str, Value)]) -> IndexMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    fn val_map(pairs: &[(&str, Value)]) -> Value {
+        Value::Map(imap(pairs))
+    }
+
+    fn slot(name: &str) -> SlotDerivation {
+        SlotDerivation {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn slot_pf(name: &str, pf: &str) -> SlotDerivation {
+        SlotDerivation {
+            name: name.to_string(),
+            populated_from: Some(pf.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn slot_expr(name: &str, expr: &str) -> SlotDerivation {
+        SlotDerivation {
+            name: name.to_string(),
+            expr: Some(expr.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn slot_agg(name: &str, pf: &str, agg: AggregationType) -> SlotDerivation {
+        SlotDerivation {
+            name: name.to_string(),
+            populated_from: Some(pf.to_string()),
+            aggregation_operation: Some(AggregationOperation {
+                operator: agg,
+                null_handling: None,
+                invalid_value_handling: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn make_spec(
+        class_name: &str,
+        slots: Vec<SlotDerivation>,
+        joins: Option<IndexMap<String, AliasedClass>>,
+    ) -> TransformationSpecification {
+        let mut cd = ClassDerivation {
+            name: class_name.to_string(),
+            ..Default::default()
+        };
+        cd.joins = joins;
+        let mut sd: IndexMap<String, SlotDerivation> = IndexMap::new();
+        for s in slots {
+            sd.insert(s.name.clone(), s);
+        }
+        cd.slot_derivations = Some(sd);
+        let mut spec = TransformationSpecification::default();
+        spec.class_derivations = Some(vec![cd]);
+        spec
+    }
+
+    fn join_alias(alias: &str, table: &str, src_key: &str) -> AliasedClass {
+        AliasedClass {
+            alias: alias.to_string(),
+            class_named: Some(table.to_string()),
+            source_key: Some(src_key.to_string()),
+            lookup_key: None,
+            join_on: None,
+        }
+    }
+
+    // ── Test 1: populated_from "alias.field" single-row join ─────────────────
+
+    #[test]
+    fn test_join_populated_from_dot_notation() {
+        // demographics table keyed by patient_id
+        let demo_rows = vec![val_map(&[
+            ("patient_id", Value::Str("P1".into())),
+            ("age", Value::Int(42)),
+            ("city", Value::Str("London".into())),
+        ])];
+        let mut li = LookupIndex::new();
+        li.register_table("demographics", &demo_rows, "patient_id");
+
+        let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+        joins.insert(
+            "demo".to_string(),
+            join_alias("demo", "demographics", "pid"),
+        );
+
+        let spec = make_spec(
+            "Patient",
+            vec![
+                slot("pid"),
+                slot_pf("age", "demo.age"),
+                slot_pf("city", "demo.city"),
+            ],
+            Some(joins),
+        );
+
+        let source = val_map(&[("pid", Value::Str("P1".into()))]);
+        let result = ObjectTransformer::new(spec, None, None)
+            .with_lookup_index(Arc::new(li))
+            .map_object(&source, Some("Patient"))
+            .unwrap();
+
+        assert_eq!(get(&result, "age"), Value::Int(42));
+        assert_eq!(get(&result, "city"), Value::Str("London".into()));
+    }
+
+    // ── Test 2: expr "{alias.field}" join binding ─────────────────────────────
+
+    #[test]
+    fn test_join_expr_binding() {
+        let demo_rows = vec![val_map(&[
+            ("patient_id", Value::Str("P2".into())),
+            ("score", Value::Int(10)),
+        ])];
+        let mut li = LookupIndex::new();
+        li.register_table("scores", &demo_rows, "patient_id");
+
+        let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+        joins.insert("sc".to_string(), join_alias("sc", "scores", "pid"));
+
+        let spec = make_spec(
+            "Result",
+            vec![slot_expr("doubled", "{sc.score} * 2")],
+            Some(joins),
+        );
+
+        let source = val_map(&[("pid", Value::Str("P2".into()))]);
+        let result = ObjectTransformer::new(spec, None, None)
+            .with_lookup_index(Arc::new(li))
+            .map_object(&source, Some("Result"))
+            .unwrap();
+
+        assert_eq!(get(&result, "doubled"), Value::Int(20));
+    }
+
+    // ── Test 3: aggregation_operation + multi-row join (COUNT / SUM) ──────────
+
+    #[test]
+    fn test_join_multi_row_aggregation() {
+        // Multiple visits for patient P3
+        let visits = vec![
+            val_map(&[
+                ("patient_id", Value::Str("P3".into())),
+                ("cost", Value::Float(100.0)),
+            ]),
+            val_map(&[
+                ("patient_id", Value::Str("P3".into())),
+                ("cost", Value::Float(200.0)),
+            ]),
+            val_map(&[
+                ("patient_id", Value::Str("P3".into())),
+                ("cost", Value::Float(50.0)),
+            ]),
+        ];
+        let mut li = LookupIndex::new();
+        li.register_table("visits", &visits, "patient_id");
+
+        let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+        joins.insert("v".to_string(), join_alias("v", "visits", "pid"));
+
+        let spec = make_spec(
+            "Summary",
+            vec![
+                slot_agg("visit_count", "v.cost", AggregationType::Count),
+                slot_agg("total_cost", "v.cost", AggregationType::Sum),
+            ],
+            Some(joins),
+        );
+
+        let source = val_map(&[("pid", Value::Str("P3".into()))]);
+        let result = ObjectTransformer::new(spec, None, None)
+            .with_lookup_index(Arc::new(li))
+            .map_object(&source, Some("Summary"))
+            .unwrap();
+
+        assert_eq!(get(&result, "visit_count"), Value::Int(3));
+        assert_eq!(get(&result, "total_cost"), Value::Float(350.0));
+    }
+
+    // ── Test 4: no index → dot-notation falls back to source_map get ─────────
+
+    #[test]
+    fn test_join_no_index_fallback() {
+        // Without a LookupIndex, "alias.field" just does a raw source_map lookup
+        // (which returns Null since "demo.age" is not a key).
+        let spec = make_spec("Patient", vec![slot_pf("age", "demo.age")], None);
+        let source = val_map(&[("pid", Value::Str("P1".into()))]);
+        let result = ObjectTransformer::new(spec, None, None)
+            .map_object(&source, Some("Patient"))
+            .unwrap();
+        assert_eq!(get(&result, "age"), Value::Null);
     }
 }

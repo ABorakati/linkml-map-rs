@@ -1,0 +1,27 @@
+[package]
+name = "linkml-map-duckdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DuckDB-backed transformer for linkml-map: compiles TransformationSpecification to SQL and executes via duckdb-rs."
+
+[features]
+# Enable the DuckDB execution engine (transformer.rs).
+# Pulling in duckdb triggers a multi-minute C++ build on first use.
+# default = [] keeps `cargo test` fast; enable explicitly when needed.
+default = []
+# "engine" activates duckdb + the DuckDBTransformer.
+engine = ["dep:duckdb", "dep:tempfile"]
+# Static link DuckDB — no system install required.  Pass with engine:
+#   cargo build -p linkml-map-duckdb --features engine,bundled
+bundled = ["duckdb/bundled"]
+
+[dependencies]
+linkml-map-core = { path = "../linkml-map-core" }
+duckdb   = { version = "1", optional = true }
+tempfile = { workspace = true, optional = true }
+serde_json = { workspace = true }
+indexmap   = { workspace = true }
+thiserror  = { workspace = true }
+
+[dev-dependencies]

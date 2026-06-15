@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-cli", "crates/linkml-map-schemaview", "crates/linkml-map-conformance", "crates/linkml-map-pipeline", "crates/linkml-map-py"]
+members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-cli", "crates/linkml-map-schemaview", "crates/linkml-map-conformance", "crates/linkml-map-pipeline", "crates/linkml-map-py", "crates/linkml-map-duckdb"]
 # linkml-map-py is a cdylib (maturin wheel); add to members so workspace deps resolve
 # Build wheel: maturin build -m crates/linkml-map-py/Cargo.toml
 # cargo build --lib -p linkml-map-py  also works (skips Python linking)
