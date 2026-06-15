@@ -45,8 +45,16 @@ use linkml_map_schemaview::SchemaViewProvider;
 /// Convert a Python object (dict, list, scalar) to a Rust `Value` by going
 /// through JSON.  The caller must hold the GIL (`py`).
 fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    use pyo3::types::PyDict;
     let json_mod = py.import("json")?;
-    let json_str: String = json_mod.call_method1("dumps", (obj,))?.extract()?;
+    // `default=str` so non-JSON scalars (datetime.date / Decimal / etc., as
+    // produced by linkml_runtime loaders) serialise to their string form rather
+    // than raising — matching how LinkML treats date/datetime ranges.
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
+    let json_str: String = json_mod
+        .call_method("dumps", (obj,), Some(&kwargs))?
+        .extract()?;
 
     let serde_val: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
@@ -176,6 +184,48 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
                 }
             }
         }
+
+        // ── source_schema / target_schema: object → its name/id string ────────
+        for key in &["source_schema", "target_schema"] {
+            if let Some(v) = obj.get_mut(*key) {
+                if v.is_object() {
+                    let name_val = v
+                        .as_object()
+                        .and_then(|o| o.get("name").or_else(|| o.get("id")))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    *v = serde_json::Value::String(name_val);
+                }
+            }
+        }
+
+        // ── prefixes: string values → KeyVal maps ─────────────────────────────
+        if let Some(pfx) = obj.get_mut("prefixes") {
+            if let Some(m) = pfx.as_object_mut() {
+                for (_, v) in m.iter_mut() {
+                    if v.is_string() {
+                        let s = v.as_str().unwrap().to_string();
+                        *v = serde_json::json!({ "key": s, "value": s });
+                    }
+                }
+            }
+        }
+
+        // ── creator / author / reviewer: inject default agent `type` ──────────
+        for key in &["creator", "author", "reviewer"] {
+            if let Some(agents) = obj.get_mut(*key) {
+                if let Some(arr) = agents.as_array_mut() {
+                    for agent in arr.iter_mut() {
+                        if let Some(o) = agent.as_object_mut() {
+                            if !o.contains_key("type") {
+                                o.insert("type".into(), serde_json::Value::String("Agent".into()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     serde_json::to_string(&root).map_err(|e| anyhow::anyhow!("JSON re-serialise error: {e}"))
@@ -222,8 +272,11 @@ fn run_transform(
         target_provider.map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
     );
 
+    // `map_container` builds a foreign-key ObjectIndex from the whole input
+    // first, then maps — handling cross-row FK joins. For non-FK input the index
+    // is empty and this is identical to `map_object`.
     let result = engine
-        .map_object(&input_value, source_class)
+        .map_container(&input_value, source_class)
         .map_err(|e| PyValueError::new_err(format!("Transform error: {e}")))?;
 
     value_to_py(py, &result)
