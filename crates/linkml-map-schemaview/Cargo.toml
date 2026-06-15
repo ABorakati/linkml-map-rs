@@ -6,8 +6,11 @@ license.workspace = true
 
 [dependencies]
 linkml-map-core = { path = "../linkml-map-core" }
-schemaview = { path = "../../../LinkML-MCP/rust/src/schemaview", default-features = false, features = [] }
-linkml_meta = { path = "../../../LinkML-MCP/rust/src/metamodel" }
+# LinkML metamodel + SchemaView, from the public Kapernikov/rust-linkml-core
+# workspace (pinned for reproducibility). Replaces the previous local path deps
+# so the repo builds from a clean clone.
+schemaview = { git = "https://github.com/Kapernikov/rust-linkml-core", rev = "df9d18ec03086bcbd2dc82c81db5ae724f6e132b", default-features = false, features = [] }
+linkml_meta = { git = "https://github.com/Kapernikov/rust-linkml-core", rev = "df9d18ec03086bcbd2dc82c81db5ae724f6e132b" }
 serde_yaml = "0.9"
 serde_json = { workspace = true }
 thiserror = { workspace = true }
