@@ -47,48 +47,57 @@ Two comparisons matter:
   pipeline fanning rows across all cores, which base Python can't do in one
   process.
 
-### Example (16-core machine, 50k rows)
+### Example (16-core machine, 100k rows)
 
 **Transform-only** (per-row engine CPU, no I/O):
 
 | impl          | workers | rows/sec | speedup |
 |---------------|--------:|---------:|--------:|
-| python        |       1 |    7,442 |    1.0× |
-| rust-1thread  |       1 |  113,819 | **15.3×** |
-| rust-Ncore    |      16 |  423,596 | **56.9×** |
+| python        |       1 |    6,379 |    1.0× |
+| rust-1thread  |       1 |   75,835 | **11.9×** |
+| rust-Ncore    |      16 |  305,035 | **47.8×** |
 
 **End-to-end** (read JSONL → transform → write JSONL):
 
 | impl              | workers | rows/sec | speedup |
 |-------------------|--------:|---------:|--------:|
-| python            |       1 |    6,009 |    1.0× |
-| rust-e2e-1thread  |       1 |   38,583 | **6.4×** |
-| rust-e2e-Ncore    |      16 |   36,778 |  6.1×   |
+| python            |       1 |    4,743 |    1.0× |
+| rust-e2e-1thread  |       1 |   44,717 | **9.4×** |
+| rust-e2e-Ncore    |      16 |  190,475 | **40.2×** |
 
-Two different stories, and the contrast is the point:
+End-to-end now scales with cores too (~9× → ~40×), nearly tracking
+transform-only — because the pipeline parallelises the *whole* JSONL path:
 
-- **Transform-only is CPU-bound** → cores scale it (15× → 57×). This is the pure
-  engine win.
-- **End-to-end on tiny rows is I/O-bound** → the serial JSONL reader/parser +
-  writer is the bottleneck, so extra transform threads add nothing (`Ncore` ≈
-  `1thread`, even marginally slower from coordination overhead). Rust is still
-  ~6× faster (native JSON parse/serialise + faster engine), but **multicore
-  can't beat a serial I/O wall.**
+- **Bulk I/O, not per-line async.** The reader does one big read and the writer
+  one big buffered write; at 1M rows, phase timing shows read ≈ 0.03s, write ≈
+  0.03s — I/O is negligible. (The earlier version did `next_line().await` and a
+  `write_all` per row — hundreds of thousands of awaits — which capped e2e at a
+  flat ~6× regardless of cores. That was the I/O wall; it's gone.)
+- **Parse + transform + serialise run in parallel** on a rayon pool sized to
+  `workers`, so all the CPU work (including `serde_json` parse/serialise, which
+  transform-only skips) scales. At 1M rows: transform phase 20.3s → 6.4s (1 →
+  16 threads).
+- **Correct FK routing.** A spec with an in-row nested access like
+  `{height}.value` is *not* a cross-row foreign key (the object is inlined in
+  the row). The pipeline now keeps those on the fast streaming path instead of
+  buffering the whole dataset to build an `ObjectIndex`. True cross-row FK specs
+  still buffer + index (they must — referenced rows can appear anywhere), and
+  that branch is parallelised too, but its serial buffer+index preamble caps
+  scaling.
 
-Takeaway: parallelism helps only the CPU-bound part. If your rows are tiny and
-the job is dominated by reading/writing, you're I/O-bound and ~6× is the honest
-number; if per-row work is heavy (big nested objects, many exprs), the
-transform-only regime dominates and you get the larger multicore speedups.
+So both regimes now parallelise. The remaining transform-only vs e2e gap is the
+JSON parse+serialise e2e must do; it's parallel, just extra work.
+
+Set `PIPELINE_PHASE_TIMING=1` to print per-phase (read/transform/write) timings.
 
 Absolute numbers vary by CPU, disk, and core count, and run-to-run (cold caches
-on the first run). The per-thread transform-only ratio is the most portable
-figure for raw engine speed.
+on the first run). The per-thread ratio is the most portable figure.
 
 ## Caveats / fairness
 
-- Transform-only — excludes parsing the input file and serialising output. End-
-  to-end throughput is capped lower by serial I/O on tiny-per-row data (see
-  `pipeline-bench` for the full read→transform→write picture).
+- Transform-only — excludes parsing the input file and serialising output. The
+  e2e numbers add that (parse + serialise + file read/write); both run in
+  parallel, so e2e tracks transform-only minus the extra serde work.
 - The Rust side reuses a cached-AST `CompiledPlan` (spec/exprs parsed once);
   Python likewise builds the `ObjectTransformer` once before the timed loop, so
   neither pays per-row setup.

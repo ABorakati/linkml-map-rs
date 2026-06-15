@@ -245,14 +245,26 @@ impl CompiledPlan {
             return false;
         }
 
-        // At least one source-schema slot has a class range → FK possible.
+        // A dotted expr needs the ObjectIndex only for a genuine cross-row
+        // foreign key: a class-range slot that is NOT inlined (so the value is
+        // an id, not a nested object) AND whose range class has an identifier
+        // (so it can be referenced by id). In-row nested access — an inlined
+        // slot, or a range class with no identifier (implicitly inlined) — is
+        // resolved within the row and must stay on the fast streaming path.
         let source: &dyn SchemaProvider = self.source_provider.as_ref();
         source.all_class_names().iter().any(|class_name| {
             source
                 .induced_slots(class_name)
                 .unwrap_or_default()
                 .iter()
-                .any(|s| s.range_class().is_some())
+                .any(|s| match s.range_class() {
+                    Some(rc) => {
+                        let inlined = s.inlined || s.inlined_as_list;
+                        let range_has_id = source.identifier_slot(rc).ok().flatten().is_some();
+                        !inlined && range_has_id
+                    }
+                    None => false,
+                })
         })
     }
 
@@ -412,49 +424,102 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
             Some(plan.source_provider.as_ref()),
         ));
 
-        // Fan out: parallel transform sharing Arc<CompiledPlan> + Arc<ObjectIndex>.
-        let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(config.channel_depth);
+        // Fan out with a sized rayon pool: par_iter over rows sharing
+        // Arc<ObjectIndex> + Arc<CompiledPlan> (both Send+Sync, lock-free reads).
+        // Replaces per-row tokio spawn_blocking, which was overhead-bound on
+        // tiny rows. `collect()` preserves input order, so output is ordered.
+        let pool = build_rayon_pool(config.workers)?;
 
-        let plan2 = Arc::clone(&plan);
-        let dispatcher_handle = tokio::spawn(async move {
-            let mut handles = Vec::new();
-            for (seq, row) in all_rows.into_iter().enumerate() {
-                let plan3 = Arc::clone(&plan2);
-                let idx3 = Arc::clone(&index);
-                let res_tx3 = res_tx.clone();
-                let h = tokio::task::spawn_blocking(move || {
-                    let result = plan3.transform_with_index(row, &idx3);
-                    let _ = res_tx3.blocking_send((seq, result));
-                });
-                handles.push(h);
-            }
-            for h in handles {
-                let _ = h.await;
-            }
-            drop(res_tx);
-        });
-
-        // Collect results.
-        let mut output_rows: Vec<(usize, Value)> = Vec::new();
-        while let Some((seq, result)) = res_rx.recv().await {
-            match result {
-                Ok(v) => output_rows.push((seq, v)),
-                Err(e) => eprintln!("FK transform error at seq {seq}: {e:#}"),
-            }
-        }
-        let _ = dispatcher_handle.await;
-
-        // Sort by seq to restore input order (workers finish out of order).
-        if config.ordered {
-            output_rows.sort_by_key(|(seq, _)| *seq);
-        }
-        let ordered: Vec<Value> = output_rows.into_iter().map(|(_, v)| v).collect();
-        rows_out = ordered.len();
-
-        let stream = futures::stream::iter(ordered.into_iter().map(Ok::<_, anyhow::Error>));
-        write_all(&config.out_path, out_format, stream)
+        if matches!(out_format, Format::Jsonl) {
+            // JSONL: transform AND serialise in parallel into one buffer, then a
+            // single bulk write (serial per-row serialise was the writer wall).
+            use rayon::prelude::*;
+            let plan2 = Arc::clone(&plan);
+            let idx2 = Arc::clone(&index);
+            let (buf, n): (String, usize) = tokio::task::spawn_blocking(move || {
+                let work = || -> (String, usize) {
+                    let outs: Vec<Option<String>> = all_rows
+                        .par_iter()
+                        .map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
+                            Ok(v) => linkml_map_io::value_to_json(&v)
+                                .ok()
+                                .and_then(|j| serde_json::to_string(&j).ok()),
+                            Err(e) => {
+                                eprintln!("FK transform error: {e:#}");
+                                None
+                            }
+                        })
+                        .collect();
+                    let mut buf = String::with_capacity(outs.len() * 64);
+                    let mut n = 0usize;
+                    for o in outs.into_iter().flatten() {
+                        buf.push_str(&o);
+                        buf.push('\n');
+                        n += 1;
+                    }
+                    (buf, n)
+                };
+                match pool.as_ref() {
+                    Some(p) => p.install(work),
+                    None => work(),
+                }
+            })
             .await
-            .with_context(|| format!("writing FK output to {}", config.out_path))?;
+            .context("FK transform task")?;
+
+            rows_out = n;
+            use tokio::io::AsyncWriteExt;
+            let out_file = tokio::fs::File::create(&config.out_path)
+                .await
+                .with_context(|| format!("creating FK output {}", config.out_path))?;
+            let mut writer = tokio::io::BufWriter::with_capacity(1 << 20, out_file);
+            writer.write_all(buf.as_bytes()).await?;
+            writer.flush().await?;
+        } else {
+            // Other formats: parallel transform → Vec<Value>, then the generic
+            // (serial) writer for that format.
+            use rayon::prelude::*;
+            let plan2 = Arc::clone(&plan);
+            let idx2 = Arc::clone(&index);
+            let values: Vec<Value> = tokio::task::spawn_blocking(move || {
+                let work = || {
+                    all_rows
+                        .par_iter()
+                        .filter_map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                eprintln!("FK transform error: {e:#}");
+                                None
+                            }
+                        })
+                        .collect::<Vec<Value>>()
+                };
+                match pool.as_ref() {
+                    Some(p) => p.install(work),
+                    None => work(),
+                }
+            })
+            .await
+            .context("FK transform task")?;
+
+            rows_out = values.len();
+            let stream = futures::stream::iter(values.into_iter().map(Ok::<_, anyhow::Error>));
+            write_all(&config.out_path, out_format, stream)
+                .await
+                .with_context(|| format!("writing FK output to {}", config.out_path))?;
+        }
+    } else if src_format == Format::Jsonl && out_format == Format::Jsonl {
+        // ── Fully-parallel JSONL fast path ────────────────────────────────────
+        //
+        // The generic streaming path parses every record in the serial reader
+        // (`load_stream`) and serialises every record in the serial writer —
+        // making tiny-per-row JSONL jobs I/O/serde-bound, not parallel. Here the
+        // reader emits *raw lines* (cheap byte scan), workers parse+transform+
+        // serialise in parallel, and the writer does raw byte appends. This moves
+        // JSON parse + serialise off the serial path onto the worker pool.
+        let (ri, ro) = transform_jsonl_parallel(&config, Arc::clone(&plan)).await?;
+        rows_in = ri;
+        rows_out = ro;
     } else {
         // ── Non-FK streaming mode (original path, unchanged) ──────────────────
         let mut source_stream = load_stream(&config.source_path, src_format)
@@ -582,6 +647,126 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
         elapsed,
         rows_per_sec,
     })
+}
+
+/// Fully-parallel JSONL transform: raw-line reader → parallel
+/// parse+transform+serialise workers → raw-byte writer.
+///
+/// Returns `(rows_in, rows_out)`. Used by [`run_pipeline`] when source and
+/// output are both JSONL and the spec is not FK (no shared `ObjectIndex`).
+/// Build a rayon pool sized to `workers` (0 → use the global pool ≈ num CPUs).
+fn build_rayon_pool(workers: usize) -> Result<Arc<Option<rayon::ThreadPool>>> {
+    let pool = if workers > 0 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .map_err(|e| anyhow::anyhow!("building rayon pool: {e}"))?,
+        )
+    } else {
+        None
+    };
+    Ok(Arc::new(pool))
+}
+
+async fn transform_jsonl_parallel(
+    config: &PipelineConfig,
+    plan: Arc<CompiledPlan>,
+) -> Result<(usize, usize)> {
+    use rayon::prelude::*;
+    use tokio::io::{AsyncWriteExt, BufWriter};
+
+    let pool = build_rayon_pool(config.workers)?;
+
+    // Bulk read: one big async read, not per-line `next_line().await` (100k+
+    // awaits were the real bottleneck — read dominated, not transform). Line
+    // splitting + JSON parse + transform + serialise then run fully in parallel
+    // on the rayon pool, off the async reactor.
+    //
+    // ponytail: reads the whole file into memory (O(file_size)). For inputs
+    // larger than RAM, switch to a block-streaming reader (read fixed-size byte
+    // blocks, split lines across block boundaries) — not needed for typical ETL.
+    let dbg = std::env::var("PIPELINE_PHASE_TIMING").is_ok();
+    let t0 = Instant::now();
+    let data = tokio::fs::read_to_string(&config.source_path)
+        .await
+        .with_context(|| format!("reading JSONL source {}", config.source_path))?;
+    let t_read = t0.elapsed();
+
+    let t1 = Instant::now();
+    let plan2 = Arc::clone(&plan);
+    let (out_buf, rows_in, rows_out): (String, usize, usize) =
+        tokio::task::spawn_blocking(move || {
+            let work = || -> (String, usize, usize) {
+                let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
+                let n_in = lines.len();
+                let outs: Vec<Option<String>> = lines
+                    .par_iter()
+                    .map(|l| parse_transform_serialize(&plan2, l))
+                    .collect();
+                let mut buf = String::with_capacity(outs.len() * 64);
+                let mut n_out = 0usize;
+                for o in outs.into_iter().flatten() {
+                    buf.push_str(&o);
+                    buf.push('\n');
+                    n_out += 1;
+                }
+                (buf, n_in, n_out)
+            };
+            match pool.as_ref() {
+                Some(p) => p.install(work),
+                None => work(),
+            }
+        })
+        .await
+        .context("transform task")?;
+    let t_xform = t1.elapsed();
+
+    let t2 = Instant::now();
+    let out_file = tokio::fs::File::create(&config.out_path)
+        .await
+        .with_context(|| format!("creating JSONL output {}", config.out_path))?;
+    let mut writer = BufWriter::with_capacity(1 << 20, out_file);
+    writer.write_all(out_buf.as_bytes()).await?;
+    writer.flush().await?;
+    let t_write = t2.elapsed();
+
+    if dbg {
+        eprintln!(
+            "[phase] read={:.3}s transform={:.3}s write={:.3}s (workers={})",
+            t_read.as_secs_f64(),
+            t_xform.as_secs_f64(),
+            t_write.as_secs_f64(),
+            config.workers
+        );
+    }
+    Ok((rows_in, rows_out))
+}
+
+/// Parse one JSONL line → transform → serialise back to a JSON string.
+/// Returns `None` (dropping the row, with a logged error) on any failure.
+fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> {
+    let v: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("JSONL parse error: {e}");
+            return None;
+        }
+    };
+    let out = match plan.transform(v) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("transform error: {e:#}");
+            return None;
+        }
+    };
+    match linkml_map_io::value_to_json(&out).and_then(|j| Ok(serde_json::to_string(&j)?)) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("serialise error: {e:#}");
+            None
+        }
+    }
 }
 
 // ── Tolerant schema loader ──────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ pub mod writers;
 // Re-export the most commonly used items at crate root.
 pub use format::Format;
 pub use loaders::{load_all, load_stream, load_stream_auto};
-pub use writers::{write_all, write_all_auto, write_vec};
+pub use writers::{value_to_json, write_all, write_all_auto, write_vec};
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

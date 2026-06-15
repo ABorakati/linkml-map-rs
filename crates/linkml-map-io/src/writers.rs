@@ -170,7 +170,7 @@ where
 // ─── Value → serde_json::Value ────────────────────────────────────────────────
 
 /// Losslessly convert a [`Value`] to `serde_json::Value` for serialisation.
-pub(crate) fn value_to_json(v: &Value) -> Result<serde_json::Value> {
+pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
     Ok(match v {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
