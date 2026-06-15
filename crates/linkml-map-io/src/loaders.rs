@@ -32,7 +32,10 @@ use crate::format::Format;
 /// For streaming formats (CSV, TSV, JSONL) the file is read incrementally.
 /// For whole-file formats (JSON, YAML) the file is read in one shot and the
 /// results are returned as a stream of owned `Value`s.
-pub async fn load_stream(path: impl AsRef<Path>, format: Format) -> Result<BoxStream<'static, Result<Value>>> {
+pub async fn load_stream(
+    path: impl AsRef<Path>,
+    format: Format,
+) -> Result<BoxStream<'static, Result<Value>>> {
     let path = path.as_ref().to_owned();
     match format {
         Format::Csv => Ok(csv_stream_inner(path, b',')),
@@ -192,8 +195,7 @@ async fn json_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result
         .await
         .with_context(|| format!("opening {:?}", path.as_ref()))?;
 
-    let val: serde_json::Value =
-        serde_json::from_slice(&bytes).context("JSON parse error")?;
+    let val: serde_json::Value = serde_json::from_slice(&bytes).context("JSON parse error")?;
 
     let items = serde_json_value_to_values(val);
     Ok(stream::iter(items.into_iter().map(Ok)).boxed())
@@ -206,8 +208,7 @@ async fn yaml_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result
         .await
         .with_context(|| format!("opening {:?}", path.as_ref()))?;
 
-    let val: serde_json::Value =
-        serde_yaml_ng::from_slice(&bytes).context("YAML parse error")?;
+    let val: serde_json::Value = serde_yaml_ng::from_slice(&bytes).context("YAML parse error")?;
 
     let items = serde_json_value_to_values(val);
     Ok(stream::iter(items.into_iter().map(Ok)).boxed())
@@ -219,9 +220,7 @@ async fn yaml_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result
 /// Arrays are expanded; single objects/scalars yield a one-element vec.
 fn serde_json_value_to_values(v: serde_json::Value) -> Vec<Value> {
     match v {
-        serde_json::Value::Array(items) => {
-            items.into_iter().map(json_to_value).collect()
-        }
+        serde_json::Value::Array(items) => items.into_iter().map(json_to_value).collect(),
         other => vec![json_to_value(other)],
     }
 }

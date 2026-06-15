@@ -144,10 +144,7 @@ where
                 writer.write_all(line.as_bytes()).await?;
                 writer.write_all(b"\n").await?;
             }
-            other => bail!(
-                "CSV/TSV writer expects Value::Map records, got {:?}",
-                other
-            ),
+            other => bail!("CSV/TSV writer expects Value::Map records, got {:?}", other),
         }
     }
     Ok(())
@@ -208,12 +205,10 @@ fn value_to_csv_str(v: &Value) -> String {
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Str(s) => s.clone(),
-        Value::List(_) | Value::Map(_) => {
-            value_to_json(v)
-                .ok()
-                .map(|j| j.to_string())
-                .unwrap_or_default()
-        }
+        Value::List(_) | Value::Map(_) => value_to_json(v)
+            .ok()
+            .map(|j| j.to_string())
+            .unwrap_or_default(),
     }
 }
 

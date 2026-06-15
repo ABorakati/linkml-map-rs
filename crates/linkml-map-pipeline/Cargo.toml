@@ -22,6 +22,10 @@ indexmap              = { workspace = true }
 name = "pipeline-bench"
 path = "src/bin/bench.rs"
 
+[[bin]]
+name = "bench-vs-python"
+path = "src/bin/bench_vs_python.rs"
+
 [dev-dependencies]
 tokio     = { workspace = true }
 tempfile  = { workspace = true }

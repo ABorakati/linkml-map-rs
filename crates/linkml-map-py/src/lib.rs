@@ -32,13 +32,11 @@
 //! PyDict traversal, and is correct for all Value variants including nested
 //! maps and lists.
 
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
 use linkml_map_core::{
-    datamodel::TransformationSpecification,
-    engine::ObjectTransformer,
-    value::Value,
+    datamodel::TransformationSpecification, engine::ObjectTransformer, value::Value,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 
@@ -48,9 +46,7 @@ use linkml_map_schemaview::SchemaViewProvider;
 /// through JSON.  The caller must hold the GIL (`py`).
 fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     let json_mod = py.import("json")?;
-    let json_str: String = json_mod
-        .call_method1("dumps", (obj,))?
-        .extract()?;
+    let json_str: String = json_mod.call_method1("dumps", (obj,))?.extract()?;
 
     let serde_val: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
@@ -67,9 +63,7 @@ fn value_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         .map_err(|e| PyValueError::new_err(format!("JSON serialisation error: {e}")))?;
 
     let json_mod = py.import("json")?;
-    let py_obj: PyObject = json_mod
-        .call_method1("loads", (json_str,))?
-        .extract()?;
+    let py_obj: PyObject = json_mod.call_method1("loads", (json_str,))?.extract()?;
 
     Ok(py_obj)
 }
@@ -82,8 +76,9 @@ fn load_spec(spec_path: &str) -> PyResult<TransformationSpecification> {
 
     // linkml-map transform specs write class_derivations as a YAML mapping
     // (ClassName -> body) rather than as a list.  Normalise before deserialising.
-    let normalised = normalise_transform_yaml(&yaml_str)
-        .map_err(|e| PyValueError::new_err(format!("Failed to normalise spec '{spec_path}': {e}")))?;
+    let normalised = normalise_transform_yaml(&yaml_str).map_err(|e| {
+        PyValueError::new_err(format!("Failed to normalise spec '{spec_path}': {e}"))
+    })?;
 
     let spec: TransformationSpecification = serde_yaml_ng::from_str(&normalised)
         .map_err(|e| PyValueError::new_err(format!("Failed to parse spec '{spec_path}': {e}")))?;
@@ -100,8 +95,8 @@ fn load_spec(spec_path: &str) -> PyResult<TransformationSpecification> {
 /// - null-shorthand slots (`id:` with no body) → `{"name": "id"}`
 /// - `enum_derivations` and nested `permissible_value_derivations`: same name injection
 fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
-    let mut root: serde_json::Value = serde_yaml_ng::from_str(text)
-        .map_err(|e| anyhow::anyhow!("YAML parse error: {e}"))?;
+    let mut root: serde_json::Value =
+        serde_yaml_ng::from_str(text).map_err(|e| anyhow::anyhow!("YAML parse error: {e}"))?;
 
     if let Some(obj) = root.as_object_mut() {
         // ── class_derivations: mapping → Vec ──────────────────────────────────
@@ -129,7 +124,9 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
                                                 if !so.contains_key("name") {
                                                     so.insert(
                                                         "name".into(),
-                                                        serde_json::Value::String(slot_name.clone()),
+                                                        serde_json::Value::String(
+                                                            slot_name.clone(),
+                                                        ),
                                                     );
                                                 }
                                             }
@@ -150,7 +147,9 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
         if let Some(ed) = obj.get_mut("enum_derivations") {
             if let Some(edm) = ed.as_object_mut() {
                 for (enum_name, enum_val) in edm.iter_mut() {
-                    if enum_val.is_null() { *enum_val = serde_json::json!({}); }
+                    if enum_val.is_null() {
+                        *enum_val = serde_json::json!({});
+                    }
                     if let Some(eo) = enum_val.as_object_mut() {
                         if !eo.contains_key("name") {
                             eo.insert("name".into(), serde_json::Value::String(enum_name.clone()));
@@ -158,10 +157,15 @@ fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
                         if let Some(pvds) = eo.get_mut("permissible_value_derivations") {
                             if let Some(pvm) = pvds.as_object_mut() {
                                 for (pv_name, pv_val) in pvm.iter_mut() {
-                                    if pv_val.is_null() { *pv_val = serde_json::json!({}); }
+                                    if pv_val.is_null() {
+                                        *pv_val = serde_json::json!({});
+                                    }
                                     if let Some(po) = pv_val.as_object_mut() {
                                         if !po.contains_key("name") {
-                                            po.insert("name".into(), serde_json::Value::String(pv_name.clone()));
+                                            po.insert(
+                                                "name".into(),
+                                                serde_json::Value::String(pv_name.clone()),
+                                            );
                                         }
                                     }
                                 }
@@ -217,7 +221,8 @@ fn run_transform(
         target_provider.map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
     );
 
-    let result = engine.map_object(&input_value, source_class)
+    let result = engine
+        .map_object(&input_value, source_class)
         .map_err(|e| PyValueError::new_err(format!("Transform error: {e}")))?;
 
     value_to_py(py, &result)
@@ -277,7 +282,8 @@ impl PyTransformer {
     /// Transform a single Python dict and return the result as a dict.
     fn transform(&self, py: Python<'_>, obj: Bound<'_, PyAny>) -> PyResult<PyObject> {
         let source = load_source_provider(&self.source_schema_path, &self.spec)?;
-        let target_opt: Option<SchemaViewProvider> = self.target_schema_path
+        let target_opt: Option<SchemaViewProvider> = self
+            .target_schema_path
             .as_deref()
             .map(load_schema_provider)
             .transpose()?;
@@ -293,10 +299,15 @@ impl PyTransformer {
     }
 
     /// Transform a list of Python dicts and return a list of result dicts.
-    fn transform_many(&self, py: Python<'_>, objs: Vec<Bound<'_, PyAny>>) -> PyResult<Vec<PyObject>> {
+    fn transform_many(
+        &self,
+        py: Python<'_>,
+        objs: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<PyObject>> {
         // Load schemas once for the batch.
         let source = load_source_provider(&self.source_schema_path, &self.spec)?;
-        let target_opt: Option<SchemaViewProvider> = self.target_schema_path
+        let target_opt: Option<SchemaViewProvider> = self
+            .target_schema_path
             .as_deref()
             .map(load_schema_provider)
             .transpose()?;
@@ -318,9 +329,7 @@ impl PyTransformer {
     fn __repr__(&self) -> String {
         format!(
             "Transformer(source_schema={:?}, target_schema={:?}, source_class={:?})",
-            self.source_schema_path,
-            self.target_schema_path,
-            self.source_class,
+            self.source_schema_path, self.target_schema_path, self.source_class,
         )
     }
 }

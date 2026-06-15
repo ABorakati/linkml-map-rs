@@ -105,7 +105,9 @@ async fn test_map_data_measurements_001_golden() {
     );
 
     // height_in_cm should be 172.0 (float or int)
-    let height = map.get("height_in_cm").expect("height_in_cm missing in output");
+    let height = map
+        .get("height_in_cm")
+        .expect("height_in_cm missing in output");
     match height {
         Value::Float(f) => assert!(
             (f - 172.0_f64).abs() < 1e-6,

@@ -74,13 +74,21 @@ mod tests {
         let path = dir.path().join("records.jsonl");
 
         let original = vec![
-            make_map_mixed(&[("name", Value::Str("Alice".into())), ("age", Value::Int(30))]),
+            make_map_mixed(&[
+                ("name", Value::Str("Alice".into())),
+                ("age", Value::Int(30)),
+            ]),
             make_map_mixed(&[("name", Value::Str("Bob".into())), ("age", Value::Int(25))]),
-            make_map_mixed(&[("name", Value::Str("Charlie".into())), ("age", Value::Int(40))]),
+            make_map_mixed(&[
+                ("name", Value::Str("Charlie".into())),
+                ("age", Value::Int(40)),
+            ]),
         ];
 
         // Write.
-        write_vec(&path, Format::Jsonl, original.clone()).await.unwrap();
+        write_vec(&path, Format::Jsonl, original.clone())
+            .await
+            .unwrap();
 
         // Read back.
         let loaded = load_all(&path, Format::Jsonl).await.unwrap();
@@ -97,11 +105,16 @@ mod tests {
         // Write 5 records.
         let original: Vec<Value> = (0..5)
             .map(|i| {
-                make_map_mixed(&[("id", Value::Int(i)), ("val", Value::Str(format!("item{}", i)))])
+                make_map_mixed(&[
+                    ("id", Value::Int(i)),
+                    ("val", Value::Str(format!("item{}", i))),
+                ])
             })
             .collect();
 
-        write_vec(&path, Format::Jsonl, original.clone()).await.unwrap();
+        write_vec(&path, Format::Jsonl, original.clone())
+            .await
+            .unwrap();
 
         // Stream back one by one.
         let mut stream = load_stream(&path, Format::Jsonl).await.unwrap();
@@ -131,7 +144,9 @@ mod tests {
             make_map(&[("name", "Bob"), ("city", "Paris")]),
         ];
 
-        write_vec(&path, Format::Csv, original.clone()).await.unwrap();
+        write_vec(&path, Format::Csv, original.clone())
+            .await
+            .unwrap();
 
         let loaded = load_all(&path, Format::Csv).await.unwrap();
 
@@ -177,7 +192,9 @@ mod tests {
             make_map(&[("gene", "EGFR"), ("chromosome", "7")]),
         ];
 
-        write_vec(&path, Format::Tsv, original.clone()).await.unwrap();
+        write_vec(&path, Format::Tsv, original.clone())
+            .await
+            .unwrap();
         let loaded = load_all(&path, Format::Tsv).await.unwrap();
 
         assert_eq!(loaded, original, "TSV round-trip mismatch");
@@ -195,7 +212,9 @@ mod tests {
             make_map_mixed(&[("x", Value::Int(2)), ("y", Value::Bool(false))]),
         ];
 
-        write_vec(&path, Format::Json, original.clone()).await.unwrap();
+        write_vec(&path, Format::Json, original.clone())
+            .await
+            .unwrap();
         let loaded = load_all(&path, Format::Json).await.unwrap();
 
         assert_eq!(loaded, original, "JSON round-trip mismatch");
@@ -213,7 +232,9 @@ mod tests {
             ("label", Value::Str("test".into())),
         ])];
 
-        write_vec(&path, Format::Yaml, original.clone()).await.unwrap();
+        write_vec(&path, Format::Yaml, original.clone())
+            .await
+            .unwrap();
         let loaded = load_all(&path, Format::Yaml).await.unwrap();
 
         assert_eq!(loaded, original, "YAML round-trip mismatch");
@@ -244,7 +265,9 @@ mod tests {
         let original: Vec<Value> = (0..10)
             .map(|i| make_map(&[("row", &i.to_string()), ("label", "x")]))
             .collect();
-        write_vec(&path, Format::Csv, original.clone()).await.unwrap();
+        write_vec(&path, Format::Csv, original.clone())
+            .await
+            .unwrap();
 
         // Stream back and verify order.
         let mut stream = load_stream(&path, Format::Csv).await.unwrap();
@@ -278,7 +301,9 @@ mod tests {
             Value::Int(99),
             Value::Bool(true),
         ];
-        write_vec(&path, Format::Jsonl, items.clone()).await.unwrap();
+        write_vec(&path, Format::Jsonl, items.clone())
+            .await
+            .unwrap();
 
         let loaded = load_all(&path, Format::Jsonl).await.unwrap();
         assert_eq!(loaded, items);
@@ -293,7 +318,9 @@ mod tests {
 
         // A value containing a comma must be quoted.
         let original = vec![make_map(&[("col", "hello, world"), ("other", "plain")])];
-        write_vec(&path, Format::Csv, original.clone()).await.unwrap();
+        write_vec(&path, Format::Csv, original.clone())
+            .await
+            .unwrap();
 
         let loaded = load_all(&path, Format::Csv).await.unwrap();
         assert_eq!(loaded, original, "comma in value broke round-trip");
@@ -313,7 +340,9 @@ mod tests {
             Value::List(vec![Value::Int(1), Value::Int(2)]),
         ];
 
-        write_vec(&path, Format::Jsonl, original.clone()).await.unwrap();
+        write_vec(&path, Format::Jsonl, original.clone())
+            .await
+            .unwrap();
         let loaded = load_all(&path, Format::Jsonl).await.unwrap();
         assert_eq!(loaded, original);
     }
