@@ -1808,11 +1808,6 @@ fn join_source_key(ac: &AliasedClass) -> Option<&str> {
     ac.source_key.as_deref().or(ac.join_on.as_deref())
 }
 
-/// Lookup-side join key: `spec.lookup_key or spec.join_on`.
-fn join_lookup_key(ac: &AliasedClass) -> Option<&str> {
-    ac.lookup_key.as_deref().or(ac.join_on.as_deref())
-}
-
 /// Convert a Value to a string for use as a map key (value_mappings lookups).
 fn value_to_string_key(v: &Value) -> String {
     match v {
