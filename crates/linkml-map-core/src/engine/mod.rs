@@ -464,10 +464,16 @@ impl<'s> ObjectTransformer<'s> {
             (v, None)
         } else if let Some(populated_from) = &slot_deriv.populated_from {
             // 3. populated_from — direct field copy.
-            let raw = source_map
-                .get(populated_from)
-                .cloned()
-                .unwrap_or(Value::Null);
+            // `_source_class` is a virtual slot that resolves to the source class
+            // name itself, enabling value_mappings keyed by source class (#193).
+            let raw = if populated_from == "_source_class" {
+                Value::Str(source_type.to_string())
+            } else {
+                source_map
+                    .get(populated_from)
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            };
             // Apply value_mappings if present and value is non-null.
             let mapped = if let Some(vm) = &slot_deriv.value_mappings {
                 if !raw.is_null() {
@@ -484,25 +490,43 @@ impl<'s> ObjectTransformer<'s> {
                 raw
             };
             // Source slot def for range/cardinality coercion.
-            let ssd = self
-                .source_schema
-                .and_then(|ss| ss.induced_slot(populated_from, source_type).ok());
+            // _source_class is virtual — no real schema slot to look up.
+            let ssd = if populated_from == "_source_class" {
+                None
+            } else {
+                self.source_schema
+                    .and_then(|ss| ss.induced_slot(populated_from, source_type).ok())
+            };
             (mapped, ssd)
         } else if let Some(sources) = &slot_deriv.sources {
-            // 4. sources — first non-null wins.
-            let mut found_v = Value::Null;
-            let mut found_ssd: Option<SlotDef> = None;
+            // 4. sources — exactly one non-null wins; error if multiple present.
+            // Mirrors Python `_resolve_sources` which raises ValueError on ambiguity.
+            let mut found: Vec<(String, Value, Option<SlotDef>)> = Vec::new();
             for src_slot in sources {
                 let candidate = source_map.get(src_slot).cloned().unwrap_or(Value::Null);
                 if !candidate.is_null() {
                     let ssd = self
                         .source_schema
                         .and_then(|ss| ss.induced_slot(src_slot, source_type).ok());
-                    found_v = candidate;
-                    found_ssd = ssd;
-                    break;
+                    found.push((src_slot.clone(), candidate, ssd));
                 }
             }
+            if found.len() > 1 {
+                let names: Vec<&str> = found.iter().map(|(k, _, _)| k.as_str()).collect();
+                return Err(Error::SlotTransform {
+                    class: class_deriv.name.clone(),
+                    slot: slot_name.to_string(),
+                    cause: format!(
+                        "multiple sources have values for {slot_name}: {}",
+                        names.join(", ")
+                    ),
+                });
+            }
+            let (found_v, found_ssd) = found
+                .into_iter()
+                .next()
+                .map(|(_, v, ssd)| (v, ssd))
+                .unwrap_or((Value::Null, None));
             (found_v, found_ssd)
         } else if slot_deriv.object_derivations.is_some() {
             // 5. object_derivations — fully ported.
@@ -820,6 +844,11 @@ impl<'s> ObjectTransformer<'s> {
         // Build bindings from all source map keys.
         let mut bindings: Bindings = IndexMap::new();
         bindings.insert("NULL".to_string(), Value::Null);
+        // _source_class is the source class name, available in expr: bindings (#193).
+        bindings.insert(
+            "_source_class".to_string(),
+            Value::Str(source_type.to_string()),
+        );
         for (k, v) in source_map {
             // FK dereference: when this source slot holds a foreign key (a
             // scalar identifier whose range is a class), replace the binding
@@ -1518,7 +1547,13 @@ impl<'s> ObjectTransformer<'s> {
             .iter()
             .filter(|cd| {
                 cd.populated_from.as_deref() == Some(source_type)
-                    || (cd.populated_from.is_none() && cd.name == source_type)
+                    || (cd.populated_from.is_none()
+                        && cd.sources.is_none()
+                        && cd.name == source_type)
+                    || cd
+                        .sources
+                        .as_ref()
+                        .is_some_and(|s| s.contains(&source_type.to_string()))
             })
             .collect();
 
@@ -2813,7 +2848,9 @@ mod tests {
     // ── Test 12: sources (first non-null wins) ────────────────────────────────
 
     #[test]
-    fn test_sources_first_wins() {
+    fn test_sources_single_wins() {
+        // Mirrors Python `_resolve_sources`: exactly one non-null source wins;
+        // error if multiple sources are present simultaneously.
         let schema = make_person_schema();
         let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
         slots.insert(
@@ -2834,16 +2871,18 @@ mod tests {
             ..Default::default()
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
-        // name is present → should win.
-        let src = src_person("P:001", "Charlie");
-        let result = engine.map_object(&src, Some("Person")).unwrap();
+
+        // Only `name` present → wins.
+        let mut m1 = IndexMap::new();
+        m1.insert("name".into(), Value::Str("Charlie".into()));
+        let result = engine.map_object(&Value::Map(m1), Some("Person")).unwrap();
         let out = match result {
             Value::Map(m) => m,
             _ => panic!(),
         };
         assert_eq!(out["display_name"], Value::Str("Charlie".into()));
 
-        // name is absent → id wins.
+        // Only `id` present → wins.
         let mut m2 = IndexMap::new();
         m2.insert("id".into(), Value::Str("P:999".into()));
         let result2 = engine.map_object(&Value::Map(m2), Some("Person")).unwrap();
@@ -2852,6 +2891,14 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(out2["display_name"], Value::Str("P:999".into()));
+
+        // Both present → error (mirrors Python ValueError on ambiguous sources).
+        let src_both = src_person("P:001", "Charlie");
+        let err = engine.map_object(&src_both, Some("Person"));
+        assert!(
+            err.is_err(),
+            "expected error when multiple sources are non-null"
+        );
     }
 
     // ── Test 13: enum mirror_source ───────────────────────────────────────────
@@ -2968,6 +3015,149 @@ mod tests {
         let src = src_person("P:001", "Alice");
         let err = engine.map_object(&src, Some("Organization")).unwrap_err();
         assert!(matches!(err, Error::NoClassDerivation { .. }));
+    }
+
+    // ── Test: class-level sources dispatch (#193) ────────────────────────────
+
+    #[test]
+    fn test_class_sources_dispatch() {
+        // A single ClassDerivation with `sources` covers multiple source types.
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "id".into(),
+            SlotDerivation {
+                name: "id".into(),
+                ..Default::default()
+            },
+        );
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                // sources replaces populated_from for multi-source dispatch
+                sources: Some(vec!["PersonV1".into(), "PersonV2".into()]),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        // Both source types should map via the same derivation.
+        let mut obj = IndexMap::new();
+        obj.insert("id".into(), Value::Str("P:1".into()));
+        obj.insert("name".into(), Value::Str("Alice".into()));
+
+        let r1 = engine
+            .map_object(&Value::Map(obj.clone()), Some("PersonV1"))
+            .unwrap();
+        let r2 = engine
+            .map_object(&Value::Map(obj.clone()), Some("PersonV2"))
+            .unwrap();
+        assert_eq!(r1, r2);
+        if let Value::Map(m) = &r1 {
+            assert_eq!(m["name"], Value::Str("Alice".into()));
+        } else {
+            panic!("expected map");
+        }
+
+        // A type not in sources should still error.
+        let err = engine.map_object(&Value::Map(obj), Some("PersonV3"));
+        assert!(err.is_err());
+    }
+
+    // ── Test: _source_class virtual binding (#193) ────────────────────────────
+
+    #[test]
+    fn test_source_class_binding() {
+        // `populated_from: _source_class` returns the source class name, enabling
+        // value_mappings keyed by source class.
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        let mut vm: IndexMap<String, KeyVal> = IndexMap::new();
+        vm.insert(
+            "PersonV1".into(),
+            KeyVal {
+                key: "PersonV1".into(),
+                value: Some(serde_json::Value::String("visit_1".into())),
+            },
+        );
+        vm.insert(
+            "PersonV2".into(),
+            KeyVal {
+                key: "PersonV2".into(),
+                value: Some(serde_json::Value::String("visit_2".into())),
+            },
+        );
+        slots.insert(
+            "visit_label".into(),
+            SlotDerivation {
+                name: "visit_label".into(),
+                populated_from: Some("_source_class".into()),
+                value_mappings: Some(vm),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                sources: Some(vec!["PersonV1".into(), "PersonV2".into()]),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        let obj = Value::Map(IndexMap::new());
+        let r1 = engine.map_object(&obj, Some("PersonV1")).unwrap();
+        let r2 = engine.map_object(&obj, Some("PersonV2")).unwrap();
+        if let (Value::Map(m1), Value::Map(m2)) = (&r1, &r2) {
+            assert_eq!(m1["visit_label"], Value::Str("visit_1".into()));
+            assert_eq!(m2["visit_label"], Value::Str("visit_2".into()));
+        } else {
+            panic!("expected maps");
+        }
+    }
+
+    // ── Test: _source_class in expr (#193) ───────────────────────────────────
+
+    #[test]
+    fn test_source_class_in_expr() {
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "label".into(),
+            SlotDerivation {
+                name: "label".into(),
+                expr: Some("{_source_class}".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                sources: Some(vec!["PersonV1".into(), "PersonV2".into()]),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let obj = Value::Map(IndexMap::new());
+        let r = engine.map_object(&obj, Some("PersonV1")).unwrap();
+        if let Value::Map(m) = r {
+            assert_eq!(m["label"], Value::Str("PersonV1".into()));
+        } else {
+            panic!("expected map");
+        }
     }
 
     // ── Test 17: is_a ancestor slot inheritance ───────────────────────────────
