@@ -21,7 +21,7 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install maturin pytest linkml-runtime pyyaml deepdiff linkml
+        pip install maturin pytest linkml-runtime pyyaml deepdiff linkml linkml-map
 
     - name: Setup Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
