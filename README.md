@@ -237,7 +237,7 @@ Runtime: `serde` / `serde_json` / `serde_yaml_ng`, `indexmap`, `anyhow` /
 `thiserror`, `tokio` + `futures` (async I/O), `rayon` (data parallelism),
 `walkdir`. Python bindings: `pyo3` (built with `maturin`); the shim needs
 `linkml-runtime` + `pyyaml`. Schema introspection uses the LinkML metamodel and
-SchemaView Rust crates.
+SchemaView Rust crates, compiled from the unofficial [Kapernikov/rust-linkml-core](https://github.com/Kapernikov/rust-linkml-core) monorepo.
 
 ## Building
 
