@@ -103,15 +103,11 @@ class ObjectTransformer:
             return
         if self.source_schemaview is None:
             raise ValueError("source_schemaview is required before map_object")
-        schema_yaml = _schema_to_yaml(self.source_schemaview)
-        spec_yaml = _spec_to_yaml(self.specification)
-        target_yaml = (
-            _schema_to_yaml(self.target_schemaview)
-            if self.target_schemaview is not None
-            else None
-        )
-        self._rust = linkml_map_rs.Transformer.from_yaml(
-            schema_yaml, spec_yaml, target_yaml, None
+        self._rust = linkml_map_rs.Transformer.from_python(
+            self.source_schemaview,
+            self.specification,
+            self.target_schemaview,
+            None,
         )
 
     def map_object(self, source_obj: Any, source_type: Optional[str] = None) -> Any:

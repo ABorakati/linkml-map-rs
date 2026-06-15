@@ -76,6 +76,65 @@ fn value_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
     Ok(py_obj)
 }
 
+/// Coerce a Python SchemaView (or string/path) argument to a JSON string.
+fn schema_to_json_str(py: Python<'_>, sv: &Bound<'_, PyAny>) -> PyResult<String> {
+    use pyo3::types::PyString;
+    if sv.is_instance_of::<PyString>() {
+        let s: String = sv.extract()?;
+        let path = std::path::Path::new(&s);
+        if path.exists() && path.is_file() {
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| PyValueError::new_err(format!("Cannot read schema file '{s}': {e}")))?;
+            return Ok(content);
+        }
+        return Ok(s);
+    }
+
+    let schema = if sv.hasattr("schema")? {
+        sv.getattr("schema")?
+    } else {
+        sv.clone()
+    };
+
+    let json_dumper = py.import("linkml_runtime.dumpers.json_dumper")?;
+    let json_str: String = json_dumper.call_method1("dumps", (schema,))?.extract()?;
+    Ok(json_str)
+}
+
+/// Coerce a Python specification (dict, dataclass, string/path) argument to a `serde_json::Value`.
+fn spec_to_json_value(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    use pyo3::types::{PyDict, PyString};
+
+    if spec.is_instance_of::<PyString>() {
+        let s: String = spec.extract()?;
+        let path = std::path::Path::new(&s);
+        let content = if path.exists() && path.is_file() {
+            std::fs::read_to_string(path)
+                .map_err(|e| PyValueError::new_err(format!("Cannot read spec file '{s}': {e}")))?
+        } else {
+            s
+        };
+        let val: serde_json::Value = serde_yaml_ng::from_str(&content)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse spec: {e}")))?;
+        return Ok(val);
+    }
+
+    if spec.is_instance_of::<PyDict>() {
+        let json_mod = py.import("json")?;
+        let json_str: String = json_mod.call_method1("dumps", (spec,))?.extract()?;
+        let val: serde_json::Value = serde_json::from_str(&json_str)
+            .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
+        return Ok(val);
+    }
+
+    // Otherwise assume it is a dataclass object.
+    let json_dumper = py.import("linkml_runtime.dumpers.json_dumper")?;
+    let json_str: String = json_dumper.call_method1("dumps", (spec,))?.extract()?;
+    let val: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
+    Ok(val)
+}
+
 // ── Schema / spec loading ─────────────────────────────────────────────────────
 
 fn load_spec(spec_path: &str) -> PyResult<TransformationSpecification> {
@@ -226,6 +285,46 @@ impl PyTransformer {
             .transpose()?;
         Ok(Self {
             spec,
+            source_provider,
+            target_provider,
+            source_class,
+        })
+    }
+
+    /// Build from direct Python SchemaView and specification objects (or strings).
+    /// Bypasses Python-side YAML dumping/parsing via JSON coercion.
+    #[staticmethod]
+    #[pyo3(signature = (source_schemaview, spec, target_schemaview=None, source_class=None))]
+    fn from_python(
+        py: Python<'_>,
+        source_schemaview: Bound<'_, PyAny>,
+        spec: Bound<'_, PyAny>,
+        target_schemaview: Option<Bound<'_, PyAny>>,
+        source_class: Option<String>,
+    ) -> PyResult<Self> {
+        let mut spec_val = spec_to_json_value(py, &spec)?;
+        linkml_map_core::datamodel::normalise_spec_json(&mut spec_val);
+        let spec_parsed: TransformationSpecification = serde_json::from_value(spec_val)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse spec: {e}")))?;
+
+        let source_json = schema_to_json_str(py, &source_schemaview)?;
+        let source_provider = SchemaViewProvider::from_yaml_str_with_patch(
+            &source_json,
+            spec_parsed.source_schema_patches.as_ref(),
+        )
+        .map_err(|e| PyValueError::new_err(format!("Failed to parse source schema JSON: {e}")))?;
+
+        let target_provider = target_schemaview
+            .map(|t| {
+                let target_json = schema_to_json_str(py, &t)?;
+                SchemaViewProvider::from_yaml_str(&target_json).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to parse target schema JSON: {e}"))
+                })
+            })
+            .transpose()?;
+
+        Ok(Self {
+            spec: spec_parsed,
             source_provider,
             target_provider,
             source_class,
