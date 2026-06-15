@@ -8,7 +8,7 @@ members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

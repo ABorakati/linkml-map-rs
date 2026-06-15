@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: "linkml-map-rs: a fast parallel Rust port of linkml-map"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  # TODO: set your full given name(s) before publishing.
+  - family-names: Borakati
+    given-names: A.
+    email: a.borakati@gmail.com
+repository-code: "https://github.com/ABorakati/linkml-map-rs"
+abstract: >-
+  A native, multi-core Rust port of the LinkML data-transformation engine
+  (linkml-map). It executes the same declarative TransformationSpecification
+  language as the reference Python implementation, producing byte-identical
+  output, and provides a drop-in Python API, a CLI, and a concurrent streaming
+  pipeline that runs an order of magnitude (or more) faster than base Python.
+keywords:
+  - LinkML
+  - linkml-map
+  - data transformation
+  - ETL
+  - OMOP
+  - Rust
+license: Apache-2.0
+references:
+  - type: software
+    title: "linkml-map"
+    repository-code: "https://github.com/linkml/linkml-map"
+    notes: "Upstream reference implementation that this project ports."
