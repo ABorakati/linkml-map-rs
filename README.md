@@ -51,7 +51,19 @@ linkml-map map-data \
 
 ### Python (Recommended Drop-in API)
 
-Install this **instead of** upstream `linkml-map`; existing imports resolve here. This drop-in shim is fully compatible with the standard `linkml-map` API and delivers matching performance:
+Install this **instead of** upstream `linkml-map` (existing imports will resolve to this optimized version).
+
+**Local installation:**
+```bash
+pip install ./crates/linkml-map-py
+```
+
+**Direct Git installation:**
+```bash
+pip install "git+https://github.com/ABorakati/linkml-map-rs.git#subdirectory=crates/linkml-map-py"
+```
+
+Once installed, use it as you would standard `linkml-map`:
 
 ```python
 from linkml_runtime import SchemaView
@@ -61,6 +73,7 @@ tr = ObjectTransformer(source_schemaview=SchemaView("source.yaml"),
                        specification=open("transform.yaml").read())
 out = tr.map_object({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 ```
+
 
 
 <details>
