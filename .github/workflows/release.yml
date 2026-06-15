@@ -1,0 +1,56 @@
+name: Auto-release
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  bump-and-tag:
+    # Skip the commit the bot itself makes (prevents infinite loop)
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          OLD=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          NEW=$(echo "$OLD" | awk -F. '{print $1"."$2"."$3+1}')
+          sed -i "s/^version = \"$OLD\"/version = \"$NEW\"/" Cargo.toml
+          cargo generate-lockfile
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: Collect commit message
+        id: notes
+        run: |
+          echo "msg<<EOF" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty=%B >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag
+        run: |
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }}"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin master --tags
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.bump.outputs.version }}" \
+            --title "v${{ steps.bump.outputs.version }}" \
+            --notes "${{ steps.notes.outputs.msg }}"
