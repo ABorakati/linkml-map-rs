@@ -1,0 +1,14 @@
+id: https://example.org/simple-enum
+name: simple-enum
+classes:
+  Asset:
+    attributes:
+      id: { range: string }
+  Signal:
+    is_a: Asset
+    attributes:
+      signalType: { range: SignalTypes }
+enums:
+  SignalTypes:
+    permissible_values:
+      A: { description: example }

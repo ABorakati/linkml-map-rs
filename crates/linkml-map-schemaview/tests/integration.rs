@@ -24,11 +24,8 @@ use linkml_map_core::schema::{RangeKind, SchemaError, SchemaProvider};
 use linkml_map_schemaview::SchemaViewProvider;
 
 fn simple_enum_path() -> std::path::PathBuf {
-    // CARGO_MANIFEST_DIR is set at compile time to the crate directory:
-    //   C:\Users\abora\linkml-map-rs\crates\linkml-map-schemaview
-    // Three levels up lands at C:\Users\abora, then into LinkML-MCP.
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest.join("../../../LinkML-MCP/rust/src/schemaview/tests/data/simple_enum.yaml")
+    manifest.join("tests/data/simple_enum.yaml")
 }
 
 fn load_simple_enum() -> SchemaViewProvider {
