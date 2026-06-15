@@ -5,7 +5,20 @@
 //! in linkml_map.datamodel.transformer_model.
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn deserialize_stringish_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.map(|v| match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        other => other.to_string(),
+    }))
+}
 
 /// Collection type for slot derivations.
 ///
@@ -345,7 +358,11 @@ pub enum Agent {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "deserialize_stringish_option",
+            skip_serializing_if = "Option::is_none"
+        )]
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         repository_url: Option<String>,
@@ -680,7 +697,11 @@ pub struct TransformationSpecification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub license: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_stringish_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub version: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]

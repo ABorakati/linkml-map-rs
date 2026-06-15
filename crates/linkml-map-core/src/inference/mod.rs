@@ -4,6 +4,7 @@
 //! port of Python `linkml_map.inference.inverter.TransformationSpecificationInverter`:
 //! given a forward spec (source → target), it derives the inverse spec
 //! (target → source) so a mapped object can be round-tripped back.
+mod schema_mapper;
 
 use indexmap::IndexMap;
 
@@ -15,6 +16,8 @@ use crate::{
     error::{Error, Result},
     schema::{RangeKind, SchemaProvider, SlotDef, UnitSystem},
 };
+
+pub use schema_mapper::SchemaMapper;
 
 /// Invert a transformation specification.
 ///

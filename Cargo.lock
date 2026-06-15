@@ -1330,6 +1330,7 @@ dependencies = [
  "linkml-map-io",
  "linkml-map-pipeline",
  "linkml-map-schemaview",
+ "serde_yaml_ng",
  "tempfile",
  "tokio",
 ]

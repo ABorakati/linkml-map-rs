@@ -16,6 +16,7 @@ linkml-map-schemaview = { path = "../linkml-map-schemaview" }
 clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+serde_yaml_ng = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

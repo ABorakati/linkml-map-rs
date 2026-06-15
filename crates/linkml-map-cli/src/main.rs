@@ -6,11 +6,12 @@
 //! - `derive-schema` — derive a target schema from a transformation spec
 //!                     (stub: not yet implemented in the Rust port).
 
-use std::process;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use linkml_map_cli::{parse_format_str, run_map_data_config, MapDataConfig};
+use linkml_map_core::inference::SchemaMapper;
+use linkml_map_pipeline::load_transform_spec;
+use linkml_map_schemaview::SchemaViewProvider;
 
 // ── Top-level CLI ─────────────────────────────────────────────────────────────
 
@@ -97,6 +98,10 @@ struct DeriveSchemaArgs {
     /// Source LinkML schema YAML file.
     #[arg(short = 's', long = "source-schema", value_name = "SCHEMA_YAML")]
     source_schema: String,
+
+    /// Output schema YAML file. Defaults to stdout.
+    #[arg(short = 'o', long = "output", value_name = "OUT_YAML")]
+    output: Option<String>,
 }
 
 // ── Subcommand dispatch ───────────────────────────────────────────────────────
@@ -124,23 +129,21 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
     Ok(())
 }
 
-fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> ! {
-    // derive-schema is not yet implemented in the Rust port.
-    // The Python `linkml-tr` CLI supports this via schema_maker; the Rust
-    // engine does not yet expose a derive path that reads a transform spec
-    // and emits a target schema YAML.
-    eprintln!(
-        "linkml-tr-rs derive-schema: spec={} source-schema={}",
-        args.spec, args.source_schema
-    );
-    eprintln!(
-        "error: derive-schema is not yet implemented in the Rust port.\n\
-         Use the Python `linkml-tr` CLI instead:\n\
-         \n\
-         \tlinkml-tr derive-schema -T {} -s {}\n",
-        args.spec, args.source_schema
-    );
-    process::exit(1);
+fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> Result<()> {
+    let spec = load_transform_spec(std::path::Path::new(&args.spec))?;
+    let source = SchemaViewProvider::load_from_path_with_patch(
+        std::path::Path::new(&args.source_schema),
+        spec.source_schema_patches.as_ref(),
+    )?;
+    let schema_doc = SchemaMapper::new(&source).derive_schema(&spec);
+    let yaml = serde_yaml_ng::to_string(&schema_doc)?;
+
+    if let Some(output) = &args.output {
+        std::fs::write(output, yaml)?;
+    } else {
+        print!("{yaml}");
+    }
+    Ok(())
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -150,7 +153,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::MapData(args) => dispatch_map_data(args).await?,
-        Commands::DeriveSchema(ref args) => dispatch_derive_schema(args),
+        Commands::DeriveSchema(ref args) => dispatch_derive_schema(args)?,
     }
     Ok(())
 }

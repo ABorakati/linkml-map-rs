@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
+use serde_json::json;
 
-use super::TransformationSpecificationInverter;
+use super::{SchemaMapper, TransformationSpecificationInverter};
 use crate::{
     datamodel::{
         ClassDerivation, SlotDerivation, StringificationConfiguration, TransformationSpecification,
@@ -298,4 +299,68 @@ fn invert_enum_derivation_swaps_pv() {
     let pv = &ed.permissible_value_derivations.as_ref().unwrap()["A"];
     assert_eq!(pv.name, "A");
     assert_eq!(pv.populated_from.as_deref(), Some("B"));
+}
+
+#[test]
+fn schema_mapper_derives_class_and_slot_metadata() {
+    let schema = InMemorySchemaBuilder::new()
+        .add_class(ClassDef {
+            name: "Person".into(),
+            tree_root: true,
+            is_a: None,
+            mixins: vec![],
+        })
+        .add_slot(
+            "Person",
+            SlotDef {
+                name: "full_name".into(),
+                range: RangeKind::Type("string".into()),
+                required: true,
+                ..slot("full_name")
+            },
+        )
+        .build();
+
+    let fwd = spec_of(vec![cd_with(
+        "Agent",
+        Some("Person"),
+        vec![SlotDerivation {
+            name: "name".into(),
+            populated_from: Some("full_name".into()),
+            target_definition: Some(json!({"description": "display name"})),
+            ..Default::default()
+        }],
+    )]);
+
+    let derived = SchemaMapper::new(&schema).derive_schema(&fwd);
+    let name_slot = &derived["classes"]["Agent"]["attributes"]["name"];
+    assert_eq!(name_slot["range"], "string");
+    assert_eq!(name_slot["required"], true);
+    assert_eq!(name_slot["description"], "display name");
+}
+
+#[test]
+fn schema_mapper_omits_hidden_slots() {
+    let schema = InMemorySchemaBuilder::new()
+        .add_class(ClassDef {
+            name: "Person".into(),
+            tree_root: true,
+            is_a: None,
+            mixins: vec![],
+        })
+        .add_slot("Person", slot("secret"))
+        .build();
+
+    let fwd = spec_of(vec![cd_with(
+        "Agent",
+        Some("Person"),
+        vec![SlotDerivation {
+            name: "secret".into(),
+            hide: Some(true),
+            ..Default::default()
+        }],
+    )]);
+
+    let derived = SchemaMapper::new(&schema).derive_schema(&fwd);
+    assert!(derived["classes"]["Agent"].get("attributes").is_none());
 }

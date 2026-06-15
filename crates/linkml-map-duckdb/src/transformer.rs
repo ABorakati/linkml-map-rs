@@ -180,7 +180,10 @@ fn read_table(conn: &Connection, table: &str) -> Result<Vec<Value>> {
 
     let col_count = stmt.column_count();
     let col_names: Vec<String> = (0..col_count)
-        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+        .map(|i| {
+            stmt.column_name(i)
+                .map_or("?".to_string(), |s| s.to_string())
+        })
         .collect();
 
     let mut rows: Vec<Value> = Vec::new();
@@ -251,21 +254,21 @@ fn duck_value_to_value(v: duckdb::types::Value) -> Value {
         DV::Struct(fields) => {
             // duckdb::types::OrderedMap<String, Value>
             let m: IndexMap<String, Value> = fields
-                .into_iter()
-                .map(|(k, v)| (k, duck_value_to_value(v)))
+                .iter()
+                .map(|(k, v)| (k.clone(), duck_value_to_value(v.clone())))
                 .collect();
             Value::Map(m)
         }
         DV::Map(entries) => {
             // duckdb::types::OrderedMap<Value, Value>
             let m: IndexMap<String, Value> = entries
-                .into_iter()
+                .iter()
                 .map(|(k, v)| {
-                    let key = match duck_value_to_value(k) {
+                    let key = match duck_value_to_value(k.clone()) {
                         Value::Str(s) => s,
                         other => format!("{other:?}"),
                     };
-                    (key, duck_value_to_value(v))
+                    (key, duck_value_to_value(v.clone()))
                 })
                 .collect();
             Value::Map(m)
