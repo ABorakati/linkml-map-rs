@@ -13,12 +13,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Setup Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-
-    - name: Run Rust workspace tests
-      run: cargo test --workspace --exclude linkml-map-py
-
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
@@ -29,10 +23,17 @@ jobs:
         python -m pip install --upgrade pip
         pip install maturin pytest linkml-runtime pyyaml
 
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Run Rust workspace tests
+      run: cargo test --workspace --exclude linkml-map-py
+
     - name: Build and install Python bindings
       run: |
-        maturin develop -m crates/linkml-map-py/Cargo.toml
+        pip install ./crates/linkml-map-py
 
     - name: Run Python compliance tests
       run: |
         pytest tests/compliance/test_compliance_suite.py
+
