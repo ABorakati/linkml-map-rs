@@ -18,10 +18,14 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Setup uv
+      uses: astral-sh/setup-uv-action@v5
+      with:
+        enable-cache: true
+
     - name: Install Python dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install maturin pytest linkml-runtime pyyaml deepdiff linkml linkml-map
+        uv pip install pytest linkml-runtime pyyaml deepdiff linkml linkml-map --system
 
     - name: Setup Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -37,7 +41,7 @@ jobs:
 
     - name: Install Python bindings
       run: |
-        pip install dist/*.whl
+        uv pip install dist/*.whl --system
 
     - name: Run Python compliance tests
       run: |
