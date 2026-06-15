@@ -1,5 +1,11 @@
 # linkml-map-rs
 
+[![DOI](https://zenodo.org/badge/1268538591.svg)](https://doi.org/10.5281/zenodo.20702210)
+[![CI](https://github.com/ABorakati/linkml-map-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ABorakati/linkml-map-rs/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
+[![LinkML](https://img.shields.io/badge/linkml-1.3%2B-blue.svg)](https://linkml.io)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 A fast, parallel **Rust port of [linkml-map](https://github.com/linkml/linkml-map)** — the
 LinkML data-transformation engine. Maps source objects to a target data model
 from a declarative `TransformationSpecification`, with a **drop-in Python API**,
@@ -25,9 +31,9 @@ If you use this software, please cite it using the following BibTeX entry:
   author = {Borakati, Aditya},
   title = {{linkml-map-rs: A Fast, Parallel Rust Port of linkml-map}},
   year = {2026},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/ABorakati/linkml-map-rs}}
+  publisher = {Zenodo},
+  doi = {10.5281/zenodo.20702210},
+  url = {https://doi.org/10.5281/zenodo.20702210}
 }
 ```
 

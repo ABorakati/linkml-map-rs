@@ -7,6 +7,7 @@ authors:
     given-names: Aditya
     affiliation: "Roger Williams Institute of Liver Studies, King's College London, 111 Coldharbour Ln, London SE5 9NT, UK"
 repository-code: "https://github.com/ABorakati/linkml-map-rs"
+doi: "10.5281/zenodo.20702210"
 abstract: >-
   A native, multi-core Rust port of the LinkML data-transformation engine
   (linkml-map). It executes the same declarative TransformationSpecification
@@ -34,4 +35,5 @@ preferred-citation:
       given-names: Aditya
       affiliation: "Roger Williams Institute of Liver Studies, King's College London, 111 Coldharbour Ln, London SE5 9NT, UK"
   year: 2026
+  doi: "10.5281/zenodo.20702210"
   url: "https://github.com/ABorakati/linkml-map-rs"
