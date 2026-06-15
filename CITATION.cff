@@ -26,3 +26,12 @@ references:
     title: "linkml-map"
     repository-code: "https://github.com/linkml/linkml-map"
     notes: "Upstream reference implementation that this project ports."
+preferred-citation:
+  type: software
+  title: "linkml-map-rs: a fast parallel Rust port of linkml-map"
+  authors:
+    - family-names: Borakati
+      given-names: Aditya
+      affiliation: "Roger Williams Institute of Liver Studies, King's College London, 111 Coldharbour Ln, London SE5 9NT, UK"
+  year: 2026
+  url: "https://github.com/ABorakati/linkml-map-rs"

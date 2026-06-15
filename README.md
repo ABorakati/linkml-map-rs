@@ -16,6 +16,21 @@ a CLI, and a streaming concurrent pipeline.
 > Status: covers the data-transformation engine (the feature set exercised by
 > the upstream compliance suite). See [Feature coverage](#feature-coverage).
 
+## Citation
+
+If you use this software, please cite it using the following BibTeX entry:
+
+```bibtex
+@software{borakati2026linkmlmaprs,
+  author = {Borakati, Aditya},
+  title = {{linkml-map-rs: A Fast, Parallel Rust Port of linkml-map}},
+  year = {2026},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/ABorakati/linkml-map-rs}}
+}
+```
+
 ## Why
 
 `linkml-map` is the LinkML mechanism for declaratively transforming data between
@@ -155,8 +170,7 @@ maturin build --release -m crates/linkml-map-py/Cargo.toml
 
 ## Citing
 
-If you use this software, please cite it (see [`CITATION.cff`](CITATION.cff))
-and the upstream LinkML / linkml-map project.
+If you use this software, please cite it (see [Citation](#citation) near the top for a BibTeX entry, and [`CITATION.cff`](CITATION.cff) for CFF metadata) as well as the upstream LinkML / linkml-map project.
 
 ## Acknowledgements
 
