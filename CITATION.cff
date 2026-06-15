@@ -3,10 +3,9 @@ title: "linkml-map-rs: a fast parallel Rust port of linkml-map"
 message: "If you use this software, please cite it using these metadata."
 type: software
 authors:
-  # TODO: set your full given name(s) before publishing.
   - family-names: Borakati
-    given-names: A.
-    email: a.borakati@gmail.com
+    given-names: Aditya
+    affiliation: "Roger Williams Institute of Liver Studies, King's College London, 111 Coldharbour Ln, London SE5 9NT, UK"
 repository-code: "https://github.com/ABorakati/linkml-map-rs"
 abstract: >-
   A native, multi-core Rust port of the LinkML data-transformation engine

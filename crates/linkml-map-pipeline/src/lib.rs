@@ -131,11 +131,7 @@ pub struct CompiledPlan {
     source_class: Option<String>,
 }
 
-// SAFETY: SchemaViewProvider wraps a pure-Rust SchemaView with no interior
-// mutability after construction; TransformationSpecification is plain data.
-// Both are safe to share across threads.
-unsafe impl Send for CompiledPlan {}
-unsafe impl Sync for CompiledPlan {}
+
 
 impl CompiledPlan {
     /// Number of `expr:` derivations in the spec (slots with an `expr:`).
@@ -957,95 +953,11 @@ fn build_inmemory_schema_from_yaml(path: &Path) -> Result<linkml_map_core::schem
 pub fn load_transform_spec(path: &Path) -> Result<TransformationSpecification> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading spec {}", path.display()))?;
-    // normalise_transform_yaml returns a JSON string (via serde_json round-trip)
-    let normalised_json = normalise_transform_yaml(&text)
-        .with_context(|| format!("normalising spec {}", path.display()))?;
-    // Deserialise from JSON (not YAML) — the normalised form is already JSON
-    serde_json::from_str(&normalised_json)
-        .with_context(|| format!("parsing spec {}", path.display()))
-}
-
-/// Normalise YAML transform spec: convert `class_derivations` map → vec,
-/// injecting `name` into each ClassDerivation.
-///
-/// `slot_derivations` stays as a map (the datamodel uses `IndexMap<String,
-/// SlotDerivation>` for that field, so no list conversion needed).
-fn normalise_transform_yaml(text: &str) -> Result<String> {
     let mut obj: serde_json::Value =
-        serde_yaml_ng::from_str(text).context("parsing transform YAML")?;
-
-    if let Some(cd) = obj.get_mut("class_derivations") {
-        if cd.is_object() {
-            let mapping = std::mem::replace(cd, serde_json::Value::Null);
-            let mut list = Vec::new();
-            if let serde_json::Value::Object(m) = mapping {
-                for (class_name, mut val) in m {
-                    if val.is_null() {
-                        val = serde_json::Value::Object(serde_json::Map::new());
-                    }
-                    if let serde_json::Value::Object(ref mut class_obj) = val {
-                        // Inject the map key as `name` (ClassDerivation.name)
-                        class_obj
-                            .entry("name")
-                            .or_insert_with(|| serde_json::Value::String(class_name.clone()));
-                        // slot_derivations stays as a map (ClassDerivation.slot_derivations
-                        // is IndexMap<String,SlotDerivation>), but each SlotDerivation
-                        // has a required `name` field — inject it from the map key.
-                        if let Some(sd) = class_obj.get_mut("slot_derivations") {
-                            if sd.is_object() {
-                                let sd_owned = std::mem::replace(sd, serde_json::Value::Null);
-                                if let serde_json::Value::Object(mut sdm) = sd_owned {
-                                    for (slot_name, slot_val) in sdm.iter_mut() {
-                                        if slot_val.is_null() {
-                                            *slot_val = serde_json::json!({});
-                                        }
-                                        if let Some(so) = slot_val.as_object_mut() {
-                                            so.entry("name").or_insert_with(|| {
-                                                serde_json::Value::String(slot_name.clone())
-                                            });
-                                        }
-                                    }
-                                    *sd = serde_json::Value::Object(sdm);
-                                }
-                            }
-                        }
-                    }
-                    list.push(val);
-                }
-            }
-            *cd = serde_json::Value::Array(list);
-        }
-    }
-
-    // ── source_schema / target_schema: object {name:} → plain string
-    if let Some(root_obj) = obj.as_object_mut() {
-        for key in &["source_schema", "target_schema"] {
-            if let Some(v) = root_obj.get_mut(*key) {
-                if v.is_object() {
-                    let name_val = v
-                        .as_object()
-                        .and_then(|o| o.get("name").or_else(|| o.get("id")))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    *v = serde_json::Value::String(name_val);
-                }
-            }
-        }
-        // ── prefixes: string values → KeyVal { key, value }
-        if let Some(pfx) = root_obj.get_mut("prefixes") {
-            if let Some(m) = pfx.as_object_mut() {
-                for (_, v) in m.iter_mut() {
-                    if v.is_string() {
-                        let s = v.as_str().unwrap().to_string();
-                        *v = serde_json::json!({ "key": s, "value": s });
-                    }
-                }
-            }
-        }
-    }
-
-    serde_json::to_string(&obj).context("re-serialising normalised spec")
+        serde_yaml_ng::from_str(&text).context("parsing transform YAML")?;
+    linkml_map_core::datamodel::normalise_spec_json(&mut obj);
+    serde_json::from_value(obj)
+        .with_context(|| format!("parsing spec {}", path.display()))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

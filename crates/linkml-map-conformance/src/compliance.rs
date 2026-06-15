@@ -25,7 +25,7 @@ use serde_json::{json, Value as J};
 use serde_yaml_ng as serde_yaml;
 
 use crate::{
-    first_diff, json_to_value, normalise, normalise_transform_yaml, value_to_json, RunResult,
+    first_diff, json_to_value, normalise, value_to_json, RunResult,
     Status,
 };
 
@@ -101,15 +101,9 @@ fn run_one(c: &Case) -> RunResult {
     };
 
     // ── transform spec (mapping style → normalise → datamodel) ────────────────
-    let spec_yaml = match serde_yaml::to_string(&c.spec) {
-        Ok(y) => y,
-        Err(e) => return skip(name, format!("SKIP(spec-serialise): {e:#}")),
-    };
-    let normalised = match normalise_transform_yaml(&spec_yaml) {
-        Ok(n) => n,
-        Err(e) => return skip(name, format!("SKIP(transform-parse): {e:#}")),
-    };
-    let spec: TransformationSpecification = match serde_yaml::from_str(&normalised) {
+    let mut spec_obj = c.spec.clone();
+    linkml_map_core::datamodel::normalise_spec_json(&mut spec_obj);
+    let spec: TransformationSpecification = match serde_json::from_value(spec_obj) {
         Ok(s) => s,
         Err(e) => return skip(name, format!("SKIP(transform-parse): {e:#}")),
     };

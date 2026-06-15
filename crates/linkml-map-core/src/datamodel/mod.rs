@@ -735,6 +735,143 @@ pub struct TransformationSpecification {
     pub comments: Option<Vec<String>>,
 }
 
+/// Normalise a LinkML-map spec JSON value (derived from YAML) in-place.
+///
+/// Upstream `linkml-map` specs utilize YAML mapping shortcuts that do not map
+/// directly to the canonical serialization shapes expected by `serde` for our
+/// strongly-typed model. This function transforms those mapping shortcuts in-place:
+///
+/// - `class_derivations`: mapping (`ClassName` -> body) to `Vec<ClassDerivation>` with injected `name`.
+/// - `slot_derivations` within class derivations: inject `name` from the mapping key.
+/// - Shorthand null-valued slots (`id:`) inside `slot_derivations` -> `{"name": "id"}`.
+/// - `enum_derivations`: inject `name` from mapping key.
+/// - `permissible_value_derivations` under enum derivations: inject `name` from mapping key.
+/// - `source_schema` / `target_schema`: object (`{name: ...}` or `{id: ...}`) -> plain string.
+/// - `prefixes`: mapping of string values -> mapping of `KeyVal` maps (`{key: string, value: string}`).
+/// - `creator` / `author` / `reviewer`: inject default agent `type` -> `"Agent"` if missing.
+pub fn normalise_spec_json(root: &mut serde_json::Value) {
+    if let Some(obj) = root.as_object_mut() {
+        // ── class_derivations: mapping -> Vec ──────────────────────────────────
+        if let Some(cd) = obj.get_mut("class_derivations") {
+            if cd.is_object() {
+                let mapping = std::mem::replace(cd, serde_json::Value::Null);
+                let mut list = Vec::new();
+                if let serde_json::Value::Object(m) = mapping {
+                    for (class_name, mut val) in m {
+                        if val.is_null() {
+                            val = serde_json::json!({});
+                        }
+                        if let Some(o) = val.as_object_mut() {
+                            o.insert("name".into(), serde_json::Value::String(class_name.clone()));
+                            // slot_derivations: inject `name` into each slot value
+                            if let Some(sd) = o.get_mut("slot_derivations") {
+                                if sd.is_object() {
+                                    let sd_owned = std::mem::replace(sd, serde_json::Value::Null);
+                                    if let serde_json::Value::Object(mut sdm) = sd_owned {
+                                        for (slot_name, slot_val) in sdm.iter_mut() {
+                                            if slot_val.is_null() {
+                                                *slot_val = serde_json::json!({});
+                                            }
+                                            if let Some(so) = slot_val.as_object_mut() {
+                                                if !so.contains_key("name") {
+                                                    so.insert(
+                                                        "name".into(),
+                                                        serde_json::Value::String(
+                                                            slot_name.clone(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        *sd = serde_json::Value::Object(sdm);
+                                    }
+                                }
+                            }
+                        }
+                        list.push(val);
+                    }
+                }
+                *cd = serde_json::Value::Array(list);
+            }
+        }
+
+        // ── enum_derivations: inject `name` ───────────────────────────────────
+        if let Some(ed) = obj.get_mut("enum_derivations") {
+            if let Some(edm) = ed.as_object_mut() {
+                for (enum_name, enum_val) in edm.iter_mut() {
+                    if enum_val.is_null() {
+                        *enum_val = serde_json::json!({});
+                    }
+                    if let Some(eo) = enum_val.as_object_mut() {
+                        if !eo.contains_key("name") {
+                            eo.insert("name".into(), serde_json::Value::String(enum_name.clone()));
+                        }
+                        if let Some(pvds) = eo.get_mut("permissible_value_derivations") {
+                            if let Some(pvm) = pvds.as_object_mut() {
+                                for (pv_name, pv_val) in pvm.iter_mut() {
+                                    if pv_val.is_null() {
+                                        *pv_val = serde_json::json!({});
+                                    }
+                                    if let Some(po) = pv_val.as_object_mut() {
+                                        if !po.contains_key("name") {
+                                            po.insert(
+                                                "name".into(),
+                                                serde_json::Value::String(pv_name.clone()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── source_schema / target_schema: object -> its name/id string ────────
+        for key in &["source_schema", "target_schema"] {
+            if let Some(v) = obj.get_mut(*key) {
+                if v.is_object() {
+                    let name_val = v
+                        .as_object()
+                        .and_then(|o| o.get("name").or_else(|| o.get("id")))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    *v = serde_json::Value::String(name_val);
+                }
+            }
+        }
+
+        // ── prefixes: string values -> KeyVal maps ─────────────────────────────
+        if let Some(pfx) = obj.get_mut("prefixes") {
+            if let Some(m) = pfx.as_object_mut() {
+                for (_, v) in m.iter_mut() {
+                    if v.is_string() {
+                        let s = v.as_str().unwrap().to_string();
+                        *v = serde_json::json!({ "key": s, "value": s });
+                    }
+                }
+            }
+        }
+
+        // ── creator / author / reviewer: inject default agent `type` ──────────
+        for key in &["creator", "author", "reviewer"] {
+            if let Some(agents) = obj.get_mut(*key) {
+                if let Some(arr) = agents.as_array_mut() {
+                    for agent in arr.iter_mut() {
+                        if let Some(o) = agent.as_object_mut() {
+                            if !o.contains_key("type") {
+                                o.insert("type".into(), serde_json::Value::String("Agent".into()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -50,6 +50,7 @@ impl SchemaSource {
 }
 use walkdir::WalkDir;
 
+#[cfg(test)]
 mod compliance;
 
 // ─── Public data types ────────────────────────────────────────────────────────
@@ -536,193 +537,14 @@ pub(crate) fn normalise(v: serde_json::Value) -> serde_json::Value {
 // ─── Core runner ─────────────────────────────────────────────────────────────
 
 /// Load the transform YAML into a `TransformationSpecification`.
-///
-/// The YAML is parsed with `serde_yaml_ng`; `class_derivations` in the
-/// golden fixtures use a **mapping** format (`name → ClassDerivation`) rather
-/// than the list format the datamodel uses by default.  We handle both.
 fn load_transform(path: &Path) -> anyhow::Result<TransformationSpecification> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading transform {}", path.display()))?;
-    // The datamodel's `class_derivations` field is `Vec<ClassDerivation>`.
-    // But the golden fixtures write it as a YAML mapping `ClassName: {...}`.
-    // We need to normalise the YAML before deserialising.
-    let normalised = normalise_transform_yaml(&text)?;
-    serde_yaml::from_str(&normalised)
-        .with_context(|| format!("parsing transform spec {}", path.display()))
-}
-
-/// The linkml-map transform specs write `class_derivations` as a YAML mapping:
-/// ```yaml
-/// class_derivations:
-///   Person:
-///     populated_from: Person
-///     slot_derivations:
-///       id:
-///         populated_from: id
-/// ```
-/// But our `TransformationSpecification` deserialisers expect a list.
-/// Likewise `source_schema: { name: path }` vs `source_schema: "path"`.
-/// We normalise via a serde_json round-trip on the `serde_yaml_ng` AST.
-pub(crate) fn normalise_transform_yaml(text: &str) -> anyhow::Result<String> {
-    // Parse to serde_json::Value (via serde_yaml_ng)
-    let mut root: serde_json::Value =
-        serde_yaml::from_str(text).context("YAML parse in normalise_transform_yaml")?;
-
-    if let Some(obj) = root.as_object_mut() {
-        // ── class_derivations: mapping → Vec<ClassDerivation> ───────────────
-        //
-        // The YAML fixtures write class_derivations as a YAML mapping:
-        //   class_derivations:
-        //     Person:
-        //       populated_from: Person
-        //       slot_derivations: { id: null, label: { populated_from: name } }
-        //
-        // The Rust datamodel has `class_derivations: Option<Vec<ClassDerivation>>`
-        // where each ClassDerivation has a required `name: String`.
-        // So we convert the YAML map to a Vec, injecting `name` from the key.
-        //
-        // slot_derivations inside each ClassDerivation is
-        // `Option<IndexMap<String, SlotDerivation>>` — stays as a YAML map —
-        // but each SlotDerivation also has a required `name: String`.  We inject
-        // `name` into each slot object in-place (keeping the map structure).
-        if let Some(cd) = obj.get_mut("class_derivations") {
-            if cd.is_object() {
-                let mapping = std::mem::replace(cd, serde_json::Value::Null);
-                let mut list = Vec::new();
-                if let serde_json::Value::Object(m) = mapping {
-                    for (class_name, mut val) in m {
-                        // Ensure val is an object (not null)
-                        if val.is_null() {
-                            val = serde_json::json!({});
-                        }
-                        if let Some(o) = val.as_object_mut() {
-                            // Inject class name
-                            o.insert("name".into(), serde_json::Value::String(class_name.clone()));
-
-                            // ── slot_derivations: stays as a map, but each slot
-                            //    value needs `name` injected (SlotDerivation.name is required).
-                            //    Null-valued slots (shorthand `id:`) become `{name: "id"}`.
-                            if let Some(sd) = o.get_mut("slot_derivations") {
-                                if sd.is_object() {
-                                    let sd_map_owned =
-                                        std::mem::replace(sd, serde_json::Value::Null);
-                                    if let serde_json::Value::Object(mut sdm) = sd_map_owned {
-                                        for (slot_name, slot_val) in sdm.iter_mut() {
-                                            // Null shorthand → empty object
-                                            if slot_val.is_null() {
-                                                *slot_val = serde_json::json!({});
-                                            }
-                                            if let Some(so) = slot_val.as_object_mut() {
-                                                // Only inject if not already present
-                                                if !so.contains_key("name") {
-                                                    so.insert(
-                                                        "name".into(),
-                                                        serde_json::Value::String(
-                                                            slot_name.clone(),
-                                                        ),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        *sd = serde_json::Value::Object(sdm);
-                                    }
-                                }
-                            }
-                        }
-                        list.push(val);
-                    }
-                }
-                *cd = serde_json::Value::Array(list);
-            }
-        }
-
-        // ── source_schema / target_schema ──────────────────────────────────
-        // The datamodel field is `Option<String>`.  Fixtures may write either:
-        //   source_schema: "path/to/schema.yaml"   (already a string — OK)
-        //   source_schema:                         (absent — OK)
-        //   source_schema:\n    name: biolink      (object — extract .name)
-        for key in &["source_schema", "target_schema"] {
-            if let Some(v) = obj.get_mut(*key) {
-                if v.is_object() {
-                    // Extract the 'name' field as a plain string
-                    let name_val = v
-                        .as_object()
-                        .and_then(|o| o.get("name").or_else(|| o.get("id")))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    *v = serde_json::Value::String(name_val);
-                }
-                // If it's already a string, leave it as-is.
-            }
-        }
-
-        // ── enum_derivations: stays a map, but each EnumDerivation needs
-        //    `name` injected (required field), and each nested
-        //    permissible_value_derivations entry likewise. Both are written in
-        //    the fixtures keyed by name without an explicit `name:` field.
-        if let Some(ed) = obj.get_mut("enum_derivations") {
-            if let Some(edm) = ed.as_object_mut() {
-                for (enum_name, enum_val) in edm.iter_mut() {
-                    if enum_val.is_null() {
-                        *enum_val = serde_json::json!({});
-                    }
-                    if let Some(eo) = enum_val.as_object_mut() {
-                        if !eo.contains_key("name") {
-                            eo.insert("name".into(), serde_json::Value::String(enum_name.clone()));
-                        }
-                        if let Some(pvds) = eo.get_mut("permissible_value_derivations") {
-                            if let Some(pvm) = pvds.as_object_mut() {
-                                for (pv_name, pv_val) in pvm.iter_mut() {
-                                    if pv_val.is_null() {
-                                        *pv_val = serde_json::json!({});
-                                    }
-                                    if let Some(po) = pv_val.as_object_mut() {
-                                        if !po.contains_key("name") {
-                                            po.insert(
-                                                "name".into(),
-                                                serde_json::Value::String(pv_name.clone()),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── prefixes: mapping of string values → mapping of KeyVal ──────────
-        if let Some(pfx) = obj.get_mut("prefixes") {
-            if let Some(m) = pfx.as_object_mut() {
-                for (_, v) in m.iter_mut() {
-                    if v.is_string() {
-                        let s = v.as_str().unwrap().to_string();
-                        *v = serde_json::json!({ "key": s, "value": s });
-                    }
-                }
-            }
-        }
-
-        // ── creator / author / reviewer: handle list of {id:...} dicts ──────
-        for key in &["creator", "author", "reviewer"] {
-            if let Some(agents) = obj.get_mut(*key) {
-                if let Some(arr) = agents.as_array_mut() {
-                    for agent in arr.iter_mut() {
-                        if let Some(o) = agent.as_object_mut() {
-                            if !o.contains_key("type") {
-                                // Default to Agent type
-                                o.insert("type".into(), serde_json::Value::String("Agent".into()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    serde_json::to_string(&root).context("re-serialise after normalisation")
+    let mut obj: serde_json::Value =
+        serde_yaml::from_str(&text).context("parsing transform YAML")?;
+    linkml_map_core::datamodel::normalise_spec_json(&mut obj);
+    serde_json::from_value(obj)
+        .map_err(|e| anyhow::anyhow!("parsing transform spec {}: {}", path.display(), e))
 }
 
 /// Run a single fixture case end-to-end.
