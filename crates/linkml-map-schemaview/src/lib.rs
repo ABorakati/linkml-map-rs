@@ -57,7 +57,7 @@ impl SchemaViewProvider {
         path: &Path,
         patch: Option<&serde_json::Value>,
     ) -> anyhow::Result<Self> {
-        let mut schema = linkml_schemaview::io::from_yaml(path)
+        let mut schema = load_schema_definition_from_path(path)
             .map_err(|e| anyhow::anyhow!("failed to load schema from {}: {}", path.display(), e))?;
 
         if let Some(patch) = patch {
@@ -86,7 +86,7 @@ impl SchemaViewProvider {
         yaml: &str,
         patch: Option<&serde_json::Value>,
     ) -> anyhow::Result<Self> {
-        let mut schema: linkml_meta::SchemaDefinition = serde_yaml::from_str(yaml)
+        let mut schema = load_schema_definition_from_str(yaml)
             .map_err(|e| anyhow::anyhow!("failed to parse schema YAML: {}", e))?;
 
         if let Some(patch) = patch {
@@ -106,6 +106,55 @@ impl SchemaViewProvider {
 }
 
 // ── source_schema_patches support ──────────────────────────────────────────────
+
+fn load_schema_definition_from_path(path: &Path) -> anyhow::Result<linkml_meta::SchemaDefinition> {
+    let yaml = std::fs::read_to_string(path)?;
+    load_schema_definition_from_str(&yaml)
+}
+
+fn load_schema_definition_from_str(yaml: &str) -> anyhow::Result<linkml_meta::SchemaDefinition> {
+    let mut value: serde_json::Value = serde_yaml::from_str(yaml)?;
+    normalise_python_compatible_metaslots(&mut value, false);
+    serde_json::from_value(value).map_err(Into::into)
+}
+
+fn normalise_python_compatible_metaslots(value: &mut serde_json::Value, in_examples: bool) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "deprecated" {
+                    if let Some(b) = child.as_bool() {
+                        *child = serde_json::Value::String(b.to_string());
+                        continue;
+                    }
+                }
+                if key == "in_subset" && child.is_string() {
+                    *child = serde_json::Value::Array(vec![child.clone()]);
+                    continue;
+                }
+                if in_examples && key == "value" && !child.is_string() && !child.is_object() {
+                    *child = serde_json::Value::String(match child {
+                        serde_json::Value::Null => String::new(),
+                        serde_json::Value::Bool(b) => b.to_string(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                            unreachable!()
+                        }
+                        serde_json::Value::String(_) => unreachable!(),
+                    });
+                    continue;
+                }
+                normalise_python_compatible_metaslots(child, key == "examples");
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalise_python_compatible_metaslots(item, in_examples);
+            }
+        }
+        _ => {}
+    }
+}
 
 type JsonMap = serde_json::Map<String, serde_json::Value>;
 

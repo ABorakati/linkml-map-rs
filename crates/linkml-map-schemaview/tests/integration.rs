@@ -200,6 +200,25 @@ fn inline_load_succeeds() {
 }
 
 #[test]
+fn inline_load_accepts_python_compatible_metaslots() {
+    let yaml = r#"
+id: https://example.org/deprecated
+name: deprecated
+classes:
+  OldThing:
+    deprecated: true
+    in_subset: translator_minimal
+    examples:
+      - value: 0.018
+    attributes:
+      id:
+        identifier: true
+"#;
+    let p = SchemaViewProvider::from_yaml_str(yaml).unwrap();
+    assert!(p.all_class_names().contains(&"OldThing".to_owned()));
+}
+
+#[test]
 fn inline_all_class_names() {
     let p = load_inline();
     let mut names = p.all_class_names();
