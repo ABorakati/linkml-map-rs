@@ -550,83 +550,99 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
         });
 
         // Spawn worker dispatcher: for each (seq, row) pulls from work_rx and
-        // hands off to spawn_blocking (runs on rayon or tokio blocking pool).
+        // hands off to spawn_blocking (runs on the tokio blocking pool).
+        //
+        // In-flight workers are capped by a semaphore so a slow transform can't
+        // let the dispatcher spawn an unbounded number of tasks (memory spike).
+        // The cap also bounds how far out-of-order the results can get, which in
+        // turn bounds the reorder buffer below.  We keep no JoinHandle list:
+        // each worker owns a `res_tx` clone, so the results channel closes
+        // naturally once the last in-flight worker finishes.
         let res_tx2 = res_tx.clone();
         let plan2 = Arc::clone(&plan);
+        let max_inflight = if config.workers > 0 {
+            config.workers
+        } else {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(8)
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(max_inflight));
         let dispatcher_handle = tokio::spawn(async move {
-            let mut handles = Vec::new();
             while let Some((seq, row)) = work_rx.recv().await {
                 let plan3 = Arc::clone(&plan2);
                 let res_tx3 = res_tx2.clone();
-                let h = tokio::task::spawn_blocking(move || {
+                // Back-pressure the dispatcher when all worker slots are busy.
+                let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
+                tokio::task::spawn_blocking(move || {
                     let result = plan3.transform(row);
                     // Best-effort send; if receiver dropped, ignore.
                     let _ = res_tx3.blocking_send((seq, result));
+                    drop(permit); // free the slot when this row is done
                 });
-                handles.push(h);
             }
-            // Wait for all in-flight workers before dropping our res_tx clone
-            for h in handles {
-                let _ = h.await;
-            }
-            // Drop our clone so the writer sees channel close
-            drop(res_tx2);
+            drop(res_tx2); // in-flight workers still hold their own clones
         });
         drop(res_tx); // main task no longer holds a sender
 
-        // ── 4. Collect + write ────────────────────────────────────────────────────
-
-        if config.ordered {
-            // Ordered: buffer out-of-order results until the expected seq arrives.
-            use std::collections::BTreeMap;
-            let mut pending: BTreeMap<usize, Result<Value>> = BTreeMap::new();
-            let mut next_seq = 0usize;
-            let mut output_rows: Vec<Value> = Vec::new();
-
-            while let Some((seq, result)) = res_rx.recv().await {
-                pending.insert(seq, result);
-                // Drain consecutive completed rows
-                while let Some(result) = pending.remove(&next_seq) {
-                    next_seq += 1;
+        // ── 4. Collect + write (streamed, no whole-dataset buffering) ─────────────
+        // A collector task feeds finished rows into an output channel; write_all
+        // streams from it, so memory stays bounded to the channel depth (+ the
+        // reorder window in ordered mode, itself bounded by `max_inflight`).
+        let (out_tx, out_rx) = mpsc::channel::<Value>(config.channel_depth);
+        let ordered = config.ordered;
+        let collector = tokio::spawn(async move {
+            let mut count = 0usize;
+            if ordered {
+                use std::collections::BTreeMap;
+                // Bounded: at most `max_inflight` entries can be out of order,
+                // since only that many rows are ever in flight concurrently.
+                let mut pending: BTreeMap<usize, Result<Value>> = BTreeMap::new();
+                let mut next_seq = 0usize;
+                while let Some((seq, result)) = res_rx.recv().await {
+                    pending.insert(seq, result);
+                    // Drain consecutive completed rows (errors advance past gaps).
+                    while let Some(result) = pending.remove(&next_seq) {
+                        next_seq += 1;
+                        match result {
+                            Ok(v) => {
+                                if out_tx.send(v).await.is_err() {
+                                    return count;
+                                }
+                                count += 1;
+                            }
+                            Err(e) => eprintln!("transform error at seq {}: {e:#}", next_seq - 1),
+                        }
+                    }
+                }
+            } else {
+                // Unordered: forward as they arrive (maximum throughput).
+                while let Some((_seq, result)) = res_rx.recv().await {
                     match result {
-                        Ok(v) => output_rows.push(v),
-                        Err(e) => eprintln!("transform error at seq {}: {e:#}", next_seq - 1),
+                        Ok(v) => {
+                            if out_tx.send(v).await.is_err() {
+                                return count;
+                            }
+                            count += 1;
+                        }
+                        Err(e) => eprintln!("transform error: {e:#}"),
                     }
                 }
             }
-            // Drain any remaining
-            for (_seq, result) in pending {
-                if let Ok(v) = result {
-                    output_rows.push(v);
-                }
-            }
-            rows_out = output_rows.len();
-            rows_in = reader_handle.await.unwrap_or(0);
+            count
+        });
 
-            // Write ordered results
-            let stream = futures::stream::iter(output_rows.into_iter().map(Ok::<_, anyhow::Error>));
-            write_all(&config.out_path, out_format, stream)
-                .await
-                .with_context(|| format!("writing output to {}", config.out_path))?;
-        } else {
-            // Unordered: write results as they arrive (maximum throughput).
-            // We can't use write_all directly because we need to count — collect into vec.
-            let mut output_rows: Vec<Value> = Vec::new();
-            while let Some((_seq, result)) = res_rx.recv().await {
-                match result {
-                    Ok(v) => output_rows.push(v),
-                    Err(e) => eprintln!("transform error: {e:#}"),
-                }
-            }
-            rows_out = output_rows.len();
-            rows_in = reader_handle.await.unwrap_or(0);
+        // Lazily turn the output channel into a stream for write_all.
+        let out_stream = futures::stream::unfold(out_rx, |mut rx| async move {
+            rx.recv().await.map(|v| (Ok::<_, anyhow::Error>(v), rx))
+        })
+        .boxed();
+        write_all(&config.out_path, out_format, out_stream)
+            .await
+            .with_context(|| format!("writing output to {}", config.out_path))?;
 
-            let stream = futures::stream::iter(output_rows.into_iter().map(Ok::<_, anyhow::Error>));
-            write_all(&config.out_path, out_format, stream)
-                .await
-                .with_context(|| format!("writing output to {}", config.out_path))?;
-        }
-
+        rows_out = collector.await.unwrap_or(0);
+        rows_in = reader_handle.await.unwrap_or(0);
         let _ = dispatcher_handle.await;
     }
 
@@ -1245,6 +1261,25 @@ mod tests {
             .await
             .expect("reading output failed");
         assert_eq!(output_rows.len(), 1, "expected 1 output row");
+
+        let output_text =
+            std::fs::read_to_string(&out_path).expect("reading raw YAML output failed");
+        let output_yaml: serde_json::Value =
+            serde_yaml_ng::from_str(&output_text).expect("parsing raw YAML output failed");
+        assert!(
+            output_yaml.is_object(),
+            "single transformed container should serialize as a top-level YAML object"
+        );
+
+        let expected_path = fixture.join("output/MappingSet-001.transformed.yaml");
+        let expected_text =
+            std::fs::read_to_string(&expected_path).expect("reading golden YAML output failed");
+        let expected_yaml: serde_json::Value =
+            serde_yaml_ng::from_str(&expected_text).expect("parsing golden YAML output failed");
+        assert_eq!(
+            output_yaml, expected_yaml,
+            "raw YAML object shape should match the golden fixture"
+        );
 
         // The output should be a MappingSet with a mappings list.
         let out_map = match &output_rows[0] {
