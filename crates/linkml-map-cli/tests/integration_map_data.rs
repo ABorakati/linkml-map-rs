@@ -124,6 +124,69 @@ async fn test_map_data_measurements_001_golden() {
     );
 }
 
+/// End-to-end: single YAML input row → YAML output should remain a top-level object,
+/// matching Python `linkml-map`'s non-streaming `map-data` behavior.
+#[tokio::test]
+async fn test_map_data_measurements_001_yaml_output_shape() {
+    let fix = measurements_dir();
+    let tmp = tempdir().expect("tempdir");
+    let out_path = tmp.path().join("out.yaml");
+
+    let cfg = MapDataConfig {
+        spec: fix
+            .join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        source_schema: fix
+            .join("source/quantity_value.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        target_schema: Some(
+            fix.join("target/quantity_value_flat.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        ),
+        output: out_path.to_str().unwrap().to_owned(),
+        source_class: Some("Person".to_owned()),
+        input_format: "auto".to_owned(),
+        output_format: "yaml".to_owned(),
+        workers: 2,
+        unordered: false,
+        input: fix
+            .join("data/PersonQuantityValue-001.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    };
+
+    let stats = run_map_data_config(cfg)
+        .await
+        .expect("map-data pipeline failed");
+    assert_eq!(stats.rows_in, 1, "expected 1 row in");
+    assert_eq!(stats.rows_out, 1, "expected 1 row out");
+
+    let output_text = std::fs::read_to_string(&out_path).expect("reading raw YAML output failed");
+    let output_yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&output_text).expect("parsing raw YAML output failed");
+    assert!(
+        matches!(output_yaml, serde_yaml_ng::Value::Mapping(_)),
+        "single transformed object should serialize as a top-level YAML object"
+    );
+
+    let expected_path = fix.join("output/PersonQuantityValue-001.transformed.yaml");
+    let expected_text =
+        std::fs::read_to_string(&expected_path).expect("reading golden YAML output failed");
+    let expected_yaml: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&expected_text).expect("parsing golden YAML output failed");
+    assert_eq!(
+        output_yaml, expected_yaml,
+        "raw YAML object shape should match the golden fixture"
+    );
+}
+
 /// Two-row fixture (PersonQuantityValue-002 adds a second person).
 /// Verifies rows_in/rows_out and that both ids appear.
 #[tokio::test]

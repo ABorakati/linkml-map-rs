@@ -238,6 +238,38 @@ mod tests {
         let loaded = load_all(&path, Format::Yaml).await.unwrap();
 
         assert_eq!(loaded, original, "YAML round-trip mismatch");
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_yaml_ng::from_str(&text).unwrap();
+        assert!(
+            parsed.is_object(),
+            "single YAML record should serialize as a top-level object"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_yaml_multi_record_writes_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("records.yaml");
+
+        let original = vec![
+            make_map_mixed(&[("id", Value::Str("P:1".into()))]),
+            make_map_mixed(&[("id", Value::Str("P:2".into()))]),
+        ];
+
+        write_vec(&path, Format::Yaml, original.clone())
+            .await
+            .unwrap();
+
+        let loaded = load_all(&path, Format::Yaml).await.unwrap();
+        assert_eq!(loaded, original, "YAML multi-record round-trip mismatch");
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_yaml_ng::from_str(&text).unwrap();
+        let items = parsed
+            .as_array()
+            .expect("multiple YAML records should serialize as a sequence");
+        assert_eq!(items.len(), 2, "expected 2 YAML sequence items");
     }
 
     // ── Format auto-detection ───────────────────────────────────────────────

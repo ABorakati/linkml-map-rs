@@ -8,7 +8,7 @@
 //! | JSON   | buffered | writes a complete JSON array |
 //! | CSV    | ✓ per-record | header derived from first record; all scalars stringified |
 //! | TSV    | ✓ per-record | same as CSV with tab delimiter |
-//! | YAML   | buffered | writes a YAML sequence |
+//! | YAML   | buffered | writes a single object for one item, otherwise a YAML sequence |
 //!
 //! The writers consume an async `Stream<Item = Result<Value>>` (or a
 //! `Vec<Value>` via the [`write_all`] helper).
@@ -162,7 +162,11 @@ where
         let val = item?;
         items.push(value_to_json(&val)?);
     }
-    let yaml_str = serde_yaml_ng::to_string(&items).context("serialising YAML")?;
+    let yaml_value = match items.len() {
+        1 => items.pop().unwrap(),
+        _ => serde_json::Value::Array(items),
+    };
+    let yaml_str = serde_yaml_ng::to_string(&yaml_value).context("serialising YAML")?;
     writer.write_all(yaml_str.as_bytes()).await?;
     Ok(())
 }
