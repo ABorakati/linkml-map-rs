@@ -301,13 +301,25 @@ impl<'s> ObjectTransformer<'s> {
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
             let v = self
-                .derive_slot(slot_deriv, source_map, source_type, &class_deriv, index)
+                .derive_slot(
+                    slot_deriv,
+                    source_map,
+                    source_type,
+                    &class_deriv,
+                    index,
+                    Some(&tgt_attrs),
+                )
                 .map_err(|e| Error::SlotTransform {
                     class: class_deriv.name.clone(),
                     slot: slot_name.to_string(),
                     cause: e.to_string(),
                 })?;
             tgt_attrs.insert(slot_name.to_string(), v);
+        }
+        for (_, slot_deriv) in slot_derivations {
+            if slot_deriv.hide.unwrap_or(false) {
+                tgt_attrs.shift_remove(slot_deriv.name.as_str());
+            }
         }
 
         Ok(Value::Map(tgt_attrs))
@@ -330,13 +342,25 @@ impl<'s> ObjectTransformer<'s> {
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
             let v = self
-                .derive_slot(slot_deriv, source_map, source_type, class_deriv, index)
+                .derive_slot(
+                    slot_deriv,
+                    source_map,
+                    source_type,
+                    class_deriv,
+                    index,
+                    Some(&tgt_attrs),
+                )
                 .map_err(|e| Error::SlotTransform {
                     class: class_deriv.name.clone(),
                     slot: slot_name.to_string(),
                     cause: e.to_string(),
                 })?;
             tgt_attrs.insert(slot_name.to_string(), v);
+        }
+        for (_, slot_deriv) in slot_derivations {
+            if slot_deriv.hide.unwrap_or(false) {
+                tgt_attrs.shift_remove(slot_deriv.name.as_str());
+            }
         }
         Ok(Value::Map(tgt_attrs))
     }
@@ -438,6 +462,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        target_attrs: Option<&IndexMap<String, Value>>,
     ) -> Result<Value> {
         let slot_name = slot_deriv.name.as_str();
 
@@ -521,6 +546,7 @@ impl<'s> ObjectTransformer<'s> {
                 source_type,
                 class_deriv,
                 index,
+                target_attrs,
             )?;
             (v, None)
         } else if let Some(populated_from) = &slot_deriv.populated_from {
@@ -568,12 +594,33 @@ impl<'s> ObjectTransformer<'s> {
                     .cloned()
                     .unwrap_or(Value::Null)
             };
-            // Apply value_mappings if present and value is non-null.
-            let mapped = if let Some(vm) = &slot_deriv.value_mappings {
+            // Apply mappings if present and value is non-null.
+            let mapped = if slot_deriv.value_mappings.is_some()
+                || slot_deriv.expression_mappings.is_some()
+            {
                 if !raw.is_null() {
                     let key = value_to_string_key(&raw);
-                    if let Some(kv) = vm.get(&key) {
+                    if let Some(kv) = slot_deriv
+                        .value_mappings
+                        .as_ref()
+                        .and_then(|vm| vm.get(&key))
+                    {
                         json_to_value(kv.value.as_ref().unwrap_or(&serde_json::Value::Null))
+                    } else if let Some(kv) = slot_deriv
+                        .expression_mappings
+                        .as_ref()
+                        .and_then(|em| em.get(&key))
+                    {
+                        let expr = kv.value.as_ref().and_then(|v| v.as_str()).unwrap_or("None");
+                        self.eval_expr_for_slot(
+                            expr,
+                            source_map,
+                            slot_name,
+                            source_type,
+                            class_deriv,
+                            index,
+                            target_attrs,
+                        )?
                     } else {
                         Value::Null
                     }
@@ -647,7 +694,7 @@ impl<'s> ObjectTransformer<'s> {
         // ── Post-processing: range coercion + cardinality ─────────────────────
 
         if let Some(ssd) = &source_slot_def {
-            if !v.is_null() {
+            if !v.is_null() && !slot_deriv.hide.unwrap_or(false) {
                 v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
                 v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
                 if let Some(target_range) = slot_deriv.range.as_deref() {
@@ -934,6 +981,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        target_attrs: Option<&IndexMap<String, Value>>,
     ) -> Result<Value> {
         let class_name = class_deriv.name.as_str();
         // Build bindings from all source map keys.
@@ -997,6 +1045,9 @@ impl<'s> ObjectTransformer<'s> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         bindings.insert("src".to_string(), Value::Map(src_obj));
+        if let Some(attrs) = target_attrs {
+            bindings.insert("__slot_values".to_string(), Value::Map(attrs.clone()));
+        }
 
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
@@ -2472,6 +2523,121 @@ mod tests {
     }
 
     // ── Test 2b: cached-AST expr path matches the string path ─────────────────
+
+    #[test]
+    fn test_slot_function_references_previous_derived_slot() {
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "_label".into(),
+            SlotDerivation {
+                name: "_label".into(),
+                populated_from: Some("name".into()),
+                hide: Some(true),
+                ..Default::default()
+            },
+        );
+        slots.insert(
+            "display".into(),
+            SlotDerivation {
+                name: "display".into(),
+                expr: Some("slot(\"_label\") + \"!\"".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Agent".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let result = engine
+            .map_object(&src_person("P:001", "Alice"), Some("Person"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
+        assert_eq!(out["display"], Value::Str("Alice!".into()));
+        assert!(!out.contains_key("_label"));
+    }
+
+    #[test]
+    fn test_slot_function_missing_slot_is_null() {
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "display".into(),
+            SlotDerivation {
+                name: "display".into(),
+                expr: Some("slot(\"missing\")".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Agent".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let result = engine
+            .map_object(&src_person("P:001", "Alice"), Some("Person"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
+        assert_eq!(out["display"], Value::Null);
+    }
+
+    #[test]
+    fn test_expression_mappings_evaluate_mapped_expression() {
+        let schema = make_person_schema();
+        let mut mappings = IndexMap::new();
+        mappings.insert(
+            "P:001".into(),
+            KeyVal {
+                key: "P:001".into(),
+                value: Some(serde_json::json!("name + \"!\"")),
+            },
+        );
+        let mut slots = IndexMap::new();
+        slots.insert(
+            "display".into(),
+            SlotDerivation {
+                name: "display".into(),
+                populated_from: Some("id".into()),
+                expression_mappings: Some(mappings),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Agent".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        let result = engine
+            .map_object(&src_person("P:001", "Alice"), Some("Person"))
+            .unwrap();
+        let out = match result {
+            Value::Map(m) => m,
+            _ => panic!("expected Map"),
+        };
+        assert_eq!(out["display"], Value::Str("Alice!".into()));
+    }
 
     #[test]
     fn test_compiled_exprs_matches_string_path() {

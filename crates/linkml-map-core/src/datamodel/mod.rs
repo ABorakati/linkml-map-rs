@@ -446,6 +446,9 @@ pub struct SlotDerivation {
     pub value_mappings: Option<IndexMap<String, KeyVal>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression_mappings: Option<IndexMap<String, KeyVal>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expression_to_value_mappings: Option<IndexMap<String, KeyVal>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -802,6 +805,8 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                                                         ),
                                                     );
                                                 }
+                                                normalise_keyval_mapping(so, "value_mappings");
+                                                normalise_keyval_mapping(so, "expression_mappings");
                                             }
                                         }
                                         *sd = serde_json::Value::Object(sdm);
@@ -888,6 +893,32 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+fn normalise_keyval_mapping(obj: &mut serde_json::Map<String, serde_json::Value>, field: &str) {
+    let Some(mapping) = obj.get_mut(field) else {
+        return;
+    };
+    let Some(entries) = mapping.as_object_mut() else {
+        return;
+    };
+    for (key, value) in entries.iter_mut() {
+        match value {
+            serde_json::Value::Object(o) => {
+                o.entry("key")
+                    .or_insert_with(|| serde_json::Value::String(key.clone()));
+                if !o.contains_key("value") {
+                    if let Some(expr) = o.remove("expr") {
+                        o.insert("value".into(), expr);
+                    }
+                }
+            }
+            _ => {
+                let scalar = std::mem::replace(value, serde_json::Value::Null);
+                *value = serde_json::json!({ "key": key, "value": scalar });
             }
         }
     }
@@ -995,5 +1026,31 @@ mod tests {
             value_mappings.get("short").unwrap().value,
             Some(serde_json::json!("dwarf"))
         );
+    }
+
+    #[test]
+    fn test_normalise_expression_mappings_shorthand() {
+        let mut value = serde_json::json!({
+            "class_derivations": {
+                "Agent": {
+                    "populated_from": "Person",
+                    "slot_derivations": {
+                        "display": {
+                            "populated_from": "id",
+                            "expression_mappings": {
+                                "P:001": "name + \"!\""
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        normalise_spec_json(&mut value);
+        let spec: TransformationSpecification = serde_json::from_value(value).unwrap();
+        let class_derivations = spec.class_derivations.unwrap();
+        let slot = &class_derivations[0].slot_derivations.as_ref().unwrap()["display"];
+        let mapping = &slot.expression_mappings.as_ref().unwrap()["P:001"];
+        assert_eq!(mapping.key, "P:001");
+        assert_eq!(mapping.value, Some(serde_json::json!("name + \"!\"")));
     }
 }

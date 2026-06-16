@@ -258,8 +258,33 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             for a in args {
                 evaled.push(eval_ast(a, vars)?);
             }
+            if func == "slot" {
+                return call_slot_function(evaled, vars);
+            }
             call_function(func, evaled)
         }
+    }
+}
+
+fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
+    if args.len() != 1 {
+        return Err(ExprError::Eval(format!(
+            "slot() takes 1 argument ({} given)",
+            args.len()
+        )));
+    }
+    let slot_name = match &args[0] {
+        Value::Str(s) => s,
+        other => {
+            return Err(ExprError::Eval(format!(
+                "slot() argument must be str, got {}",
+                type_name(other)
+            )))
+        }
+    };
+    match vars.get("__slot_values") {
+        Some(Value::Map(slots)) => Ok(slots.get(slot_name).cloned().unwrap_or(Value::Null)),
+        _ => Ok(Value::Null),
     }
 }
 
