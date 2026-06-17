@@ -15,7 +15,7 @@
 //!   slot.  Bindings are built from the source object's map keys.
 //! - Recursion happens via `map_object` — nested class-ranged slots recurse
 //!   into the same engine instance.
-//! - FK join, stringification, `unit_conversion:`, `object_derivations:`,
+//! - FK join, stringification, `unit_conversion:`, `class_derivations:`,
 //!   `offset:`, `aggregation_operation:` and `pivot_operation:` (melt/unmelt)
 //!   ARE ported (`unit_conversion` via the dependency-free [`units`] table).
 //!   Aggregation has no Python `ObjectTransformer` reference — its semantics are
@@ -471,9 +471,8 @@ impl<'s> ObjectTransformer<'s> {
         // 1. constant `value:`
         // 2. `expr:`
         // 3. `populated_from:` (direct field copy + value_mappings)
-        // 4. `sources:` (first non-null wins)
-        // 5. `object_derivations:` (nested object derivation — ported)
-        // 6. implicit same-name copy
+        // 4. `class_derivations:` (nested object derivation — v0.6.0)
+        // 5. implicit same-name copy
         //
         // After obtaining v, apply range coercion + cardinality reshaping.
 
@@ -639,41 +638,12 @@ impl<'s> ObjectTransformer<'s> {
                     .and_then(|ss| ss.induced_slot(populated_from, source_type).ok())
             };
             (mapped, ssd)
-        } else if let Some(sources) = &slot_deriv.sources {
-            // 4. sources — exactly one non-null wins; error if multiple present.
-            // Mirrors Python `_resolve_sources` which raises ValueError on ambiguity.
-            let mut found: Vec<(String, Value, Option<SlotDef>)> = Vec::new();
-            for src_slot in sources {
-                let candidate = source_map.get(src_slot).cloned().unwrap_or(Value::Null);
-                if !candidate.is_null() {
-                    let ssd = self
-                        .source_schema
-                        .and_then(|ss| ss.induced_slot(src_slot, source_type).ok());
-                    found.push((src_slot.clone(), candidate, ssd));
-                }
-            }
-            if found.len() > 1 {
-                let names: Vec<&str> = found.iter().map(|(k, _, _)| k.as_str()).collect();
-                return Err(Error::SlotTransform {
-                    class: class_deriv.name.clone(),
-                    slot: slot_name.to_string(),
-                    cause: format!(
-                        "multiple sources have values for {slot_name}: {}",
-                        names.join(", ")
-                    ),
-                });
-            }
-            let (found_v, found_ssd) = found
-                .into_iter()
-                .next()
-                .map(|(_, v, ssd)| (v, ssd))
-                .unwrap_or((Value::Null, None));
-            (found_v, found_ssd)
-        } else if slot_deriv.object_derivations.is_some() {
-            // 5. object_derivations — fully ported.
-            //    Recurse into each ObjectDerivation's class_derivations, then
-            //    decide multivalued/scalar from the TARGET slot (mirrors Python
-            //    `_derive_nested_objects` which calls `target_schemaview.induced_slot`).
+        } else if slot_deriv.class_derivations.is_some() {
+            // 4. class_derivations — nested target objects (v0.6.0; replaces the
+            //    removed `object_derivations`). Recurse into each nested
+            //    ClassDerivation, then decide multivalued/scalar from the TARGET
+            //    slot (mirrors Python `_derive_nested_objects` which calls
+            //    `target_schemaview.induced_slot`).
             let v = self.derive_nested_objects(
                 slot_deriv,
                 source_map,
@@ -683,7 +653,7 @@ impl<'s> ObjectTransformer<'s> {
             )?;
             (v, None)
         } else {
-            // 6. Implicit same-name copy.
+            // 5. Implicit same-name copy.
             let raw = source_map.get(slot_name).cloned().unwrap_or(Value::Null);
             let ssd = self
                 .source_schema
@@ -1382,12 +1352,12 @@ impl<'s> ObjectTransformer<'s> {
 
     // ── Nested object derivations ─────────────────────────────────────────────
 
-    /// Mirror of Python `ObjectTransformer._derive_nested_objects`.
+    /// Mirror of Python `ObjectTransformer._derive_nested_objects` (v0.6.0).
     ///
-    /// For each [`ObjectDerivation`] in `slot_deriv.object_derivations`,
-    /// iterates its `class_derivations` map and recursively transforms
-    /// `source_map` using each `ClassDerivation`.  The resulting objects are
-    /// collected into a `Vec`.
+    /// Iterates `slot_deriv.class_derivations` (the v0.6.0 slot-level nested
+    /// object map, one level flatter than the removed `object_derivations`) and
+    /// recursively transforms `source_map` using each `ClassDerivation`.  The
+    /// resulting objects are collected into a `Vec`.
     ///
     /// Cardinality is decided from the **target slot** (not the source), as
     /// Python does via `target_schemaview.induced_slot(slot, target_class)`:
@@ -1412,33 +1382,24 @@ impl<'s> ObjectTransformer<'s> {
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
-        let obj_derivations = match &slot_deriv.object_derivations {
+        let cls_derivations = match &slot_deriv.class_derivations {
             Some(v) => v,
             None => return Ok(Value::Null),
         };
 
         let mut derived: Vec<Value> = Vec::new();
 
-        for obj_deriv in obj_derivations {
-            if let Some(cls_derivations) = &obj_deriv.class_derivations {
-                for (_target_cls, cls_deriv) in cls_derivations {
-                    // `populated_from` on the ClassDerivation tells us which
-                    // source class to use.  When absent, fall back to the outer
-                    // source_type (same-class derivation).
-                    let effective_source_type =
-                        cls_deriv.populated_from.as_deref().unwrap_or(source_type);
+        for (_target_cls, cls_deriv) in cls_derivations {
+            // `populated_from` on the ClassDerivation tells us which source
+            // class to use.  When absent, fall back to the outer source_type
+            // (same-class derivation).
+            let effective_source_type = cls_deriv.populated_from.as_deref().unwrap_or(source_type);
 
-                    // Recursively transform the same source map using the
-                    // nested ClassDerivation.
-                    let nested = self.map_object_internal(
-                        source_map,
-                        effective_source_type,
-                        cls_deriv,
-                        index,
-                    )?;
-                    derived.push(nested);
-                }
-            }
+            // Recursively transform the same source map using the nested
+            // ClassDerivation.
+            let nested =
+                self.map_object_internal(source_map, effective_source_type, cls_deriv, index)?;
+            derived.push(nested);
         }
 
         if derived.is_empty() {
@@ -1674,13 +1635,10 @@ impl<'s> ObjectTransformer<'s> {
             let src_str = value_to_string_key(source_value);
             if let Some(pvds) = &ed.permissible_value_derivations {
                 for (_, pvd) in pvds {
-                    // populated_from match.
-                    if pvd.populated_from.as_deref() == Some(&src_str) {
-                        return Ok(Value::Str(pvd.name.clone()));
-                    }
-                    // sources list match.
-                    if let Some(sources) = &pvd.sources {
-                        if sources.contains(&src_str) {
+                    // populated_from match — v0.6.0 list-form (#250): a single
+                    // string or a list of source PVs, any of which maps here.
+                    if let Some(sources) = &pvd.populated_from {
+                        if sources.iter().any(|s| s == &src_str) {
                             return Ok(Value::Str(pvd.name.clone()));
                         }
                     }
@@ -1718,13 +1676,7 @@ impl<'s> ObjectTransformer<'s> {
             .iter()
             .filter(|cd| {
                 cd.populated_from.as_deref() == Some(source_type)
-                    || (cd.populated_from.is_none()
-                        && cd.sources.is_none()
-                        && cd.name == source_type)
-                    || cd
-                        .sources
-                        .as_ref()
-                        .is_some_and(|s| s.contains(&source_type.to_string()))
+                    || (cd.populated_from.is_none() && cd.name == source_type)
             })
             .collect();
 
@@ -2784,7 +2736,7 @@ mod tests {
             "ACTIVE".into(),
             PermissibleValueDerivation {
                 name: "ACTIVE".into(),
-                populated_from: Some("active".into()),
+                populated_from: Some(vec!["active".into()]),
                 ..Default::default()
             },
         );
@@ -2792,7 +2744,7 @@ mod tests {
             "INACTIVE".into(),
             PermissibleValueDerivation {
                 name: "INACTIVE".into(),
-                populated_from: Some("inactive".into()),
+                populated_from: Some(vec!["inactive".into()]),
                 ..Default::default()
             },
         );
@@ -3141,61 +3093,8 @@ mod tests {
         assert_eq!(out["name"], Value::Null);
     }
 
-    // ── Test 12: sources (first non-null wins) ────────────────────────────────
-
-    #[test]
-    fn test_sources_single_wins() {
-        // Mirrors Python `_resolve_sources`: exactly one non-null source wins;
-        // error if multiple sources are present simultaneously.
-        let schema = make_person_schema();
-        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert(
-            "display_name".into(),
-            SlotDerivation {
-                name: "display_name".into(),
-                sources: Some(vec!["name".into(), "id".into()]),
-                ..Default::default()
-            },
-        );
-        let spec = TransformationSpecification {
-            class_derivations: Some(vec![ClassDerivation {
-                name: "Person".into(),
-                populated_from: Some("Person".into()),
-                slot_derivations: Some(slots),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let engine = ObjectTransformer::new(spec, Some(&schema), None);
-
-        // Only `name` present → wins.
-        let mut m1 = IndexMap::new();
-        m1.insert("name".into(), Value::Str("Charlie".into()));
-        let result = engine.map_object(&Value::Map(m1), Some("Person")).unwrap();
-        let out = match result {
-            Value::Map(m) => m,
-            _ => panic!(),
-        };
-        assert_eq!(out["display_name"], Value::Str("Charlie".into()));
-
-        // Only `id` present → wins.
-        let mut m2 = IndexMap::new();
-        m2.insert("id".into(), Value::Str("P:999".into()));
-        let result2 = engine.map_object(&Value::Map(m2), Some("Person")).unwrap();
-        let out2 = match result2 {
-            Value::Map(m) => m,
-            _ => panic!(),
-        };
-        assert_eq!(out2["display_name"], Value::Str("P:999".into()));
-
-        // Both present → error (mirrors Python ValueError on ambiguous sources).
-        let src_both = src_person("P:001", "Charlie");
-        let err = engine.map_object(&src_both, Some("Person"));
-        assert!(
-            err.is_err(),
-            "expected error when multiple sources are non-null"
-        );
-    }
+    // (v0.6.0) `sources` removed — the multi-source-single-wins behaviour no
+    // longer exists; slots use `populated_from` (single) instead.
 
     // ── Test 13: enum mirror_source ───────────────────────────────────────────
 
@@ -3313,61 +3212,8 @@ mod tests {
         assert!(matches!(err, Error::NoClassDerivation { .. }));
     }
 
-    // ── Test: class-level sources dispatch (#193) ────────────────────────────
-
-    #[test]
-    fn test_class_sources_dispatch() {
-        // A single ClassDerivation with `sources` covers multiple source types.
-        let schema = make_person_schema();
-        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
-        slots.insert(
-            "id".into(),
-            SlotDerivation {
-                name: "id".into(),
-                ..Default::default()
-            },
-        );
-        slots.insert(
-            "name".into(),
-            SlotDerivation {
-                name: "name".into(),
-                ..Default::default()
-            },
-        );
-        let spec = TransformationSpecification {
-            class_derivations: Some(vec![ClassDerivation {
-                name: "Person".into(),
-                // sources replaces populated_from for multi-source dispatch
-                sources: Some(vec!["PersonV1".into(), "PersonV2".into()]),
-                slot_derivations: Some(slots),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let engine = ObjectTransformer::new(spec, Some(&schema), None);
-
-        // Both source types should map via the same derivation.
-        let mut obj = IndexMap::new();
-        obj.insert("id".into(), Value::Str("P:1".into()));
-        obj.insert("name".into(), Value::Str("Alice".into()));
-
-        let r1 = engine
-            .map_object(&Value::Map(obj.clone()), Some("PersonV1"))
-            .unwrap();
-        let r2 = engine
-            .map_object(&Value::Map(obj.clone()), Some("PersonV2"))
-            .unwrap();
-        assert_eq!(r1, r2);
-        if let Value::Map(m) = &r1 {
-            assert_eq!(m["name"], Value::Str("Alice".into()));
-        } else {
-            panic!("expected map");
-        }
-
-        // A type not in sources should still error.
-        let err = engine.map_object(&Value::Map(obj), Some("PersonV3"));
-        assert!(err.is_err());
-    }
+    // (v0.6.0) class-level `sources` multi-source dispatch removed — cover
+    // multiple source classes with one ClassDerivation each (per upstream).
 
     // ── Test: _source_class virtual binding (#193) ────────────────────────────
 
@@ -3376,7 +3222,6 @@ mod tests {
         // `populated_from: _source_class` returns the source class name, enabling
         // value_mappings keyed by source class.
         let schema = make_person_schema();
-        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
         let mut vm: IndexMap<String, KeyVal> = IndexMap::new();
         vm.insert(
             "PersonV1".into(),
@@ -3392,22 +3237,35 @@ mod tests {
                 value: Some(serde_json::Value::String("visit_2".into())),
             },
         );
-        slots.insert(
-            "visit_label".into(),
-            SlotDerivation {
-                name: "visit_label".into(),
-                populated_from: Some("_source_class".into()),
-                value_mappings: Some(vm),
-                ..Default::default()
-            },
-        );
+        let visit_slot = || {
+            let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+            slots.insert(
+                "visit_label".into(),
+                SlotDerivation {
+                    name: "visit_label".into(),
+                    populated_from: Some("_source_class".into()),
+                    value_mappings: Some(vm.clone()),
+                    ..Default::default()
+                },
+            );
+            slots
+        };
+        // One ClassDerivation per source class (v0.6.0 multi-source pattern).
         let spec = TransformationSpecification {
-            class_derivations: Some(vec![ClassDerivation {
-                name: "Person".into(),
-                sources: Some(vec!["PersonV1".into(), "PersonV2".into()]),
-                slot_derivations: Some(slots),
-                ..Default::default()
-            }]),
+            class_derivations: Some(vec![
+                ClassDerivation {
+                    name: "FromV1".into(),
+                    populated_from: Some("PersonV1".into()),
+                    slot_derivations: Some(visit_slot()),
+                    ..Default::default()
+                },
+                ClassDerivation {
+                    name: "FromV2".into(),
+                    populated_from: Some("PersonV2".into()),
+                    slot_derivations: Some(visit_slot()),
+                    ..Default::default()
+                },
+            ]),
             ..Default::default()
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
@@ -3439,8 +3297,8 @@ mod tests {
         );
         let spec = TransformationSpecification {
             class_derivations: Some(vec![ClassDerivation {
-                name: "Person".into(),
-                sources: Some(vec!["PersonV1".into(), "PersonV2".into()]),
+                name: "FromV1".into(),
+                populated_from: Some("PersonV1".into()),
                 slot_derivations: Some(slots),
                 ..Default::default()
             }]),
@@ -4552,18 +4410,14 @@ mod tests {
         let mut inner_cls_derivs: IndexMap<String, ClassDerivation> = IndexMap::new();
         inner_cls_derivs.insert("FullName".into(), fullname_cls_deriv);
 
-        let obj_deriv = crate::datamodel::ObjectDerivation {
-            class_derivations: Some(inner_cls_derivs),
-            ..Default::default()
-        };
-
-        // Outer spec: Person → Person with full_name via object_derivations, age direct.
+        // Outer spec: Person → Person with full_name via slot-level
+        // class_derivations (v0.6.0), age direct.
         let mut outer_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
         outer_slots.insert(
             "full_name".into(),
             SlotDerivation {
                 name: "full_name".into(),
-                object_derivations: Some(vec![obj_deriv]),
+                class_derivations: Some(inner_cls_derivs),
                 ..Default::default()
             },
         );
@@ -4682,17 +4536,12 @@ mod tests {
         let mut inner: IndexMap<String, ClassDerivation> = IndexMap::new();
         inner.insert("Tag".into(), tag_cls_deriv);
 
-        let obj_deriv = crate::datamodel::ObjectDerivation {
-            class_derivations: Some(inner),
-            ..Default::default()
-        };
-
         let mut outer_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
         outer_slots.insert(
             "tags".into(),
             SlotDerivation {
                 name: "tags".into(),
-                object_derivations: Some(vec![obj_deriv]),
+                class_derivations: Some(inner),
                 ..Default::default()
             },
         );

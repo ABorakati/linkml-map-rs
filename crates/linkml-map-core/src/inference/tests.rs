@@ -270,7 +270,7 @@ fn invert_enum_derivation_swaps_pv() {
         "B".to_string(),
         PermissibleValueDerivation {
             name: "B".into(),
-            populated_from: Some("A".into()),
+            populated_from: Some(vec!["A".into()]),
             ..Default::default()
         },
     );
@@ -298,7 +298,7 @@ fn invert_enum_derivation_swaps_pv() {
     assert_eq!(ed.populated_from.as_deref(), Some("E"));
     let pv = &ed.permissible_value_derivations.as_ref().unwrap()["A"];
     assert_eq!(pv.name, "A");
-    assert_eq!(pv.populated_from.as_deref(), Some("B"));
+    assert_eq!(pv.populated_from, Some(vec!["B".to_string()]));
 }
 
 #[test]

@@ -120,12 +120,21 @@ impl<'a> TransformationSpecificationInverter<'a> {
             .flatten()
             .map(|(_, v)| v)
         {
-            let pname = pv.populated_from.clone().unwrap_or_else(|| pv.name.clone());
+            // Forward maps source PV(s) -> this target PV; the inverse swaps
+            // them. List-form `populated_from` (many sources -> one target) is
+            // not uniquely invertible — take the first source as the inverted
+            // name (pragmatic, mirrors the single-source common case).
+            let pname = pv
+                .populated_from
+                .as_ref()
+                .and_then(|v| v.first())
+                .cloned()
+                .unwrap_or_else(|| pv.name.clone());
             pvds.insert(
                 pname.clone(),
                 PermissibleValueDerivation {
                     name: pname,
-                    populated_from: Some(pv.name.clone()),
+                    populated_from: Some(vec![pv.name.clone()]),
                     ..Default::default()
                 },
             );

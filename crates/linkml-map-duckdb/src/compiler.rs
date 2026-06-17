@@ -148,7 +148,7 @@ impl SqlCompiler {
 
         // Unsupported forms → NULL.
         if sd.unit_conversion.is_some()
-            || sd.object_derivations.is_some()
+            || sd.class_derivations.is_some()
             || sd.pivot_operation.is_some()
             || sd.offset.is_some()
             || sd.value_mappings.is_some()

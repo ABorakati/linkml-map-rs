@@ -122,10 +122,8 @@ impl<'a> SchemaMapper<'a> {
         if let Some(range) = &sd.range {
             obj.insert("range".into(), json!(range));
         } else if let Some(range) = sd
-            .object_derivations
+            .class_derivations
             .as_ref()
-            .and_then(|ods| ods.first())
-            .and_then(|od| od.class_derivations.as_ref())
             .and_then(|cds| cds.keys().next())
         {
             obj.insert("range".into(), json!(range));

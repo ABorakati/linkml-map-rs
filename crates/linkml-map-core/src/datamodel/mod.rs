@@ -5,7 +5,7 @@
 //! in linkml_map.datamodel.transformer_model.
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 fn deserialize_stringish_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -18,6 +18,48 @@ where
         serde_json::Value::Bool(b) => b.to_string(),
         other => other.to_string(),
     }))
+}
+
+/// Deserialize a field that accepts either a single scalar or a list of
+/// scalars into `Option<Vec<String>>`. Used for v0.6.0 list-form
+/// `populated_from` on permissible-value derivations (#250): `"A"` and
+/// `["A", "C"]` both parse to a vector. Scalars are coerced stringish so
+/// numeric PV codes (e.g. `1`) survive.
+fn deserialize_string_or_seq_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let stringify = |v: serde_json::Value| match v {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        other => other.to_string(),
+    };
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Array(arr)) => Some(arr.into_iter().map(stringify).collect()),
+        Some(scalar) => Some(vec![stringify(scalar)]),
+    })
+}
+
+/// Serialize `Option<Vec<String>>` as a bare scalar when it holds exactly one
+/// element, otherwise as a list — mirroring the input shape of list-form
+/// `populated_from`.
+fn serialize_seq_or_scalar_option<S>(
+    value: &Option<Vec<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(v) if v.len() == 1 => serializer.serialize_str(&v[0]),
+        Some(v) => v.serialize(serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// Collection type for slot derivations.
@@ -379,14 +421,11 @@ pub struct SlotDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub populated_from: Option<String>,
 
+    /// Nested target objects derived from source data (v0.6.0: replaces the
+    /// removed `object_derivations` — one nesting level flatter). Mirrors
+    /// Python `SlotDerivation.class_derivations`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub object_derivations: Option<Vec<ObjectDerivation>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub derived_from: Option<Vec<String>>,
+    pub class_derivations: Option<IndexMap<String, ClassDerivation>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
@@ -477,11 +516,17 @@ pub struct PermissibleValueDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub populated_from: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<String>>,
+    /// Source permissible value(s) that map to this target PV. v0.6.0 accepts
+    /// either a single string or a list (list-form `populated_from`, #250),
+    /// replacing the removed `sources` list. Mirrors Python
+    /// `PermissibleValueDerivation.populated_from`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        serialize_with = "serialize_seq_or_scalar_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub populated_from: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide: Option<bool>,
@@ -531,9 +576,6 @@ pub struct EnumDerivation {
     pub populated_from: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -576,50 +618,8 @@ pub struct EnumDerivation {
     pub comments: Option<Vec<String>>,
 }
 
-/// A specification of how to derive target object instances.
-///
-/// Mirrors Python `ObjectDerivation`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct ObjectDerivation {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub class_derivations: Option<IndexMap<String, ClassDerivation>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub copy_directives: Option<IndexMap<String, CopyDirective>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overrides: Option<serde_json::Value>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub is_a: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mixins: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value_mappings: Option<IndexMap<String, KeyVal>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expression_to_value_mappings: Option<IndexMap<String, KeyVal>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expression_to_expression_mappings: Option<IndexMap<String, KeyVal>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mirror_source: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub implements: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub comments: Option<Vec<String>>,
-}
+// `ObjectDerivation` removed in v0.6.0 — nested object derivations now live
+// directly on `SlotDerivation.class_derivations` (one nesting level flatter).
 
 /// A specification of how to derive a target class from source class(es).
 ///
@@ -630,9 +630,6 @@ pub struct ClassDerivation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub populated_from: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub joins: Option<IndexMap<String, AliasedClass>>,
@@ -747,9 +744,6 @@ pub struct TransformationSpecification {
     pub enum_derivations: Option<IndexMap<String, EnumDerivation>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub slot_derivations: Option<IndexMap<String, SlotDerivation>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -775,7 +769,7 @@ pub struct TransformationSpecification {
 /// - `creator` / `author` / `reviewer`: inject default agent `type` -> `"Agent"` if missing.
 pub fn normalise_spec_json(root: &mut serde_json::Value) {
     if let Some(obj) = root.as_object_mut() {
-        // ── class_derivations: mapping -> Vec ──────────────────────────────────
+        // ── class_derivations: top-level mapping -> Vec ────────────────────────
         if let Some(cd) = obj.get_mut("class_derivations") {
             if cd.is_object() {
                 let mapping = std::mem::replace(cd, serde_json::Value::Null);
@@ -787,32 +781,7 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                         }
                         if let Some(o) = val.as_object_mut() {
                             o.insert("name".into(), serde_json::Value::String(class_name.clone()));
-                            // slot_derivations: inject `name` into each slot value
-                            if let Some(sd) = o.get_mut("slot_derivations") {
-                                if sd.is_object() {
-                                    let sd_owned = std::mem::replace(sd, serde_json::Value::Null);
-                                    if let serde_json::Value::Object(mut sdm) = sd_owned {
-                                        for (slot_name, slot_val) in sdm.iter_mut() {
-                                            if slot_val.is_null() {
-                                                *slot_val = serde_json::json!({});
-                                            }
-                                            if let Some(so) = slot_val.as_object_mut() {
-                                                if !so.contains_key("name") {
-                                                    so.insert(
-                                                        "name".into(),
-                                                        serde_json::Value::String(
-                                                            slot_name.clone(),
-                                                        ),
-                                                    );
-                                                }
-                                                normalise_keyval_mapping(so, "value_mappings");
-                                                normalise_keyval_mapping(so, "expression_mappings");
-                                            }
-                                        }
-                                        *sd = serde_json::Value::Object(sdm);
-                                    }
-                                }
-                            }
+                            normalise_class_derivation_body(o);
                         }
                         list.push(val);
                     }
@@ -890,6 +859,51 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                             if !o.contains_key("type") {
                                 o.insert("type".into(), serde_json::Value::String("Agent".into()));
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Normalise the body of a single class derivation in place: walk its
+/// `slot_derivations`, injecting names and recursing into any slot-level
+/// `class_derivations` (v0.6.0 nested objects). The class's own `name` is
+/// expected to be set by the caller (from the mapping key).
+fn normalise_class_derivation_body(o: &mut serde_json::Map<String, serde_json::Value>) {
+    if let Some(sd) = o.get_mut("slot_derivations") {
+        if let Some(sdm) = sd.as_object_mut() {
+            normalise_slot_derivations(sdm);
+        }
+    }
+}
+
+/// Normalise a `slot_derivations` mapping in place: inject `name` from the key,
+/// normalise keyval mappings, and recurse into any slot-level
+/// `class_derivations` (kept as a mapping / `IndexMap`).
+fn normalise_slot_derivations(sdm: &mut serde_json::Map<String, serde_json::Value>) {
+    for (slot_name, slot_val) in sdm.iter_mut() {
+        if slot_val.is_null() {
+            *slot_val = serde_json::json!({});
+        }
+        if let Some(so) = slot_val.as_object_mut() {
+            so.entry("name")
+                .or_insert_with(|| serde_json::Value::String(slot_name.clone()));
+            normalise_keyval_mapping(so, "value_mappings");
+            normalise_keyval_mapping(so, "expression_mappings");
+            // Slot-level nested class_derivations stay a mapping (IndexMap);
+            // inject each class name from its key and recurse.
+            if let Some(cd) = so.get_mut("class_derivations") {
+                if let Some(cdm) = cd.as_object_mut() {
+                    for (cls_name, cls_val) in cdm.iter_mut() {
+                        if cls_val.is_null() {
+                            *cls_val = serde_json::json!({});
+                        }
+                        if let Some(co) = cls_val.as_object_mut() {
+                            co.entry("name")
+                                .or_insert_with(|| serde_json::Value::String(cls_name.clone()));
+                            normalise_class_derivation_body(co);
                         }
                     }
                 }

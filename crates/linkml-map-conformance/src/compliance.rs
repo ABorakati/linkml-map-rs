@@ -804,15 +804,11 @@ fn cases_map_enum() -> Vec<Case> {
         .into_iter()
         .filter(|e| !e.mirror) // upstream skips mirror_source
         .map(|e| {
-            // Build permissible_value_derivations: list value → {sources}, scalar → {populated_from}.
+            // Build permissible_value_derivations. v0.6.0 list-form (#250):
+            // `populated_from` accepts a scalar or a list of source PVs.
             let mut pvds = serde_json::Map::new();
             for (k, v) in e.mapping.as_object().unwrap() {
-                let d = if v.is_array() {
-                    json!({ "sources": v })
-                } else {
-                    json!({ "populated_from": v })
-                };
-                pvds.insert(k.clone(), d);
+                pvds.insert(k.clone(), json!({ "populated_from": v }));
             }
             Case {
                 feature: "map_enum",
