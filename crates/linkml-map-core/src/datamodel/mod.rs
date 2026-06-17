@@ -62,6 +62,57 @@ where
     }
 }
 
+/// Deserialize `source_schema` / `target_schema`, accepting either a bare
+/// string (a schema name/path) or a full mapping. A string `s` becomes
+/// `SchemaReference { name: Some(s), .. }`. v0.6.0 (#215).
+fn deserialize_schema_reference_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<SchemaReference>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(SchemaReference {
+            name: Some(s),
+            ..Default::default()
+        })),
+        Some(other) => serde_json::from_value(other)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+/// A reference to a schema, by name and/or location. v0.6.0 replaces the plain
+/// string `source_schema`/`target_schema` (#215). Mirrors Python
+/// `SchemaReference`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SchemaReference {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl SchemaReference {
+    /// The usable path/identifier for loading: prefers `local_path`, falling
+    /// back to `name`, then `url`.
+    pub fn path(&self) -> Option<&str> {
+        self.local_path
+            .as_deref()
+            .or(self.name.as_deref())
+            .or(self.url.as_deref())
+    }
+}
+
 /// Collection type for slot derivations.
 ///
 /// Mirrors Python `CollectionType` enum.
@@ -710,11 +761,19 @@ pub struct TransformationSpecification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_directives: Option<IndexMap<String, CopyDirective>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_schema: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_schema_reference_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub source_schema: Option<SchemaReference>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_schema: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_schema_reference_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub target_schema: Option<SchemaReference>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_schema_patches: Option<serde_json::Value>,
@@ -764,7 +823,6 @@ pub struct TransformationSpecification {
 /// - Shorthand null-valued slots (`id:`) inside `slot_derivations` -> `{"name": "id"}`.
 /// - `enum_derivations`: inject `name` from mapping key.
 /// - `permissible_value_derivations` under enum derivations: inject `name` from mapping key.
-/// - `source_schema` / `target_schema`: object (`{name: ...}` or `{id: ...}`) -> plain string.
 /// - `prefixes`: mapping of string values -> mapping of `KeyVal` maps (`{key: string, value: string}`).
 /// - `creator` / `author` / `reviewer`: inject default agent `type` -> `"Agent"` if missing.
 pub fn normalise_spec_json(root: &mut serde_json::Value) {
@@ -823,20 +881,9 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
             }
         }
 
-        // ── source_schema / target_schema: object -> its name/id string ────────
-        for key in &["source_schema", "target_schema"] {
-            if let Some(v) = obj.get_mut(*key) {
-                if v.is_object() {
-                    let name_val = v
-                        .as_object()
-                        .and_then(|o| o.get("name").or_else(|| o.get("id")))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    *v = serde_json::Value::String(name_val);
-                }
-            }
-        }
+        // source_schema / target_schema accept either a bare string or a full
+        // mapping natively (see `deserialize_schema_reference_option`), so no
+        // normalisation is needed here.
 
         // ── prefixes: string values -> KeyVal maps ─────────────────────────────
         if let Some(pfx) = obj.get_mut("prefixes") {
@@ -971,8 +1018,15 @@ mod tests {
 
         assert_eq!(spec.id, Some("test-spec-1".to_string()));
         assert_eq!(spec.title, Some("Test Transformation".to_string()));
-        assert_eq!(spec.source_schema, Some("source.yaml".to_string()));
-        assert_eq!(spec.target_schema, Some("target.yaml".to_string()));
+        // Bare-string schema refs deserialize into SchemaReference { name }.
+        assert_eq!(
+            spec.source_schema.as_ref().and_then(|s| s.path()),
+            Some("source.yaml")
+        );
+        assert_eq!(
+            spec.target_schema.as_ref().and_then(|s| s.path()),
+            Some("target.yaml")
+        );
         assert!(spec.class_derivations.is_some());
 
         let class_derivs = spec.class_derivations.unwrap();
@@ -982,6 +1036,25 @@ mod tests {
             class_derivs[0].populated_from,
             Some("SourceClass".to_string())
         );
+    }
+
+    #[test]
+    fn test_schema_reference_string_or_object() {
+        // Object form: full SchemaReference fields parse.
+        let json = r#"{
+          "source_schema": { "name": "src", "local_path": "schemas/src.yaml" },
+          "target_schema": "tgt.yaml"
+        }"#;
+        let spec: TransformationSpecification = serde_json::from_str(json).unwrap();
+        let src = spec.source_schema.unwrap();
+        assert_eq!(src.name.as_deref(), Some("src"));
+        assert_eq!(src.local_path.as_deref(), Some("schemas/src.yaml"));
+        // path() prefers local_path.
+        assert_eq!(src.path(), Some("schemas/src.yaml"));
+        // String form falls back to name.
+        let tgt = spec.target_schema.unwrap();
+        assert_eq!(tgt.name.as_deref(), Some("tgt.yaml"));
+        assert_eq!(tgt.path(), Some("tgt.yaml"));
     }
 
     #[test]
