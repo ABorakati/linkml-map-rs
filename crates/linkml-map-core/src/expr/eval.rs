@@ -23,6 +23,49 @@ use crate::value::Value;
 /// Variable bindings: name → value mapping.
 pub type Bindings = IndexMap<String, Value>;
 
+thread_local! {
+    /// When set, an unbound identifier (or an unresolved `slot()` lookup)
+    /// raises [`ExprError::Eval`] instead of resolving to [`Value::Null`].
+    ///
+    /// Default (lax) behaviour is off, so all existing public entry points are
+    /// unchanged. The `*_strict` entry points ([`eval_parsed_strict`],
+    /// [`eval_expr_with_mapping_strict`]) flip this on for the duration of the
+    /// evaluation via [`with_strict_mode`]. Modelled on [`OBJECT_ATTR_MODE`].
+    static STRICT_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with strict unbound-name semantics set to `strict`, restoring the
+/// prior mode afterwards (nesting-safe).
+pub(crate) fn with_strict_mode<T>(strict: bool, f: impl FnOnce() -> T) -> T {
+    STRICT_MODE.with(|m| {
+        let prev = m.get();
+        m.set(strict);
+        let out = f();
+        m.set(prev);
+        out
+    })
+}
+
+/// True when strict unbound-name mode is currently active.
+fn strict_mode_enabled() -> bool {
+    STRICT_MODE.with(|m| m.get())
+}
+
+/// Resolve `name` from `vars`, honouring the current strict mode: in lax mode an
+/// unbound name yields [`Value::Null`]; in strict mode it is an error.
+fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
+    match vars.get(name) {
+        Some(v) => Ok(v.clone()),
+        None => {
+            if strict_mode_enabled() {
+                Err(ExprError::Eval(format!("name '{name}' is not defined")))
+            } else {
+                Ok(Value::Null)
+            }
+        }
+    }
+}
+
 /// A parsed expression, ready to evaluate many times without re-parsing.
 ///
 /// This is the core performance lever for the row pipeline: an `expr:` string
@@ -60,6 +103,14 @@ impl ParsedExpr {
     /// Equivalent to [`eval_parsed`]; provided as a method for ergonomics.
     pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
         eval_parsed(self, vars)
+    }
+
+    /// Evaluate this pre-parsed expression against `vars` in **strict** mode,
+    /// where unbound names error instead of resolving to [`Value::Null`].
+    ///
+    /// Equivalent to [`eval_parsed_strict`]; provided as a method for ergonomics.
+    pub fn eval_strict(&self, vars: &Bindings) -> ExprResult<Value> {
+        eval_parsed_strict(self, vars)
     }
 
     /// True when this was parsed as a multi-statement program (the
@@ -147,6 +198,23 @@ pub fn eval_expr_with_mapping(expr: &str, vars: &Bindings) -> ExprResult<Value> 
     eval_parsed(&parsed, vars)
 }
 
+/// Evaluate a pre-parsed expression in **strict** mode.
+///
+/// Identical to [`eval_parsed`] except that an unbound identifier — or an
+/// unresolved `slot()` lookup — returns `Err(ExprError::Eval(..))` instead of
+/// resolving to [`Value::Null`]. The default ([`eval_parsed`]) stays lax, so
+/// existing callers are unchanged; strict mode is fully opt-in.
+pub fn eval_parsed_strict(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
+    with_strict_mode(true, || eval_parsed(parsed, vars))
+}
+
+/// String-in convenience for strict evaluation; equivalent to
+/// `eval_parsed_strict(&parse_expr(expr)?, vars)`. See [`eval_parsed_strict`].
+pub fn eval_expr_with_mapping_strict(expr: &str, vars: &Bindings) -> ExprResult<Value> {
+    let parsed = parse_expr(expr)?;
+    eval_parsed_strict(&parsed, vars)
+}
+
 /// Convenience: evaluate against an empty binding set.
 pub fn eval_expr(expr: &str) -> ExprResult<Value> {
     let vars = Bindings::new();
@@ -161,7 +229,7 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         Ast::Bool(b) => Ok(Value::Bool(*b)),
         Ast::None => Ok(Value::Null),
 
-        Ast::Name(name) => Ok(vars.get(name).cloned().unwrap_or(Value::Null)),
+        Ast::Name(name) => resolve_name(name, vars),
 
         // {x} resolves identically to bare x.
         Ast::Brace(inner) => eval_ast(inner, vars),
@@ -282,9 +350,21 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
             )))
         }
     };
-    match vars.get("__slot_values") {
-        Some(Value::Map(slots)) => Ok(slots.get(slot_name).cloned().unwrap_or(Value::Null)),
-        _ => Ok(Value::Null),
+    let resolved = match vars.get("__slot_values") {
+        Some(Value::Map(slots)) => slots.get(slot_name).cloned(),
+        _ => None,
+    };
+    match resolved {
+        Some(v) => Ok(v),
+        None => {
+            if strict_mode_enabled() {
+                Err(ExprError::Eval(format!(
+                    "slot '{slot_name}' is not defined"
+                )))
+            } else {
+                Ok(Value::Null)
+            }
+        }
     }
 }
 
@@ -960,6 +1040,13 @@ fn call_function(name: &str, args: Vec<Value>) -> ExprResult<Value> {
 
         // distributing scalar functions
         "str" => distributing(args, "str", |v| Ok(Value::Str(py_str(&v)))),
+        "lower" => distributing(args, "lower", |v| Ok(Value::Str(py_str(&v).to_lowercase()))),
+        "upper" => distributing(args, "upper", |v| Ok(Value::Str(py_str(&v).to_uppercase()))),
+        "title" => distributing(args, "title", |v| Ok(Value::Str(py_title(&py_str(&v))))),
+        "capitalize" => distributing(args, "capitalize", |v| {
+            Ok(Value::Str(py_capitalize(&py_str(&v))))
+        }),
+        "slugify" => distributing(args, "slugify", |v| Ok(Value::Str(slugify(&py_str(&v))))),
         "int" => distributing(args, "int", |v| py_int(&v)),
         "float" => distributing(args, "float", |v| py_float(&v)),
         "bool" => distributing(args, "bool", |v| Ok(Value::Bool(v.is_truthy()))),
@@ -1208,6 +1295,61 @@ fn py_repr(v: &Value) -> String {
     }
 }
 
+/// Python `str.title`: uppercase the first letter of each run of letters,
+/// lowercase the rest. A letter that follows a non-letter starts a new word.
+fn py_title(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_is_letter = false;
+    for c in s.chars() {
+        if c.is_alphabetic() {
+            if prev_is_letter {
+                out.extend(c.to_lowercase());
+            } else {
+                out.extend(c.to_uppercase());
+            }
+            prev_is_letter = true;
+        } else {
+            out.push(c);
+            prev_is_letter = false;
+        }
+    }
+    out
+}
+
+/// Python `str.capitalize`: first character uppercased, the rest lowercased.
+fn py_capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let mut out = String::with_capacity(s.len());
+            out.extend(first.to_uppercase());
+            out.push_str(&chars.as_str().to_lowercase());
+            out
+        }
+    }
+}
+
+/// ASCII slug: lowercase, trim, collapse each run of non-alphanumeric
+/// characters to a single `-`, and strip leading/trailing `-`.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_dash = false;
+    for c in s.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(c.to_ascii_lowercase());
+        } else {
+            // Any run of non-alphanumeric chars becomes a single separator.
+            pending_dash = true;
+        }
+    }
+    out
+}
+
 fn format_py_float(f: f64) -> String {
     if f.is_infinite() {
         return if f > 0.0 { "inf".into() } else { "-inf".into() };
@@ -1330,5 +1472,170 @@ fn round_half_even(x: f64) -> f64 {
         } else {
             floor + 1.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval(expr: &str) -> Value {
+        eval_expr(expr).unwrap()
+    }
+
+    // --- Task 1: string functions ---
+
+    #[test]
+    fn test_lower() {
+        assert_eq!(eval("lower('HeLLo')"), Value::Str("hello".into()));
+    }
+
+    #[test]
+    fn test_upper() {
+        assert_eq!(eval("upper('HeLLo')"), Value::Str("HELLO".into()));
+    }
+
+    #[test]
+    fn test_title() {
+        assert_eq!(
+            eval("title('hello world')"),
+            Value::Str("Hello World".into())
+        );
+        // Letters after a non-letter are uppercased; rest lowercased.
+        assert_eq!(
+            eval("title('they\\'re BILL\\'s friends')"),
+            Value::Str("They'Re Bill'S Friends".into())
+        );
+        assert_eq!(eval("title('a1b')"), Value::Str("A1B".into()));
+    }
+
+    #[test]
+    fn test_capitalize() {
+        assert_eq!(
+            eval("capitalize('hELLO wORLD')"),
+            Value::Str("Hello world".into())
+        );
+        assert_eq!(eval("capitalize('')"), Value::Str("".into()));
+    }
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(
+            eval("slugify('  Hello, World!  ')"),
+            Value::Str("hello-world".into())
+        );
+        assert_eq!(
+            eval("slugify('Foo___Bar  Baz')"),
+            Value::Str("foo-bar-baz".into())
+        );
+        assert_eq!(eval("slugify('---abc---')"), Value::Str("abc".into()));
+        assert_eq!(eval("slugify('!!!')"), Value::Str("".into()));
+    }
+
+    #[test]
+    fn test_string_funcs_non_string_input() {
+        // Operate on the py_str of the value.
+        assert_eq!(eval("upper(123)"), Value::Str("123".into()));
+        assert_eq!(eval("lower(True)"), Value::Str("true".into()));
+    }
+
+    #[test]
+    fn test_string_funcs_distribute_over_list() {
+        let mut vars = Bindings::new();
+        vars.insert(
+            "xs".into(),
+            Value::List(vec![Value::Str("aB".into()), Value::Str("cD".into())]),
+        );
+        let got = eval_expr_with_mapping("upper(xs)", &vars).unwrap();
+        assert_eq!(
+            got,
+            Value::List(vec![Value::Str("AB".into()), Value::Str("CD".into())])
+        );
+    }
+
+    #[test]
+    fn test_string_funcs_null_passthrough() {
+        // None scalar arg → None.
+        assert_eq!(eval("lower(None)"), Value::Null);
+        assert_eq!(eval("slugify(None)"), Value::Null);
+        // None inside a list distributes to None.
+        let mut vars = Bindings::new();
+        vars.insert(
+            "xs".into(),
+            Value::List(vec![Value::Str("Ab".into()), Value::Null]),
+        );
+        let got = eval_expr_with_mapping("title(xs)", &vars).unwrap();
+        assert_eq!(got, Value::List(vec![Value::Str("Ab".into()), Value::Null]));
+    }
+
+    // --- Task 2: strict mode on unbound names ---
+
+    #[test]
+    fn test_unbound_name_lax_is_null() {
+        let vars = Bindings::new();
+        assert_eq!(
+            eval_expr_with_mapping("missing", &vars).unwrap(),
+            Value::Null
+        );
+        // Braced form resolves identically.
+        assert_eq!(
+            eval_expr_with_mapping("{missing}", &vars).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn test_unbound_name_strict_is_err() {
+        let vars = Bindings::new();
+        assert!(eval_expr_with_mapping_strict("missing", &vars).is_err());
+        assert!(eval_expr_with_mapping_strict("{missing}", &vars).is_err());
+    }
+
+    #[test]
+    fn test_bound_name_strict_ok() {
+        let mut vars = Bindings::new();
+        vars.insert("x".into(), Value::Int(7));
+        assert_eq!(
+            eval_expr_with_mapping_strict("x", &vars).unwrap(),
+            Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn test_strict_does_not_leak_to_lax() {
+        // After a strict eval, a subsequent lax eval must still return Null.
+        let vars = Bindings::new();
+        assert!(eval_expr_with_mapping_strict("missing", &vars).is_err());
+        assert_eq!(
+            eval_expr_with_mapping("missing", &vars).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn test_slot_strict_unresolved_is_err() {
+        // No __slot_values bound at all → lax Null, strict error.
+        let vars = Bindings::new();
+        assert_eq!(
+            eval_expr_with_mapping("slot('s')", &vars).unwrap(),
+            Value::Null
+        );
+        assert!(eval_expr_with_mapping_strict("slot('s')", &vars).is_err());
+
+        // __slot_values present but missing the key → same lax/strict split.
+        let mut vars2 = Bindings::new();
+        let mut slots = IndexMap::new();
+        slots.insert("present".to_string(), Value::Int(1));
+        vars2.insert("__slot_values".into(), Value::Map(slots));
+        assert_eq!(
+            eval_expr_with_mapping("slot('absent')", &vars2).unwrap(),
+            Value::Null
+        );
+        assert!(eval_expr_with_mapping_strict("slot('absent')", &vars2).is_err());
+        // A present slot resolves in strict mode.
+        assert_eq!(
+            eval_expr_with_mapping_strict("slot('present')", &vars2).unwrap(),
+            Value::Int(1)
+        );
     }
 }
