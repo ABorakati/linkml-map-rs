@@ -99,6 +99,15 @@ fn csv_stream_inner(path: std::path::PathBuf, delimiter: u8) -> BoxStream<'stati
                 let mut rdr = AsyncReaderBuilder::new()
                     .delimiter(delim)
                     .has_headers(true)
+                    // Sparse delimited tables (upstream #210) often have rows
+                    // with fewer fields than the header — trailing columns are
+                    // empty and the trailing delimiters are simply omitted. The
+                    // delimiter is already fixed by the declared `Format` (`\t`
+                    // for TSV, `,` for CSV), so there is no sniffing to get
+                    // wrong; we just need to tolerate ragged rows instead of
+                    // aborting with `UnequalLengths`. Short records are padded
+                    // to the header width in `row_to_value` via `get(i)`.
+                    .flexible(true)
                     .create_reader(file);
 
                 let headers: Vec<String> = match rdr.headers().await {

@@ -200,6 +200,76 @@ mod tests {
         assert_eq!(loaded, original, "TSV round-trip mismatch");
     }
 
+    // ── Sparse TSV (upstream #210) ──────────────────────────────────────────
+
+    /// Regression test for upstream issue #210: a tab-separated lookup/join
+    /// table whose rows are *sparse* (trailing columns empty, or early rows
+    /// with fewer populated fields) must still split on the declared `\t`
+    /// delimiter and line up with the header columns.
+    ///
+    /// The fixture is written as raw bytes (not via `write_vec`, which always
+    /// emits full-width rows) so it reproduces the on-disk shape that tripped
+    /// the loader:
+    ///   * the first data row has fewer fields than the header (trailing tabs
+    ///     omitted), and
+    ///   * a later row has empty trailing columns.
+    ///
+    /// Before the fix the `csv_async` reader ran with `flexible(false)` and
+    /// aborted these rows with an `UnequalLengths` error (or, equivalently,
+    /// the columns were mis-split). With the declared TSV delimiter and
+    /// flexible records, every row loads with the correct column mapping.
+    #[tokio::test]
+    async fn test_sparse_tsv_keeps_column_split() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lookup.tsv");
+
+        // 4 header columns. Note the deliberately ragged rows:
+        //   row 1: only 2 fields populated, trailing tabs omitted entirely.
+        //   row 2: full width.
+        //   row 3: empty trailing columns (present-but-empty).
+        let raw = "patient_id\tname\tsite\tnotes\n\
+                   P001\tAlice\n\
+                   P002\tBob\tLEEDS\tvip\n\
+                   P003\tCarol\t\t\n";
+        std::fs::write(&path, raw).unwrap();
+
+        let loaded = load_all(&path, Format::Tsv).await.unwrap();
+        assert_eq!(loaded.len(), 3, "expected 3 data rows");
+
+        let get = |row: &Value, key: &str| -> String {
+            match row {
+                Value::Map(m) => match m.get(key) {
+                    Some(Value::Str(s)) => s.clone(),
+                    Some(other) => panic!("non-string cell for {key}: {other:?}"),
+                    None => panic!("missing column {key}"),
+                },
+                other => panic!("expected Map row, got {other:?}"),
+            }
+        };
+
+        // Row with omitted trailing tabs: declared columns must still split
+        // correctly, with the missing trailing columns defaulting to empty.
+        assert_eq!(get(&loaded[0], "patient_id"), "P001");
+        assert_eq!(get(&loaded[0], "name"), "Alice");
+        assert_eq!(
+            get(&loaded[0], "site"),
+            "",
+            "trailing column should be empty, not mis-split"
+        );
+        assert_eq!(get(&loaded[0], "notes"), "");
+
+        // Full-width row.
+        assert_eq!(get(&loaded[1], "patient_id"), "P002");
+        assert_eq!(get(&loaded[1], "site"), "LEEDS");
+        assert_eq!(get(&loaded[1], "notes"), "vip");
+
+        // Present-but-empty trailing columns.
+        assert_eq!(get(&loaded[2], "patient_id"), "P003");
+        assert_eq!(get(&loaded[2], "name"), "Carol");
+        assert_eq!(get(&loaded[2], "site"), "");
+        assert_eq!(get(&loaded[2], "notes"), "");
+    }
+
     // ── JSON round-trip ─────────────────────────────────────────────────────
 
     #[tokio::test]
