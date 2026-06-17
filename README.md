@@ -193,13 +193,23 @@ unit conversion); expected values are Python's own. See
 
 ## Feature coverage
 
-**Implemented:** type coercion, list↔dict collections, the expression language,
-foreign-key joins, enum/permissible-value mapping, inheritance (is_a/mixins),
-stringification (delimiter + JSON/YAML), unit conversion (scheme-aware, with a
-medically-extended table incl. molar↔mass via `molecular_weight` and
-equivalents↔molar via `valence`), `object_derivations`, **offset / aggregation /
-pivot (melt/unmelt)**, target-schema derivation, and the inverse (round-trip)
-transformer.
+**Implemented:** type coercion, list↔dict collections, the expression language
+(incl. safe string builtins — `lower`/`upper`/`title`/`capitalize`/`slugify` —
+and an opt-in **strict mode** that errors on unbound names instead of yielding
+null), foreign-key joins, enum/permissible-value mapping (incl. list-form
+`populated_from` mapping several source PVs to one target), inheritance
+(is_a/mixins), stringification (delimiter + JSON/YAML), unit conversion
+(scheme-aware, with a medically-extended table incl. molar↔mass via
+`molecular_weight` and equivalents↔molar via `valence`), slot-level nested
+`class_derivations`, `missing_values` (sentinel codes → null), **offset /
+aggregation / pivot (melt/unmelt)**, target-schema derivation, and the inverse
+(round-trip) transformer.
+
+> **v0.6.0 parity:** tracks upstream linkml-map v0.6.0. The deprecated
+> `sources`, `derived_from`, `object_derivations`, and top-level
+> `slot_derivations` forms have been **removed** — use `populated_from` and
+> slot-level `class_derivations`. `source_schema`/`target_schema` are structured
+> `SchemaReference` objects (a bare string still parses as the schema name).
 
 **Not implemented** (out of scope): spec→Python/SQL compilation and JSON-schema
 validation of output.
