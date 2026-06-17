@@ -322,3 +322,62 @@ fn contains_name(value: &Option<JsonValue>, name: &str) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod copy_directive_tests {
+    use super::*;
+
+    fn src() -> Map<String, JsonValue> {
+        let mut m = Map::new();
+        m.insert("a".into(), json!(1));
+        m.insert("b".into(), json!(2));
+        m.insert("c".into(), json!(3));
+        m
+    }
+
+    fn directives(d: CopyDirective) -> IndexMap<String, CopyDirective> {
+        let mut m = IndexMap::new();
+        m.insert("d".into(), d);
+        m
+    }
+
+    #[test]
+    fn copy_all_with_exclude_drops_named() {
+        // #244: exclude removes named slots from a copy_all set.
+        let mut target = Map::new();
+        apply_directives(
+            &mut target,
+            &src(),
+            &directives(CopyDirective {
+                element_name: "x".into(),
+                copy_all: Some(true),
+                exclude: Some(json!(["b"])),
+                ..Default::default()
+            }),
+        );
+        assert!(target.contains_key("a"));
+        assert!(target.contains_key("c"));
+        assert!(
+            !target.contains_key("b"),
+            "excluded slot must not be copied"
+        );
+    }
+
+    #[test]
+    fn exclude_all_copies_only_explicit_includes() {
+        // #244: exclude_all suppresses copy_all; only `include`d slots survive.
+        let mut target = Map::new();
+        apply_directives(
+            &mut target,
+            &src(),
+            &directives(CopyDirective {
+                element_name: "x".into(),
+                copy_all: Some(true),
+                exclude_all: Some(true),
+                include: Some(json!(["a"])),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(target.keys().collect::<Vec<_>>(), vec!["a"]);
+    }
+}

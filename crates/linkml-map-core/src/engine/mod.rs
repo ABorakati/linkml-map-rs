@@ -317,8 +317,16 @@ impl<'s> ObjectTransformer<'s> {
             tgt_attrs.insert(slot_name.to_string(), v);
         }
         for (_, slot_deriv) in slot_derivations {
+            let n = slot_deriv.name.as_str();
             if slot_deriv.hide.unwrap_or(false) {
-                tgt_attrs.shift_remove(slot_deriv.name.as_str());
+                tgt_attrs.shift_remove(n);
+            } else if slot_deriv.class_derivations.is_some()
+                && tgt_attrs.get(n).map(is_hollow).unwrap_or(false)
+            {
+                // #266: a nested object derived from a join with no matching row
+                // is absent, not a hollow object of nulls. Keep "no row"
+                // (slot omitted) distinct from "null value" (slot present, null).
+                tgt_attrs.shift_remove(n);
             }
         }
 
@@ -358,8 +366,16 @@ impl<'s> ObjectTransformer<'s> {
             tgt_attrs.insert(slot_name.to_string(), v);
         }
         for (_, slot_deriv) in slot_derivations {
+            let n = slot_deriv.name.as_str();
             if slot_deriv.hide.unwrap_or(false) {
-                tgt_attrs.shift_remove(slot_deriv.name.as_str());
+                tgt_attrs.shift_remove(n);
+            } else if slot_deriv.class_derivations.is_some()
+                && tgt_attrs.get(n).map(is_hollow).unwrap_or(false)
+            {
+                // #266: a nested object derived from a join with no matching row
+                // is absent, not a hollow object of nulls. Keep "no row"
+                // (slot omitted) distinct from "null value" (slot present, null).
+                tgt_attrs.shift_remove(n);
             }
         }
         Ok(Value::Map(tgt_attrs))
@@ -660,6 +676,22 @@ impl<'s> ObjectTransformer<'s> {
                 .and_then(|ss| ss.induced_slot(slot_name, source_type).ok());
             (raw, ssd)
         };
+
+        // ── missing_values: map sentinel codes (e.g. -9, 999, "NA") to null ───
+        //    Mirrors Python `SlotDerivation.missing_values`. Applied to the
+        //    resolved value across all derivation branches, before coercion.
+        if !v.is_null() {
+            if let Some(sentinels) = &slot_deriv.missing_values {
+                let v_key = value_to_string_key(&v);
+                let is_missing = sentinels.iter().any(|s| {
+                    let sv = json_to_value(s);
+                    sv == v || value_to_string_key(&sv) == v_key
+                });
+                if is_missing {
+                    v = Value::Null;
+                }
+            }
+        }
 
         // ── Post-processing: range coercion + cardinality ─────────────────────
 
@@ -1820,6 +1852,19 @@ fn value_to_string_key(v: &Value) -> String {
         Value::Float(f) => f.to_string(),
         Value::Str(s) => s.clone(),
         Value::List(_) | Value::Map(_) => format!("{v:?}"),
+    }
+}
+
+/// A value is "hollow" when it carries no actual data: null, an empty list, an
+/// empty map, or a list/map whose every leaf is itself hollow. Used by #266 to
+/// distinguish a nested object derived from a missed join (hollow → omit) from a
+/// present object that merely has a null field.
+fn is_hollow(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::List(items) => items.iter().all(is_hollow),
+        Value::Map(m) => m.values().all(is_hollow),
+        _ => false,
     }
 }
 
@@ -4580,6 +4625,126 @@ mod tests {
             other => panic!("expected Map in tags list, got {other:?}"),
         };
         assert_eq!(tag0["label"], Value::Str("rust".into()));
+    }
+
+    /// #269: a sentinel source value maps to null; real values pass through.
+    #[test]
+    fn missing_values_maps_sentinel_to_null() {
+        let schema = make_person_schema();
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "name".into(),
+            SlotDerivation {
+                name: "name".into(),
+                populated_from: Some("name".into()),
+                missing_values: Some(vec![serde_json::json!("NA"), serde_json::json!(-9)]),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        let mut sentinel = IndexMap::new();
+        sentinel.insert("name".into(), Value::Str("NA".into()));
+        let r = engine
+            .map_object(&Value::Map(sentinel), Some("Person"))
+            .unwrap();
+        match r {
+            Value::Map(o) => assert_eq!(o["name"], Value::Null, "sentinel -> null"),
+            _ => panic!("expected map"),
+        }
+
+        let mut real = IndexMap::new();
+        real.insert("name".into(), Value::Str("Bob".into()));
+        let r2 = engine
+            .map_object(&Value::Map(real), Some("Person"))
+            .unwrap();
+        match r2 {
+            Value::Map(o) => assert_eq!(o["name"], Value::Str("Bob".into())),
+            _ => panic!("expected map"),
+        }
+    }
+
+    /// #266: a hollow nested object (all leaves null, e.g. a missed join) is
+    /// omitted, while a scalar null slot stays present.
+    #[test]
+    fn hollow_nested_object_is_omitted() {
+        let schema = make_person_schema();
+        let mut inner_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        inner_slots.insert(
+            "first".into(),
+            SlotDerivation {
+                name: "first".into(),
+                populated_from: Some("first".into()),
+                ..Default::default()
+            },
+        );
+        let nested = ClassDerivation {
+            name: "FullName".into(),
+            populated_from: Some("Person".into()),
+            slot_derivations: Some(inner_slots),
+            ..Default::default()
+        };
+        let mut inner: IndexMap<String, ClassDerivation> = IndexMap::new();
+        inner.insert("FullName".into(), nested);
+
+        let mut outer: IndexMap<String, SlotDerivation> = IndexMap::new();
+        outer.insert(
+            "full_name".into(),
+            SlotDerivation {
+                name: "full_name".into(),
+                class_derivations: Some(inner),
+                ..Default::default()
+            },
+        );
+        // A scalar slot that resolves to null must stay present (null != absent).
+        outer.insert(
+            "note".into(),
+            SlotDerivation {
+                name: "note".into(),
+                populated_from: Some("missing_note".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Person".into(),
+                populated_from: Some("Person".into()),
+                slot_derivations: Some(outer),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+
+        // No `first` in source → nested object is hollow → full_name omitted.
+        let r = engine
+            .map_object(&Value::Map(IndexMap::new()), Some("Person"))
+            .unwrap();
+        match &r {
+            Value::Map(o) => {
+                assert!(!o.contains_key("full_name"), "hollow nested object omitted");
+                assert_eq!(o["note"], Value::Null, "scalar null stays present");
+            }
+            _ => panic!("expected map"),
+        }
+
+        // With `first` present → full_name is a real object.
+        let mut m = IndexMap::new();
+        m.insert("first".into(), Value::Str("Ada".into()));
+        let r2 = engine.map_object(&Value::Map(m), Some("Person")).unwrap();
+        match &r2 {
+            Value::Map(o) => assert!(o.contains_key("full_name"), "populated nested object kept"),
+            _ => panic!("expected map"),
+        }
     }
 }
 

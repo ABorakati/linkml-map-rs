@@ -484,6 +484,12 @@ pub struct SlotDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>,
 
+    /// Sentinel source values that map to null (e.g. `-9`, `999`, `"NA"`).
+    /// When the derived value equals one of these, the slot is set to null.
+    /// v0.6.0 (#269). Mirrors Python `SlotDerivation.missing_values`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_values: Option<Vec<serde_json::Value>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range: Option<String>,
 
