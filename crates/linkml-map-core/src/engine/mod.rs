@@ -41,7 +41,10 @@ use crate::{
         SerializationSyntaxType, SlotDerivation, TransformationSpecification,
     },
     error::{Error, Result},
-    expr::{eval_expr_with_mapping, eval_parsed, parse_expr, Bindings, ExprResult, ParsedExpr},
+    expr::{
+        eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict,
+        parse_expr, Bindings, ExprResult, ParsedExpr,
+    },
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
@@ -127,6 +130,10 @@ pub struct ObjectTransformer<'s> {
     /// (`aggregation_operation` + join) uses `lookup_rows` to collect all
     /// matching rows before reducing.  Attach via [`with_lookup_index`].
     lookup_index: Option<Arc<LookupIndex>>,
+    /// When true, `expr:` evaluation errors on unbound names / unresolved
+    /// `slot()` references instead of silently yielding null (#232). Default
+    /// false (lax). Set via [`with_strict_exprs`].
+    strict: bool,
 }
 
 impl<'s> ObjectTransformer<'s> {
@@ -146,6 +153,7 @@ impl<'s> ObjectTransformer<'s> {
             target_schema,
             compiled: None,
             lookup_index: None,
+            strict: false,
         }
     }
 
@@ -166,6 +174,7 @@ impl<'s> ObjectTransformer<'s> {
             target_schema,
             compiled: None,
             lookup_index: None,
+            strict: false,
         }
     }
 
@@ -188,6 +197,13 @@ impl<'s> ObjectTransformer<'s> {
     /// callers and tests that use [`ObjectTransformer::new`] are unaffected.
     pub fn with_compiled_exprs(mut self, compiled: &'s CompiledExprs) -> Self {
         self.compiled = Some(compiled);
+        self
+    }
+
+    /// Enable strict expression evaluation: unbound names and unresolved
+    /// `slot()` references error instead of yielding null (#232). Default lax.
+    pub fn with_strict_exprs(mut self, strict: bool) -> Self {
+        self.strict = strict;
         self
     }
 
@@ -1054,9 +1070,14 @@ impl<'s> ObjectTransformer<'s> {
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
         // string parse path otherwise (identical result).
-        let result = match self.compiled.and_then(|c| c.slot(class_name, slot_name)) {
-            Some(parsed) => eval_parsed(parsed, &bindings),
-            None => eval_expr_with_mapping(expr, &bindings),
+        let result = match (
+            self.compiled.and_then(|c| c.slot(class_name, slot_name)),
+            self.strict,
+        ) {
+            (Some(parsed), false) => eval_parsed(parsed, &bindings),
+            (Some(parsed), true) => eval_parsed_strict(parsed, &bindings),
+            (None, false) => eval_expr_with_mapping(expr, &bindings),
+            (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
         };
         result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
@@ -1652,9 +1673,14 @@ impl<'s> ObjectTransformer<'s> {
                 bindings.insert("NULL".to_string(), Value::Null);
                 // Cached-AST fast path mirrors the slot path; falls back to the
                 // string parse when no compiled cache is attached.
-                let evaled = match self.compiled.and_then(|c| c.enum_exprs.get(ed_key)) {
-                    Some(parsed) => eval_parsed(parsed, &bindings),
-                    None => eval_expr_with_mapping(expr, &bindings),
+                let evaled = match (
+                    self.compiled.and_then(|c| c.enum_exprs.get(ed_key)),
+                    self.strict,
+                ) {
+                    (Some(parsed), false) => eval_parsed(parsed, &bindings),
+                    (Some(parsed), true) => eval_parsed_strict(parsed, &bindings),
+                    (None, false) => eval_expr_with_mapping(expr, &bindings),
+                    (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
                 };
                 if let Ok(v) = evaled {
                     if !v.is_null() {
@@ -4745,6 +4771,48 @@ mod tests {
             Value::Map(o) => assert!(o.contains_key("full_name"), "populated nested object kept"),
             _ => panic!("expected map"),
         }
+    }
+
+    /// #232: strict mode errors on an unbound name in an expr; lax yields null.
+    #[test]
+    fn strict_exprs_error_on_unbound_name() {
+        let schema = make_person_schema();
+        let build_spec = || {
+            let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+            slots.insert(
+                "label".into(),
+                SlotDerivation {
+                    name: "label".into(),
+                    expr: Some("{nonexistent_slot}".into()),
+                    ..Default::default()
+                },
+            );
+            TransformationSpecification {
+                class_derivations: Some(vec![ClassDerivation {
+                    name: "Person".into(),
+                    populated_from: Some("Person".into()),
+                    slot_derivations: Some(slots),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }
+        };
+        let obj = Value::Map(IndexMap::new());
+
+        // Lax (default): unbound name → null, no error.
+        let lax = ObjectTransformer::new(build_spec(), Some(&schema), None);
+        match lax.map_object(&obj, Some("Person")).unwrap() {
+            Value::Map(o) => assert_eq!(o["label"], Value::Null),
+            _ => panic!("expected map"),
+        }
+
+        // Strict: unbound name → error.
+        let strict =
+            ObjectTransformer::new(build_spec(), Some(&schema), None).with_strict_exprs(true);
+        assert!(
+            strict.map_object(&obj, Some("Person")).is_err(),
+            "strict mode must error on unbound name"
+        );
     }
 }
 
