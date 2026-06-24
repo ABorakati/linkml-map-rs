@@ -62,7 +62,10 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass notes via env, not ${{ }} interpolation, so a commit message
+          # containing quotes/backticks can't break the shell command.
+          NOTES: ${{ steps.notes.outputs.msg }}
         run: |
           gh release create "v${{ steps.bump.outputs.version }}" \
             --title "v${{ steps.bump.outputs.version }}" \
-            --notes "${{ steps.notes.outputs.msg }}"
+            --notes "$NOTES"
