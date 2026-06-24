@@ -1308,7 +1308,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-cli"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -1323,7 +1323,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-conformance"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -1339,7 +1339,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "indexmap",
@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-duckdb"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "duckdb",
  "indexmap",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-io"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "csv-async",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-pipeline"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "futures",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-py"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "linkml-map-core",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "linkml-map-schemaview"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "linkml-map-core",
