@@ -32,9 +32,6 @@ use linkml_schemaview::schemaview::SchemaView;
 /// [`SchemaViewProvider::from_yaml_str`].
 pub struct SchemaViewProvider {
     sv: SchemaView,
-    /// Name of the primary schema (reserved for future per-schema filtering).
-    #[allow(dead_code)]
-    primary_schema_id: String,
 }
 
 // ── Constructors ──────────────────────────────────────────────────────────────
@@ -64,15 +61,11 @@ impl SchemaViewProvider {
             apply_schema_patch_to_definition(&mut schema, patch)?;
         }
 
-        let primary_id = schema.id.clone();
         let mut sv = SchemaView::new();
         sv.add_schema(schema)
             .map_err(|e| anyhow::anyhow!("SchemaView::add_schema failed: {}", e))?;
 
-        Ok(Self {
-            sv,
-            primary_schema_id: primary_id,
-        })
+        Ok(Self { sv })
     }
 
     /// Load a LinkML schema from a YAML string.
@@ -93,15 +86,11 @@ impl SchemaViewProvider {
             apply_schema_patch_to_definition(&mut schema, patch)?;
         }
 
-        let primary_id = schema.id.clone();
         let mut sv = SchemaView::new();
         sv.add_schema(schema)
             .map_err(|e| anyhow::anyhow!("SchemaView::add_schema failed: {}", e))?;
 
-        Ok(Self {
-            sv,
-            primary_schema_id: primary_id,
-        })
+        Ok(Self { sv })
     }
 }
 

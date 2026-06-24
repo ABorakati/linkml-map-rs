@@ -510,7 +510,7 @@ impl<'s> ObjectTransformer<'s> {
 
         let (mut v, source_slot_def) = if let Some(const_val) = &slot_deriv.value {
             // 1. Constant value.
-            let v = json_to_value(const_val);
+            let v = Value::from(const_val);
             (v, None)
         } else if slot_deriv.unit_conversion.is_some() {
             // 1b. unit_conversion — dimensional magnitude conversion.
@@ -532,40 +532,12 @@ impl<'s> ObjectTransformer<'s> {
             // Otherwise read the source list from `populated_from` (else same-
             // name slot) and aggregate as before.
             let src_key = slot_deriv.populated_from.as_deref().unwrap_or(slot_name);
-            let raw = if let Some(dot) = src_key.find('.') {
-                let alias = &src_key[..dot];
-                let field = &src_key[dot + 1..];
-                if let (Some(li), Some(joins)) =
-                    (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
-                {
-                    if let Some(ac) = joins.get(alias) {
-                        let table = ac.class_named.as_deref().unwrap_or(alias);
-                        // Python: source_key or join_on
-                        let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
-                        if let Some(key_val) = key_val {
-                            let key_str = match key_val {
-                                Value::Str(s) => s.clone(),
-                                Value::Int(i) => i.to_string(),
-                                _ => String::new(),
-                            };
-                            let items: Vec<Value> = li
-                                .lookup_rows(table, &key_str)
-                                .iter()
-                                .filter_map(|row| row.get(field).cloned())
-                                .collect();
-                            Value::List(items)
-                        } else {
-                            Value::Null
-                        }
-                    } else {
-                        source_map.get(src_key).cloned().unwrap_or(Value::Null)
-                    }
-                } else {
-                    source_map.get(src_key).cloned().unwrap_or(Value::Null)
-                }
-            } else {
-                source_map.get(src_key).cloned().unwrap_or(Value::Null)
-            };
+            let raw = resolve_aggregation_source(
+                src_key,
+                source_map,
+                self.lookup_index.as_deref(),
+                class_deriv,
+            );
             let v = apply_aggregation(agg, raw, slot_name)?;
             (v, None)
         } else if let Some(expr) = &slot_deriv.expr {
@@ -585,82 +557,24 @@ impl<'s> ObjectTransformer<'s> {
             // `_source_class` is a virtual slot that resolves to the source class
             // name itself, enabling value_mappings keyed by source class (#193).
             // `"alias.field"` resolves via the LookupIndex join (#188).
-            let raw = if populated_from == "_source_class" {
-                Value::Str(source_type.to_string())
-            } else if let Some(dot) = populated_from.find('.') {
-                let alias = &populated_from[..dot];
-                let field = &populated_from[dot + 1..];
-                if let (Some(li), Some(joins)) =
-                    (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
-                {
-                    if let Some(ac) = joins.get(alias) {
-                        let table = ac.class_named.as_deref().unwrap_or(alias);
-                        // Python: source_key or join_on
-                        source_map
-                            .get(join_source_key(ac).unwrap_or(""))
-                            .and_then(|kv| {
-                                let ks = match kv {
-                                    Value::Str(s) => s.clone(),
-                                    Value::Int(i) => i.to_string(),
-                                    _ => return None,
-                                };
-                                li.lookup_row(table, &ks)?.get(field).cloned()
-                            })
-                            .unwrap_or(Value::Null)
-                    } else {
-                        source_map
-                            .get(populated_from)
-                            .cloned()
-                            .unwrap_or(Value::Null)
-                    }
-                } else {
-                    source_map
-                        .get(populated_from)
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                }
-            } else {
-                source_map
-                    .get(populated_from)
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            };
+            let raw = resolve_populated_from_raw(
+                populated_from,
+                source_type,
+                source_map,
+                self.lookup_index.as_deref(),
+                class_deriv,
+            );
             // Apply mappings if present and value is non-null.
-            let mapped = if slot_deriv.value_mappings.is_some()
-                || slot_deriv.expression_mappings.is_some()
-            {
-                if !raw.is_null() {
-                    let key = value_to_string_key(&raw);
-                    if let Some(kv) = slot_deriv
-                        .value_mappings
-                        .as_ref()
-                        .and_then(|vm| vm.get(&key))
-                    {
-                        json_to_value(kv.value.as_ref().unwrap_or(&serde_json::Value::Null))
-                    } else if let Some(kv) = slot_deriv
-                        .expression_mappings
-                        .as_ref()
-                        .and_then(|em| em.get(&key))
-                    {
-                        let expr = kv.value.as_ref().and_then(|v| v.as_str()).unwrap_or("None");
-                        self.eval_expr_for_slot(
-                            expr,
-                            source_map,
-                            slot_name,
-                            source_type,
-                            class_deriv,
-                            index,
-                            target_attrs,
-                        )?
-                    } else {
-                        Value::Null
-                    }
-                } else {
-                    raw
-                }
-            } else {
-                raw
-            };
+            let mapped = self.apply_value_mappings(
+                raw,
+                slot_deriv,
+                source_map,
+                slot_name,
+                source_type,
+                class_deriv,
+                index,
+                target_attrs,
+            )?;
             // Source slot def for range/cardinality coercion.
             // _source_class is virtual — no real schema slot to look up.
             let ssd = if populated_from == "_source_class" {
@@ -696,33 +610,11 @@ impl<'s> ObjectTransformer<'s> {
         // ── missing_values: map sentinel codes (e.g. -9, 999, "NA") to null ───
         //    Mirrors Python `SlotDerivation.missing_values`. Applied to the
         //    resolved value across all derivation branches, before coercion.
-        if !v.is_null() {
-            if let Some(sentinels) = &slot_deriv.missing_values {
-                let v_key = value_to_string_key(&v);
-                let is_missing = sentinels.iter().any(|s| {
-                    let sv = json_to_value(s);
-                    sv == v || value_to_string_key(&sv) == v_key
-                });
-                if is_missing {
-                    v = Value::Null;
-                }
-            }
-        }
+        v = apply_missing_values(v, slot_deriv);
 
         // ── Post-processing: range coercion + cardinality ─────────────────────
 
-        if let Some(ssd) = &source_slot_def {
-            if !v.is_null() && !slot_deriv.hide.unwrap_or(false) {
-                v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
-                v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
-                if let Some(target_range) = slot_deriv.range.as_deref() {
-                    v = coerce_datatype(v, target_range);
-                }
-                // Reshape list↔compact-dict per `dictionary_key` / `cast_collection_as`.
-                // Mirrors Python `ObjectTransformer._reshape_collection`.
-                v = self.reshape_collection(v, slot_deriv, ssd)?;
-            }
-        }
+        v = self.apply_range_coercion(v, slot_deriv, class_deriv, source_slot_def.as_ref(), index)?;
 
         // ── URI / CURIE coercion (applied after other coercions) ──────────────
         //
@@ -744,6 +636,81 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
+        Ok(v)
+    }
+
+    /// Apply `value_mappings` / `expression_mappings` to `raw` (arm 3 second half).
+    ///
+    /// Returns `raw` unchanged when neither mapping table is present.  When both
+    /// are absent the mapping block is a no-op, matching Python behaviour.
+    fn apply_value_mappings(
+        &self,
+        raw: Value,
+        slot_deriv: &SlotDerivation,
+        source_map: &IndexMap<String, Value>,
+        slot_name: &str,
+        source_type: &str,
+        class_deriv: &ClassDerivation,
+        index: Option<&ObjectIndex>,
+        target_attrs: Option<&IndexMap<String, Value>>,
+    ) -> Result<Value> {
+        if slot_deriv.value_mappings.is_none() && slot_deriv.expression_mappings.is_none() {
+            return Ok(raw);
+        }
+        if raw.is_null() {
+            return Ok(raw);
+        }
+        let key = value_to_string_key(&raw);
+        if let Some(kv) = slot_deriv
+            .value_mappings
+            .as_ref()
+            .and_then(|vm| vm.get(&key))
+        {
+            Ok(Value::from(kv.value.as_ref().unwrap_or(&serde_json::Value::Null)))
+        } else if let Some(kv) = slot_deriv
+            .expression_mappings
+            .as_ref()
+            .and_then(|em| em.get(&key))
+        {
+            let expr = kv.value.as_ref().and_then(|v| v.as_str()).unwrap_or("None");
+            self.eval_expr_for_slot(
+                expr,
+                source_map,
+                slot_name,
+                source_type,
+                class_deriv,
+                index,
+                target_attrs,
+            )
+        } else {
+            Ok(Value::Null)
+        }
+    }
+
+    /// Apply range coercion post-processing when a source slot def is present.
+    ///
+    /// Runs `map_value_by_range` → `coerce_cardinality` → `coerce_datatype` →
+    /// `reshape_collection` in that order.  Mirrors Python post-derivation
+    /// coercion.  Returns `v` unchanged when `source_slot_def` is `None`, or
+    /// when `v` is null or the slot is hidden.
+    fn apply_range_coercion(
+        &self,
+        mut v: Value,
+        slot_deriv: &SlotDerivation,
+        class_deriv: &ClassDerivation,
+        source_slot_def: Option<&SlotDef>,
+        index: Option<&ObjectIndex>,
+    ) -> Result<Value> {
+        if let Some(ssd) = source_slot_def {
+            if !v.is_null() && !slot_deriv.hide.unwrap_or(false) {
+                v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
+                v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
+                if let Some(target_range) = slot_deriv.range.as_deref() {
+                    v = coerce_datatype(v, target_range);
+                }
+                v = self.reshape_collection(v, slot_deriv, ssd)?;
+            }
+        }
         Ok(v)
     }
 
@@ -1833,31 +1800,7 @@ fn float_to_value(f: f64) -> Value {
     Value::Float(f)
 }
 
-/// Convert a `serde_json::Value` (used in SlotDerivation.value) to our `Value`.
-fn json_to_value(j: &serde_json::Value) -> Value {
-    match j {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else if let Some(f) = n.as_f64() {
-                Value::Float(f)
-            } else {
-                Value::Str(n.to_string())
-            }
-        }
-        serde_json::Value::String(s) => Value::Str(s.clone()),
-        serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(obj) => {
-            let mut m = IndexMap::new();
-            for (k, v) in obj {
-                m.insert(k.clone(), json_to_value(v));
-            }
-            Value::Map(m)
-        }
-    }
-}
+
 
 // ── Join key helpers (mirrors Python `_resolve_joined_row`) ──────────────────
 
@@ -1892,6 +1835,112 @@ fn is_hollow(v: &Value) -> bool {
         Value::Map(m) => m.values().all(is_hollow),
         _ => false,
     }
+}
+
+/// Map `v` to `Value::Null` when it matches any sentinel in
+/// `slot_deriv.missing_values`.  Returns `v` unchanged when there are no
+/// sentinels or `v` is already null.  Mirrors Python
+/// `SlotDerivation.missing_values`.
+fn apply_missing_values(mut v: Value, slot_deriv: &SlotDerivation) -> Value {
+    if v.is_null() {
+        return v;
+    }
+    if let Some(sentinels) = &slot_deriv.missing_values {
+        let v_key = value_to_string_key(&v);
+        let is_missing = sentinels.iter().any(|s| {
+            let sv = Value::from(s);
+            sv == v || value_to_string_key(&sv) == v_key
+        });
+        if is_missing {
+            v = Value::Null;
+        }
+    }
+    v
+}
+
+/// Resolve the raw [`Value`] for an `aggregation_operation:` arm (arm 1c).
+///
+/// When `src_key` is an `"alias.field"` dotted path and the engine has both a
+/// [`LookupIndex`] and `class_deriv.joins`, gathers ALL matching rows from the
+/// join table and returns them as a `Value::List`.  Falls back to a plain
+/// `source_map` lookup otherwise.
+fn resolve_aggregation_source(
+    src_key: &str,
+    source_map: &IndexMap<String, Value>,
+    lookup_index: Option<&LookupIndex>,
+    class_deriv: &ClassDerivation,
+) -> Value {
+    if let Some(dot) = src_key.find('.') {
+        let alias = &src_key[..dot];
+        let field = &src_key[dot + 1..];
+        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref()) {
+            if let Some(ac) = joins.get(alias) {
+                let table = ac.class_named.as_deref().unwrap_or(alias);
+                let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
+                if let Some(key_val) = key_val {
+                    let key_str = match key_val {
+                        Value::Str(s) => s.clone(),
+                        Value::Int(i) => i.to_string(),
+                        _ => String::new(),
+                    };
+                    let items: Vec<Value> = li
+                        .lookup_rows(table, &key_str)
+                        .iter()
+                        .filter_map(|row| row.get(field).cloned())
+                        .collect();
+                    return Value::List(items);
+                } else {
+                    return Value::Null;
+                }
+            }
+        }
+    }
+    source_map.get(src_key).cloned().unwrap_or(Value::Null)
+}
+
+/// Resolve the raw [`Value`] for the `populated_from:` arm (arm 3, first half).
+///
+/// Handles the `_source_class` virtual slot, dotted `"alias.field"` join paths,
+/// and plain source-map lookups.
+fn resolve_populated_from_raw(
+    populated_from: &str,
+    source_type: &str,
+    source_map: &IndexMap<String, Value>,
+    lookup_index: Option<&LookupIndex>,
+    class_deriv: &ClassDerivation,
+) -> Value {
+    if populated_from == "_source_class" {
+        return Value::Str(source_type.to_string());
+    }
+    if let Some(dot) = populated_from.find('.') {
+        let alias = &populated_from[..dot];
+        let field = &populated_from[dot + 1..];
+        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref()) {
+            if let Some(ac) = joins.get(alias) {
+                let table = ac.class_named.as_deref().unwrap_or(alias);
+                return source_map
+                    .get(join_source_key(ac).unwrap_or(""))
+                    .and_then(|kv| {
+                        let ks = match kv {
+                            Value::Str(s) => s.clone(),
+                            Value::Int(i) => i.to_string(),
+                            _ => return None,
+                        };
+                        li.lookup_row(table, &ks)?.get(field).cloned()
+                    })
+                    .unwrap_or(Value::Null);
+            }
+        }
+        // No join index — fall through to plain map lookup.
+        return source_map
+            .get(populated_from)
+            .cloned()
+            .unwrap_or(Value::Null);
+    }
+    source_map
+        .get(populated_from)
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 // ── Offset / aggregation / pivot helpers ──────────────────────────────────────
@@ -3257,16 +3306,16 @@ mod tests {
 
     #[test]
     fn test_json_to_value() {
-        assert_eq!(json_to_value(&serde_json::json!(null)), Value::Null);
-        assert_eq!(json_to_value(&serde_json::json!(true)), Value::Bool(true));
-        assert_eq!(json_to_value(&serde_json::json!(42)), Value::Int(42));
-        assert_eq!(json_to_value(&serde_json::json!(3.14)), Value::Float(3.14));
+        assert_eq!(Value::from(&serde_json::json!(null)), Value::Null);
+        assert_eq!(Value::from(&serde_json::json!(true)), Value::Bool(true));
+        assert_eq!(Value::from(&serde_json::json!(42)), Value::Int(42));
+        assert_eq!(Value::from(&serde_json::json!(3.14)), Value::Float(3.14));
         assert_eq!(
-            json_to_value(&serde_json::json!("hello")),
+            Value::from(&serde_json::json!("hello")),
             Value::Str("hello".into())
         );
         assert_eq!(
-            json_to_value(&serde_json::json!([1, 2])),
+            Value::from(&serde_json::json!([1, 2])),
             Value::List(vec![Value::Int(1), Value::Int(2)])
         );
     }

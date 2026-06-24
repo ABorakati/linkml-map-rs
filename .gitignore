@@ -10,3 +10,7 @@
 
 # Claude Code session/worktree scratch
 .claude/
+
+# Code-intelligence tool indexes
+.codedb-mcp/
+.kodegraf/

@@ -235,30 +235,6 @@ fn serde_json_value_to_values(v: serde_json::Value) -> Vec<Value> {
 }
 
 /// Recursively convert `serde_json::Value` → [`Value`].
-///
-/// Since `Value` has `#[serde(untagged)]` derives, we go through
-/// `serde_json::to_value` + deserialize rather than matching by hand,
-/// but the direct match is faster and avoids a round-trip.
 pub(crate) fn json_to_value(v: serde_json::Value) -> Value {
-    match v {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(f64::NAN))
-            }
-        }
-        serde_json::Value::String(s) => Value::Str(s),
-        serde_json::Value::Array(items) => {
-            Value::List(items.into_iter().map(json_to_value).collect())
-        }
-        serde_json::Value::Object(map) => {
-            // Deserialize via serde so we use Value's own IndexMap construction
-            // without depending on `indexmap` directly.
-            let json_back = serde_json::Value::Object(map);
-            serde_json::from_value(json_back).unwrap_or(Value::Null)
-        }
-    }
+    Value::from(&v)
 }

@@ -147,29 +147,8 @@ fn load_json_table(conn: &Connection, table: &str, rows: &[Value]) -> Result<()>
 
 /// Serialise a slice of `Value` rows to a JSON array string.
 fn values_to_json_array(rows: &[Value]) -> Result<String> {
-    let json_rows: Vec<serde_json::Value> = rows.iter().map(value_to_json).collect();
+    let json_rows: Vec<serde_json::Value> = rows.iter().map(serde_json::Value::from).collect();
     serde_json::to_string(&json_rows).map_err(|e| Error::Serialisation(e.to_string()))
-}
-
-/// Convert a linkml-map [`Value`] to [`serde_json::Value`] for JSON serialisation.
-fn value_to_json(v: &Value) -> serde_json::Value {
-    match v {
-        Value::Null => serde_json::Value::Null,
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(i) => serde_json::Value::Number((*i).into()),
-        Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.clone()),
-        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
-        Value::Map(m) => {
-            let obj: serde_json::Map<String, serde_json::Value> = m
-                .iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
-                .collect();
-            serde_json::Value::Object(obj)
-        }
-    }
 }
 
 /// Read all rows from a DuckDB table as `Vec<Value::Map>`.

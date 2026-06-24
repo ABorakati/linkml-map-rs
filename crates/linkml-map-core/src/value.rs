@@ -121,6 +121,53 @@ impl From<IndexMap<String, Value>> for Value {
     }
 }
 
+/// Convert a `serde_json::Value` reference into a [`Value`].
+/// Non-finite floats (NaN/±Inf) cannot appear in JSON but are mapped to `Value::Float`
+/// with the raw `f64` value if somehow constructed.
+impl From<&serde_json::Value> for Value {
+    fn from(j: &serde_json::Value) -> Self {
+        match j {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Int(i)
+                } else {
+                    Value::Float(n.as_f64().unwrap_or(f64::NAN))
+                }
+            }
+            serde_json::Value::String(s) => Value::Str(s.clone()),
+            serde_json::Value::Array(arr) => Value::List(arr.iter().map(Value::from).collect()),
+            serde_json::Value::Object(map) => {
+                Value::Map(map.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect())
+            }
+        }
+    }
+}
+
+/// Convert a [`Value`] reference into a `serde_json::Value`.
+/// Non-finite floats (NaN/±Inf) are mapped to `serde_json::Value::Null` because JSON
+/// does not support non-finite numbers.
+impl From<&Value> for serde_json::Value {
+    fn from(v: &Value) -> Self {
+        match v {
+            Value::Null => serde_json::Value::Null,
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::Int(i) => serde_json::Value::Number((*i).into()),
+            Value::Float(f) => serde_json::Number::from_f64(*f)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            Value::Str(s) => serde_json::Value::String(s.clone()),
+            Value::List(items) => {
+                serde_json::Value::Array(items.iter().map(serde_json::Value::from).collect())
+            }
+            Value::Map(m) => serde_json::Value::Object(
+                m.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(v))).collect(),
+            ),
+        }
+    }
+}
+
 impl Value {
     /// Python-native equality between two values (used by `==` / `!=`).
     ///

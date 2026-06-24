@@ -443,47 +443,12 @@ fn load_as_json(path: &Path) -> anyhow::Result<serde_json::Value> {
 
 /// Convert `serde_json::Value` → `linkml_map_core::value::Value`.
 pub fn json_to_value(j: &serde_json::Value) -> Value {
-    match j {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Int(i)
-            } else {
-                Value::Float(n.as_f64().unwrap_or(f64::NAN))
-            }
-        }
-        serde_json::Value::String(s) => Value::Str(s.clone()),
-        serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
-        serde_json::Value::Object(map) => {
-            let mut m = IndexMap::new();
-            for (k, v) in map {
-                m.insert(k.clone(), json_to_value(v));
-            }
-            Value::Map(m)
-        }
-    }
+    Value::from(j)
 }
 
 /// Convert `Value` → `serde_json::Value` for comparison / diffing.
 pub fn value_to_json(v: &Value) -> serde_json::Value {
-    match v {
-        Value::Null => serde_json::Value::Null,
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(i) => serde_json::Value::Number((*i).into()),
-        Value::Float(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.clone()),
-        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
-        Value::Map(m) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in m {
-                obj.insert(k.clone(), value_to_json(v));
-            }
-            serde_json::Value::Object(obj)
-        }
-    }
+    serde_json::Value::from(v)
 }
 
 // ─── Normalisation helpers ────────────────────────────────────────────────────
@@ -885,7 +850,7 @@ impl ConformanceReport {
             .into_iter()
             .map(|(label, (count, cases))| (label.to_string(), count, cases))
             .collect();
-        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        ranked.sort_by_key(|a| std::cmp::Reverse(a.1));
         ranked
     }
 }
