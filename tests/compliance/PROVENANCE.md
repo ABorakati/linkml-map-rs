@@ -62,3 +62,11 @@ The compliance suite is intended for:
 | `tests/test_compliance/test_compliance_suite.py` | `tests/compliance/test_compliance_suite.py` | Test Harness | 1 |
 
 Total vendored: **8 files** from compliance suite.
+
+## Additional Vendored Upstream Source
+
+`reference/upstream-python/` contains nine Python source modules from the same pinned commit
+(`19b1985889ec0fc247145e9aa03eb74a4d7b3588`), covering `transformer/`, `utils/`, `datamodel/`,
+and `inference/inverter.py`. These are read-only porting references — not built or executed.
+See [`reference/upstream-python/README.md`](../../reference/upstream-python/README.md) for the
+full file listing and fetch details.
