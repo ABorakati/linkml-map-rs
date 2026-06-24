@@ -27,8 +27,18 @@ jobs:
       - name: Bump patch version
         id: bump
         run: |
+          git fetch --tags --force
+          # Base the next version on the higher of: the current Cargo.toml
+          # version and the highest existing release tag. This is self-healing
+          # if a previous run left an orphan tag (tag pushed, bump commit not).
           OLD=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          NEW=$(echo "$OLD" | awk -F. '{print $1"."$2"."$3+1}')
+          LATEST=$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+          BASE=$(printf '%s\n%s\n' "$OLD" "$LATEST" | sort -V | tail -1)
+          NEW=$(echo "$BASE" | awk -F. '{print $1"."$2"."$3+1}')
+          # Skip any version whose tag already exists.
+          while git rev-parse -q --verify "refs/tags/v$NEW" >/dev/null; do
+            NEW=$(echo "$NEW" | awk -F. '{print $1"."$2"."$3+1}')
+          done
           sed -i "s/^version = \"$OLD\"/version = \"$NEW\"/" Cargo.toml
           cargo generate-lockfile
           echo "version=$NEW" >> "$GITHUB_OUTPUT"
@@ -45,7 +55,9 @@ jobs:
           git add Cargo.toml Cargo.lock
           git commit -m "chore: bump version to ${{ steps.bump.outputs.version }}"
           git tag "v${{ steps.bump.outputs.version }}"
-          git push origin master --tags
+          # Atomic push: the tag is only created on the remote if the branch
+          # push also succeeds, so a rejected branch push never orphans a tag.
+          git push --atomic origin master "v${{ steps.bump.outputs.version }}"
 
       - name: Create GitHub Release
         env:
