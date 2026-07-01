@@ -124,4 +124,36 @@ proving the PyO3 surface stays a drop-in for the Python API and fails the build 
   that share a file or depend on prior output.
 - **Navigate with the codedb MCP** (`codedb_symbol`, `codedb_callers`,
   `codedb_outline`, `codedb_word`) rather than brute-force reading large files —
-  `engine/mod.rs` alone is ~5k lines.
+  `engine/mod.rs` alone is ~5k lines. Pass `project=C:/Users/abora/linkml-map-rs`.
+  If `project=` errors `SnapshotLoadFailed`, or the index is stale after big edits,
+  rebuild the gitignored repo-root snapshot with the codedb binary (the MCP
+  `codedb_index` tool fails in-sandbox; the binary works):
+  `~/.claude/codedb-windows-x86_64.exe "C:/Users/abora/linkml-map-rs" index && \
+   ~/.claude/codedb-windows-x86_64.exe "C:/Users/abora/linkml-map-rs" snapshot`.
+  To force a full rescan, first delete `codedb.snapshot` and the live store
+  `~/.codedb/projects/c98c95ba07df091a/`. A running MCP caches per session — the
+  fresh snapshot is served after the next session/MCP restart.
+
+## Harness: linkml-map-rs crate development
+
+**Goal:** route every change to its subsystem owner, keep the three API surfaces
+(Rust / PyO3 / Python `.pyi`+docs) in sync, and end every change in verification.
+
+**Trigger:** for any development task on the engine, bindings, CLI, io/pipeline,
+conformance suite, or benches — including follow-ups ("redo", "update", "fix",
+"also…") — use the `harness-orchestrator` skill. It routes to the owner agents
+(`transform-engine-engineer`, `pyo3-binding-engineer`, `runtime-engineer`,
+`conformance-engineer`) on **`model: opus`** and always ends in `harness-qa`.
+Pure questions can be answered directly.
+
+**Reliable sync gate:** `harness-ownership.toml` is the machine-readable owner map
++ three-surface rule. Both CI (`.github/workflows/ci.yml` → `harness-gate` job) and
+the in-session Stop hook (`.claude/settings.json`) enforce it via the same binary:
+`cargo xtask harness-gate` (crate `./xtask`). Bypass a non-behavioural change with
+`[skip-harness]` in the commit message or `HARNESS_SKIP=1`.
+
+**Change history:**
+| Date | Change | Target | Reason |
+|------|--------|--------|--------|
+| 2026-06-26 | Initial harness: 4 owner agents + harness-qa, 7 skills, xtask sync gate, CI job, Stop hook, `_native.pyi` stub | whole repo | - |
+| 2026-06-26 | Model tiering: opus for engine + runtime (correctness-critical), sonnet for pyo3-binding + conformance, haiku for harness-qa (gate/cmd execution + shape-diff, no synthesis) | agents/, harness-orchestrator | efficiency — reserve opus for hardest reasoning |

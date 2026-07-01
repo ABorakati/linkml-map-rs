@@ -1,0 +1,86 @@
+# harness-ownership.toml — single source of truth for the harness sync gate.
+#
+# Consumed by BOTH the CI gate and the in-session Stop hook via the same code
+# path: `cargo xtask harness-gate` (crate: ./xtask). Nothing else defines
+# ownership or the three-surface sync rule — edit here, not in the hook.
+#
+# See .claude/skills/crate-development/ for the doctrine this enforces.
+
+# ── Ownership: every changed path under `crates/**` must match exactly one
+#    owner. A new crate with no entry here fails the gate as an "orphan path".
+#    Non-crate paths (docs, CI, Cargo.lock) are exempt from the orphan check;
+#    they are listed here only so the orchestrator can route edits to an owner.
+
+[[owners]]
+name = "transform-engine-engineer"
+paths = [
+  "crates/linkml-map-core/**",
+  "crates/linkml-map-schemaview/**",
+  "crates/linkml-map-duckdb/**",
+]
+
+[[owners]]
+name = "pyo3-binding-engineer"
+paths = ["crates/linkml-map-py/**"]
+
+[[owners]]
+name = "runtime-engineer"
+paths = [
+  "crates/linkml-map-io/**",
+  "crates/linkml-map-pipeline/**",
+  "crates/linkml-map-cli/**",
+]
+
+[[owners]]
+name = "conformance-engineer"
+paths = [
+  "crates/linkml-map-conformance/**",
+  "tests/**",
+  "benchmarks/**",
+]
+
+# Routing-only (NOT subject to the orphan check, since not under crates/**).
+[[owners]]
+name = "harness-maint"
+paths = [
+  ".claude/**",
+  "xtask/**",
+  ".github/**",
+  ".cargo/**",
+  "harness-ownership.toml",
+  "*.md",
+  "Cargo.toml",
+]
+
+# ── Three-surface API sync rule.
+#    A change to the public Rust API that the binding consumes, OR to the PyO3
+#    binding itself, must be accompanied by a change to the Python-facing
+#    surface (.pyi stub / shim __all__ / docs). Bypass with the tag below in the
+#    latest commit message, or env HARNESS_SKIP=1, for non-behavioural edits.
+
+[sync]
+bypass_tag = "[skip-harness]"
+
+# (1) Public Rust API the binding imports. A changed line starting with `pub `
+#     in any of these files trips the sync requirement. Kept tight to the
+#     binding-consumed surface to avoid false positives on engine internals.
+rust_api = [
+  "crates/linkml-map-core/src/lib.rs",
+  "crates/linkml-map-core/src/datamodel/mod.rs",
+  "crates/linkml-map-core/src/value.rs",
+  "crates/linkml-map-core/src/schema/mod.rs",
+  "crates/linkml-map-core/src/engine/mod.rs",
+  "crates/linkml-map-schemaview/src/lib.rs",
+]
+
+# (2) The PyO3 binding surface (any change trips the requirement).
+binding = ["crates/linkml-map-py/src/lib.rs"]
+
+# (3) The Python-facing contract. At least one must change when (1) or (2) does.
+py_surface = [
+  "crates/linkml-map-py/python/linkml_map_rs/_native.pyi",
+  "crates/linkml-map-py/python/linkml_map_rs/__init__.py",
+  "crates/linkml-map-py/python/linkml_map/**",
+  "crates/linkml-map-py/README.md",
+  "README.md",
+]

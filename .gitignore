@@ -14,3 +14,4 @@
 # Code-intelligence tool indexes
 .codedb-mcp/
 .kodegraf/
+/codedb.snapshot
