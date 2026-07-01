@@ -332,17 +332,13 @@ impl<'s> ObjectTransformer<'s> {
                 })?;
             tgt_attrs.insert(slot_name.to_string(), v);
         }
+        // Remove hidden slots from output (they exist only for slot() references).
+        // PARITY: object_transformer.py::map_object (a19eb095) — only `hide`
+        // pops a key; a nested join miss is handled upstream in
+        // `_derive_nested_objects` (slot retained as null/[]), not here.
         for (_, slot_deriv) in slot_derivations {
-            let n = slot_deriv.name.as_str();
             if slot_deriv.hide.unwrap_or(false) {
-                tgt_attrs.shift_remove(n);
-            } else if slot_deriv.class_derivations.is_some()
-                && tgt_attrs.get(n).map(is_hollow).unwrap_or(false)
-            {
-                // #266: a nested object derived from a join with no matching row
-                // is absent, not a hollow object of nulls. Keep "no row"
-                // (slot omitted) distinct from "null value" (slot present, null).
-                tgt_attrs.shift_remove(n);
+                tgt_attrs.shift_remove(slot_deriv.name.as_str());
             }
         }
 
@@ -381,17 +377,12 @@ impl<'s> ObjectTransformer<'s> {
                 })?;
             tgt_attrs.insert(slot_name.to_string(), v);
         }
+        // PARITY: object_transformer.py::map_object (a19eb095) — only `hide`
+        // removes a key. Nested join misses are collapsed to null/[] in
+        // `derive_nested_objects`, so the key stays present here.
         for (_, slot_deriv) in slot_derivations {
-            let n = slot_deriv.name.as_str();
             if slot_deriv.hide.unwrap_or(false) {
-                tgt_attrs.shift_remove(n);
-            } else if slot_deriv.class_derivations.is_some()
-                && tgt_attrs.get(n).map(is_hollow).unwrap_or(false)
-            {
-                // #266: a nested object derived from a join with no matching row
-                // is absent, not a hollow object of nulls. Keep "no row"
-                // (slot omitted) distinct from "null value" (slot present, null).
-                tgt_attrs.shift_remove(n);
+                tgt_attrs.shift_remove(slot_deriv.name.as_str());
             }
         }
         Ok(Value::Map(tgt_attrs))
@@ -563,7 +554,9 @@ impl<'s> ObjectTransformer<'s> {
                 source_map,
                 self.lookup_index.as_deref(),
                 class_deriv,
-            );
+                self.source_schema,
+                slot_deriv,
+            )?;
             // Apply mappings if present and value is non-null.
             let mapped = self.apply_value_mappings(
                 raw,
@@ -1415,6 +1408,22 @@ impl<'s> ObjectTransformer<'s> {
             // (same-class derivation).
             let effective_source_type = cls_deriv.populated_from.as_deref().unwrap_or(source_type);
 
+            // PARITY: object_transformer.py::_derive_nested_objects (a19eb095, #217).
+            // When a nested class_derivation joins to a *different* table and no
+            // row matches the join key (sparse miss), upstream does `continue`
+            // (`if joined_row is None: ... continue`): it appends no object for
+            // that derivation. The enclosing slot is then assigned `None`
+            // (singular) or `[]` (multivalued) below — the target key is
+            // RETAINED with a null/empty value. This keeps "no joined row exists"
+            // distinguishable from "a joined row exists whose field is null",
+            // and only `hide` ever removes the key. This supersedes the earlier
+            // local #266 behaviour, which over-broadly dropped ANY hollow nested
+            // object (including genuine same-table `{slot: null}` objects that
+            // upstream retains).
+            if self.nested_join_misses(cls_deriv, source_map, class_deriv) {
+                continue;
+            }
+
             // Recursively transform the same source map using the nested
             // ClassDerivation.
             let nested =
@@ -1422,12 +1431,14 @@ impl<'s> ObjectTransformer<'s> {
             derived.push(nested);
         }
 
-        if derived.is_empty() {
-            return Ok(Value::Null);
-        }
-
         // Decide cardinality from the target schema slot when available,
-        // mirroring Python: `target_class_slot = self.target_schemaview.induced_slot(slot, target_type)`
+        // mirroring Python: `target_class_slot = self.target_schemaview.induced_slot(slot, target_type)`.
+        // PARITY (a19eb095): cardinality is applied even when `derived` is empty
+        // (all nested derivations were skipped as join misses) — multivalued
+        // yields `[]`, singular yields `None`. Upstream: `v = derived_objs` when
+        // multivalued else `derived_objs[0] if derived_objs else None`. Do NOT
+        // early-return Null on empty: that would drop the `[]` for a multivalued
+        // all-miss.
         let target_multivalued = self
             .target_schema
             .and_then(|ts| ts.induced_slot(&slot_deriv.name, &class_deriv.name).ok())
@@ -1441,6 +1452,62 @@ impl<'s> ObjectTransformer<'s> {
             // we follow Python and return the first without erroring.
             Ok(derived.into_iter().next().unwrap_or(Value::Null))
         }
+    }
+
+    /// True when `nested` joins to a different table than its parent and the
+    /// join finds no matching row (a sparse join miss).
+    ///
+    /// Mirrors Python `ObjectTransformer._resolve_joined_row(...) is None` as
+    /// used by `_derive_nested_objects` at a19eb095 (#217): the miss condition
+    /// is `source_obj.get(source_key) is None` (no key on the parent row) or the
+    /// `LookupIndex` finding no row for that key.  Returns `false` for
+    /// same-table nested derivations and when no join spec exists — those are
+    /// resolved normally and never collapsed.
+    fn nested_join_misses(
+        &self,
+        nested: &ClassDerivation,
+        source_map: &IndexMap<String, Value>,
+        parent_class_deriv: &ClassDerivation,
+    ) -> bool {
+        let parent_source = parent_class_deriv
+            .populated_from
+            .as_deref()
+            .unwrap_or(parent_class_deriv.name.as_str());
+        let Some(nested_source) = nested.populated_from.as_deref() else {
+            return false;
+        };
+        if nested_source == parent_source {
+            return false;
+        }
+        // Join spec is keyed by the nested source (mirrors upstream
+        // `parent_class_deriv.joins[nested_source]`).
+        let Some(ac) = parent_class_deriv
+            .joins
+            .as_ref()
+            .and_then(|j| j.get(nested_source))
+        else {
+            // No join spec: upstream raises rather than collapsing. The error is
+            // surfaced by the normal resolution path; do not treat as a miss.
+            return false;
+        };
+        // Python: source_key = spec.source_key or spec.join_on. Missing key spec
+        // is a config error handled elsewhere — not a miss.
+        let Some(source_key) = join_source_key(ac) else {
+            return false;
+        };
+        // Python: key_val = source_obj.get(source_key); if key_val is None: None.
+        let key_str = match source_map.get(source_key) {
+            Some(Value::Str(s)) => s.clone(),
+            Some(Value::Int(i)) => i.to_string(),
+            // Null / absent / non-scalar key ⇒ no join possible ⇒ miss.
+            _ => return true,
+        };
+        let table = ac.class_named.as_deref().unwrap_or(nested_source);
+        // Miss when the index is absent or holds no row for this key.
+        self.lookup_index
+            .as_deref()
+            .and_then(|li| li.lookup_row(table, &key_str))
+            .is_none()
     }
 
     // ── Cardinality coercion ──────────────────────────────────────────────────
@@ -1824,19 +1891,6 @@ fn value_to_string_key(v: &Value) -> String {
     }
 }
 
-/// A value is "hollow" when it carries no actual data: null, an empty list, an
-/// empty map, or a list/map whose every leaf is itself hollow. Used by #266 to
-/// distinguish a nested object derived from a missed join (hollow → omit) from a
-/// present object that merely has a null field.
-fn is_hollow(v: &Value) -> bool {
-    match v {
-        Value::Null => true,
-        Value::List(items) => items.iter().all(is_hollow),
-        Value::Map(m) => m.values().all(is_hollow),
-        _ => false,
-    }
-}
-
 /// Map `v` to `Value::Null` when it matches any sentinel in
 /// `slot_deriv.missing_values`.  Returns `v` unchanged when there are no
 /// sentinels or `v` is already null.  Mirrors Python
@@ -1900,25 +1954,38 @@ fn resolve_aggregation_source(
 
 /// Resolve the raw [`Value`] for the `populated_from:` arm (arm 3, first half).
 ///
-/// Handles the `_source_class` virtual slot, dotted `"alias.field"` join paths,
-/// and plain source-map lookups.
+/// Handles the `_source_class` virtual slot, inlined nested dot-paths (#247),
+/// dotted `"alias.field"` join paths, and plain source-map lookups.
+///
+/// Mirrors Python `ObjectTransformer._resolve_fk_or_literal`
+/// (`object_transformer.py`): a dotted path that traverses inlined nested data
+/// is walked structurally *before* attempting FK/join resolution.
+#[allow(clippy::too_many_arguments)]
 fn resolve_populated_from_raw(
     populated_from: &str,
     source_type: &str,
     source_map: &IndexMap<String, Value>,
     lookup_index: Option<&LookupIndex>,
     class_deriv: &ClassDerivation,
-) -> Value {
+    source_schema: Option<&dyn SchemaProvider>,
+    slot_deriv: &SlotDerivation,
+) -> Result<Value> {
     if populated_from == "_source_class" {
-        return Value::Str(source_type.to_string());
+        return Ok(Value::Str(source_type.to_string()));
     }
     if let Some(dot) = populated_from.find('.') {
+        // #247: inlined nested dot-path takes precedence over FK/join resolution.
+        // Mirrors `if "." in populated_from and self._is_inline_path(...)` at the
+        // top of Python `_resolve_fk_or_literal`.
+        if is_inline_path(populated_from, source_type, source_map, source_schema) {
+            return resolve_inline_path(populated_from, source_type, source_map, source_schema, slot_deriv);
+        }
         let alias = &populated_from[..dot];
         let field = &populated_from[dot + 1..];
         if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref()) {
             if let Some(ac) = joins.get(alias) {
                 let table = ac.class_named.as_deref().unwrap_or(alias);
-                return source_map
+                return Ok(source_map
                     .get(join_source_key(ac).unwrap_or(""))
                     .and_then(|kv| {
                         let ks = match kv {
@@ -1928,19 +1995,141 @@ fn resolve_populated_from_raw(
                         };
                         li.lookup_row(table, &ks)?.get(field).cloned()
                     })
-                    .unwrap_or(Value::Null);
+                    .unwrap_or(Value::Null));
             }
         }
         // No join index — fall through to plain map lookup.
-        return source_map
+        return Ok(source_map
             .get(populated_from)
             .cloned()
-            .unwrap_or(Value::Null);
+            .unwrap_or(Value::Null));
     }
-    source_map
+    Ok(source_map
         .get(populated_from)
         .cloned()
-        .unwrap_or(Value::Null)
+        .unwrap_or(Value::Null))
+}
+
+/// Decide whether a dot-path traverses inlined nested data rather than an FK.
+///
+/// Mirrors Python `ObjectTransformer._is_inline_path` (`object_transformer.py`,
+/// issue #247). Detection is declarative first, with a runtime fallback:
+///
+/// * **Declarative:** the first path segment's source slot has a class range and
+///   is marked `inlined` / `inlined_as_list`.
+/// * **Runtime fallback:** the value at the first segment is actually a nested
+///   object (map) or list, even when the schema doesn't declare `inlined`.
+///
+/// Foreign keys (class range, scalar identifier value, not inlined) fall through
+/// to the join/FK resolution as before.
+fn is_inline_path(
+    populated_from: &str,
+    source_type: &str,
+    source_map: &IndexMap<String, Value>,
+    source_schema: Option<&dyn SchemaProvider>,
+) -> bool {
+    let first_segment = populated_from.split('.').next().unwrap_or(populated_from);
+    let slot = source_schema.and_then(|sv| sv.induced_slot(first_segment, source_type).ok());
+    // `slot.range in sv.all_classes()` is encoded directly by `RangeKind::Class`.
+    if let Some(slot) = &slot {
+        if slot.is_object_range() && (slot.inlined || slot.inlined_as_list) {
+            return true;
+        }
+    }
+    matches!(
+        source_map.get(first_segment),
+        Some(Value::Map(_)) | Some(Value::List(_))
+    )
+}
+
+/// Walk a dot-path structurally through inlined nested objects (issue #247).
+///
+/// Mirrors Python `ObjectTransformer._resolve_inline_path`
+/// (`object_transformer.py`). Descends into the nested map(s) one segment at a
+/// time and returns the leaf value. A segment that is legitimately absent yields
+/// `Null` rather than an error.
+///
+/// # Errors
+/// Returns [`Error::InlinePath`] if a segment holds a list (multivalued inline
+/// fan-out, tracked in #265) or a non-map value is encountered mid-path.
+fn resolve_inline_path(
+    populated_from: &str,
+    source_type: &str,
+    source_map: &IndexMap<String, Value>,
+    source_schema: Option<&dyn SchemaProvider>,
+    slot_deriv: &SlotDerivation,
+) -> Result<Value> {
+    let segments: Vec<&str> = populated_from.split('.').collect();
+    // Start from the source object (a `Map`) rather than the raw `IndexMap` so
+    // the loop can uniformly hold a `&Value`, mirroring Python's `current_val`.
+    let mut current_val = Value::Map(source_map.clone());
+    let mut current_class: Option<String> = Some(source_type.to_string());
+
+    let inline_err = |message: String| Error::InlinePath {
+        message,
+        slot_derivation_name: slot_deriv.name.clone(),
+        slot_populated_from: populated_from.to_string(),
+    };
+
+    let last = segments.len() - 1;
+    for (i, segment) in segments.iter().enumerate() {
+        let map = match &current_val {
+            Value::Map(m) => m,
+            other => {
+                return Err(inline_err(format!(
+                    "Cannot traverse inlined path '{populated_from}': segment '{segment}' \
+                     expected a nested object but found {}",
+                    value_type_name(other)
+                )));
+            }
+        };
+        let slot = current_class
+            .as_deref()
+            .and_then(|c| source_schema.and_then(|sv| sv.induced_slot(segment, c).ok()));
+        let next = map.get(*segment).cloned().unwrap_or(Value::Null);
+        if let Value::List(_) = next {
+            return Err(inline_err(format!(
+                "Inlined path '{populated_from}' reaches a multivalued segment '{segment}'; \
+                 per-item fan-out to a matching class_derivation is not yet supported (see #265)"
+            )));
+        }
+        current_val = next;
+        if i == last {
+            // Final segment — value is the leaf; slot is captured by the caller
+            // via `induced_slot` on `populated_from` (as before), so we only
+            // return the value here.
+        } else if slot.as_ref().is_some_and(|s| s.is_object_range()) {
+            current_class = slot.and_then(|s| s.range_class().map(str::to_string));
+        } else {
+            // PARITY: upstream `_resolve_inline_path` sets
+            // `current_class = slot.range if slot else None` on the non-final,
+            // non-class-range branch — a *scalar* range becomes the "class" for
+            // the next hop (which will then fail `induced_slot` and yield None).
+            // Reproduced verbatim rather than cleaned up so a malformed deep path
+            // resolves identically to upstream.
+            // (linkml-map object_transformer.py::_resolve_inline_path, commit b5fca196)
+            current_class = slot.and_then(|s| s.range.name().map(str::to_string));
+        }
+        if current_val.is_null() {
+            break;
+        }
+    }
+
+    Ok(current_val)
+}
+
+/// Human-readable type name for the [`Error::InlinePath`] diagnostic, matching
+/// the shape of Python's `type(current_val).__name__` (dict/list/str/int/...).
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "NoneType",
+        Value::Bool(_) => "bool",
+        Value::Int(_) => "int",
+        Value::Float(_) => "float",
+        Value::Str(_) => "str",
+        Value::List(_) => "list",
+        Value::Map(_) => "dict",
+    }
 }
 
 // ── Offset / aggregation / pivot helpers ──────────────────────────────────────
@@ -4748,10 +4937,14 @@ mod tests {
         }
     }
 
-    /// #266: a hollow nested object (all leaves null, e.g. a missed join) is
-    /// omitted, while a scalar null slot stays present.
+    /// #217 (a19eb095): a same-table nested object whose inner slot is null is
+    /// RETAINED with the key present (value `{first: null}`), and a scalar null
+    /// slot also stays present. Upstream `_derive_nested_objects` only collapses
+    /// a nested slot to null/[] on a genuine cross-table *join* miss; a
+    /// same-table hollow object is kept. (This corrects the earlier local #266
+    /// behaviour that omitted any hollow nested object.)
     #[test]
-    fn hollow_nested_object_is_omitted() {
+    fn same_table_hollow_nested_object_is_retained() {
         let schema = make_person_schema();
         let mut inner_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
         inner_slots.insert(
@@ -4800,13 +4993,25 @@ mod tests {
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
 
-        // No `first` in source → nested object is hollow → full_name omitted.
+        // No `first` in source, same-table nested (no join miss) → nested object
+        // is retained as `{first: null}`; scalar null slot also stays present.
         let r = engine
             .map_object(&Value::Map(IndexMap::new()), Some("Person"))
             .unwrap();
         match &r {
             Value::Map(o) => {
-                assert!(!o.contains_key("full_name"), "hollow nested object omitted");
+                assert!(
+                    o.contains_key("full_name"),
+                    "same-table hollow nested object retained"
+                );
+                match &o["full_name"] {
+                    Value::Map(inner) => assert_eq!(
+                        inner["first"],
+                        Value::Null,
+                        "inner null slot stays present"
+                    ),
+                    other => panic!("expected Map for full_name, got {other:?}"),
+                }
                 assert_eq!(o["note"], Value::Null, "scalar null stays present");
             }
             _ => panic!("expected map"),
@@ -5275,5 +5480,398 @@ mod lookup_index_tests {
             .map_object(&source, Some("Patient"))
             .unwrap();
         assert_eq!(get(&result, "age"), Value::Null);
+    }
+
+    // ── #217 (a19eb095): nested cross-table join MISS retains the key ─────────
+
+    /// Build a slot whose value is a nested class_derivation joined to `table`.
+    fn slot_nested(name: &str, nested_class: &str, table: &str, inner: &str) -> SlotDerivation {
+        let mut inner_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        inner_slots.insert(inner.to_string(), slot_pf(inner, inner));
+        let nested = ClassDerivation {
+            name: nested_class.to_string(),
+            populated_from: Some(table.to_string()),
+            slot_derivations: Some(inner_slots),
+            ..Default::default()
+        };
+        let mut cds: IndexMap<String, ClassDerivation> = IndexMap::new();
+        cds.insert(nested_class.to_string(), nested);
+        SlotDerivation {
+            name: name.to_string(),
+            class_derivations: Some(cds),
+            ..Default::default()
+        }
+    }
+
+    /// Singular nested slot, cross-table join with no matching row → the key is
+    /// RETAINED with value `null` (not omitted, not `{value: null}`). Mirrors
+    /// upstream `_derive_nested_objects` `continue` on a sparse miss.
+    #[test]
+    fn nested_join_miss_singular_retains_null() {
+        // readings keyed by subject_id — only S_OTHER present.
+        let readings = vec![val_map(&[
+            ("subject_id", Value::Str("S_OTHER".into())),
+            ("score", Value::Float(95.5)),
+        ])];
+        let mut li = LookupIndex::new();
+        li.register_table("readings", &readings, "subject_id");
+
+        let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+        // Join keyed by the nested source ("readings"), mirroring upstream
+        // `joins[nested_source]`. Source key column is `subject_id`.
+        joins.insert(
+            "readings".to_string(),
+            join_alias("readings", "readings", "subject_id"),
+        );
+
+        let spec = make_spec(
+            "Measurement",
+            vec![
+                slot_pf("id", "id"),
+                slot_nested("observation", "Observation", "readings", "score"),
+            ],
+            Some(joins),
+        );
+
+        // subject_id S_NODATA has no matching reading → sparse miss.
+        let source = val_map(&[
+            ("id", Value::Str("M2".into())),
+            ("subject_id", Value::Str("S_NODATA".into())),
+        ]);
+        let result = ObjectTransformer::new(spec, None, None)
+            .with_lookup_index(Arc::new(li))
+            .map_object(&source, Some("Measurement"))
+            .unwrap();
+
+        match &result {
+            Value::Map(o) => {
+                assert!(o.contains_key("observation"), "key retained on miss");
+                assert_eq!(o["observation"], Value::Null, "miss → null, not omitted");
+                assert_eq!(o["id"], Value::Str("M2".into()));
+            }
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+
+    /// A matching joined row is NOT collapsed: the nested object is built and
+    /// retained (control for the miss test above — the collapse in
+    /// `nested_join_misses` fires only when the join finds no row). The inner
+    /// `score` uses a plain `populated_from` that reads the parent row, so it is
+    /// null here; the point of this test is that the object survives as a `Map`
+    /// rather than becoming `Null` as it would on a miss.
+    #[test]
+    fn nested_join_hit_builds_object() {
+        let readings = vec![val_map(&[
+            ("subject_id", Value::Str("S1".into())),
+            ("score", Value::Float(95.5)),
+        ])];
+        let mut li = LookupIndex::new();
+        li.register_table("readings", &readings, "subject_id");
+
+        let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+        joins.insert(
+            "readings".to_string(),
+            join_alias("readings", "readings", "subject_id"),
+        );
+
+        let spec = make_spec(
+            "Measurement",
+            vec![slot_nested("observation", "Observation", "readings", "score")],
+            Some(joins),
+        );
+
+        // subject_id S1 HAS a matching reading → no miss → object built.
+        let source = val_map(&[("subject_id", Value::Str("S1".into()))]);
+        let result = ObjectTransformer::new(spec, None, None)
+            .with_lookup_index(Arc::new(li))
+            .map_object(&source, Some("Measurement"))
+            .unwrap();
+
+        match &result {
+            Value::Map(o) => {
+                assert!(o.contains_key("observation"), "hit keeps the slot");
+                assert!(
+                    matches!(o["observation"], Value::Map(_)),
+                    "hit builds a real nested object (not collapsed to null), got {:?}",
+                    o["observation"]
+                );
+            }
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+
+    /// Multivalued nested slot whose join misses → `[]` retained (not `[null]`,
+    /// not omitted). Requires a target schema marking the slot multivalued.
+    #[test]
+    fn nested_join_miss_multivalued_retains_empty_list() {
+        use crate::schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef};
+
+        // Target: Result.observations is multivalued (List of Observation).
+        let target = InMemorySchemaBuilder::new()
+            .add_type("float")
+            .add_class(ClassDef {
+                name: "Result".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
+            })
+            .add_slot(
+                "Result",
+                SlotDef {
+                    name: "observations".into(),
+                    range: RangeKind::Class("Observation".into()),
+                    multivalued: true,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: true,
+                },
+            )
+            .build();
+
+        let readings = vec![val_map(&[
+            ("subject_id", Value::Str("S_OTHER".into())),
+            ("score", Value::Float(95.5)),
+        ])];
+        let mut li = LookupIndex::new();
+        li.register_table("readings", &readings, "subject_id");
+
+        let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+        joins.insert(
+            "readings".to_string(),
+            join_alias("readings", "readings", "subject_id"),
+        );
+
+        // Parent class must be "Result" so the target-schema slot lookup matches.
+        let spec = make_spec(
+            "Result",
+            vec![slot_nested("observations", "Observation", "readings", "score")],
+            Some(joins),
+        );
+
+        let source = val_map(&[("subject_id", Value::Str("S_NODATA".into()))]);
+        let result = ObjectTransformer::new(spec, None, Some(&target))
+            .with_lookup_index(Arc::new(li))
+            .map_object(&source, Some("Result"))
+            .unwrap();
+
+        match &result {
+            Value::Map(o) => {
+                assert!(o.contains_key("observations"), "multivalued key retained");
+                assert_eq!(
+                    o["observations"],
+                    Value::List(vec![]),
+                    "all-miss multivalued → [] retained"
+                );
+            }
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod inline_dotpath_tests {
+    //! Tests for inlined `populated_from` dot-path traversal (issue #247).
+    //!
+    //! Mirrors upstream `tests/test_transformer/test_inline_dotpath.py`
+    //! (commit b5fca196). `populated_from` dot-paths normally walk FK joins via
+    //! a LookupIndex; #247 extends them to traverse *inlined* nested data
+    //! (XML/JSON/OWL/EML-shaped trees) by walking into the nested object
+    //! structurally instead of treating it as a foreign key.
+    use super::*;
+    use crate::datamodel::SlotDerivation;
+    use crate::schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef};
+
+    fn get(v: &Value, key: &str) -> Value {
+        match v {
+            Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
+            _ => Value::Null,
+        }
+    }
+
+    fn imap(pairs: &[(&str, Value)]) -> IndexMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    fn slot_pf(name: &str, pf: &str) -> SlotDerivation {
+        SlotDerivation {
+            name: name.to_string(),
+            populated_from: Some(pf.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn make_spec(class_name: &str, slots: Vec<SlotDerivation>) -> TransformationSpecification {
+        let mut cd = ClassDerivation {
+            name: class_name.to_string(),
+            ..Default::default()
+        };
+        let mut sd: IndexMap<String, SlotDerivation> = IndexMap::new();
+        for s in slots {
+            sd.insert(s.name.clone(), s);
+        }
+        cd.slot_derivations = Some(sd);
+        TransformationSpecification {
+            class_derivations: Some(vec![cd]),
+            ..Default::default()
+        }
+    }
+
+    fn class(name: &str, tree_root: bool) -> ClassDef {
+        ClassDef {
+            name: name.into(),
+            tree_root,
+            is_a: None,
+            mixins: vec![],
+        }
+    }
+
+    fn scalar_slot(name: &str) -> SlotDef {
+        SlotDef {
+            name: name.into(),
+            range: RangeKind::Type("string".into()),
+            multivalued: false,
+            required: false,
+            identifier: false,
+            key: false,
+            unit: None,
+            any_of_enums: vec![],
+            inlined: false,
+            inlined_as_list: false,
+        }
+    }
+
+    fn class_slot(name: &str, range: &str, multivalued: bool, inlined_as_list: bool) -> SlotDef {
+        SlotDef {
+            name: name.into(),
+            range: RangeKind::Class(range.into()),
+            multivalued,
+            required: false,
+            identifier: false,
+            key: false,
+            unit: None,
+            any_of_enums: vec![],
+            inlined: !inlined_as_list,
+            inlined_as_list,
+        }
+    }
+
+    /// Build the EML-ish inlined source schema:
+    /// `EMLDocument -> dataset (inlined) -> {title, dataTable (inlined list)}`.
+    /// When `declare_inlined` is false the `dataset` slot omits `inlined`, to
+    /// exercise the runtime dict fallback.
+    fn eml_schema(declare_inlined: bool) -> InMemorySchemaBuilder {
+        let dataset = SlotDef {
+            inlined: declare_inlined,
+            ..class_slot("dataset", "Dataset", false, false)
+        };
+        InMemorySchemaBuilder::new()
+            .add_class(class("EMLDocument", true))
+            .add_slot("EMLDocument", dataset)
+            .add_class(class("Dataset", false))
+            .add_slot("Dataset", scalar_slot("title"))
+            .add_slot("Dataset", class_slot("dataTable", "DataTable", true, true))
+            .add_class(class("DataTable", false))
+            .add_slot("DataTable", scalar_slot("entityName"))
+    }
+
+    fn input_data() -> Value {
+        Value::Map(imap(&[(
+            "dataset",
+            Value::Map(imap(&[
+                ("title", Value::Str("My Dataset".into())),
+                (
+                    "dataTable",
+                    Value::List(vec![
+                        Value::Map(imap(&[("entityName", Value::Str("table_one".into()))])),
+                        Value::Map(imap(&[("entityName", Value::Str("table_two".into()))])),
+                    ]),
+                ),
+            ])),
+        )]))
+    }
+
+    /// `title: {populated_from: dataset.title}` spec.
+    fn title_spec() -> TransformationSpecification {
+        make_spec("EMLDocument", vec![slot_pf("title", "dataset.title")])
+    }
+
+    // #247 test 1: dot-path into an inlined object reaches the scalar leaf,
+    // declaratively (dataset is marked `inlined: true`), with no ObjectIndex.
+    #[test]
+    fn test_slot_level_inline_deep_scalar() {
+        let schema = eml_schema(true).build();
+        let result = ObjectTransformer::new(title_spec(), Some(&schema), None)
+            .map_object(&input_data(), Some("EMLDocument"))
+            .unwrap();
+        assert_eq!(get(&result, "title"), Value::Str("My Dataset".into()));
+    }
+
+    // #247 test 2: runtime fallback — a dict value traverses even when the
+    // source schema omits `inlined: true` on the first segment.
+    #[test]
+    fn test_inline_path_via_runtime_fallback_without_inlined_declaration() {
+        let schema = eml_schema(false).build();
+        let result = ObjectTransformer::new(title_spec(), Some(&schema), None)
+            .map_object(&input_data(), Some("EMLDocument"))
+            .unwrap();
+        assert_eq!(get(&result, "title"), Value::Str("My Dataset".into()));
+    }
+
+    // #247 test 3: a legitimately missing leaf yields Null rather than erroring.
+    #[test]
+    fn test_inline_path_absent_segment_yields_none() {
+        let schema = eml_schema(true).build();
+        let source = Value::Map(imap(&[("dataset", Value::Map(IndexMap::new()))]));
+        let result = ObjectTransformer::new(title_spec(), Some(&schema), None)
+            .map_object(&source, Some("EMLDocument"))
+            .unwrap();
+        assert_eq!(get(&result, "title"), Value::Null);
+    }
+
+    // #265 test: a list segment mid-path is the not-yet-supported inline
+    // fan-out case — it raises naming the multivalued segment, not silent Null.
+    #[test]
+    fn test_multivalued_inline_segment_raises_clear_diagnostic() {
+        let schema = eml_schema(true).build();
+        let spec = make_spec("EMLDocument", vec![slot_pf("classes", "dataset.dataTable")]);
+        let err = ObjectTransformer::new(spec, Some(&schema), None)
+            .map_object(&input_data(), Some("EMLDocument"))
+            .unwrap_err();
+        // The engine wraps per-slot errors in `SlotTransform` (mirroring Python
+        // `map_object`'s incremental context enrichment); the `InlinePath`
+        // diagnostic — segment name + #265 + slot context — is preserved verbatim.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("dataTable") && msg.contains("#265"),
+            "diagnostic should name the segment and cite #265: {msg}"
+        );
+        assert!(
+            msg.contains("slot_derivation=classes"),
+            "diagnostic should carry slot-derivation context: {msg}"
+        );
+    }
+
+    // #247: a non-dict value mid-path (scalar where a nested object is expected)
+    // errors rather than silently returning Null.
+    #[test]
+    fn test_non_dict_mid_path_raises() {
+        let schema = eml_schema(true).build();
+        let spec = make_spec("EMLDocument", vec![slot_pf("title", "dataset.title.deeper")]);
+        // `dataset.title` is a scalar string; descending into `.deeper` must error.
+        let err = ObjectTransformer::new(spec, Some(&schema), None)
+            .map_object(&input_data(), Some("EMLDocument"))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expected a nested object") && msg.contains("deeper"),
+            "diagnostic should explain the non-object segment: {msg}"
+        );
     }
 }

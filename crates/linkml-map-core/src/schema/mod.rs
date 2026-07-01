@@ -29,6 +29,21 @@ pub enum RangeKind {
     None,
 }
 
+impl RangeKind {
+    /// The declared range name (class, type, or enum name), or `None` when no
+    /// range is declared. Mirrors reading Python's `slot.range` string
+    /// irrespective of what the name refers to.
+    //
+    // gate:internal — engine-only helper, not part of the binding-consumed
+    // surface (no linkml-map-py usage), so it needs no Python-surface sync.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            RangeKind::Class(n) | RangeKind::Type(n) | RangeKind::Enum(n) => Some(n.as_str()),
+            RangeKind::None => None,
+        }
+    }
+}
+
 /// A single permissible value within an enum.
 #[derive(Debug, Clone)]
 pub struct PermissibleValue {

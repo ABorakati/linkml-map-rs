@@ -64,6 +64,19 @@ pub enum Error {
         slot: String,
         cause: String,
     },
+
+    /// A `populated_from` dot-path that traverses inlined nested data hit an
+    /// unsupported or malformed segment: a list segment (multivalued inline
+    /// fan-out, not yet supported — upstream issue #265) or a non-dict value
+    /// mid-path. Mirrors Python `TransformationError` raised from
+    /// `ObjectTransformer._resolve_inline_path`, carrying the same
+    /// `slot_derivation_name` / `slot_populated_from` context.
+    #[error("{message}; slot_derivation={slot_derivation_name} (from {slot_populated_from})")]
+    InlinePath {
+        message: String,
+        slot_derivation_name: String,
+        slot_populated_from: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
