@@ -88,6 +88,33 @@ cargo clippy --workspace --all-targets       # keep clippy-clean
 - `linkml-map-py` requires Python 3 + `linkml-runtime` on PATH to test; exclude it
   otherwise (this is an environment constraint, not a failure).
 
+### PyO3 drop-in compat leg (`python-compat` CI job)
+
+The `python-compat` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the
+**only** CI leg that actually exercises the compiled `linkml_map_rs` wheel + the Rust-backed
+`linkml_map` shim (the main `test` job builds the wheel but its Python suite runs against
+*upstream* `linkml-map`). It builds the wheel, installs it into a **clean** env (matrix:
+Python 3.11, 3.12), and drives it through the byte-identical-to-Python golden corpus in
+[`crates/linkml-map-py/tests/test_compat_api.py`](crates/linkml-map-py/tests/test_compat_api.py),
+proving the PyO3 surface stays a drop-in for the Python API and fails the build on drift.
+
+- **Never co-install upstream `linkml-map` / `linkml` in this leg.** Upstream also imports as
+  `linkml_map`, so co-installing it makes `import linkml_map` resolve to upstream and the
+  wheel is silently not under test. Compat deps are **exactly** `pytest pyyaml linkml-runtime`.
+- **Local repro** (env WITHOUT upstream linkml-map):
+  ```bash
+  python -m venv /tmp/compat && . /tmp/compat/bin/activate   # clean, isolated env
+  pip install pytest pyyaml linkml-runtime                   # NO linkml / linkml-map
+  maturin build --release --out dist -m crates/linkml-map-py/Cargo.toml
+  pip install dist/*.whl
+  pytest crates/linkml-map-py/tests/test_compat_api.py -v
+  ```
+- **Making it block merges:** the YAML guarantees the job runs unconditionally on every PR
+  and fails on drift, but a GitHub check only *blocks merges* when a repo admin adds it to
+  the `master` **branch-protection required-checks** list. Add the check names
+  **`python-compat (3.11)`** and **`python-compat (3.12)`** there. YAML alone cannot make a
+  check "required".
+
 ## Working conventions
 
 - **Idiomatic, clippy-clean Rust.** Follow the idiomatic-code doctrine; cleanups

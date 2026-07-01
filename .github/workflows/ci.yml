@@ -23,6 +23,12 @@ jobs:
       with:
         enable-cache: true
 
+    # NOTE: this job installs upstream `linkml` + `linkml-map` on purpose — it
+    # runs the UPSTREAM-REFERENCE compliance suite (tests/compliance/
+    # test_compliance_suite.py imports linkml_map.compiler/.datamodel/.inference,
+    # which only upstream provides). The PyO3 wheel is built here for packaging,
+    # but the binding surface is proven separately in the `python-compat` job
+    # below, which must NOT co-install upstream. Do not conflate the two.
     - name: Install Python dependencies
       run: |
         uv pip install pytest linkml-runtime pyyaml deepdiff linkml linkml-map --system
@@ -30,6 +36,8 @@ jobs:
     - name: Setup Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
 
+    # Sanctioned no-Python-env fallback: linkml-map-py is excluded here and gets
+    # its real coverage from the `python-compat` job.
     - name: Run Rust workspace tests
       run: cargo test --workspace --exclude linkml-map-py
 
@@ -43,7 +51,74 @@ jobs:
       run: |
         uv pip install dist/*.whl --system
 
-    - name: Run Python compliance tests
+    - name: Run upstream-reference compliance tests
       run: |
         pytest tests/compliance/test_compliance_suite.py
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # Drop-in Python API compatibility of the PyO3 bindings.
+  #
+  # This job is the ONLY thing in CI that actually exercises the compiled
+  # `linkml_map_rs` wheel + the Rust-backed `linkml_map` shim. It builds the
+  # wheel, installs it into a CLEAN environment, and drives it through the
+  # byte-identical-to-Python golden corpus (crates/linkml-map-py/tests/
+  # test_compat_api.py). If the PyO3 surface drifts, this job fails the build.
+  #
+  # LOAD-BEARING INVARIANT — DO NOT "helpfully" add `linkml` or `linkml-map` to
+  # the pip install below. Upstream `linkml-map` also imports as `linkml_map`,
+  # so co-installing it would make `import linkml_map` resolve to UPSTREAM
+  # Python instead of this repo's Rust shim, and the wheel would silently NOT be
+  # under test. The compat deps are EXACTLY: pytest pyyaml linkml-runtime.
+  # (The test module also actively guards against upstream leaking in and will
+  # skip the whole module if it detects upstream's compiler/datamodel/inference
+  # submodules — but keep this env clean regardless.)
+  #
+  # REQUIRED-CHECK NOTE: a GitHub check only *blocks merges* if a repo admin
+  # adds it to the master branch-protection required-checks list. The check
+  # names produced by this job are "python-compat (3.11)" and
+  # "python-compat (3.12)" (job id `python-compat`, matrixed on python-version).
+  # The YAML here only guarantees the job RUNS unconditionally on every PR and
+  # FAILS on drift; it cannot make itself "required" — that is a branch-
+  # protection setting.
+  # ───────────────────────────────────────────────────────────────────────────
+  python-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject.toml declares requires-python = ">=3.8"; test the two most
+        # commonly deployed in-range interpreters. Widen only if the wheel is
+        # actually built/tested for more.
+        python-version: ['3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    # EXACTLY the compat deps — NO upstream `linkml` / `linkml-map` here.
+    # See the load-bearing invariant in the job comment above.
+    - name: Install compat dependencies (NO upstream linkml-map)
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install pytest pyyaml linkml-runtime
+
+    - name: Build the PyO3 wheel
+      uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        args: --release --out dist -m crates/linkml-map-py/Cargo.toml
+
+    - name: Install the wheel under test
+      run: |
+        python -m pip install dist/*.whl
+
+    - name: Run PyO3 drop-in compat tests
+      run: |
+        pytest crates/linkml-map-py/tests/test_compat_api.py -v
