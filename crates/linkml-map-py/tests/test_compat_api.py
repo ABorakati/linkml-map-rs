@@ -115,6 +115,44 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 GOLDEN_ROOT = REPO_ROOT / "tests" / "golden"
 
 
+def _json_bridge_normalize(obj: Any) -> Any:
+    """Recursively stringify `datetime.date` / `datetime.datetime` leaves.
+
+    The golden `output/*.transformed.yaml` files are loaded with
+    `yaml.safe_load`, whose implicit resolver turns an unquoted date-shaped
+    scalar (e.g. `driving_since: 2014-03-31`) into a native `datetime.date` —
+    that is how upstream Python's in-memory `ObjectTransformer.map_object`
+    actually returns it too, since it operates on `source_obj` directly and
+    never round-trips through JSON.
+
+    The Rust-backed `Transformer`/`ObjectTransformer` shim, however, crosses
+    the Python<->Rust boundary via a JSON round trip (see the `# dict <->
+    Value bridging` note in `crates/linkml-map-py/src/lib.rs`), and the core
+    `Value` enum (`crates/linkml-map-core/src/value.rs`) has no dedicated
+    date/datetime variant — a date is always carried as `Value::Str`, matching
+    LinkML's own date stringification (`json.dumps(default=str)` on the way
+    in). JSON has no date type, so `value_to_py` always returns a plain `str`
+    on the way out. This is a real, permanent asymmetry of the JSON bridge —
+    not a value-loss bug: the *engine* computes the byte-identical string
+    (proved by the pure-Rust conformance suite's YAML-text comparison,
+    tests/CONFORMANCE_REPORT.md, which re-parses both sides through YAML and
+    is therefore immune to this asymmetry). Comparing native Python objects
+    here would otherwise fail on type (`str` vs `datetime.date`) despite
+    identical values, so normalize the expected side to strings before
+    comparing — the same direction real dates already travel through the
+    Python->Rust half of the bridge.
+    """
+    import datetime
+
+    if isinstance(obj, dict):
+        return {k: _json_bridge_normalize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_bridge_normalize(v) for v in obj]
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return str(obj)
+    return obj
+
+
 def _find_yaml_file(directory: pathlib.Path) -> pathlib.Path | None:
     if not directory.is_dir():
         return None
@@ -310,7 +348,7 @@ def test_golden_native_transformer_matches_expected(case: GoldenCase) -> None:
     )
     input_obj = case.load_input()
     actual = transformer.map_object(input_obj, source_type)
-    expected = case.load_expected()
+    expected = _json_bridge_normalize(case.load_expected())
 
     assert actual == expected, (
         f"{case.name}: native Transformer output diverges from byte-identical "
@@ -340,7 +378,7 @@ def test_golden_shim_object_transformer_matches_expected(case: GoldenCase) -> No
     )
     input_obj = case.load_input()
     actual = ot.map_object(input_obj, source_type)
-    expected = case.load_expected()
+    expected = _json_bridge_normalize(case.load_expected())
 
     assert actual == expected, (
         f"{case.name}: shim ObjectTransformer.map_object output diverges from "
@@ -368,7 +406,7 @@ def test_golden_shim_specification_as_dict_matches_expected(case: GoldenCase) ->
 
     input_obj = case.load_input()
     actual = ot.map_object(input_obj, source_type)
-    expected = case.load_expected()
+    expected = _json_bridge_normalize(case.load_expected())
 
     assert actual == expected, (
         f"{case.name}: shim with dict specification diverges from expected.\n"
@@ -521,7 +559,23 @@ class TestDictValueBridge:
         # A minimal identity-shaped transform spec (populated_from == attribute
         # name for every field) so the ONLY thing under test is the dict<->Value
         # JSON bridge, not derivation logic. Uses the measurements source schema
-        # for a valid SchemaView but supplies its own class derivation.
+        # for a valid SchemaView but supplies its own class derivations.
+        #
+        # The measurements source schema (tests/golden/measurements/source/
+        # quantity_value.yaml) declares `Person.height` with `range:
+        # QuantityValue` — a class-ranged slot. Both the Rust engine
+        # (map_value_by_range -> RangeKind::Class in
+        # crates/linkml-map-core/src/engine/mod.rs) and real upstream Python
+        # (`ObjectTransformer._map_value_by_range`, which recurses via
+        # `self.map_object(v, source_class_slot_range, ...)`) therefore recurse
+        # into a NESTED `map_object` call for `height` using source_type=
+        # "QuantityValue" — regardless of how simple the `height` slot
+        # derivation itself is. Omitting a `QuantityValue` class derivation
+        # is a `ValueError`/`NoClassDerivation` in BOTH engines (confirmed
+        # against a real `pip install linkml-map` here), not something
+        # `populated_from` copy-through can bypass. So a faithful bridge test
+        # needs an explicit (identity) `QuantityValue` derivation alongside
+        # `Person`, each field its own `populated_from`.
         case = _measurements_case()
         spec_dict = {
             "id": "bridge-roundtrip",
@@ -532,7 +586,15 @@ class TestDictValueBridge:
                         "id": {"populated_from": "id"},
                         "height": {"populated_from": "height"},
                     },
-                }
+                },
+                "QuantityValue": {
+                    "populated_from": "QuantityValue",
+                    "slot_derivations": {
+                        "value": {"populated_from": "value"},
+                        "unit": {"populated_from": "unit"},
+                        "meta": {"populated_from": "meta"},
+                    },
+                },
             },
         }
         ot = ObjectTransformer(

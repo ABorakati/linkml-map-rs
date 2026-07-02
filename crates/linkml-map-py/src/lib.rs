@@ -31,6 +31,21 @@
 //! This approach avoids `pythonize` (not a dep) and the fragile manual
 //! PyDict traversal, and is correct for all Value variants including nested
 //! maps and lists.
+//!
+//! `json.dumps` is always called with `default=str`, both for a source
+//! *object* (`py_to_value`) and for a dict/`TransformationSpecification`
+//! passed as `specification=` (`spec_to_json_value`) — the `linkml_map`
+//! shim's `create_transformer_specification(spec_dict)` path commonly carries
+//! a `yaml.safe_load`-parsed `datetime.date`/`datetime.datetime` (e.g. a bare
+//! `publication_date: 2025-08-14` spec metadata field), which `json.dumps`
+//! otherwise rejects with `TypeError`. Note the resulting `Value` is always a
+//! plain string on both bridge directions — the core `Value` enum
+//! (`linkml_map_core::value::Value`) has no dedicated date/datetime variant,
+//! so a value returned from `Transformer.transform`/`.map_object` that
+//! originated from a date is a Python `str`, not a `datetime.date` — a
+//! permanent (and correct, LinkML-stringification-matching) asymmetry with
+//! upstream Python's in-memory `ObjectTransformer`, which never round-trips
+//! through JSON and so preserves native `date`/`datetime` objects untouched.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -120,8 +135,16 @@ fn spec_to_json_value(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<serde
     }
 
     if spec.is_instance_of::<PyDict>() {
+        // `default=str` mirrors `py_to_value`: a dict spec loaded via
+        // `yaml.safe_load` can carry non-JSON scalars (e.g. a bare
+        // `publication_date: 2025-08-14` becomes `datetime.date`), which
+        // `json.dumps` otherwise rejects with `TypeError`.
         let json_mod = py.import("json")?;
-        let json_str: String = json_mod.call_method1("dumps", (spec,))?.extract()?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
+        let json_str: String = json_mod
+            .call_method("dumps", (spec,), Some(&kwargs))?
+            .extract()?;
         let val: serde_json::Value = serde_json::from_str(&json_str)
             .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
         return Ok(val);

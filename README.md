@@ -135,6 +135,12 @@ tr = ObjectTransformer(source_schemaview=SchemaView("source.yaml"),
 out = tr.map_object({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 ```
 
+Source objects and specifications cross the Python↔Rust boundary via a JSON
+round-trip (`json.dumps(default=str)`), so a `date`/`datetime` value anywhere
+in the input — including a `yaml.safe_load`-parsed spec dict passed to
+`create_transformer_specification` — comes back out the other side as a
+plain `str`, never a native `datetime.date`/`datetime.datetime` object.
+
 <details>
 <summary><b>Native Python API (Reference Only)</b></summary>
 
