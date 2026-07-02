@@ -1,0 +1,4 @@
+# `cargo xtask <task>` → runs the ./xtask binary. Lets CI and the Stop hook
+# share one entry point for the harness sync gate.
+[alias]
+xtask = "run --quiet --package xtask --"

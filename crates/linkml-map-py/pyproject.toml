@@ -19,3 +19,10 @@ shim = ["linkml-runtime", "pyyaml"]
 # ships alongside.
 module-name = "linkml_map_rs._native"
 python-source = "python"
+# python-source's mixed-layout auto-discovery only bundles the ONE package
+# matching module-name's root (`linkml_map_rs`); the sibling `linkml_map`
+# shim package must be listed explicitly or it silently never lands in the
+# wheel — confirmed by unzipping a built wheel, which omitted `linkml_map/`
+# entirely, causing the CI `python-compat` job's `pytest.importorskip` to
+# skip the whole test module (pytest exit 5, "no tests collected").
+include = [{ path = "python/linkml_map/**/*.py", format = "wheel" }]
