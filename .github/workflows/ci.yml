@@ -81,6 +81,19 @@ jobs:
       run: |
         uv pip install dist/*.whl --system
 
+    # LOAD-BEARING: our own wheel now ships a `linkml_map` compat shim
+    # package (crates/linkml-map-py/pyproject.toml's [tool.maturin] include)
+    # at the SAME import path as upstream `linkml-map`. Installing it above
+    # clobbers upstream's `linkml_map/*` files already on disk from the
+    # "Install Python dependencies" step. This job's compliance suite needs
+    # the OPPOSITE — genuine upstream `linkml_map` — so re-assert it here,
+    # after our wheel install. The binding's own `linkml_map` shim is proven
+    # separately by the `python-compat` job (clean venv, no upstream never
+    # co-installed), not here.
+    - name: Re-assert upstream linkml-map (our wheel's shim clobbers it)
+      run: |
+        uv pip install --force-reinstall --no-deps linkml-map --system
+
     - name: Run upstream-reference compliance tests
       run: |
         pytest tests/compliance/test_compliance_suite.py
