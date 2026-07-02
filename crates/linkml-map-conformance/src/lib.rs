@@ -21,33 +21,12 @@ use indexmap::IndexMap;
 use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::ObjectTransformer,
-    schema::{ClassDef, InMemorySchema, InMemorySchemaBuilder, RangeKind, SchemaProvider, SlotDef},
+    schema::SchemaProvider,
     value::Value,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 use serde_yaml_ng as serde_yaml;
 
-/// A source-schema provider for a fixture case.
-///
-/// Prefers the real pure-Rust `SchemaViewProvider`. Some golden schemas use
-/// standard CURIE maps (`semweb_context`) whose prefixes the backend does not
-/// resolve at `add_schema` time, so they fail to load. For those, the runner
-/// falls back to a tolerant in-memory schema parsed directly from the YAML
-/// (classes, slots, ranges, identifier/multivalued flags) — enough metadata for
-/// the engine's range coercion + FK object-index resolution.
-pub enum SchemaSource {
-    Real(SchemaViewProvider),
-    InMemory(InMemorySchema),
-}
-
-impl SchemaSource {
-    fn as_provider(&self) -> &dyn SchemaProvider {
-        match self {
-            SchemaSource::Real(p) => p as &dyn SchemaProvider,
-            SchemaSource::InMemory(p) => p as &dyn SchemaProvider,
-        }
-    }
-}
 use walkdir::WalkDir;
 
 #[cfg(test)]
@@ -224,7 +203,7 @@ fn collect_yaml_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-// ─── Source-schema loading (real → in-memory fallback) ────────────────────────
+// ─── Source-schema loading ────────────────────────────────────────────────────
 
 /// Load the best source schema for a case.
 ///
@@ -232,9 +211,18 @@ fn collect_yaml_files(dir: &Path) -> Vec<PathBuf> {
 /// `model/`). We scan its sibling directory for ALL schema YAMLs and pick the
 /// one that yields the most classes — some fixtures ship a truncated/alternate
 /// schema alongside the real one (e.g. an empty `cmdr_normalized.yaml` next to
-/// the populated `normalized.yaml`). For each candidate we try the real
-/// backend first, then a tolerant in-memory parse.
-fn load_source_schema(hint_path: &Path) -> anyhow::Result<SchemaSource> {
+/// the populated `normalized.yaml`), so naively taking the first file would
+/// silently pick the empty stub. (This candidate-scan is mirrored on the Python
+/// side by `_best_source_schema` in `crates/linkml-map-py/tests/test_compat_api.py`.)
+///
+/// Every candidate loads through the strict `SchemaViewProvider`: the previous
+/// tolerant in-memory fallback existed only for schemas whose standard CURIE maps
+/// (`default_curi_maps: [semweb_context]`) / builtin `linkml:` imports the
+/// backend couldn't resolve, and `linkml-map-schemaview` now resolves those
+/// before `add_schema` (see `resolve_default_curi_maps`). Schemas that still fail
+/// to load for other reasons (e.g. the biolink metamodel) yield an `Err`, which
+/// the caller turns into a documented SKIP — same as before.
+fn load_source_schema(hint_path: &Path) -> anyhow::Result<SchemaViewProvider> {
     let dir = hint_path.parent().unwrap_or(hint_path);
     let mut candidates = collect_yaml_files(dir);
     // Ensure the hinted file is considered even if collect order differs.
@@ -242,34 +230,18 @@ fn load_source_schema(hint_path: &Path) -> anyhow::Result<SchemaSource> {
         candidates.push(hint_path.to_path_buf());
     }
 
-    // The tolerant in-memory fallback exists for fixtures that ship a truncated
-    // alternate schema next to the real one (e.g. `cmdr_normalized.yaml` beside
-    // `normalized.yaml` in flattening), where the real backend rejects the
-    // populated file (unresolved standard CURIE map) AND the sibling it *does*
-    // load is empty. It is gated to multi-candidate directories so single-schema
-    // fixtures whose schema legitimately fails to load (e.g. the biolink
-    // metamodel) keep their documented SKIP rather than being silently rescued.
-    let allow_inmemory = candidates.len() > 1;
-
-    let mut best: Option<(usize, SchemaSource)> = None;
+    let mut best: Option<(usize, SchemaViewProvider)> = None;
     let mut last_err: Option<anyhow::Error> = None;
 
     for cand in &candidates {
         let source = match SchemaViewProvider::load_from_path(cand) {
-            Ok(p) => SchemaSource::Real(p),
-            Err(e) if allow_inmemory => match build_inmemory_schema_from_yaml(cand) {
-                Ok(p) => SchemaSource::InMemory(p),
-                Err(e2) => {
-                    last_err = Some(anyhow::anyhow!("{cand:?}: real={e:#}; inmemory={e2:#}"));
-                    continue;
-                }
-            },
+            Ok(p) => p,
             Err(e) => {
                 last_err = Some(anyhow::anyhow!("{cand:?}: {e:#}"));
                 continue;
             }
         };
-        let n = source.as_provider().all_class_names().len();
+        let n = source.all_class_names().len();
         if best.as_ref().map(|(bn, _)| n > *bn).unwrap_or(true) {
             best = Some((n, source));
         }
@@ -281,150 +253,6 @@ fn load_source_schema(hint_path: &Path) -> anyhow::Result<SchemaSource> {
     }
 }
 
-/// Tolerant LinkML-schema → [`InMemorySchema`] parser.
-///
-/// Reads only what the engine needs: classes (with `is_a`, `tree_root`), their
-/// inline `attributes` and referenced global `slots`, and each slot's `range`,
-/// `multivalued`, and `identifier`/`key` flags. Ranges are classified against
-/// the schema's own classes/enums/types (everything else defaults to a scalar
-/// type). This is a deliberate, minimal subset — not a full LinkML loader.
-fn build_inmemory_schema_from_yaml(path: &Path) -> anyhow::Result<InMemorySchema> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading schema {}", path.display()))?;
-    let root: serde_json::Value =
-        serde_yaml::from_str(&text).with_context(|| format!("YAML parse {}", path.display()))?;
-    let obj = root
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("schema root is not a mapping: {}", path.display()))?;
-
-    let class_names: Vec<String> = obj
-        .get("classes")
-        .and_then(|c| c.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    let enum_names: Vec<String> = obj
-        .get("enums")
-        .and_then(|c| c.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    let type_names: Vec<String> = obj
-        .get("types")
-        .and_then(|c| c.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-
-    // Global slot definitions block.
-    let global_slots = obj.get("slots").and_then(|s| s.as_object());
-
-    let classify = |range_name: &str| -> RangeKind {
-        if class_names.iter().any(|c| c == range_name) {
-            RangeKind::Class(range_name.to_string())
-        } else if enum_names.iter().any(|e| e == range_name) {
-            RangeKind::Enum(range_name.to_string())
-        } else {
-            RangeKind::Type(range_name.to_string())
-        }
-    };
-
-    // Build a SlotDef from a slot spec object + a fallback name + (optional)
-    // global slot spec to merge defaults from.
-    let make_slot =
-        |name: &str, local: Option<&serde_json::Map<String, serde_json::Value>>| -> SlotDef {
-            let global = global_slots
-                .and_then(|gs| gs.get(name))
-                .and_then(|v| v.as_object());
-            let get_str = |key: &str| -> Option<String> {
-                local
-                    .and_then(|m| m.get(key))
-                    .or_else(|| global.and_then(|m| m.get(key)))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            };
-            let get_bool = |key: &str| -> bool {
-                local
-                    .and_then(|m| m.get(key))
-                    .or_else(|| global.and_then(|m| m.get(key)))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            };
-            let range = match get_str("range") {
-                Some(r) => classify(&r),
-                None => RangeKind::None,
-            };
-            SlotDef {
-                name: name.to_string(),
-                range,
-                multivalued: get_bool("multivalued"),
-                required: get_bool("required"),
-                identifier: get_bool("identifier"),
-                key: get_bool("key"),
-                unit: None,
-                any_of_enums: vec![],
-                inlined: false,
-                inlined_as_list: false,
-            }
-        };
-
-    let mut builder = InMemorySchemaBuilder::new();
-    for t in &type_names {
-        builder = builder.add_type(t.clone());
-    }
-    // Always register the common scalar types so unknown ranges still classify.
-    for t in [
-        "string",
-        "integer",
-        "float",
-        "double",
-        "boolean",
-        "uriorcurie",
-        "uri",
-        "date",
-    ] {
-        if !type_names.iter().any(|x| x == t) {
-            builder = builder.add_type(t);
-        }
-    }
-
-    if let Some(classes) = obj.get("classes").and_then(|c| c.as_object()) {
-        for (class_name, cdef) in classes {
-            let cobj = cdef.as_object();
-            let is_a = cobj
-                .and_then(|m| m.get("is_a"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let tree_root = cobj
-                .and_then(|m| m.get("tree_root"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            builder = builder.add_class(ClassDef {
-                name: class_name.clone(),
-                tree_root,
-                is_a,
-                mixins: vec![],
-            });
-
-            // Inline `attributes` (each is a full slot def keyed by name).
-            if let Some(attrs) = cobj
-                .and_then(|m| m.get("attributes"))
-                .and_then(|a| a.as_object())
-            {
-                for (slot_name, sdef) in attrs {
-                    builder = builder.add_slot(class_name, make_slot(slot_name, sdef.as_object()));
-                }
-            }
-            // Referenced global `slots` (list of names; defs live in top-level slots:).
-            if let Some(slot_refs) = cobj.and_then(|m| m.get("slots")).and_then(|s| s.as_array()) {
-                for sref in slot_refs {
-                    if let Some(slot_name) = sref.as_str() {
-                        builder = builder.add_slot(class_name, make_slot(slot_name, None));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(builder.build())
-}
 
 // ─── YAML / JSON loading helpers ──────────────────────────────────────────────
 
@@ -544,7 +372,7 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
     };
 
     // ── 3. Load source schema (optional) ─────────────────────────────────────
-    let source_provider: Option<SchemaSource> = match &case.source_schema_path {
+    let source_provider: Option<SchemaViewProvider> = match &case.source_schema_path {
         Some(p) => match load_source_schema(p) {
             Ok(prov) => Some(prov),
             Err(e) => {
@@ -589,7 +417,7 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
     });
 
     let source_provider_ref: Option<&dyn SchemaProvider> =
-        source_provider.as_ref().map(|p| p.as_provider());
+        source_provider.as_ref().map(|p| p as &dyn SchemaProvider);
 
     let engine = ObjectTransformer::new(spec, source_provider_ref, None);
 

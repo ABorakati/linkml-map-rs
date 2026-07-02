@@ -104,8 +104,142 @@ fn load_schema_definition_from_path(path: &Path) -> anyhow::Result<linkml_meta::
 fn load_schema_definition_from_str(yaml: &str) -> anyhow::Result<linkml_meta::SchemaDefinition> {
     let mut value: serde_json::Value = serde_yaml::from_str(yaml)?;
     normalise_python_compatible_metaslots(&mut value, false);
-    serde_json::from_value(value).map_err(Into::into)
+    let mut schema: linkml_meta::SchemaDefinition = serde_json::from_value(value)?;
+    resolve_default_curi_maps(&mut schema);
+    Ok(schema)
 }
+
+// ── builtin prefix resolution (default_curi_maps + builtin `linkml:` imports) ────
+//
+// The vendored `linkml_schemaview` backend never reads `default_curi_maps`, and it
+// does not fetch/merge the prefixes of builtin `linkml:` imports (`linkml:types`
+// etc.). Its `converter_from_schemas` (identifier.rs) only registers prefixes
+// declared inline under `schema.prefixes`, plus a hardcoded `rdfs`/`rdf`/`dcterms`
+// fallback. So a schema that omits e.g. `schema:`/`xsd:` from `prefixes:` and
+// relies on `default_curi_maps: [semweb_context]` and/or `imports: [linkml:types]`
+// to supply them makes `add_schema` fail with `CurieError(NotFound("schema"))`
+// while indexing a `slot_uri: schema:...` (see `tests/golden/flattening`).
+//
+// Python `linkml_runtime.SchemaView` builds its converter from ALL loaded schemas
+// (the main schema + every resolved import) via `SchemaLoader.load()`
+// (linkml `utils/schemaloader.py`): it seeds the namespace from each schema's
+// explicit `prefixes`, then runs
+// `for cmap in default_curi_maps: namespaces.add_prefixmap(cmap, include_defaults=False)`.
+// `Namespaces.add_prefixmap` (linkml_runtime `utils/namespaces.py`) adds each
+// prefix **only if not already defined** (`elif k not in self`), and imported
+// schemas' prefixes are likewise merged without clobbering the importer's.
+//
+// We reproduce the *prefix side* of that resolution here (the only part
+// `add_schema` needs) by expanding the known builtin curie maps and builtin
+// `linkml:` import prefixes into `schema.prefixes` before `add_schema`, never
+// overriding a prefix that is already present — matching the `k not in self`
+// precedence exactly. We do NOT attempt to load import *content*; the vendored
+// backend already tolerates unresolved builtin imports for everything else.
+fn resolve_default_curi_maps(schema: &mut linkml_meta::SchemaDefinition) {
+    // Collect (prefix, uri) contributions in Python's merge order: explicit
+    // `prefixes:` win, then `default_curi_maps`, then builtin `linkml:` imports.
+    // A single non-overriding merge into `prefixes` realises that precedence.
+    let curi_maps = schema.default_curi_maps.clone().unwrap_or_default();
+    let imports = schema.imports.clone().unwrap_or_default();
+    if curi_maps.is_empty() && imports.is_empty() {
+        return;
+    }
+
+    let mut contributions: Vec<(&'static str, &'static str)> = Vec::new();
+    for map_name in &curi_maps {
+        if let Some(entries) = builtin_curi_map(map_name) {
+            contributions.extend_from_slice(entries);
+        }
+        // Unknown map names (e.g. a `prefixmaps` context we don't bundle) are left
+        // for the backend, matching its existing "unresolved is not fatal here"
+        // behaviour for anything we can't supply.
+    }
+    for import in &imports {
+        if let Some(entries) = builtin_import_prefixes(import) {
+            contributions.extend_from_slice(entries);
+        }
+    }
+    if contributions.is_empty() {
+        return;
+    }
+
+    let prefixes = schema.prefixes.get_or_insert_with(Default::default);
+    for (pfx, reference) in contributions {
+        // PARITY: linkml_runtime Namespaces.add_prefixmap only adds a prefix when
+        // `k not in self`, and imported-schema prefixes never clobber the
+        // importer's — so an explicit `prefixes:` entry (and any earlier
+        // contributor) always wins over a later one.
+        prefixes
+            .entry(pfx.to_string())
+            .or_insert_with(|| linkml_meta::Prefix {
+                prefix_prefix: pfx.to_string(),
+                prefix_reference: reference.to_string(),
+            });
+    }
+}
+
+/// Return the prefix→URI pairs for a known builtin LinkML curie map, or `None`
+/// if we don't bundle that map.
+///
+/// Currently only `semweb_context` is bundled — the sole `default_curi_maps`
+/// entry the LinkML schemas in this repo declare, and a `BIOCONTEXT_CONTEXTS`
+/// name. Its contents mirror `prefixcommons`'
+/// `prefixcommons/registry/semweb_context.jsonld` (read by `linkml_runtime` via
+/// `curie_util.read_biocontext`), verbatim.
+fn builtin_curi_map(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match name {
+        "semweb_context" => Some(SEMWEB_CONTEXT),
+        _ => None,
+    }
+}
+
+/// Return the prefixes contributed by a builtin `linkml:` import that the
+/// vendored backend cannot fetch, or `None` for anything we don't bundle
+/// (local imports are resolved by the backend; other remote imports are left
+/// unresolved exactly as before).
+///
+/// Only `linkml:types` is bundled — it is the sole builtin import the repo's
+/// fixtures use, and (as in real Python) it is imported to make `xsd:`/`schema:`
+/// resolvable. Its prefixes mirror `linkml_runtime`'s
+/// `linkml_model/model/schema/types.yaml` `prefixes:` block, verbatim.
+fn builtin_import_prefixes(import: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match import {
+        "linkml:types" => Some(LINKML_TYPES_PREFIXES),
+        _ => None,
+    }
+}
+
+/// The `semweb_context` prefix map, copied from `prefixcommons`
+/// `prefixcommons/registry/semweb_context.jsonld` (the `@context` object).
+/// This is what `linkml_runtime`'s `default_curi_maps: [semweb_context]` expands
+/// to. All keys are valid NCNames, so all pass `is_ncname` and are registered.
+const SEMWEB_CONTEXT: &[(&str, &str)] = &[
+    ("dc", "http://purl.org/dc/terms/"),
+    ("dcat", "http://www.w3.org/ns/dcat#"),
+    ("dcterms", "http://purl.org/dc/terms/"),
+    ("faldo", "http://biohackathon.org/resource/faldo#"),
+    ("foaf", "http://xmlns.com/foaf/0.1/"),
+    ("idot", "http://identifiers.org/"),
+    ("oa", "http://www.w3.org/ns/oa#"),
+    ("owl", "http://www.w3.org/2002/07/owl#"),
+    ("prov", "http://www.w3.org/ns/prov#"),
+    ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#"),
+    ("rdfs", "http://www.w3.org/2000/01/rdf-schema#"),
+    ("void", "http://rdfs.org/ns/void#"),
+    ("xsd", "http://www.w3.org/2001/XMLSchema#"),
+    ("oboInOwl", "http://www.geneontology.org/formats/oboInOwl#"),
+];
+
+/// The `prefixes:` block of LinkML's builtin `types` schema, copied from
+/// `linkml_runtime`'s `linkml_model/model/schema/types.yaml`. Importing
+/// `linkml:types` is how a schema makes `schema:`/`xsd:` resolvable without
+/// listing them inline.
+const LINKML_TYPES_PREFIXES: &[(&str, &str)] = &[
+    ("linkml", "https://w3id.org/linkml/"),
+    ("xsd", "http://www.w3.org/2001/XMLSchema#"),
+    ("shex", "http://www.w3.org/ns/shex#"),
+    ("schema", "http://schema.org/"),
+];
 
 fn normalise_python_compatible_metaslots(value: &mut serde_json::Value, in_examples: bool) {
     match value {
@@ -761,5 +895,66 @@ classes:
         let mut schema: linkml_meta::SchemaDefinition = serde_yaml::from_str(SCHEMA).unwrap();
         apply_schema_patch_to_definition(&mut schema, &serde_json::Value::Null).unwrap();
         assert!(schema.classes.as_ref().unwrap().contains_key("Row"));
+    }
+
+    // A schema that declares neither `schema:` nor `xsd:` under `prefixes:` but
+    // relies on `default_curi_maps: [semweb_context]` + `imports: [linkml:types]`
+    // to make them resolvable. The vendored backend cannot resolve these on its
+    // own, so this used to fail `add_schema` with `CurieError(NotFound("schema"))`.
+    const CURI_MAP_SCHEMA: &str = r#"
+id: https://example.org/mappings-norm
+name: mappings_norm
+default_curi_maps:
+  - semweb_context
+imports:
+  - linkml:types
+prefixes:
+  mappings: https://example.org/mappings-norm/
+  linkml: https://w3id.org/linkml/
+default_prefix: mappings
+default_range: string
+classes:
+  Entity:
+    slots:
+      - id
+      - name
+slots:
+  id:
+    identifier: true
+    slot_uri: schema:identifier
+  name:
+    slot_uri: rdfs:label
+"#;
+
+    #[test]
+    fn default_curi_maps_and_builtin_import_resolve_prefixes() {
+        // schema: comes from linkml:types; rdfs: from semweb_context — neither is
+        // declared inline, yet the strict loader now succeeds.
+        let prov = SchemaViewProvider::from_yaml_str(CURI_MAP_SCHEMA).unwrap();
+        assert!(prov.all_class_names().iter().any(|c| c == "Entity"));
+    }
+
+    #[test]
+    fn explicit_prefix_wins_over_curi_map() {
+        // PARITY: linkml_runtime's add_prefixmap only adds `k not in self`, so an
+        // explicit `prefixes:` entry is never overridden by a curie map.
+        let yaml = r#"
+id: https://example.org/s
+name: s
+default_curi_maps:
+  - semweb_context
+prefixes:
+  rdfs: http://example.org/OVERRIDDEN#
+default_range: string
+classes:
+  C:
+    attributes:
+      x:
+        range: string
+"#;
+        let mut schema: linkml_meta::SchemaDefinition = serde_yaml::from_str(yaml).unwrap();
+        resolve_default_curi_maps(&mut schema);
+        let rdfs = &schema.prefixes.as_ref().unwrap()["rdfs"];
+        assert_eq!(rdfs.prefix_reference, "http://example.org/OVERRIDDEN#");
     }
 }

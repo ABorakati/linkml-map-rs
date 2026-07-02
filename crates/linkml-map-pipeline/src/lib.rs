@@ -160,31 +160,20 @@ impl CompiledPlan {
         let spec = load_transform_spec(spec_path)
             .with_context(|| format!("loading spec {}", spec_path.display()))?;
 
-        // Load source schema with CURIE-map tolerance, applying any
-        // source_schema_patches from the spec (e.g. FK range augmentation).
-        // `SchemaViewProvider` fails on schemas that reference `semweb_context`
-        // or other standard CURIE maps it can't resolve at load time. We fall
-        // back to a minimal in-memory YAML parser that extracts the class/slot
-        // metadata the engine needs for FK detection and range coercion.
-        let source_provider: Box<dyn SchemaProvider> = {
-            let ts = load_schema_tolerant(schema_path, spec.source_schema_patches.as_ref())
-                .with_context(|| format!("loading source schema {}", schema_path.display()))?;
-            match ts {
-                TolerantSchema::Real(p) => Box::new(p),
-                TolerantSchema::InMemory(p) => Box::new(p),
-            }
-        };
+        // Load source schema, applying any source_schema_patches from the spec
+        // (e.g. FK range augmentation). `SchemaViewProvider` now resolves builtin
+        // CURIE maps / `linkml:` import prefixes itself, so no fallback is needed.
+        let source_provider: Box<dyn SchemaProvider> = Box::new(
+            load_schema(schema_path, spec.source_schema_patches.as_ref())
+                .with_context(|| format!("loading source schema {}", schema_path.display()))?,
+        );
 
         // Load target schema (may be same file — that's fine, second load is cheap)
-        let target_provider: Box<dyn SchemaProvider> = {
-            let ts = load_schema_tolerant(target_schema_path, None).with_context(|| {
+        let target_provider: Box<dyn SchemaProvider> = Box::new(
+            load_schema(target_schema_path, None).with_context(|| {
                 format!("loading target schema {}", target_schema_path.display())
-            })?;
-            match ts {
-                TolerantSchema::Real(p) => Box::new(p),
-                TolerantSchema::InMemory(p) => Box::new(p),
-            }
-        };
+            })?,
+        );
 
         // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
         // surface here at plan-build time rather than per row.
@@ -789,193 +778,19 @@ fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> 
     }
 }
 
-// ── Tolerant schema loader ──────────────────────────────────────────────────────
+// ── Schema loader ────────────────────────────────────────────────────────────
 //
-// `SchemaViewProvider::load_from_path` fails on schemas that reference
-// unresolved standard CURIE maps (e.g. `semweb_context`).  The tolerant loader
-// falls back to an in-memory schema parsed directly from the YAML — enough
-// metadata for FK range classification and object-index resolution.
+// `SchemaViewProvider` resolves builtin CURIE maps (`default_curi_maps:
+// [semweb_context]`) and builtin `linkml:` import prefixes before `add_schema`
+// (see `linkml-map-schemaview`'s `resolve_default_curi_maps`), so schemas that
+// used to need an in-memory YAML fallback now load through the strict backend
+// directly.
 
-/// Wrapper that holds either a real `SchemaViewProvider` or a minimal
-/// `InMemorySchema` parsed from YAML, exposing both as `&dyn SchemaProvider`.
-enum TolerantSchema {
-    Real(SchemaViewProvider),
-    InMemory(linkml_map_core::schema::InMemorySchema),
-}
-
-impl TolerantSchema {}
-
-/// Load a schema tolerantly: try `SchemaViewProvider` first; if it fails due
-/// to CURIE resolution errors, fall back to the minimal YAML parser.
-/// The fallback provides class/slot/range/identifier metadata sufficient for
-/// FK detection and object-index resolution.
-fn load_schema_tolerant(path: &Path, patch: Option<&serde_json::Value>) -> Result<TolerantSchema> {
-    match SchemaViewProvider::load_from_path_with_patch(path, patch) {
-        Ok(p) => Ok(TolerantSchema::Real(p)),
-        Err(_) => {
-            if patch.is_some() {
-                eprintln!(
-                    "warning: source_schema_patches could not be applied \
-                     (schema fell back to in-memory parser): {}",
-                    path.display()
-                );
-            }
-            // Try the tolerant in-memory YAML parser as fallback.
-            build_inmemory_schema_from_yaml(path)
-                .map(TolerantSchema::InMemory)
-                .with_context(|| {
-                    format!(
-                        "loading schema (real + inmemory fallback failed): {}",
-                        path.display()
-                    )
-                })
-        }
-    }
-}
-
-/// Tolerant LinkML-schema → `InMemorySchema` parser.
-///
-/// Reads classes, slots (inline `attributes` + referenced global `slots`),
-/// ranges, and `identifier`/`multivalued` flags. Everything else defaults
-/// (unknown range → scalar type). Deliberately minimal — not a full LinkML loader.
-fn build_inmemory_schema_from_yaml(path: &Path) -> Result<linkml_map_core::schema::InMemorySchema> {
-    use linkml_map_core::schema::{
-        ClassDef as SchemaDef, InMemorySchemaBuilder, RangeKind, SlotDef,
-    };
-    use serde_yaml_ng as serde_yaml;
-
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading schema {}", path.display()))?;
-    let root: serde_json::Value =
-        serde_yaml::from_str(&text).with_context(|| format!("YAML parse {}", path.display()))?;
-    let obj = root
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("schema root is not a mapping: {}", path.display()))?;
-
-    let class_names: Vec<String> = obj
-        .get("classes")
-        .and_then(|c| c.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    let enum_names: Vec<String> = obj
-        .get("enums")
-        .and_then(|c| c.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    let type_names: Vec<String> = obj
-        .get("types")
-        .and_then(|c| c.as_object())
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-
-    let global_slots = obj.get("slots").and_then(|s| s.as_object());
-
-    let classify = |range_name: &str| -> RangeKind {
-        if class_names.iter().any(|c| c == range_name) {
-            RangeKind::Class(range_name.to_string())
-        } else if enum_names.iter().any(|e| e == range_name) {
-            RangeKind::Enum(range_name.to_string())
-        } else {
-            RangeKind::Type(range_name.to_string())
-        }
-    };
-
-    let make_slot =
-        |name: &str, local: Option<&serde_json::Map<String, serde_json::Value>>| -> SlotDef {
-            let global = global_slots
-                .and_then(|gs| gs.get(name))
-                .and_then(|v| v.as_object());
-            let get_str = |key: &str| -> Option<String> {
-                local
-                    .and_then(|m| m.get(key))
-                    .or_else(|| global.and_then(|m| m.get(key)))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            };
-            let get_bool = |key: &str| -> bool {
-                local
-                    .and_then(|m| m.get(key))
-                    .or_else(|| global.and_then(|m| m.get(key)))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            };
-            let range = match get_str("range") {
-                Some(r) => classify(&r),
-                None => RangeKind::None,
-            };
-            SlotDef {
-                name: name.to_string(),
-                range,
-                multivalued: get_bool("multivalued"),
-                required: get_bool("required"),
-                identifier: get_bool("identifier"),
-                key: get_bool("key"),
-                unit: None,
-                any_of_enums: vec![],
-                inlined: false,
-                inlined_as_list: false,
-            }
-        };
-
-    let mut builder = InMemorySchemaBuilder::new();
-    for t in &type_names {
-        builder = builder.add_type(t.clone());
-    }
-    // Always register common scalar types so unknown ranges still classify.
-    for t in [
-        "string",
-        "integer",
-        "float",
-        "double",
-        "boolean",
-        "uriorcurie",
-        "uri",
-        "date",
-    ] {
-        if !type_names.iter().any(|x| x == t) {
-            builder = builder.add_type(t);
-        }
-    }
-
-    if let Some(classes) = obj.get("classes").and_then(|c| c.as_object()) {
-        for (class_name, cdef) in classes {
-            let cobj = cdef.as_object();
-            let is_a = cobj
-                .and_then(|m| m.get("is_a"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let tree_root = cobj
-                .and_then(|m| m.get("tree_root"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            builder = builder.add_class(SchemaDef {
-                name: class_name.clone(),
-                tree_root,
-                is_a,
-                mixins: vec![],
-            });
-
-            // Inline `attributes`.
-            if let Some(attrs) = cobj
-                .and_then(|m| m.get("attributes"))
-                .and_then(|a| a.as_object())
-            {
-                for (slot_name, sdef) in attrs {
-                    builder = builder.add_slot(class_name, make_slot(slot_name, sdef.as_object()));
-                }
-            }
-            // Referenced global `slots` list.
-            if let Some(slot_refs) = cobj.and_then(|m| m.get("slots")).and_then(|s| s.as_array()) {
-                for sref in slot_refs {
-                    if let Some(slot_name) = sref.as_str() {
-                        builder = builder.add_slot(class_name, make_slot(slot_name, None));
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(builder.build())
+/// Load a source/target schema through `SchemaViewProvider`, applying any
+/// `source_schema_patches` (FK range augmentation etc.) before indexing.
+fn load_schema(path: &Path, patch: Option<&serde_json::Value>) -> Result<SchemaViewProvider> {
+    SchemaViewProvider::load_from_path_with_patch(path, patch)
+        .with_context(|| format!("loading schema: {}", path.display()))
 }
 
 // ── Transform spec loader (mirrors linkml-map-conformance) ────────────────────
