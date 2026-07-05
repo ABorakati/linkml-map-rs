@@ -18,6 +18,10 @@ pub use parser::Ast;
 
 #[cfg(test)]
 mod tests {
+    // PARITY: the 3.14 test literals mirror upstream Python doctests
+    // (_try_numeric / _maybe_coerce_numeric in utils/eval_utils.py); keep the exact
+    // value and silence approx_constant rather than diverge from the reference.
+    #![allow(clippy::approx_constant)]
     use super::eval::{eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr, Bindings};
     use crate::value::Value;
     use indexmap::IndexMap;

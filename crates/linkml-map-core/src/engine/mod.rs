@@ -2479,6 +2479,9 @@ fn coerce_datatype(v: Value, target_range: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    // PARITY: the 3.14 test literals mirror upstream Python's numeric-coercion
+    // fixtures; keep the exact value and silence approx_constant rather than diverge.
+    #![allow(clippy::approx_constant)]
     use super::*;
     use crate::{
         datamodel::{
