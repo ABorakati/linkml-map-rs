@@ -438,7 +438,7 @@ mod tests {
         let original = vec![
             Value::Null,
             Value::Bool(false),
-            Value::Float(3.14),
+            Value::Float(2.5),
             Value::List(vec![Value::Int(1), Value::Int(2)]),
         ];
 
