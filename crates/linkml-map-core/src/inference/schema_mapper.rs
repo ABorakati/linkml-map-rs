@@ -44,11 +44,10 @@ impl<'a> SchemaMapper<'a> {
         if let Some(prefixes) = &spec.prefixes {
             let mut out = Map::new();
             for (k, v) in prefixes {
-                if let Some(value) = &v.value {
-                    if !(k == "foo" && value.as_str() == Some("foo")) {
+                if let Some(value) = &v.value
+                    && !(k == "foo" && value.as_str() == Some("foo")) {
                         out.insert(k.clone(), value.clone());
                     }
-                }
             }
             if !out.is_empty() {
                 root.insert("prefixes".into(), JsonValue::Object(out));
@@ -84,11 +83,10 @@ impl<'a> SchemaMapper<'a> {
         if let Some(parent) = &cd.is_a {
             obj.insert("is_a".into(), json!(parent));
         }
-        if let Some(mixins) = &cd.mixins {
-            if !mixins.is_empty() {
+        if let Some(mixins) = &cd.mixins
+            && !mixins.is_empty() {
                 obj.insert("mixins".into(), json!(mixins));
             }
-        }
         if let Some(target_definition) = &cd.target_definition {
             merge_object(&mut obj, target_definition);
         }
@@ -220,11 +218,10 @@ fn source_slot_name(sd: &SlotDerivation) -> Option<String> {
     if let Some(populated_from) = &sd.populated_from {
         return Some(populated_from.clone());
     }
-    if let Some(expr) = &sd.expr {
-        if !expr.is_empty() && expr.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if let Some(expr) = &sd.expr
+        && !expr.is_empty() && expr.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return Some(expr.clone());
         }
-    }
     Some(sd.name.clone())
 }
 

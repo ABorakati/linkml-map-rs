@@ -277,18 +277,16 @@ impl<'s> ObjectTransformer<'s> {
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
         // Enum pass-through: if source_type is an enum, transform via enum derivation.
-        if let Some(ss) = self.source_schema {
-            if ss.all_enum_names().contains(&source_type.to_string()) {
+        if let Some(ss) = self.source_schema
+            && ss.all_enum_names().contains(&source_type.to_string()) {
                 return self.transform_enum(source_obj, &[source_type.to_string()], source_obj);
             }
-        }
 
         // Scalar pass-through: if it's a known type, return as-is.
-        if let Some(ss) = self.source_schema {
-            if ss.all_type_names().contains(&source_type.to_string()) {
+        if let Some(ss) = self.source_schema
+            && ss.all_type_names().contains(&source_type.to_string()) {
                 return Ok(source_obj.clone());
             }
-        }
 
         // Must be a map.
         let source_map = match source_obj {
@@ -438,14 +436,13 @@ impl<'s> ObjectTransformer<'s> {
 
         let mut results = Vec::new();
         for sname in &slots_to_melt {
-            if let Some(v) = source_map.get(sname) {
-                if !v.is_null() {
+            if let Some(v) = source_map.get(sname)
+                && !v.is_null() {
                     let mut rec = base.clone();
                     rec.insert(pivot.variable_slot.clone(), Value::Str(sname.clone()));
                     rec.insert(pivot.value_slot.clone(), v.clone());
                     results.push(Value::Map(rec));
                 }
-            }
         }
         Ok(Value::List(results))
     }
@@ -465,13 +462,11 @@ impl<'s> ObjectTransformer<'s> {
         }
         // Otherwise find a multivalued slot holding EAV records.
         for v in source_map.values() {
-            if let Value::List(items) = v {
-                if let Some(Value::Map(first)) = items.first() {
-                    if first.contains_key(&pivot.variable_slot) {
+            if let Value::List(items) = v
+                && let Some(Value::Map(first)) = items.first()
+                    && first.contains_key(&pivot.variable_slot) {
                         return Ok(unmelt_collection(pivot, items));
                     }
-                }
-            }
         }
         // Nothing to unmelt → pass through.
         Ok(Value::Map(source_map.clone()))
@@ -615,19 +610,17 @@ impl<'s> ObjectTransformer<'s> {
         // expand any CURIE value to a full URI using the source schema's prefix
         // map.  When `range: curie`, compress an absolute URI to a CURIE.
         // This mirrors Python `ObjectTransformer._coerce_uri` behaviour.
-        if !v.is_null() {
-            if let Some(target_range) = slot_deriv.range.as_deref() {
+        if !v.is_null()
+            && let Some(target_range) = slot_deriv.range.as_deref() {
                 v = self.coerce_uri_curie(v, target_range);
             }
-        }
 
         // ── Offset (longitudinal baseline ± offset_value * offset_field) ──────
         //    Mirrors Python `ObjectTransformer._apply_offset`.
-        if let Some(off) = &slot_deriv.offset {
-            if !v.is_null() {
+        if let Some(off) = &slot_deriv.offset
+            && !v.is_null() {
                 v = apply_offset(off, v, source_map);
             }
-        }
 
         Ok(v)
     }
@@ -694,8 +687,8 @@ impl<'s> ObjectTransformer<'s> {
         source_slot_def: Option<&SlotDef>,
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
-        if let Some(ssd) = source_slot_def {
-            if !v.is_null() && !slot_deriv.hide.unwrap_or(false) {
+        if let Some(ssd) = source_slot_def
+            && !v.is_null() && !slot_deriv.hide.unwrap_or(false) {
                 v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
                 v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
                 if let Some(target_range) = slot_deriv.range.as_deref() {
@@ -703,7 +696,6 @@ impl<'s> ObjectTransformer<'s> {
                 }
                 v = self.reshape_collection(v, slot_deriv, ssd)?;
             }
-        }
         Ok(v)
     }
 
@@ -769,8 +761,8 @@ impl<'s> ObjectTransformer<'s> {
         let schema_unit: Option<String> = schema_unit_ref.as_ref().map(|u| u.code.clone());
         let spec_unit = uc.source_unit.clone();
 
-        if let (Some(su), Some(pu)) = (&schema_unit, &spec_unit) {
-            if su != pu {
+        if let (Some(su), Some(pu)) = (&schema_unit, &spec_unit)
+            && su != pu {
                 return Err(Error::SlotTransform {
                     class: source_type.to_string(),
                     slot: slot_deriv.name.clone(),
@@ -780,7 +772,6 @@ impl<'s> ObjectTransformer<'s> {
                     ),
                 });
             }
-        }
         // Resolved 'from' unit from schema or spec (may still be overridden by
         // a structured value's unit slot below).
         let mut from_unit: Option<String> = schema_unit.clone().or_else(|| spec_unit.clone());
@@ -802,8 +793,8 @@ impl<'s> ObjectTransformer<'s> {
             };
             match map.get(unit_slot) {
                 Some(Value::Str(u)) if !u.is_empty() => {
-                    if let Some(fu) = &from_unit {
-                        if u != fu {
+                    if let Some(fu) = &from_unit
+                        && u != fu {
                             return Err(Error::SlotTransform {
                                 class: source_type.to_string(),
                                 slot: slot_deriv.name.clone(),
@@ -813,7 +804,6 @@ impl<'s> ObjectTransformer<'s> {
                                 ),
                             });
                         }
-                    }
                     from_unit = Some(u.clone());
                 }
                 _ => {
@@ -1066,11 +1056,10 @@ impl<'s> ObjectTransformer<'s> {
             return false;
         }
         // Schema says range is a class → FK by definition.
-        if let Some(ss) = self.source_schema {
-            if let Ok(slot) = ss.induced_slot(slot_name, source_type) {
+        if let Some(ss) = self.source_schema
+            && let Ok(slot) = ss.induced_slot(slot_name, source_type) {
                 return slot.range_class().is_some();
             }
-        }
         // Fallback: scalar (or list of scalars) that the index can resolve.
         match value {
             Value::Str(s) => index.contains_id(s),
@@ -1138,15 +1127,14 @@ impl<'s> ObjectTransformer<'s> {
         // any_of enum shortcut (range is None/Any but enum alternatives exist).
         if matches!(source_range, RangeKind::None) && !source_slot.any_of_enums.is_empty() {
             let enum_names = source_slot.any_of_enums.clone();
-            if source_slot.multivalued {
-                if let Value::List(items) = v {
+            if source_slot.multivalued
+                && let Value::List(items) = v {
                     let mapped: Result<Vec<Value>> = items
                         .iter()
                         .map(|item| self.transform_enum(item, &enum_names, item))
                         .collect();
                     return Ok(Value::List(mapped?));
                 }
-            }
             return self.transform_enum(v, &enum_names, v);
         }
 
@@ -1161,16 +1149,16 @@ impl<'s> ObjectTransformer<'s> {
                     if let Value::List(items) = v {
                         let mapped: Result<Vec<Value>> = items
                             .iter()
-                            .map(|item| self.transform_enum(item, &[enum_name.clone()], item))
+                            .map(|item| self.transform_enum(item, std::slice::from_ref(enum_name), item))
                             .collect();
                         return Ok(Value::List(mapped?));
                     }
                     // Scalar value on a multivalued enum slot: map then wrap in a
                     // one-element list (mirror of Python single→multivalued).
-                    let mapped = self.transform_enum(v, &[enum_name.clone()], v)?;
+                    let mapped = self.transform_enum(v, std::slice::from_ref(enum_name), v)?;
                     return Ok(Value::List(vec![mapped]));
                 }
-                self.transform_enum(v, &[enum_name.clone()], v)
+                self.transform_enum(v, std::slice::from_ref(enum_name), v)
             }
             RangeKind::Class(class_name) => {
                 let target_range_str = target_range.map(|s| s.to_string());
@@ -1307,8 +1295,8 @@ impl<'s> ObjectTransformer<'s> {
             None
         };
 
-        if let Some(key_slot) = dict_key {
-            if let Value::List(items) = v {
+        if let Some(key_slot) = dict_key
+            && let Value::List(items) = v {
                 let mut result: IndexMap<String, Value> = IndexMap::new();
                 for item in items {
                     if let Value::Map(mut m) = item {
@@ -1322,11 +1310,10 @@ impl<'s> ObjectTransformer<'s> {
                 }
                 return Ok(Value::Map(result));
             }
-        }
 
         // ── Keyed dict → list ────────────────────────────────────────────────
-        if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as {
-            if let Value::Map(m) = v {
+        if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as
+            && let Value::Map(m) = v {
                 // Look up the identifier slot of the source range class so we
                 // can re-inject the key into each value object.
                 let id_slot_name: Option<String> =
@@ -1358,7 +1345,6 @@ impl<'s> ObjectTransformer<'s> {
                     .collect();
                 return Ok(Value::List(list));
             }
-        }
 
         Ok(v)
     }
@@ -1538,9 +1524,9 @@ impl<'s> ObjectTransformer<'s> {
                 Some(CollectionType::MultiValuedList) | Some(CollectionType::MultiValuedDict)
             ) || slot_deriv.dictionary_key.is_some();
             let is_map = matches!(&v, Value::Map(_));
-            if !matches!(&v, Value::Null)
-                && !matches!(&v, Value::List(_))
-                && !(reshape_will_handle && is_map)
+            if !(matches!(&v, Value::Null)
+                || matches!(&v, Value::List(_))
+                || (reshape_will_handle && is_map))
             {
                 return self.single_to_multivalued(v, slot_deriv);
             }
@@ -1566,19 +1552,16 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
         // stringification reversed = split → list.
-        if let Some(s) = &sd.stringification {
-            if s.reversed.unwrap_or(false) {
+        if let Some(s) = &sd.stringification
+            && s.reversed.unwrap_or(false) {
                 return true;
             }
-        }
         // Target schema says multivalued.
-        if let Some(ts) = self.target_schema {
-            if let Ok(slot) = ts.induced_slot(&sd.name, &cd.name) {
-                if slot.multivalued {
+        if let Some(ts) = self.target_schema
+            && let Ok(slot) = ts.induced_slot(&sd.name, &cd.name)
+                && slot.multivalued {
                     return true;
                 }
-            }
-        }
         // Fallback: when the source slot is multivalued and no explicit
         // single-valued directive applied, treat the target as multivalued too
         // (a scalar value is wrapped in a one-element list). Mirrors Python
@@ -1590,34 +1573,30 @@ impl<'s> ObjectTransformer<'s> {
     }
 
     fn is_coerce_to_singlevalued(&self, sd: &SlotDerivation, cd: &ClassDerivation) -> bool {
-        if let Some(cast_as) = &sd.cast_collection_as {
-            if matches!(cast_as, CollectionType::SingleValued) {
+        if let Some(cast_as) = &sd.cast_collection_as
+            && matches!(cast_as, CollectionType::SingleValued) {
                 return true;
             }
-        }
         // stringification not reversed = join → string.
-        if let Some(s) = &sd.stringification {
-            if !s.reversed.unwrap_or(false) {
+        if let Some(s) = &sd.stringification
+            && !s.reversed.unwrap_or(false) {
                 return true;
             }
-        }
         // Target schema says single-valued.
-        if let Some(ts) = self.target_schema {
-            if let Ok(slot) = ts.induced_slot(&sd.name, &cd.name) {
-                if !slot.multivalued {
+        if let Some(ts) = self.target_schema
+            && let Ok(slot) = ts.induced_slot(&sd.name, &cd.name)
+                && !slot.multivalued {
                     return true;
                 }
-            }
-        }
         false
     }
 
     fn single_to_multivalued(&self, v: Value, sd: &SlotDerivation) -> Result<Value> {
         // If stringification.reversed: split the string.
-        if let Some(s) = &sd.stringification {
-            if s.reversed.unwrap_or(false) {
-                if let Value::Str(ref sv) = v {
-                    if let Some(delim) = &s.delimiter {
+        if let Some(s) = &sd.stringification
+            && s.reversed.unwrap_or(false)
+                && let Value::Str(ref sv) = v
+                    && let Some(delim) = &s.delimiter {
                         let parts: Vec<Value> = sv
                             .split(delim.as_str())
                             .map(|p| Value::Str(p.to_string()))
@@ -1629,9 +1608,6 @@ impl<'s> ObjectTransformer<'s> {
                         };
                         return Ok(Value::List(parts));
                     }
-                }
-            }
-        }
         Ok(Value::List(vec![v]))
     }
 
@@ -1716,11 +1692,10 @@ impl<'s> ObjectTransformer<'s> {
                     (None, false) => eval_expr_with_mapping(expr, &bindings),
                     (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
                 };
-                if let Ok(v) = evaled {
-                    if !v.is_null() {
+                if let Ok(v) = evaled
+                    && !v.is_null() {
                         return Ok(v);
                     }
-                }
             }
 
             // Permissible value derivations.
@@ -1729,11 +1704,10 @@ impl<'s> ObjectTransformer<'s> {
                 for (_, pvd) in pvds {
                     // populated_from match — v0.6.0 list-form (#250): a single
                     // string or a list of source PVs, any of which maps here.
-                    if let Some(sources) = &pvd.populated_from {
-                        if sources.iter().any(|s| s == &src_str) {
+                    if let Some(sources) = &pvd.populated_from
+                        && sources.iter().any(|s| s == &src_str) {
                             return Ok(Value::Str(pvd.name.clone()));
                         }
-                    }
                 }
             }
 
@@ -1844,11 +1818,10 @@ impl<'s> ObjectTransformer<'s> {
         }
 
         // Fall back to first class derivation name.
-        if let Some(derivations) = &self.spec.class_derivations {
-            if let Some(first) = derivations.first() {
+        if let Some(derivations) = &self.spec.class_derivations
+            && let Some(first) = derivations.first() {
                 return Ok(first.name.clone());
             }
-        }
 
         Err(Error::SourceTypeUnresolvable(
             "no source_type provided, no tree root, and spec has no class_derivations".to_string(),
@@ -1927,8 +1900,8 @@ fn resolve_aggregation_source(
     if let Some(dot) = src_key.find('.') {
         let alias = &src_key[..dot];
         let field = &src_key[dot + 1..];
-        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref()) {
-            if let Some(ac) = joins.get(alias) {
+        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
+            && let Some(ac) = joins.get(alias) {
                 let table = ac.class_named.as_deref().unwrap_or(alias);
                 let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
                 if let Some(key_val) = key_val {
@@ -1947,7 +1920,6 @@ fn resolve_aggregation_source(
                     return Value::Null;
                 }
             }
-        }
     }
     source_map.get(src_key).cloned().unwrap_or(Value::Null)
 }
@@ -1982,8 +1954,8 @@ fn resolve_populated_from_raw(
         }
         let alias = &populated_from[..dot];
         let field = &populated_from[dot + 1..];
-        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref()) {
-            if let Some(ac) = joins.get(alias) {
+        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
+            && let Some(ac) = joins.get(alias) {
                 let table = ac.class_named.as_deref().unwrap_or(alias);
                 return Ok(source_map
                     .get(join_source_key(ac).unwrap_or(""))
@@ -1997,7 +1969,6 @@ fn resolve_populated_from_raw(
                     })
                     .unwrap_or(Value::Null));
             }
-        }
         // No join index — fall through to plain map lookup.
         return Ok(source_map
             .get(populated_from)
@@ -2031,11 +2002,10 @@ fn is_inline_path(
     let first_segment = populated_from.split('.').next().unwrap_or(populated_from);
     let slot = source_schema.and_then(|sv| sv.induced_slot(first_segment, source_type).ok());
     // `slot.range in sv.all_classes()` is encoded directly by `RangeKind::Class`.
-    if let Some(slot) = &slot {
-        if slot.is_object_range() && (slot.inlined || slot.inlined_as_list) {
+    if let Some(slot) = &slot
+        && slot.is_object_range() && (slot.inlined || slot.inlined_as_list) {
             return true;
         }
-    }
     matches!(
         source_map.get(first_segment),
         Some(Value::Map(_)) | Some(Value::List(_))

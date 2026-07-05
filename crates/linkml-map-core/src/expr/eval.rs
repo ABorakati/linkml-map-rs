@@ -280,11 +280,10 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             let mut out = Vec::new();
             for item in items {
                 scope.insert(var.clone(), item);
-                if let Some(c) = cond {
-                    if !eval_ast(c, &scope)?.is_truthy() {
+                if let Some(c) = cond
+                    && !eval_ast(c, &scope)?.is_truthy() {
                         continue;
                     }
-                }
                 out.push(eval_ast(elt, &scope)?);
             }
             Ok(Value::List(out))
@@ -737,21 +736,17 @@ fn maybe_coerce_numeric(left: &Value, right: &Value) -> (Value, Value) {
         return (left.clone(), right.clone());
     }
     // left numeric (non-bool), right str → coerce right to type(left)
-    if is_real_number(left) {
-        if let Value::Str(s) = right {
-            if let Some(coerced) = coerce_str_to_type_of(s, left) {
+    if is_real_number(left)
+        && let Value::Str(s) = right
+            && let Some(coerced) = coerce_str_to_type_of(s, left) {
                 return (left.clone(), coerced);
             }
-        }
-    }
     // right numeric (non-bool), left str → coerce left to type(right)
-    if is_real_number(right) {
-        if let Value::Str(s) = left {
-            if let Some(coerced) = coerce_str_to_type_of(s, right) {
+    if is_real_number(right)
+        && let Value::Str(s) = left
+            && let Some(coerced) = coerce_str_to_type_of(s, right) {
                 return (coerced, right.clone());
             }
-        }
-    }
     (left.clone(), right.clone())
 }
 
@@ -1108,13 +1103,12 @@ fn list_func_reduce(
         return Ok(Value::Null);
     }
     // max/min/len accept the list as a single argument (no distribution).
-    if args.len() == 1 {
-        if let Value::List(items) = &args[0] {
+    if args.len() == 1
+        && let Value::List(items) = &args[0] {
             return f(items);
         }
         // max/min over multiple positional args also valid in Python, but the
         // single-list form is what these expressions use.
-    }
     // Multiple positional args: treat them as the iterable.
     f(&args).map_err(|_| ExprError::Eval(format!("{name}() argument error")))
 }

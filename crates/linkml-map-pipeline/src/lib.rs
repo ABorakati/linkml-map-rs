@@ -971,11 +971,10 @@ mod tests {
 
         let mut seen_ids: HashMap<String, bool> = HashMap::new();
         for row in &loaded {
-            if let Value::Map(m) = row {
-                if let Some(Value::Str(id)) = m.get("id") {
+            if let Value::Map(m) = row
+                && let Some(Value::Str(id)) = m.get("id") {
                     seen_ids.insert(id.clone(), true);
                 }
-            }
         }
         assert_eq!(seen_ids.len(), 1000, "not all IDs present in output");
 
@@ -1056,9 +1055,9 @@ mod tests {
 
         // Verify the plan detects FK need.
         let plan = CompiledPlan::load(
-            &std::path::Path::new(&cfg.spec_path),
-            &std::path::Path::new(&cfg.schema_path),
-            &std::path::Path::new(&cfg.target_schema_path),
+            std::path::Path::new(&cfg.spec_path),
+            std::path::Path::new(&cfg.schema_path),
+            std::path::Path::new(&cfg.target_schema_path),
             cfg.source_class.as_deref(),
         )
         .expect("plan load failed");

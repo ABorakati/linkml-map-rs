@@ -178,31 +178,26 @@ impl<'a> TransformationSpecificationInverter<'a> {
         let source_slot =
             self.lookup_source_slot(source_cls_name.as_deref(), sd.populated_from.as_deref());
 
-        if sd.range.is_some() {
-            if let Some(ss) = &source_slot {
+        if sd.range.is_some()
+            && let Some(ss) = &source_slot {
                 inv.range = range_name(&ss.range);
-                if let RangeKind::Class(rc) = &ss.range {
-                    if let Ok(Some(id_slot)) = self.source_schema.identifier_slot(rc) {
+                if let RangeKind::Class(rc) = &ss.range
+                    && let Ok(Some(id_slot)) = self.source_schema.identifier_slot(rc) {
                         inv.dictionary_key = Some(id_slot.name);
                     }
-                }
             }
-        }
 
-        if let Some(ss) = &source_slot {
-            if ss.multivalued {
+        if let Some(ss) = &source_slot
+            && ss.multivalued {
                 if ss.inlined_as_list {
                     inv.cast_collection_as = Some(CollectionType::MultiValuedList);
-                } else if ss.inlined {
-                    if let RangeKind::Class(rc) = &ss.range {
-                        if let Ok(Some(id_slot)) = self.source_schema.identifier_slot(rc) {
+                } else if ss.inlined
+                    && let RangeKind::Class(rc) = &ss.range
+                        && let Ok(Some(id_slot)) = self.source_schema.identifier_slot(rc) {
                             inv.cast_collection_as = Some(CollectionType::MultiValuedDict);
                             inv.dictionary_key = Some(id_slot.name);
                         }
-                    }
-                }
             }
-        }
 
         if let Some(uc) = &sd.unit_conversion {
             // Re-resolve the source slot's declared unit → the inverse's target unit.

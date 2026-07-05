@@ -245,12 +245,11 @@ fn normalise_python_compatible_metaslots(value: &mut serde_json::Value, in_examp
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map.iter_mut() {
-                if key == "deprecated" {
-                    if let Some(b) = child.as_bool() {
+                if key == "deprecated"
+                    && let Some(b) = child.as_bool() {
                         *child = serde_json::Value::String(b.to_string());
                         continue;
                     }
-                }
                 if key == "in_subset" && child.is_string() {
                     *child = serde_json::Value::Array(vec![child.clone()]);
                     continue;
@@ -642,11 +641,10 @@ impl SchemaViewProvider {
         };
         let enum_names: HashSet<_> = self.all_enum_names_internal().into_iter().collect();
         for expr in any_of {
-            if let Some(range) = &expr.range {
-                if enum_names.contains(range.as_str()) {
+            if let Some(range) = &expr.range
+                && enum_names.contains(range.as_str()) {
                     result.push(range.clone());
                 }
-            }
         }
         result
     }

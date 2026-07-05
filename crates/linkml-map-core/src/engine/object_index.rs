@@ -166,11 +166,10 @@ impl ObjectIndex {
     /// Look up a referenced object by `(class, id)`, falling back to the flat
     /// `id` index when the class is unknown / not indexed typed.
     pub fn get(&self, class: Option<&str>, id: &str) -> Option<&Value> {
-        if let Some(c) = class {
-            if let Some(v) = self.by_class_id.get(&(c.to_string(), id.to_string())) {
+        if let Some(c) = class
+            && let Some(v) = self.by_class_id.get(&(c.to_string(), id.to_string())) {
                 return Some(v);
             }
-        }
         self.by_id.get(id)
     }
 
