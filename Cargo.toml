@@ -6,7 +6,7 @@ members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-
 # cargo build --lib -p linkml-map-py  also works (skips Python linking)
 
 [workspace.package]
-version = "0.1.16"
+version = "0.1.17"
 edition = "2024"
 license = "Apache-2.0"
 
