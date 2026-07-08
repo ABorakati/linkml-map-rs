@@ -2,8 +2,11 @@
 
 ## Source Repository
 - **URL**: https://github.com/linkml/linkml-map
-- **Upstream Commit**: 19b1985889ec0fc247145e9aa03eb74a4d7b3588
+- **Upstream Commit**: 66cbcc31b5169f8f95a70f164161a4cee1c6a2bb
 - **Clone Date**: 2026-06-13
+- **Pin history**: see [`docs/upstream-sync-2026-07-07.md`](../../docs/upstream-sync-2026-07-07.md)
+  for the 2026-07-07 pin-drift review that moved the pin from
+  `19b1985889ec0fc247145e9aa03eb74a4d7b3588` to this commit.
 
 ## Contents
 
@@ -65,8 +68,8 @@ Total vendored: **8 files** from compliance suite.
 
 ## Additional Vendored Upstream Source
 
-`reference/upstream-python/` contains nine Python source modules from the same pinned commit
-(`19b1985889ec0fc247145e9aa03eb74a4d7b3588`), covering `transformer/`, `utils/`, `datamodel/`,
+`reference/upstream-python/` contains twelve Python source modules from the same pinned commit
+(`66cbcc31b5169f8f95a70f164161a4cee1c6a2bb`), covering `transformer/`, `utils/`, `datamodel/`,
 and `inference/inverter.py`. These are read-only porting references — not built or executed.
 See [`reference/upstream-python/README.md`](../../reference/upstream-python/README.md) for the
 full file listing and fetch details.

@@ -46,12 +46,17 @@ A real fix only lands here once it has landed upstream and we re-pin.
 
 ## Upstream reference
 
-- Pinned upstream commit: **`19b1985889ec0fc247145e9aa03eb74a4d7b3588`**.
+- Pinned upstream commit: **`66cbcc31b5169f8f95a70f164161a4cee1c6a2bb`**.
+  Latest pin-drift review: [`docs/upstream-sync-2026-07-07.md`](docs/upstream-sync-2026-07-07.md)
+  (upstream is at `v0.5.3-rc2`; the DuckDB set-based join engine and the
+  SCAN/MIGRATE normalization refactor are the largest deferred items — see
+  that report before starting the next review).
 - Read-only Python source the port mirrors:
   [`reference/upstream-python/`](reference/upstream-python/) (object_transformer,
-  engine, eval_utils, fk_utils, lookup_index, schema_patch, transformer_model,
-  inference/inverter). Consult these for the "mirror Python" doctrine — they are
-  **not built or imported**.
+  engine, transformer, eval_utils, fk_utils, lookup_index, schema_patch,
+  join_utils, expression_locations, transformer_model, inference/inverter).
+  Consult these for the "mirror Python" doctrine — they are **not built or
+  imported**.
 - Vendored compliance suite + fixtures: [`tests/compliance/`](tests/compliance/),
   provenance in [`tests/compliance/PROVENANCE.md`](tests/compliance/PROVENANCE.md).
 - The `schemaview` backend is git-pinned in

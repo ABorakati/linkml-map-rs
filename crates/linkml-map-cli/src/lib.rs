@@ -1,11 +1,20 @@
 //! Public library surface of `linkml-map-cli`.
 //!
-//! Exposes [`run_map_data_config`] so integration tests can exercise the
-//! pipeline logic without spawning a subprocess.
+//! Exposes [`run_map_data_config`] and [`run_validate_config`] so integration
+//! tests can exercise the CLI logic without spawning a subprocess.
+
+use std::path::Path;
 
 use anyhow::Result;
+use linkml_map_core::schema::SchemaProvider;
+use linkml_map_core::validate::validate_spec_semantics;
 use linkml_map_io::Format;
-use linkml_map_pipeline::{PipelineConfig, PipelineStats};
+use linkml_map_pipeline::{load_transform_spec, PipelineConfig, PipelineStats};
+use linkml_map_schemaview::SchemaViewProvider;
+
+/// Re-exported from `linkml-map-core` so callers/tests of [`run_validate_config`]
+/// can inspect message severity/content without depending on core directly.
+pub use linkml_map_core::validate::{Severity, ValidationMessage};
 
 // ── Format parsing (pub for tests) ───────────────────────────────────────────
 
@@ -48,7 +57,10 @@ pub struct MapDataConfig {
     pub workers: usize,
     /// `true` → rows written in arrival order (max throughput, output order undefined).
     pub unordered: bool,
-    /// Input data file path.
+    /// Input data path — a single data file (default), or a *directory* of tables
+    /// for multi-table joins (each file is a named table matched by filename stem;
+    /// the primary table is streamed and joined tables feed a lookup index). See
+    /// [`linkml_map_pipeline::PipelineConfig::source_path`].
     pub input: String,
 }
 
@@ -116,4 +128,59 @@ pub async fn run_map_data_config(cfg: MapDataConfig) -> Result<PipelineStats> {
     );
 
     Ok(stats)
+}
+
+// ── validate: programmatic entry point ────────────────────────────────────────
+
+/// Configuration for a `validate` invocation (mirroring the CLI flags).
+///
+/// Validation is a read-only pre-flight check: it cross-references the spec
+/// against whichever schemas are supplied and never runs a transform. At least
+/// one of `source_schema` / `target_schema` should be set — with neither,
+/// [`validate_spec_semantics`] has nothing to check and returns no messages.
+pub struct ValidateConfig {
+    /// Path to the transformation spec YAML (-T).
+    pub spec: String,
+    /// Path to the source LinkML schema YAML (-s). `None` → skip source checks.
+    pub source_schema: Option<String>,
+    /// Path to the target LinkML schema YAML. `None` → skip target checks.
+    pub target_schema: Option<String>,
+    /// When `true`, unresolved expression references are errors, not warnings.
+    pub strict: bool,
+}
+
+/// Run `validate` programmatically and return every [`ValidationMessage`].
+///
+/// The source schema is loaded with the spec's `source_schema_patches` applied
+/// (matching the transform path); the target schema is loaded unpatched (as it
+/// is everywhere else in the codebase). The returned messages are in the same
+/// order [`validate_spec_semantics`] produces them.
+pub fn run_validate_config(cfg: ValidateConfig) -> Result<Vec<ValidationMessage>> {
+    let spec = load_transform_spec(Path::new(&cfg.spec))?;
+
+    let source = cfg
+        .source_schema
+        .as_deref()
+        .map(|p| {
+            SchemaViewProvider::load_from_path_with_patch(
+                Path::new(p),
+                spec.source_schema_patches.as_ref(),
+            )
+        })
+        .transpose()?;
+
+    let target = cfg
+        .target_schema
+        .as_deref()
+        .map(|p| SchemaViewProvider::load_from_path(Path::new(p)))
+        .transpose()?;
+
+    let messages = validate_spec_semantics(
+        &spec,
+        source.as_ref().map(|p| p as &dyn SchemaProvider),
+        target.as_ref().map(|p| p as &dyn SchemaProvider),
+        cfg.strict,
+    );
+
+    Ok(messages)
 }

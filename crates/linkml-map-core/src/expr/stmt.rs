@@ -48,6 +48,32 @@ pub struct Program {
 }
 
 impl Program {
+    /// Collect every expression [`Ast`] carried by the program — assignment
+    /// right-hand sides, `if` conditions, and bare expression statements —
+    /// recursing into nested `if` bodies. Used by expression-location scanning
+    /// (`crate::normalize::expression_locations`) to find cross-table
+    /// references inside multi-statement `expr:` blocks, mirroring upstream's
+    /// `ast.walk` over an exec-mode parse.
+    pub fn exprs(&self) -> Vec<&Ast> {
+        let mut out = Vec::new();
+        collect_stmt_exprs(&self.stmts, &mut out);
+        out
+    }
+
+    /// Collect every name bound by an assignment in this program — the
+    /// left-hand side of each `name = <expr>` statement, recursing into `if`
+    /// bodies. These are the "locally bound" names that expression-reference
+    /// scanning (`crate::validate::expr_refs`) must exclude, mirroring how
+    /// upstream's `extract_expr_slot_references` drops `ast.Name` nodes in a
+    /// `Store` context. Assignment targets are not `Ast` nodes in this parser
+    /// (they live on [`Stmt::Assign`]), so they cannot be recovered by walking
+    /// [`exprs`](Self::exprs) alone.
+    pub fn assigned_names(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_assigned_names(&self.stmts, &mut out);
+        out
+    }
+
     /// Evaluate the program against `vars` and return the `target` symbol.
     ///
     /// `vars` must already carry the `src` binding (the whole source object)
@@ -60,6 +86,29 @@ impl Program {
         env.insert("target".to_string(), Value::Null);
         exec_block(&self.stmts, &mut env)?;
         Ok(env.get("target").cloned().unwrap_or(Value::Null))
+    }
+}
+
+fn collect_assigned_names(stmts: &[Stmt], out: &mut Vec<String>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Assign { name, .. } => out.push(name.clone()),
+            Stmt::If { body, .. } => collect_assigned_names(body, out),
+            Stmt::Expr(_) => {}
+        }
+    }
+}
+
+fn collect_stmt_exprs<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Ast>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Assign { value, .. } => out.push(value),
+            Stmt::If { cond, body } => {
+                out.push(cond);
+                collect_stmt_exprs(body, out);
+            }
+            Stmt::Expr(ast) => out.push(ast),
+        }
     }
 }
 

@@ -23,6 +23,45 @@ use crate::value::Value;
 /// Variable bindings: name → value mapping.
 pub type Bindings = IndexMap<String, Value>;
 
+/// Names injected into the unrestricted-eval namespace by the transformer
+/// (`src`, `target`, `uuid5`) that are neither source slots nor tables. The
+/// restricted evaluator does not bind them, so a qualified `{src.x}` must not be
+/// flagged as an unknown reference. Mirrors Python
+/// `eval_utils.INJECTED_EVAL_NAMES`; shared with normalization-time reference
+/// checking (see `crate::normalize`).
+pub const INJECTED_EVAL_NAMES: &[&str] = &["src", "target", "uuid5"];
+
+/// Names of the built-in expression functions. A qualified `{func.x}` root
+/// resolves to a function (not an unknown name), so it must not fail loud;
+/// normalization-time reference checking treats these as known too. Mirrors the
+/// keys of Python `eval_utils.FUNCTIONS` (plus the injected `slot`).
+pub const FUNCTION_NAMES: &[&str] = &[
+    "max",
+    "min",
+    "len",
+    "str",
+    "lower",
+    "upper",
+    "title",
+    "capitalize",
+    "slugify",
+    "int",
+    "float",
+    "bool",
+    "abs",
+    "round",
+    "strlen",
+    "uuid5",
+    "case",
+    "is_numeric",
+    "slot",
+];
+
+/// True when `name` is a built-in expression function.
+fn is_function_name(name: &str) -> bool {
+    FUNCTION_NAMES.contains(&name)
+}
+
 thread_local! {
     /// When set, an unbound identifier (or an unresolved `slot()` lookup)
     /// raises [`ExprError::Eval`] instead of resolving to [`Value::Null`].
@@ -221,6 +260,30 @@ pub fn eval_expr(expr: &str) -> ExprResult<Value> {
     eval_expr_with_mapping(expr, &vars)
 }
 
+/// Parse `expr` and return the top-level expression [`Ast`] node(s) it carries.
+///
+/// A single expression yields one node; a multi-statement (`asteval`-style)
+/// block yields one node per assignment RHS, `if` condition, and expression
+/// statement (recursing into nested `if` bodies). The `"None"` literal yields a
+/// single [`Ast::None`]. This is the Rust counterpart to Python's
+/// `ast.parse(expr, mode="exec")` + `ast.walk` used by
+/// `expression_locations.extract_*`; callers walk each returned node to find
+/// braced references and table references.
+///
+/// # Errors
+/// Propagates a parse error for a malformed expression (mirroring upstream
+/// surfacing a `SyntaxError` rather than masking it).
+pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
+    if expr == "None" {
+        return Ok(vec![Ast::None]);
+    }
+    if is_multi_statement(expr) {
+        let program = parse_program(expr)?;
+        return Ok(program.exprs().into_iter().cloned().collect());
+    }
+    Ok(vec![parse(expr)?])
+}
+
 fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
     match node {
         Ast::Int(i) => Ok(Value::Int(*i)),
@@ -235,6 +298,26 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         Ast::Brace(inner) => eval_ast(inner, vars),
 
         Ast::Attribute { value, attr } => {
+            // A qualified `{Name.attr}` whose root Name is genuinely unbound —
+            // not an injected eval name, not a function, and absent from the
+            // bindings — is a broken reference (a typo or a missing/renamed
+            // table) and fails loud even in lax mode. Mirrors upstream
+            // `RestrictedEvaluator._eval_attribute` (utils/eval_utils.py at
+            // 66cbcc31b5), where the root is resolved via the base name lookup
+            // and a `NameNotDefined` there becomes a `NameError`. A *bare*
+            // `{col}` (a Name, not an Attribute) and a root that resolves to
+            // None (a sparse-join miss, or an absent schema slot bound to Null)
+            // both stay null — only a root with no possible binding errors.
+            if let Ast::Name(root) = value.as_ref()
+                && !INJECTED_EVAL_NAMES.contains(&root.as_str())
+                && !is_function_name(root)
+                && !vars.contains_key(root)
+            {
+                return Err(ExprError::Eval(format!(
+                    "Expression references unknown '{root}' in '{root}.{attr}': \
+                     no such source class, join, or slot. Typo or stale reference?"
+                )));
+            }
             let obj = eval_ast(value, vars)?;
             distributed_getattr(&obj, attr)
         }
@@ -1604,6 +1687,31 @@ mod tests {
             eval_expr_with_mapping("missing", &vars).unwrap(),
             Value::Null
         );
+    }
+
+    #[test]
+    fn test_qualified_unknown_root_fails_loud() {
+        // A qualified `{Unknown.col}` whose root is unbound raises, even in lax
+        // mode — distinct from a bare `{missing}` and a known-but-None root.
+        let mut vars = Bindings::new();
+        vars.insert("a".into(), Value::Int(1));
+        let err = eval_expr_with_mapping("{Nope.col}", &vars).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown 'Nope'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_bare_absent_and_known_none_stay_null() {
+        // Bare absent names and known-but-None roots null out rather than raising.
+        let mut vars = Bindings::new();
+        vars.insert("a".into(), Value::Int(1));
+        assert_eq!(eval_expr_with_mapping("{missing}", &vars).unwrap(), Value::Null);
+        // Root `a` is bound (to None) → getattr(None, b) → Null, no raise.
+        let mut vars2 = Bindings::new();
+        vars2.insert("a".into(), Value::Null);
+        assert_eq!(eval_expr_with_mapping("{a.b}", &vars2).unwrap(), Value::Null);
     }
 
     #[test]

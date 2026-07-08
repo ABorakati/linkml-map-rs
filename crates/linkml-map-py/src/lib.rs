@@ -14,10 +14,30 @@
 //! result = t.transform({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 //! results = t.transform_many([obj1, obj2])
 //!
+//! # Cross-table joins: register the joined table's rows before transforming
+//! # (mirrors upstream Transformer.lookup_index, but rows are supplied
+//! # in-memory rather than loaded from a file).
+//! t.register_join_table("demographics", [{"patient_id": "P:1", "age": 42}], "patient_id")
+//! result = t.transform({"pid": "P:1"})   # spec's `joins:`/`{alias.field}` now resolves
+//!
 //! # Convenience free functions (schema/spec loaded on every call — use the
 //! # class when transforming many objects from the same spec).
 //! result = transform_object(obj, source_schema="source.yaml", spec="transform.yaml")
 //! results = transform_objects(objs, source_schema="source.yaml", spec="transform.yaml")
+//!
+//! # Pre-flight validation: cross-reference a spec against its schema(s)
+//! # WITHOUT running any transform (no implicit-join synthesis either — it
+//! # checks the spec exactly as parsed, so it catches problems before that
+//! # stage runs). Returns [] if neither schema is given.
+//! from linkml_map_rs import validate_spec
+//! messages = validate_spec(
+//!     "transform.yaml",
+//!     source_schema="source.yaml",
+//!     target_schema="target.yaml",   # optional
+//!     strict=False,                  # optional; True escalates expr warnings to errors
+//! )
+//! for msg in messages:
+//!     print(msg.severity, msg.path, msg.message)   # or just: print(msg)
 //! ```
 //!
 //! # dict <-> Value bridging
@@ -47,11 +67,16 @@
 //! upstream Python's in-memory `ObjectTransformer`, which never round-trips
 //! through JSON and so preserves native `date`/`datetime` objects untouched.
 
+use std::sync::Arc;
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use linkml_map_core::{
-    datamodel::TransformationSpecification, engine::ObjectTransformer, value::Value,
+    datamodel::TransformationSpecification,
+    engine::{LookupIndex, ObjectTransformer},
+    validate::{validate_spec_semantics, ValidationMessage},
+    value::Value,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 
@@ -196,11 +221,35 @@ fn load_source_provider(
         })
 }
 
+/// Resolve implicit cross-table joins on a freshly loaded spec, once the source
+/// schema is available. Mirrors upstream `Transformer.derived_specification`:
+/// implicit `{Table.col}` references are rewritten into explicit joins before
+/// any object is transformed (synthesis walks the source schema's classes, so
+/// it cannot run at raw spec-parse time). Called once at each build-once entry
+/// — the reusable `Transformer` constructors and the one-shot free functions —
+/// so `.transform` / `.transform_many` reuse the derived spec instead of paying
+/// synthesis per object. Raises `ValueError` on an un-keyable / un-hostable
+/// reference, matching the `ValueError` Python's `_synthesize_implicit_joins`
+/// raises.
+fn derive_spec(
+    mut spec: TransformationSpecification,
+    source: &SchemaViewProvider,
+) -> PyResult<TransformationSpecification> {
+    linkml_map_core::normalize::synthesize_implicit_joins(
+        &mut spec,
+        source as &dyn linkml_map_core::schema::SchemaProvider,
+    )
+    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(spec)
+}
+
 // ── Core transform logic ──────────────────────────────────────────────────────
 
 /// Inner implementation shared by `Transformer.transform` and the free function.
 ///
 /// `source_class` is `None` → engine infers from `tree_root` or first derivation.
+/// `lookup_index` is `None` unless the caller registered joined-table rows via
+/// `Transformer.register_join_table` — see that method for the resolution path.
 fn run_transform(
     py: Python<'_>,
     obj: &Bound<'_, PyAny>,
@@ -208,14 +257,18 @@ fn run_transform(
     source_provider: &SchemaViewProvider,
     target_provider: Option<&SchemaViewProvider>,
     source_class: Option<&str>,
+    lookup_index: Option<&Arc<LookupIndex>>,
 ) -> PyResult<PyObject> {
     let input_value = py_to_value(py, obj)?;
 
-    let engine = ObjectTransformer::new(
+    let mut engine = ObjectTransformer::new(
         spec.clone(),
         Some(source_provider as &dyn linkml_map_core::schema::SchemaProvider),
         target_provider.map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
     );
+    if let Some(li) = lookup_index {
+        engine = engine.with_lookup_index(Arc::clone(li));
+    }
 
     // `map_container` builds a foreign-key ObjectIndex from the whole input
     // first, then maps — handling cross-row FK joins. For non-FK input the index
@@ -255,6 +308,10 @@ struct PyTransformer {
     source_provider: SchemaViewProvider,
     target_provider: Option<SchemaViewProvider>,
     source_class: Option<String>,
+    /// Cross-table join data, populated via `register_join_table`. `None`
+    /// until the first registration; attached to the engine on every
+    /// `transform` / `transform_many` / `map_object` call once present.
+    lookup_index: Option<Arc<LookupIndex>>,
 }
 
 #[pymethods]
@@ -269,6 +326,7 @@ impl PyTransformer {
     ) -> PyResult<Self> {
         let spec_parsed = load_spec(&spec)?;
         let source_provider = load_source_provider(&source_schema, &spec_parsed)?;
+        let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
         let target_provider = target_schema
             .as_deref()
             .map(load_schema_provider)
@@ -278,6 +336,7 @@ impl PyTransformer {
             source_provider,
             target_provider,
             source_class,
+            lookup_index: None,
         })
     }
 
@@ -292,12 +351,13 @@ impl PyTransformer {
         target_schema_yaml: Option<String>,
         source_class: Option<String>,
     ) -> PyResult<Self> {
-        let spec = parse_spec_yaml(&spec_yaml)?;
+        let spec_parsed = parse_spec_yaml(&spec_yaml)?;
         let source_provider = SchemaViewProvider::from_yaml_str_with_patch(
             &source_schema_yaml,
-            spec.source_schema_patches.as_ref(),
+            spec_parsed.source_schema_patches.as_ref(),
         )
         .map_err(|e| PyValueError::new_err(format!("Failed to parse source schema YAML: {e}")))?;
+        let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
         let target_provider = target_schema_yaml
             .as_deref()
             .map(|y| {
@@ -307,10 +367,11 @@ impl PyTransformer {
             })
             .transpose()?;
         Ok(Self {
-            spec,
+            spec: spec_parsed,
             source_provider,
             target_provider,
             source_class,
+            lookup_index: None,
         })
     }
 
@@ -336,6 +397,7 @@ impl PyTransformer {
             spec_parsed.source_schema_patches.as_ref(),
         )
         .map_err(|e| PyValueError::new_err(format!("Failed to parse source schema JSON: {e}")))?;
+        let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
 
         let target_provider = target_schemaview
             .map(|t| {
@@ -351,6 +413,7 @@ impl PyTransformer {
             source_provider,
             target_provider,
             source_class,
+            lookup_index: None,
         })
     }
 
@@ -363,6 +426,7 @@ impl PyTransformer {
             &self.source_provider,
             self.target_provider.as_ref(),
             self.source_class.as_deref(),
+            self.lookup_index.as_ref(),
         )
     }
 
@@ -383,6 +447,7 @@ impl PyTransformer {
             &self.source_provider,
             self.target_provider.as_ref(),
             source_class,
+            self.lookup_index.as_ref(),
         )
     }
 
@@ -401,9 +466,52 @@ impl PyTransformer {
                     &self.source_provider,
                     self.target_provider.as_ref(),
                     self.source_class.as_deref(),
+                    self.lookup_index.as_ref(),
                 )
             })
             .collect()
+    }
+
+    /// Register (or replace) a joined table's rows for cross-table join
+    /// resolution.
+    ///
+    /// Mirrors upstream `Transformer.lookup_index`
+    /// (`utils/lookup_index.py::LookupIndex.register_table`), except tables
+    /// are supplied directly as in-memory row dicts rather than loaded from a
+    /// CSV/TSV/JSON file — the Python caller owns getting the joined data
+    /// into memory (however it likes), and only hands the rows to the Rust
+    /// engine. This lets a `joins:` block (explicit, or synthesized from an
+    /// implicit `{Table.col}` reference — see `Transformer.__init__`) resolve
+    /// `populated_from: "alias.field"` / `expr: "{alias.field}"` bindings
+    /// against real data instead of always yielding `null`.
+    ///
+    /// `rows` is a list of dicts, converted to the engine's `Value` via the
+    /// same JSON bridge `.transform()` uses. `key_column` names the column in
+    /// `rows` that join lookups match against (the spec's `joins:` entry
+    /// supplies the *source*-side key via `source_key`/`join_on`).
+    ///
+    /// Multiple tables accumulate across calls; calling again with the same
+    /// `name` replaces that table's rows (mirrors `LookupIndex::register_table`).
+    /// Call this before `.transform()` / `.map_object()` / `.transform_many()`
+    /// — each call snapshots the currently-registered tables into a fresh
+    /// index, so later registrations are not retroactively visible to a
+    /// transform that already ran.
+    #[pyo3(signature = (name, rows, key_column))]
+    fn register_join_table(
+        &mut self,
+        py: Python<'_>,
+        name: String,
+        rows: Vec<Bound<'_, PyAny>>,
+        key_column: String,
+    ) -> PyResult<()> {
+        let values: Vec<Value> = rows
+            .iter()
+            .map(|r| py_to_value(py, r))
+            .collect::<PyResult<Vec<_>>>()?;
+        let mut index = self.lookup_index.as_deref().cloned().unwrap_or_default();
+        index.register_table(&name, &values, &key_column);
+        self.lookup_index = Some(Arc::new(index));
+        Ok(())
     }
 
     fn __repr__(&self) -> String {
@@ -454,6 +562,7 @@ fn transform_object(
 ) -> PyResult<PyObject> {
     let spec_parsed = load_spec(&spec)?;
     let source = load_source_provider(&source_schema, &spec_parsed)?;
+    let spec_parsed = derive_spec(spec_parsed, &source)?;
     let target_opt: Option<SchemaViewProvider> = target_schema
         .as_deref()
         .map(load_schema_provider)
@@ -466,6 +575,7 @@ fn transform_object(
         &source,
         target_opt.as_ref(),
         source_class.as_deref(),
+        None,
     )
 }
 
@@ -500,6 +610,7 @@ fn transform_objects(
 ) -> PyResult<Vec<PyObject>> {
     let spec_parsed = load_spec(&spec)?;
     let source = load_source_provider(&source_schema, &spec_parsed)?;
+    let spec_parsed = derive_spec(spec_parsed, &source)?;
     let target_opt: Option<SchemaViewProvider> = target_schema
         .as_deref()
         .map(load_schema_provider)
@@ -515,9 +626,140 @@ fn transform_objects(
                 &source,
                 target_opt.as_ref(),
                 source_class.as_deref(),
+                None,
             )
         })
         .collect()
+}
+
+// ── PyO3 class: ValidationMessage ─────────────────────────────────────────────
+
+/// A single finding from [`validate_spec`].
+///
+/// Mirrors `linkml_map_core::validate::ValidationMessage` over the PyO3
+/// boundary. `severity` is exposed as the lowercased string form (`"error"` /
+/// `"warning"` / `"info"`, via the Rust `Severity`'s `Display` impl) rather
+/// than a separate enum type — a plain string is the simplest faithful
+/// mirror for a read-only field consumers will mostly print or compare.
+/// `__str__`/`__repr__` reproduce the Rust `Display` impl:
+/// `"{path}: [{severity}] {message}"`.
+#[pyclass(name = "ValidationMessage")]
+#[derive(Clone)]
+struct PyValidationMessage {
+    severity: String,
+    path: String,
+    message: String,
+    category: Option<String>,
+}
+
+#[pymethods]
+impl PyValidationMessage {
+    #[getter]
+    fn severity(&self) -> String {
+        self.severity.clone()
+    }
+
+    #[getter]
+    fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    #[getter]
+    fn message(&self) -> String {
+        self.message.clone()
+    }
+
+    #[getter]
+    fn category(&self) -> Option<String> {
+        self.category.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ValidationMessage(severity={:?}, path={:?}, message={:?}, category={:?})",
+            self.severity, self.path, self.message, self.category
+        )
+    }
+
+    fn __str__(&self) -> String {
+        format!("{}: [{}] {}", self.path, self.severity, self.message)
+    }
+}
+
+impl From<ValidationMessage> for PyValidationMessage {
+    fn from(m: ValidationMessage) -> Self {
+        Self {
+            severity: m.severity.to_string(),
+            path: m.path,
+            message: m.message,
+            category: m.category,
+        }
+    }
+}
+
+/// Cross-reference a spec against its declared source/target schema(s)
+/// without running any transform.
+///
+/// Native binding for `linkml_map_core::validate::validate_spec_semantics`.
+/// This is a read-only pre-flight check: it catches an unresolved
+/// class/slot/enum name, an unresolvable expression reference, a
+/// misconfigured join, an unresolved `is_a`/`mixins`, or a required target
+/// slot with no derivation — the kinds of mistakes that would otherwise
+/// surface as a silent `null` or a runtime error at transform time.
+///
+/// Parameters
+/// ----------
+/// spec : str
+///     Path to the transformation specification YAML.
+/// source_schema : str or None, optional
+///     Path to the source LinkML schema YAML.
+/// target_schema : str or None, optional
+///     Path to the target LinkML schema YAML.
+/// strict : bool, optional
+///     When True, unresolved expression references are reported at
+///     ``error`` severity instead of ``warning``. Defaults to False.
+///
+/// Returns
+/// -------
+/// list[ValidationMessage]
+///     Findings from checking the spec against whichever schema(s) were
+///     supplied. Returns an empty list when neither `source_schema` nor
+///     `target_schema` is given — matching the Rust function, there is
+///     nothing to check the spec against. Validation runs on the spec
+///     exactly as parsed (no implicit-join synthesis / `derive_spec` first):
+///     the whole point of this check is to catch spec problems *before*
+///     that stage, so it must see the spec un-derived.
+#[pyfunction]
+#[pyo3(signature = (spec, *, source_schema=None, target_schema=None, strict=false))]
+fn validate_spec(
+    spec: String,
+    source_schema: Option<String>,
+    target_schema: Option<String>,
+    strict: bool,
+) -> PyResult<Vec<PyValidationMessage>> {
+    let spec_parsed = load_spec(&spec)?;
+
+    let source_provider: Option<SchemaViewProvider> = source_schema
+        .as_deref()
+        .map(|path| load_source_provider(path, &spec_parsed))
+        .transpose()?;
+    let target_provider: Option<SchemaViewProvider> = target_schema
+        .as_deref()
+        .map(load_schema_provider)
+        .transpose()?;
+
+    let messages = validate_spec_semantics(
+        &spec_parsed,
+        source_provider
+            .as_ref()
+            .map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
+        target_provider
+            .as_ref()
+            .map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
+        strict,
+    );
+
+    Ok(messages.into_iter().map(PyValidationMessage::from).collect())
 }
 
 // ── Module ────────────────────────────────────────────────────────────────────
@@ -527,7 +769,9 @@ fn transform_objects(
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTransformer>()?;
+    m.add_class::<PyValidationMessage>()?;
     m.add_function(wrap_pyfunction!(transform_object, m)?)?;
     m.add_function(wrap_pyfunction!(transform_objects, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
     Ok(())
 }

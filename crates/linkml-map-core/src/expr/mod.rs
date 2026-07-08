@@ -12,7 +12,8 @@ pub mod stmt;
 pub use error::{ExprError, ExprResult};
 pub use eval::{
     eval_expr, eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed,
-    eval_parsed_strict, parse_expr, Bindings, ParsedExpr,
+    eval_parsed_strict, expression_asts, parse_expr, Bindings, ParsedExpr, FUNCTION_NAMES,
+    INJECTED_EVAL_NAMES,
 };
 pub use parser::Ast;
 

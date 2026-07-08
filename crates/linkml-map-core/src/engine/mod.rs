@@ -983,21 +983,21 @@ impl<'s> ObjectTransformer<'s> {
         if let (Some(li), Some(joins)) = (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
         {
             for (alias, ac) in joins {
-                // Python: source_key or join_on; skip binding when key spec absent.
-                let Some(sk) = join_source_key(ac) else {
-                    continue;
-                };
-                if let Some(key_val) = source_map.get(sk) {
-                    let key_str = match key_val {
+                // Bind every declared join alias so a qualified `{alias.field}`
+                // never trips the unknown-root guard in `eval_ast`: the matched
+                // row on a hit, otherwise Null. A sparse-join miss stays a
+                // legitimate SQL null, mirroring upstream binding the joined
+                // row or None into the eval namespace (source_key or join_on).
+                let row = join_source_key(ac).and_then(|sk| {
+                    let key_str = match source_map.get(sk)? {
                         Value::Str(s) => s.clone(),
                         Value::Int(i) => i.to_string(),
-                        _ => continue,
+                        _ => return None,
                     };
                     let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
-                    if let Some(row) = li.lookup_row(table, &key_str) {
-                        bindings.insert(alias.clone(), Value::Map(row.clone()));
-                    }
-                }
+                    li.lookup_row(table, &key_str).map(|r| Value::Map(r.clone()))
+                });
+                bindings.insert(alias.clone(), row.unwrap_or(Value::Null));
             }
         }
 

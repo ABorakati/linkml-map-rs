@@ -805,6 +805,14 @@ pub struct TransformationSpecification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_derivations: Option<Vec<ClassDerivation>>,
 
+    /// Top-level slot derivations that are not nested under any
+    /// `class_derivation`. These have nowhere to host a `joins:` block, so a
+    /// cross-table reference in one fails loud during join synthesis. The
+    /// engine does not otherwise process top-level slot derivations. Mirrors
+    /// Python `TransformationSpecification.slot_derivations`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot_derivations: Option<IndexMap<String, SlotDerivation>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enum_derivations: Option<IndexMap<String, EnumDerivation>>,
 
@@ -826,6 +834,7 @@ pub struct TransformationSpecification {
 ///
 /// - `class_derivations`: mapping (`ClassName` -> body) to `Vec<ClassDerivation>` with injected `name`.
 /// - `slot_derivations` within class derivations: inject `name` from the mapping key.
+/// - `joins` within class derivations: inject `alias` from the mapping key.
 /// - Shorthand null-valued slots (`id:`) inside `slot_derivations` -> `{"name": "id"}`.
 /// - `enum_derivations`: inject `name` from mapping key.
 /// - `permissible_value_derivations` under enum derivations: inject `name` from mapping key.
@@ -851,6 +860,12 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                     }
                 }
                 *cd = serde_json::Value::Array(list);
+            }
+
+        // ── top-level slot_derivations: inject `name` from the mapping key ────
+        if let Some(sd) = obj.get_mut("slot_derivations")
+            && let Some(sdm) = sd.as_object_mut() {
+                normalise_slot_derivations(sdm);
             }
 
         // ── enum_derivations: inject `name` ───────────────────────────────────
@@ -921,6 +936,24 @@ fn normalise_class_derivation_body(o: &mut serde_json::Map<String, serde_json::V
     if let Some(sd) = o.get_mut("slot_derivations")
         && let Some(sdm) = sd.as_object_mut() {
             normalise_slot_derivations(sdm);
+        }
+    // ── joins: inject `alias` from the mapping key ─────────────────────────
+    // `joins` is a mapping keyed by alias name (`Option<IndexMap<String,
+    // AliasedClass>>`); `AliasedClass.alias` is required, so mirror the
+    // "map key becomes the name/alias field" rule used for class/slot/enum
+    // derivations. Only fill `alias` when absent so an explicit `alias:` in
+    // the YAML (e.g. the `class_named` divergence pattern) wins.
+    if let Some(j) = o.get_mut("joins")
+        && let Some(jm) = j.as_object_mut() {
+            for (alias_name, join_val) in jm.iter_mut() {
+                if join_val.is_null() {
+                    *join_val = serde_json::json!({});
+                }
+                if let Some(jo) = join_val.as_object_mut() {
+                    jo.entry("alias")
+                        .or_insert_with(|| serde_json::Value::String(alias_name.clone()));
+                }
+            }
         }
 }
 
@@ -1135,5 +1168,94 @@ mod tests {
         let mapping = &slot.expression_mappings.as_ref().unwrap()["P:001"];
         assert_eq!(mapping.key, "P:001");
         assert_eq!(mapping.value, Some(serde_json::json!("name + \"!\"")));
+    }
+
+    #[test]
+    fn test_normalise_joins_injects_alias_from_key() {
+        // A `joins:` entry with only a map key (no explicit `alias:`) must
+        // deserialize: the key becomes the required `AliasedClass.alias`.
+        let mut value = serde_json::json!({
+            "class_derivations": {
+                "MeasurementObservation": {
+                    "populated_from": "Measurement",
+                    "joins": {
+                        "Reading": {
+                            "join_on": "patient_id"
+                        },
+                        // null-valued join body must be coerced to `{}` first.
+                        "Bare": null
+                    }
+                }
+            }
+        });
+        normalise_spec_json(&mut value);
+        let spec: TransformationSpecification = serde_json::from_value(value)
+            .expect("joins entry keyed only by alias should deserialize");
+        let cds = spec.class_derivations.unwrap();
+        let joins = cds[0].joins.as_ref().unwrap();
+        assert_eq!(joins["Reading"].alias, "Reading");
+        assert_eq!(joins["Reading"].join_on.as_deref(), Some("patient_id"));
+        assert_eq!(joins["Bare"].alias, "Bare");
+    }
+
+    #[test]
+    fn test_normalise_joins_explicit_alias_wins() {
+        // An explicit `alias:` (differing from the map key, e.g. the
+        // `class_named` divergence pattern) must NOT be clobbered by the key.
+        let mut value = serde_json::json!({
+            "class_derivations": {
+                "Obs": {
+                    "populated_from": "Measurement",
+                    "joins": {
+                        "Reading": {
+                            "alias": "ExplicitReading",
+                            "join_on": "patient_id"
+                        }
+                    }
+                }
+            }
+        });
+        normalise_spec_json(&mut value);
+        let spec: TransformationSpecification = serde_json::from_value(value).unwrap();
+        let cds = spec.class_derivations.unwrap();
+        let joins = cds[0].joins.as_ref().unwrap();
+        assert_eq!(joins["Reading"].alias, "ExplicitReading");
+    }
+
+    #[test]
+    fn test_normalise_joins_in_nested_slot_level_class_derivation() {
+        // The same fix must cover a slot-level nested `class_derivations`
+        // entry's `joins:` (the other call site of
+        // `normalise_class_derivation_body`, via `normalise_slot_derivations`).
+        let mut value = serde_json::json!({
+            "class_derivations": {
+                "Parent": {
+                    "populated_from": "Source",
+                    "slot_derivations": {
+                        "child": {
+                            "class_derivations": {
+                                "NestedTarget": {
+                                    "populated_from": "NestedSource",
+                                    "joins": {
+                                        "Reading": {
+                                            "join_on": "patient_id"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        normalise_spec_json(&mut value);
+        let spec: TransformationSpecification = serde_json::from_value(value)
+            .expect("nested joins entry keyed only by alias should deserialize");
+        let cds = spec.class_derivations.unwrap();
+        let child = &cds[0].slot_derivations.as_ref().unwrap()["child"];
+        let nested = &child.class_derivations.as_ref().unwrap()["NestedTarget"];
+        let joins = nested.joins.as_ref().unwrap();
+        assert_eq!(joins["Reading"].alias, "Reading");
+        assert_eq!(joins["Reading"].join_on.as_deref(), Some("patient_id"));
     }
 }

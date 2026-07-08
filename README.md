@@ -155,6 +155,31 @@ outs = t.transform_many([a, b])    # batch; schema/spec parsed once
 ```
 
 This is generally not needed as the recommended drop-in API has matching performance, but remains available for low-level direct Rust engine integration.
+
+Cross-table joins (a spec's `joins:` block, explicit or synthesized from an
+implicit `{Table.col}` reference) need the joined table's rows supplied
+in-memory before transforming, mirroring upstream `Transformer.lookup_index`:
+
+```python
+t.register_join_table("demographics", [{"patient_id": "P:1", "age": 42}], "patient_id")
+out = t.transform({"pid": "P:1"})   # populated_from "demo.age" / {demo.age} now resolves
+```
+
+`register_join_table(name, rows, key_column)` may be called multiple times to
+register several tables; calling it again with the same `name` replaces that
+table. Call it before `.transform()` / `.map_object()` / `.transform_many()`.
+
+A pre-flight `validate_spec` checks a spec against its schema(s) — unresolved
+class/slot/enum names, bad expression refs, misconfigured joins — **without**
+running any transform:
+
+```python
+from linkml_map_rs import validate_spec
+
+messages = validate_spec("transform.yaml", source_schema="source.yaml", target_schema="target.yaml")
+for msg in messages:
+    print(msg.severity, msg.path, msg.message)
+```
 </details>
 
 ### Rust

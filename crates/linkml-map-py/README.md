@@ -25,6 +25,45 @@ outs = t.transform_many([obj1, obj2])     # schema/spec parsed once
 - `Transformer.from_yaml(source_schema_yaml, spec_yaml, target_schema_yaml=None,
   source_class=None)` builds from in-memory YAML strings instead of paths.
 - `t.map_object(obj, source_type=None)` is an alias of `transform`.
+- `t.register_join_table(name, rows, key_column)` registers a joined table's
+  rows (list of dicts) in-memory so a spec's `joins:` block (explicit, or
+  synthesized from an implicit `{Table.col}` reference) resolves against real
+  data instead of `null`. Mirrors upstream `Transformer.lookup_index`
+  (`utils/lookup_index.py`), except rows are supplied directly rather than
+  loaded from a CSV/TSV/JSON file. Call it before `.transform()` /
+  `.map_object()` / `.transform_many()`; calling again with the same `name`
+  replaces that table, different names accumulate.
+
+### Pre-flight validation: `validate_spec`
+
+Cross-reference a spec against its source/target schema(s) **without running
+any transform** — catches an unresolved class/slot/enum name, an unresolvable
+expression reference, a misconfigured join, an unresolved `is_a`/`mixins`, or
+a required target slot with no derivation, before any of that surfaces as a
+silent `null` or a runtime error.
+
+```python
+from linkml_map_rs import validate_spec
+
+messages = validate_spec(
+    "transform.yaml",
+    source_schema="source.yaml",     # optional
+    target_schema="target.yaml",     # optional
+    strict=False,                    # optional; True escalates expr warnings to errors
+)
+for msg in messages:
+    print(msg.severity, msg.path, msg.message)   # or just: print(msg)
+```
+
+- Each finding is a `ValidationMessage` with `.severity` (`"error"` /
+  `"warning"` / `"info"`), `.path`, `.message`, and `.category` (currently
+  always `None`).
+- Returns `[]` if neither `source_schema` nor `target_schema` is given —
+  there's nothing to check the spec against.
+- Validates the spec **exactly as parsed** — it does not run implicit-join
+  synthesis first (the same step `Transformer.__init__` runs before
+  transforming), since the point of this check is to catch problems *before*
+  that stage.
 
 ### 2. `linkml_map`-compatible shim — drop-in for existing code
 

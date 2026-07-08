@@ -25,7 +25,8 @@
 //! cost that previously dominated CPU and capped thread scaling.
 
 use std::{
-    path::Path,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -33,8 +34,8 @@ use std::{
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
-    datamodel::TransformationSpecification,
-    engine::{CompiledExprs, ObjectIndex, ObjectTransformer},
+    datamodel::{ClassDerivation, TransformationSpecification},
+    engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer},
     schema::SchemaProvider,
     value::Value,
 };
@@ -47,7 +48,21 @@ use tokio::sync::mpsc;
 /// Configuration for a single pipeline run.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
-    /// Path to the source data file.
+    /// Path to the source data.
+    ///
+    /// **Single-file mode (default):** a path to one data file — the historical
+    /// behavior; every row is a source object of the resolved source class.
+    ///
+    /// **Directory mode (multi-table joins):** a path to a *directory* switches
+    /// on the [`DataLoader`](https://github.com/linkml/linkml-map)-style
+    /// convention mirrored from upstream Python. Each file in the directory is a
+    /// named table matched by its **filename stem** to a source class/table name.
+    /// The primary table (the resolved source class) is streamed as usual, and
+    /// every table referenced by a synthesized/explicit `joins:` block in the
+    /// spec is loaded into an in-memory [`LookupIndex`] so that `{Table.col}`
+    /// join references actually resolve at runtime instead of collapsing to null.
+    /// A join whose table has no file in the directory is skipped (its reference
+    /// resolves to null), matching upstream `transform_spec`.
     pub source_path: String,
     /// Format of the source file; if `None`, auto-detected from extension.
     pub source_format: Option<Format>,
@@ -129,6 +144,11 @@ pub struct CompiledPlan {
     compiled_exprs: CompiledExprs,
     /// Resolved source class name (empty string = let engine decide per row).
     source_class: Option<String>,
+    /// Cross-table join lookup index, built once when the pipeline runs in
+    /// directory mode (secondary tables loaded from sibling files). `None` in
+    /// single-file mode — the historical behavior. Shared (`Arc`) into every
+    /// per-row engine so lock-free join resolution runs across worker threads.
+    lookup_index: Option<Arc<LookupIndex>>,
 }
 
 impl CompiledPlan {
@@ -157,7 +177,7 @@ impl CompiledPlan {
     ) -> Result<Self> {
         // Load + normalise the transformation spec first so we can extract
         // source_schema_patches before loading the source schema.
-        let spec = load_transform_spec(spec_path)
+        let mut spec = load_transform_spec(spec_path)
             .with_context(|| format!("loading spec {}", spec_path.display()))?;
 
         // Load source schema, applying any source_schema_patches from the spec
@@ -167,6 +187,18 @@ impl CompiledPlan {
             load_schema(schema_path, spec.source_schema_patches.as_ref())
                 .with_context(|| format!("loading source schema {}", schema_path.display()))?,
         );
+
+        // Synthesize implicit cross-table joins ONCE, now that the source schema
+        // is available — mirrors upstream `Transformer.derived_specification`,
+        // which rewrites implicit `{Table.col}` references into explicit joins
+        // before any row is processed (synthesis walks `all_classes()`, so it
+        // cannot run at raw spec-parse time when no schema is loaded yet). This
+        // is the build-once layer, alongside `CompiledExprs::build`; the per-row
+        // `new_borrowed` engines below share the resulting derived spec. Fails
+        // loud on an un-keyable / un-hostable reference rather than letting it
+        // silently resolve to null at runtime.
+        linkml_map_core::normalize::synthesize_implicit_joins(&mut spec, source_provider.as_ref())
+            .with_context(|| format!("synthesizing implicit joins for spec {}", spec_path.display()))?;
 
         // Load target schema (may be same file — that's fine, second load is cheap)
         let target_provider: Box<dyn SchemaProvider> = Box::new(
@@ -196,7 +228,73 @@ impl CompiledPlan {
             target_provider,
             compiled_exprs,
             source_class,
+            lookup_index: None,
         })
+    }
+
+    /// Attach a pre-built cross-table [`LookupIndex`] (directory mode).
+    ///
+    /// The pipeline builds one index from the secondary-table files, wraps it in
+    /// `Arc`, and calls this once before wrapping the plan in `Arc<CompiledPlan>`.
+    /// Every per-row engine then borrows a clone of the `Arc` via
+    /// [`ObjectTransformer::with_lookup_index`], so join resolution is lock-free
+    /// across worker threads.
+    pub fn attach_lookup_index(&mut self, index: Arc<LookupIndex>) {
+        self.lookup_index = Some(index);
+    }
+
+    /// Enumerate the secondary tables this spec joins to, mapping each to the
+    /// column its rows must be indexed on. Mirrors upstream
+    /// `engine._collect_all_joins`: walks every `class_derivation` and its nested
+    /// descendants, and for each declared/synthesized `joins:` entry resolves the
+    /// lookup key (`lookup_key` or `join_on`).
+    ///
+    /// The map key is the name the engine looks the table up under at runtime
+    /// (`class_named` if set, else the join alias — matching the engine's
+    /// `ac.class_named.unwrap_or(alias)` resolution), which is also the file stem
+    /// used to find its data in directory mode.
+    ///
+    /// # Errors
+    /// Fails loud (mirroring upstream's `ValueError`) when a join specifies
+    /// neither `join_on` nor both of `source_key`/`lookup_key`, or when two joins
+    /// resolve to the same table with conflicting lookup keys.
+    fn collect_join_tables(&self) -> Result<BTreeMap<String, String>> {
+        fn walk(cd: &ClassDerivation, out: &mut BTreeMap<String, String>) -> Result<()> {
+            if let Some(joins) = cd.joins.as_ref() {
+                for (join_name, ac) in joins {
+                    let lookup_key = ac.lookup_key.as_deref().or(ac.join_on.as_deref());
+                    let source_key = ac.source_key.as_deref().or(ac.join_on.as_deref());
+                    let (Some(lookup_key), Some(_source_key)) = (lookup_key, source_key) else {
+                        anyhow::bail!(
+                            "join {join_name:?} must specify 'join_on' or both \
+                             'source_key' and 'lookup_key'"
+                        );
+                    };
+                    let table = ac.class_named.as_deref().unwrap_or(join_name).to_string();
+                    if let Some(existing) = out.get(&table)
+                        && existing != lookup_key
+                    {
+                        anyhow::bail!(
+                            "conflicting join specs for {table:?}: \
+                             lookup key {existing:?} vs {lookup_key:?}"
+                        );
+                    }
+                    out.insert(table, lookup_key.to_string());
+                }
+            }
+            for (_, sd) in cd.slot_derivations.iter().flatten() {
+                for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+                    walk(nested, out)?;
+                }
+            }
+            Ok(())
+        }
+
+        let mut out = BTreeMap::new();
+        for cd in self.spec.class_derivations.iter().flatten() {
+            walk(cd, &mut out)?;
+        }
+        Ok(out)
     }
 
     /// Returns `true` when the spec has any `expr:` that contains a `.`
@@ -258,12 +356,15 @@ impl CompiledPlan {
     /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
     /// a reference to each parallel worker — zero per-row index rebuild.
     pub fn transform_with_index(&self, row: Value, index: &ObjectIndex) -> Result<Value> {
-        let engine = ObjectTransformer::new_borrowed(
+        let mut engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
             Some(self.target_provider.as_ref()),
         )
         .with_compiled_exprs(&self.compiled_exprs);
+        if let Some(li) = &self.lookup_index {
+            engine = engine.with_lookup_index(Arc::clone(li));
+        }
         engine
             .map_object_with_index(&row, self.source_class.as_deref(), index)
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
@@ -275,12 +376,15 @@ impl CompiledPlan {
     /// reader/writer I/O path.
     pub fn transform(&self, row: Value) -> Result<Value> {
         // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
-        let engine = ObjectTransformer::new_borrowed(
+        let mut engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
             Some(self.target_provider.as_ref()),
         )
         .with_compiled_exprs(&self.compiled_exprs);
+        if let Some(li) = &self.lookup_index {
+            engine = engine.with_lookup_index(Arc::clone(li));
+        }
         engine
             .map_object(&row, self.source_class.as_deref())
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
@@ -311,7 +415,7 @@ impl CompiledPlan {
 /// 3. Each row is dispatched to a rayon threadpool (via `spawn_blocking`) with
 ///    the shared `Arc<CompiledPlan>` — no per-row schema/spec parsing.
 /// 4. Results (optionally reordered) are written to `out_path`.
-pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
+pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
     let start = Instant::now();
 
     // Build rayon thread pool if a non-default worker count was requested.
@@ -327,15 +431,31 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
     };
 
     // ── 1. Compile plan (once) ────────────────────────────────────────────────
-    let plan = Arc::new(
-        CompiledPlan::load(
-            Path::new(&config.spec_path),
-            Path::new(&config.schema_path),
-            Path::new(&config.target_schema_path),
-            config.source_class.as_deref(),
-        )
-        .context("compiling plan")?,
-    );
+    let mut plan = CompiledPlan::load(
+        Path::new(&config.spec_path),
+        Path::new(&config.schema_path),
+        Path::new(&config.target_schema_path),
+        config.source_class.as_deref(),
+    )
+    .context("compiling plan")?;
+
+    // ── 1b. Directory-source mode: resolve the primary table's file and build
+    // the cross-table LookupIndex from sibling files (multi-table joins). In
+    // single-file mode this whole block is skipped and behavior is unchanged.
+    if Path::new(&config.source_path).is_dir() {
+        let dir = PathBuf::from(&config.source_path);
+        let (primary_file, index) = load_directory_source(&dir, &plan)
+            .await
+            .with_context(|| format!("loading directory source {}", dir.display()))?;
+        if let Some(index) = index {
+            plan.attach_lookup_index(Arc::new(index));
+        }
+        // Redirect the streaming/buffering path at the resolved primary file so
+        // format detection and the reader use the concrete data file.
+        config.source_path = primary_file;
+    }
+
+    let plan = Arc::new(plan);
 
     // ── 2. Detect FK mode and dispatch ───────────────────────────────────────
     //
@@ -778,6 +898,92 @@ fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> 
     }
 }
 
+// ── Directory-source (multi-table) mode ──────────────────────────────────────
+//
+// Mirrors upstream Python's `DataLoader` convention (transformer/engine.py
+// `transform_spec`): a directory of files maps table names → files by filename
+// stem. We resolve the primary table's file (the resolved source class) and load
+// every joined table referenced by the (post-synthesis) spec into one
+// `LookupIndex`, so `{Table.col}` join references resolve at runtime instead of
+// collapsing to null.
+
+/// Resolve the primary data file and build the cross-table [`LookupIndex`] for a
+/// directory source.
+///
+/// Returns `(primary_file_path, Some(index))` when the spec declares any joins
+/// whose tables have data files in `dir`; `(primary_file_path, None)` when there
+/// are no resolvable joins (an empty index would only add overhead, so the plain
+/// single-file path is kept). Fails loud when the primary table's file cannot be
+/// located — a directory source with no matching primary file is a user error,
+/// not a silent empty run.
+async fn load_directory_source(
+    dir: &Path,
+    plan: &CompiledPlan,
+) -> Result<(String, Option<LookupIndex>)> {
+    // Primary table = the resolved source class (populated_from / name of the
+    // first class_derivation). Its data file is matched by stem, same as joins.
+    let primary_table = plan.source_class.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "directory source {} requires a resolvable source class, but the spec \
+             declares no class_derivations to derive one from",
+            dir.display()
+        )
+    })?;
+    let primary_file = find_table_file(dir, primary_table)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "directory source {} has no data file for the primary table {primary_table:?} \
+             (expected a file whose name stem is {primary_table:?})",
+            dir.display()
+        )
+    })?;
+
+    // Load every joined table that has a file in the directory. A join whose
+    // table has no file is skipped (its reference resolves to null), mirroring
+    // upstream `if join_name in data_loader`.
+    let joins = plan.collect_join_tables()?;
+    let mut index = LookupIndex::new();
+    let mut any_registered = false;
+    for (table, lookup_key) in joins {
+        let Some(file) = find_table_file(dir, &table)? else {
+            continue;
+        };
+        let fmt = Format::from_path(&file).with_context(|| {
+            format!("detecting format of joined table file {}", file.display())
+        })?;
+        let rows = load_all(&file, fmt)
+            .await
+            .with_context(|| format!("loading joined table {table:?} from {}", file.display()))?;
+        index.register_table(&table, &rows, &lookup_key);
+        any_registered = true;
+    }
+
+    let primary = primary_file
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("non-UTF-8 primary file path {}", primary_file.display()))?;
+    Ok((primary.to_owned(), any_registered.then_some(index)))
+}
+
+/// Find the file in `dir` whose filename stem equals `table_name`.
+///
+/// Sub-directories are ignored; the first matching regular file is returned.
+/// `Ok(None)` when no file matches (a missing joined table is a skip, not an
+/// error — only a missing *primary* table is fatal, enforced by the caller).
+fn find_table_file(dir: &Path, table_name: &str) -> Result<Option<PathBuf>> {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("reading source directory {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            continue;
+        }
+        if path.file_stem().and_then(|s| s.to_str()) == Some(table_name) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
 // ── Schema loader ────────────────────────────────────────────────────────────
 //
 // `SchemaViewProvider` resolves builtin CURIE maps (`default_curi_maps:
@@ -902,6 +1108,308 @@ mod tests {
         } else {
             panic!("expected Map, got {:?}", loaded[0]);
         }
+    }
+
+    // ── Implicit-join synthesis is wired into the real load path ──────────────
+
+    /// Minimal LinkML source schema with two tables sharing a non-identifier
+    /// `subject_id` column, so an implicit `{Reading.score}` reference can be
+    /// keyed on `subject_id`.
+    fn write_join_schema(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join("schema.yaml");
+        std::fs::write(
+            &p,
+            r#"id: https://example.org/join-test
+name: join_test
+prefixes:
+  linkml: https://w3id.org/linkml/
+default_range: string
+imports:
+  - linkml:types
+classes:
+  Measurement:
+    attributes:
+      id:
+        identifier: true
+      subject_id: {}
+      method: {}
+  Reading:
+    attributes:
+      id:
+        identifier: true
+      subject_id: {}
+      score:
+        range: float
+"#,
+        )
+        .unwrap();
+        p
+    }
+
+    /// `CompiledPlan::load` — the shared CLI/pipeline build-once entry — runs
+    /// implicit-join synthesis, so an implicit `{Reading.score}` expression
+    /// reference is rewritten into an explicit join on the hosting class
+    /// derivation. Proves `synthesize_implicit_joins` is wired into the real
+    /// path a CLI/pipeline user hits, not just reachable from its own unit test.
+    #[test]
+    fn compiled_plan_load_synthesizes_implicit_expr_join() {
+        let tmp = tempfile::tempdir().unwrap();
+        let schema = write_join_schema(tmp.path());
+        let spec = tmp.path().join("spec.yaml");
+        std::fs::write(
+            &spec,
+            r#"id: https://example.org/join-transform
+title: implicit expr join
+class_derivations:
+  Result:
+    populated_from: Measurement
+    slot_derivations:
+      id:
+        populated_from: id
+      reading_score:
+        expr: "{Reading.score}"
+"#,
+        )
+        .unwrap();
+
+        let plan = CompiledPlan::load(&spec, &schema, &schema, Some("Measurement"))
+            .expect("plan load (with join synthesis) failed");
+
+        let cd = &plan.spec.class_derivations.as_ref().unwrap()[0];
+        let join = cd
+            .joins
+            .as_ref()
+            .expect("synthesis should have added a joins block")
+            .get("Reading")
+            .expect("synthesis should have added a Reading join");
+        assert_eq!(join.join_on.as_deref(), Some("subject_id"));
+    }
+
+    /// A cross-table reference in a TOP-LEVEL `slot_derivations` entry has no
+    /// class_derivation to host a join, so synthesis fails loud. Proves the
+    /// reject path — the reason the top-level `slot_derivations` field was added
+    /// — runs through the real `CompiledPlan::load` entry, surfacing as a hard
+    /// load error instead of a silent null at runtime.
+    #[test]
+    fn compiled_plan_load_rejects_unhostable_cross_table_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let schema = write_join_schema(tmp.path());
+        let spec = tmp.path().join("spec.yaml");
+        std::fs::write(
+            &spec,
+            r#"id: https://example.org/unhostable-transform
+title: unhostable top-level slot
+slot_derivations:
+  bad:
+    expr: "{Reading.score}"
+class_derivations:
+  Result:
+    populated_from: Measurement
+    slot_derivations:
+      id:
+        populated_from: id
+"#,
+        )
+        .unwrap();
+
+        let err = match CompiledPlan::load(&spec, &schema, &schema, Some("Measurement")) {
+            Ok(_) => panic!("unhostable cross-table ref should fail loud at load"),
+            Err(e) => e,
+        };
+        let full = format!("{err:#}");
+        assert!(
+            full.contains("only class_derivations can host joins"),
+            "expected unhostable-join error, got: {full}"
+        );
+    }
+
+    // ── Directory-mode join RESOLVES end-to-end (not just declared) ───────────
+
+    /// Minimal target schema defining the `Result` class the join spec derives:
+    /// `id` (identifier) + `reading_score` (float, populated from the joined
+    /// `Reading` table).
+    fn write_join_target_schema(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join("target.yaml");
+        std::fs::write(
+            &p,
+            r#"id: https://example.org/join-target
+name: join_target
+prefixes:
+  linkml: https://w3id.org/linkml/
+default_range: string
+imports:
+  - linkml:types
+classes:
+  Result:
+    attributes:
+      id:
+        identifier: true
+      reading_score:
+        range: float
+"#,
+        )
+        .unwrap();
+        p
+    }
+
+    /// End-to-end proof that an implicit-join-via-expression spec run through the
+    /// REAL `run_pipeline` (directory-source mode) produces output whose joined
+    /// value is actually populated — not null.
+    ///
+    /// This is the gap the prior pass left: synthesis *declares* the join, but
+    /// nothing in the production pipeline loaded the joined table's data or
+    /// attached a `LookupIndex`, so `{Reading.score}` silently resolved to null.
+    /// Directory mode loads `Reading.jsonl` into the index and the reference
+    /// resolves.
+    #[tokio::test]
+    async fn test_pipeline_directory_join_resolves_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let schema = write_join_schema(tmp.path());
+        let target = write_join_target_schema(tmp.path());
+
+        // Implicit cross-table reference: reading_score := {Reading.score}.
+        // Measurement and Reading share the non-identifier `subject_id` column,
+        // so synthesis infers a join keyed on subject_id.
+        let spec = tmp.path().join("spec.yaml");
+        std::fs::write(
+            &spec,
+            r#"id: https://example.org/join-transform
+title: implicit expr join
+class_derivations:
+  Result:
+    populated_from: Measurement
+    slot_derivations:
+      id:
+        populated_from: id
+      reading_score:
+        expr: "{Reading.score}"
+"#,
+        )
+        .unwrap();
+
+        // Directory of source tables, matched by filename stem to class name.
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("Measurement.jsonl"),
+            "{\"id\":\"M:1\",\"subject_id\":\"S:1\",\"method\":\"m1\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            data_dir.join("Reading.jsonl"),
+            "{\"id\":\"R:1\",\"subject_id\":\"S:1\",\"score\":9.5}\n",
+        )
+        .unwrap();
+
+        let out_path = tmp.path().join("out.jsonl");
+        let cfg = PipelineConfig {
+            // Source path is the DIRECTORY — triggers multi-table mode.
+            source_path: data_dir.to_str().unwrap().to_owned(),
+            source_format: None,
+            schema_path: schema.to_str().unwrap().to_owned(),
+            target_schema_path: target.to_str().unwrap().to_owned(),
+            spec_path: spec.to_str().unwrap().to_owned(),
+            out_path: out_path.to_str().unwrap().to_owned(),
+            out_format: Some(Format::Jsonl),
+            source_class: Some("Measurement".to_owned()),
+            workers: 2,
+            ordered: true,
+            channel_depth: 64,
+        };
+
+        let stats = run_pipeline(cfg).await.expect("directory-mode pipeline failed");
+        assert_eq!(stats.rows_in, 1, "expected 1 primary (Measurement) row in");
+        assert_eq!(stats.rows_out, 1, "expected 1 row out");
+
+        let loaded = linkml_map_io::load_all(&out_path, Format::Jsonl)
+            .await
+            .unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        let m = match &loaded[0] {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {other:?}"),
+        };
+        assert_eq!(m.get("id"), Some(&Value::Str("M:1".into())));
+
+        // The whole point: the joined value is populated, NOT null.
+        let score = m
+            .get("reading_score")
+            .expect("reading_score missing from output");
+        assert_ne!(
+            score,
+            &Value::Null,
+            "joined value must resolve, not collapse to null: {loaded:?}"
+        );
+        match score {
+            Value::Float(f) => assert!((f - 9.5).abs() < 1e-9, "reading_score = {f}, want 9.5"),
+            Value::Int(i) => assert_eq!(*i, 9, "reading_score = {i}, want 9.5"),
+            other => panic!("unexpected reading_score type: {other:?}"),
+        }
+    }
+
+    /// The SAME implicit-join spec run against a single FILE (not a directory)
+    /// builds no `LookupIndex` — single-file mode is untouched by directory mode.
+    /// With the `Reading` alias unbound, the engine's existing unknown-root guard
+    /// makes the `{Reading.score}` expression fail loud rather than silently
+    /// null. This is pre-existing engine behavior (unchanged by this crate's
+    /// work); the test pins it as the backward-compat contract: single-file mode
+    /// neither scans a directory nor resolves cross-table joins.
+    #[tokio::test]
+    async fn test_pipeline_single_file_join_is_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let schema = write_join_schema(tmp.path());
+        let target = write_join_target_schema(tmp.path());
+        let spec = tmp.path().join("spec.yaml");
+        std::fs::write(
+            &spec,
+            r#"id: https://example.org/join-transform
+title: implicit expr join
+class_derivations:
+  Result:
+    populated_from: Measurement
+    slot_derivations:
+      id:
+        populated_from: id
+      reading_score:
+        expr: "{Reading.score}"
+"#,
+        )
+        .unwrap();
+
+        // Single FILE source (not a directory) → no LookupIndex is built.
+        let src = tmp.path().join("Measurement.jsonl");
+        std::fs::write(
+            &src,
+            "{\"id\":\"M:1\",\"subject_id\":\"S:1\",\"method\":\"m1\"}\n",
+        )
+        .unwrap();
+
+        let out_path = tmp.path().join("out.jsonl");
+        let cfg = PipelineConfig {
+            source_path: src.to_str().unwrap().to_owned(),
+            source_format: Some(Format::Jsonl),
+            schema_path: schema.to_str().unwrap().to_owned(),
+            target_schema_path: target.to_str().unwrap().to_owned(),
+            spec_path: spec.to_str().unwrap().to_owned(),
+            out_path: out_path.to_str().unwrap().to_owned(),
+            out_format: Some(Format::Jsonl),
+            source_class: Some("Measurement".to_owned()),
+            workers: 2,
+            ordered: true,
+            channel_depth: 64,
+        };
+
+        // No directory ⇒ no lookup index ⇒ the unbound join reference surfaces as
+        // a hard transform error (the row fails, so run_pipeline returns Err).
+        let err = run_pipeline(cfg)
+            .await
+            .expect_err("single-file join without data should not silently succeed");
+        let full = format!("{err:#}");
+        assert!(
+            full.contains("failed to transform"),
+            "expected a transform failure in single-file join mode, got: {full}"
+        );
     }
 
     // ── Concurrency test: 1000+ rows ──────────────────────────────────────────

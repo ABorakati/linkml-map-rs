@@ -57,6 +57,15 @@ pub enum Error {
     #[error("non-invertible specification: {0}")]
     NonInvertible(String),
 
+    /// Implicit-join synthesis (spec normalisation) failed loud: a cross-table
+    /// reference that cannot be keyed, resolved, or hosted. Mirrors the
+    /// `ValueError`s raised by Python
+    /// `Transformer._synthesize_implicit_joins` and its helpers
+    /// (`_synthesize_join`, `_reject_unknown_qualified_roots`,
+    /// `_reject_unhostable_cross_table_refs`).
+    #[error("{0}")]
+    JoinSynthesis(String),
+
     /// Wrap any other error with context.
     #[error("transformation error in '{class}.{slot}': {cause}")]
     SlotTransform {
