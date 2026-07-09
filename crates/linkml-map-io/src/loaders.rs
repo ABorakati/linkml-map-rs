@@ -4,16 +4,18 @@
 //!
 //! | Format | Streaming | Item shape |
 //! |--------|-----------|-----------|
-//! | CSV    | ✓ row-by-row | `Value::Map` keyed by header column names; all values are `Value::Str` |
+//! | CSV    | ✓ row-by-row | `Value::Map` keyed by header column names; strings by default, schema-hinted numeric columns are numbers |
 //! | TSV    | ✓ row-by-row | same as CSV |
 //! | JSONL  | ✓ line-by-line | one `Value` per line |
 //! | JSON   | whole-file | array → one `Value` per element; object → single `Value` |
 //! | YAML   | whole-file | same semantics as JSON |
 //!
-//! Type coercion (string→number etc.) is intentionally **not** done here —
-//! that is the transformation engine's responsibility, mirroring the Python
-//! `TsvLoader` / `CsvLoader` which also keep everything as strings.
+//! By default type coercion is intentionally **not** done here.  The
+//! schema-aware entry points accept precomputed numeric column hints, which
+//! lets CSV/TSV inputs preserve numeric values without guessing from their
+//! lexical form (and consequently preserves e.g. ZIP codes and enum values).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -38,8 +40,41 @@ pub async fn load_stream(
 ) -> Result<BoxStream<'static, Result<Value>>> {
     let path = path.as_ref().to_owned();
     match format {
-        Format::Csv => Ok(csv_stream_inner(path, b',')),
-        Format::Tsv => Ok(csv_stream_inner(path, b'\t')),
+        Format::Csv => Ok(csv_stream_inner(path, b',', NumericColumnHints::new())),
+        Format::Tsv => Ok(csv_stream_inner(path, b'\t', NumericColumnHints::new())),
+        Format::Jsonl => jsonl_stream(path).await,
+        Format::Json => json_stream(path).await,
+        Format::Yaml => yaml_stream(path).await,
+    }
+}
+
+/// Scalar type to use for a numeric tabular column.
+///
+/// This deliberately only represents numeric LinkML ranges. String and enum
+/// ranges must never be inferred from a numeric-looking cell value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericColumnKind {
+    Integer,
+    Float,
+}
+
+/// Numeric type hints keyed by CSV/TSV header name.
+///
+/// Callers build this once from their already-loaded source schema, then reuse
+/// it for every row. This avoids reparsing a source schema for each input file.
+pub type NumericColumnHints = HashMap<String, NumericColumnKind>;
+
+/// Like [`load_stream`], but applies precomputed source-schema numeric hints to
+/// CSV and TSV columns. Other formats are unchanged.
+pub async fn load_stream_with_numeric_hints(
+    path: impl AsRef<Path>,
+    format: Format,
+    numeric_hints: NumericColumnHints,
+) -> Result<BoxStream<'static, Result<Value>>> {
+    let path = path.as_ref().to_owned();
+    match format {
+        Format::Csv => Ok(csv_stream_inner(path, b',', numeric_hints)),
+        Format::Tsv => Ok(csv_stream_inner(path, b'\t', numeric_hints)),
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
@@ -63,36 +98,55 @@ pub async fn load_all(path: impl AsRef<Path>, format: Format) -> Result<Vec<Valu
     Ok(out)
 }
 
+/// Collect all values from [`load_stream_with_numeric_hints`].
+pub async fn load_all_with_numeric_hints(
+    path: impl AsRef<Path>,
+    format: Format,
+    numeric_hints: NumericColumnHints,
+) -> Result<Vec<Value>> {
+    let mut stream = load_stream_with_numeric_hints(path, format, numeric_hints).await?;
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        out.push(item?);
+    }
+    Ok(out)
+}
+
 // ─── CSV / TSV ───────────────────────────────────────────────────────────────
 
 /// Build a `BoxStream` for CSV/TSV. The file-open and header-read happen
 /// inside the stream itself so this function is sync and infallible.
-fn csv_stream_inner(path: std::path::PathBuf, delimiter: u8) -> BoxStream<'static, Result<Value>> {
+fn csv_stream_inner(
+    path: std::path::PathBuf,
+    delimiter: u8,
+    numeric_hints: NumericColumnHints,
+) -> BoxStream<'static, Result<Value>> {
     use csv_async::StringRecord;
 
     // The state machine used in `stream::unfold`:
     // - `Init`: file not yet opened
     // - `Running`: headers known, reader ready for data rows
     enum State {
-        Init(std::path::PathBuf, u8),
+        Init(std::path::PathBuf, u8, NumericColumnHints),
         Running {
             rdr: csv_async::AsyncReader<File>,
             headers: Vec<String>,
+            numeric_hints: NumericColumnHints,
         },
     }
 
-    let init = State::Init(path, delimiter);
+    let init = State::Init(path, delimiter, numeric_hints);
 
     stream::unfold(init, |state| async move {
         match state {
-            State::Init(path, delim) => {
+            State::Init(path, delim, numeric_hints) => {
                 // Open file and read headers, then yield the first data row.
                 let file = match File::open(&path).await {
                     Ok(f) => f,
                     Err(e) => {
                         return Some((
                             Err(anyhow::anyhow!("failed to open {:?}: {}", path, e)),
-                            State::Init(path, delim),
+                            State::Init(path, delim, numeric_hints),
                         ));
                     }
                 };
@@ -115,7 +169,7 @@ fn csv_stream_inner(path: std::path::PathBuf, delimiter: u8) -> BoxStream<'stati
                     Err(e) => {
                         return Some((
                             Err(anyhow::anyhow!("CSV header error: {}", e)),
-                            State::Init(path, delim),
+                            State::Init(path, delim, numeric_hints),
                         ));
                     }
                 };
@@ -124,27 +178,53 @@ fn csv_stream_inner(path: std::path::PathBuf, delimiter: u8) -> BoxStream<'stati
                 let mut record = StringRecord::new();
                 match rdr.read_record(&mut record).await {
                     Ok(true) => {
-                        let val = row_to_value(&headers, &record);
-                        Some((Ok(val), State::Running { rdr, headers }))
+                        let val = row_to_value(&headers, &record, &numeric_hints);
+                        Some((
+                            Ok(val),
+                            State::Running {
+                                rdr,
+                                headers,
+                                numeric_hints,
+                            },
+                        ))
                     }
                     Ok(false) => None, // empty file (headers only)
                     Err(e) => Some((
                         Err(anyhow::anyhow!("CSV read error: {}", e)),
-                        State::Running { rdr, headers },
+                        State::Running {
+                            rdr,
+                            headers,
+                            numeric_hints,
+                        },
                     )),
                 }
             }
-            State::Running { mut rdr, headers } => {
+            State::Running {
+                mut rdr,
+                headers,
+                numeric_hints,
+            } => {
                 let mut record = StringRecord::new();
                 match rdr.read_record(&mut record).await {
                     Ok(true) => {
-                        let val = row_to_value(&headers, &record);
-                        Some((Ok(val), State::Running { rdr, headers }))
+                        let val = row_to_value(&headers, &record, &numeric_hints);
+                        Some((
+                            Ok(val),
+                            State::Running {
+                                rdr,
+                                headers,
+                                numeric_hints,
+                            },
+                        ))
                     }
                     Ok(false) => None, // EOF
                     Err(e) => Some((
                         Err(anyhow::anyhow!("CSV read error: {}", e)),
-                        State::Running { rdr, headers },
+                        State::Running {
+                            rdr,
+                            headers,
+                            numeric_hints,
+                        },
                     )),
                 }
             }
@@ -154,14 +234,32 @@ fn csv_stream_inner(path: std::path::PathBuf, delimiter: u8) -> BoxStream<'stati
 }
 
 /// Convert a `StringRecord` into a `Value::Map` using the header names as keys.
-/// All cell values are kept as `Value::Str` (type coercion is the engine's job).
-fn row_to_value(headers: &[String], record: &csv_async::StringRecord) -> Value {
+/// Only columns explicitly identified as numeric from the source schema are
+/// coerced; malformed numeric cells remain strings for later validation.
+fn row_to_value(
+    headers: &[String],
+    record: &csv_async::StringRecord,
+    numeric_hints: &NumericColumnHints,
+) -> Value {
     // Build through serde_json::Map so we get `Value::Map(IndexMap)` without
     // depending on `indexmap` directly in this crate.
     let mut obj = serde_json::Map::new();
     for (i, header) in headers.iter().enumerate() {
-        let cell = record.get(i).unwrap_or("").to_owned();
-        obj.insert(header.clone(), serde_json::Value::String(cell));
+        let cell = record.get(i).unwrap_or("");
+        let value = match numeric_hints.get(header) {
+            Some(NumericColumnKind::Integer) => cell
+                .parse::<i64>()
+                .map(serde_json::Value::from)
+                .unwrap_or_else(|_| serde_json::Value::String(cell.to_owned())),
+            Some(NumericColumnKind::Float) => cell
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .map(serde_json::Value::from)
+                .unwrap_or_else(|| serde_json::Value::String(cell.to_owned())),
+            None => serde_json::Value::String(cell.to_owned()),
+        };
+        obj.insert(header.clone(), value);
     }
     json_to_value(serde_json::Value::Object(obj))
 }

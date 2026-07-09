@@ -10,7 +10,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use linkml_map_cli::{
-    parse_format_str, run_map_data_config, run_validate_config, MapDataConfig, Severity,
+    parse_format_str, run_map_data_config_with_options, run_validate_config, MapDataConfig, Severity,
     ValidateConfig,
 };
 use linkml_map_core::inference::SchemaMapper;
@@ -88,6 +88,11 @@ struct MapDataArgs {
     #[arg(long = "unordered", default_value_t = false)]
     unordered: bool,
 
+    /// Continue after row-level transformation errors. Each error is reported
+    /// immediately; a clean run with any failed rows exits non-zero.
+    #[arg(long = "continue-on-error", default_value_t = false)]
+    continue_on_error: bool,
+
     /// Input data file, or a directory of tables for multi-table joins.
     ///
     /// A single file (default) is transformed row-by-row. A *directory* enables
@@ -160,7 +165,7 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
         input: args.input,
     };
 
-    run_map_data_config(cfg).await?;
+    run_map_data_config_with_options(cfg, args.continue_on_error).await?;
     Ok(())
 }
 

@@ -36,10 +36,13 @@ use futures::StreamExt;
 use linkml_map_core::{
     datamodel::{ClassDerivation, TransformationSpecification},
     engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer},
-    schema::SchemaProvider,
+    schema::{RangeKind, SchemaProvider},
     value::Value,
 };
-use linkml_map_io::{load_all, load_stream, write_all, Format};
+use linkml_map_io::{
+    Format, NumericColumnHints, NumericColumnKind, load_all_with_numeric_hints,
+    load_stream_with_numeric_hints, write_all,
+};
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
 
@@ -168,6 +171,38 @@ impl CompiledPlan {
             .unwrap_or(0)
     }
 
+    /// Precompute CSV/TSV numeric column hints from the source schema already
+    /// loaded into this plan. The loader reuses these hints across every row and
+    /// never reopens or reparses the schema file.
+    fn numeric_column_hints_for_class(&self, class_name: Option<&str>) -> NumericColumnHints {
+        let Some(class_name) = class_name else {
+            return NumericColumnHints::new();
+        };
+
+        self.source_provider
+            .induced_slots(class_name)
+            .map(|slots| {
+                slots
+                    .into_iter()
+                    .filter_map(|slot| match slot.range {
+                        RangeKind::Type(range) => {
+                            numeric_column_kind(&range).map(|kind| (slot.name, kind))
+                        }
+                        // Enums and strings intentionally remain lexical, even
+                        // where their concrete values happen to look numeric.
+                        RangeKind::Class(_) | RangeKind::Enum(_) | RangeKind::None => None,
+                    })
+                    .collect()
+            })
+            // A class hint can be absent for a generic object mapping. Preserve
+            // historical all-string tabular behaviour in that case.
+            .unwrap_or_default()
+    }
+
+    fn source_numeric_column_hints(&self) -> NumericColumnHints {
+        self.numeric_column_hints_for_class(self.source_class.as_deref())
+    }
+
     /// Load spec + schemas from disk; resolve source class.
     pub fn load(
         spec_path: &Path,
@@ -198,14 +233,18 @@ impl CompiledPlan {
         // loud on an un-keyable / un-hostable reference rather than letting it
         // silently resolve to null at runtime.
         linkml_map_core::normalize::synthesize_implicit_joins(&mut spec, source_provider.as_ref())
-            .with_context(|| format!("synthesizing implicit joins for spec {}", spec_path.display()))?;
+            .with_context(|| {
+                format!(
+                    "synthesizing implicit joins for spec {}",
+                    spec_path.display()
+                )
+            })?;
 
         // Load target schema (may be same file — that's fine, second load is cheap)
-        let target_provider: Box<dyn SchemaProvider> = Box::new(
-            load_schema(target_schema_path, None).with_context(|| {
+        let target_provider: Box<dyn SchemaProvider> =
+            Box::new(load_schema(target_schema_path, None).with_context(|| {
                 format!("loading target schema {}", target_schema_path.display())
-            })?,
-        );
+            })?);
 
         // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
         // surface here at plan-build time rather than per row.
@@ -415,7 +454,23 @@ impl CompiledPlan {
 /// 3. Each row is dispatched to a rayon threadpool (via `spawn_blocking`) with
 ///    the shared `Arc<CompiledPlan>` — no per-row schema/spec parsing.
 /// 4. Results (optionally reordered) are written to `out_path`.
-pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
+pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
+    run_pipeline_with_options(config, false).await
+}
+
+/// Run the pipeline, optionally keeping processing after row-level transform
+/// failures.
+///
+/// When `continue_on_error` is enabled, every failed row is reported to stderr
+/// as soon as the collector observes it.  A clean run that saw any such errors
+/// still returns an error after output has been flushed.  Crucially, writer
+/// errors are returned unchanged: already-emitted row diagnostics remain
+/// visible rather than being deferred until a point a writer failure may never
+/// reach.
+pub async fn run_pipeline_with_options(
+    mut config: PipelineConfig,
+    continue_on_error: bool,
+) -> Result<PipelineStats> {
     let start = Instant::now();
 
     // Build rayon thread pool if a non-default worker count was requested.
@@ -490,9 +545,13 @@ pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
         // Memory cost: O(N) in the number of source rows. For very large datasets
         // consider breaking the source into pre-joined chunks before using this
         // pipeline.
-        let all_rows = load_all(&config.source_path, src_format)
-            .await
-            .with_context(|| format!("loading source file for FK mode: {}", config.source_path))?;
+        let all_rows = load_all_with_numeric_hints(
+            &config.source_path,
+            src_format,
+            plan.source_numeric_column_hints(),
+        )
+        .await
+        .with_context(|| format!("loading source file for FK mode: {}", config.source_path))?;
 
         rows_in = all_rows.len();
 
@@ -627,9 +686,13 @@ pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
         rows_out = ro;
     } else {
         // ── Non-FK streaming mode (original path, unchanged) ──────────────────
-        let mut source_stream = load_stream(&config.source_path, src_format)
-            .await
-            .with_context(|| format!("opening source stream {}", config.source_path))?;
+        let mut source_stream = load_stream_with_numeric_hints(
+            &config.source_path,
+            src_format,
+            plan.source_numeric_column_hints(),
+        )
+        .await
+        .with_context(|| format!("opening source stream {}", config.source_path))?;
 
         // ── 3. Concurrent transform ───────────────────────────────────────────────
         // Reader → bounded channel → tokio spawn_blocking (rayon thread) → results channel → writer
@@ -698,7 +761,7 @@ pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
         // A collector task feeds finished rows into an output channel; write_all
         // streams from it, so memory stays bounded to the channel depth (+ the
         // reorder window in ordered mode, itself bounded by `max_inflight`).
-        let (out_tx, out_rx) = mpsc::channel::<Value>(config.channel_depth);
+        let (out_tx, out_rx) = mpsc::channel::<Result<Value>>(config.channel_depth);
         let ordered = config.ordered;
         let collector = tokio::spawn(async move {
             let mut count = 0usize;
@@ -715,12 +778,23 @@ pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
                         next_seq += 1;
                         match result {
                             Ok(v) => {
-                                if out_tx.send(v).await.is_err() {
+                                if out_tx.send(Ok(v)).await.is_err() {
                                     return count;
                                 }
                                 count += 1;
                             }
-                            Err(e) => eprintln!("transform error at seq {}: {e:#}", next_seq - 1),
+                            Err(e) if continue_on_error => {
+                                eprintln!("transform error at row {}: {e:#}", next_seq - 1);
+                            }
+                            Err(e) => {
+                                let _ = out_tx
+                                    .send(Err(e.context(format!(
+                                        "transform error at row {}",
+                                        next_seq - 1
+                                    ))))
+                                    .await;
+                                return count;
+                            }
                         }
                     }
                 }
@@ -729,12 +803,16 @@ pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
                 while let Some((_seq, result)) = res_rx.recv().await {
                     match result {
                         Ok(v) => {
-                            if out_tx.send(v).await.is_err() {
+                            if out_tx.send(Ok(v)).await.is_err() {
                                 return count;
                             }
                             count += 1;
                         }
-                        Err(e) => eprintln!("transform error: {e:#}"),
+                        Err(e) if continue_on_error => eprintln!("transform error: {e:#}"),
+                        Err(e) => {
+                            let _ = out_tx.send(Err(e.context("transform error"))).await;
+                            return count;
+                        }
                     }
                 }
             }
@@ -743,7 +821,7 @@ pub async fn run_pipeline(mut config: PipelineConfig) -> Result<PipelineStats> {
 
         // Lazily turn the output channel into a stream for write_all.
         let out_stream = futures::stream::unfold(out_rx, |mut rx| async move {
-            rx.recv().await.map(|v| (Ok::<_, anyhow::Error>(v), rx))
+            rx.recv().await.map(|result| (result, rx))
         })
         .boxed();
         write_all(&config.out_path, out_format, out_stream)
@@ -947,12 +1025,15 @@ async fn load_directory_source(
         let Some(file) = find_table_file(dir, &table)? else {
             continue;
         };
-        let fmt = Format::from_path(&file).with_context(|| {
-            format!("detecting format of joined table file {}", file.display())
-        })?;
-        let rows = load_all(&file, fmt)
-            .await
-            .with_context(|| format!("loading joined table {table:?} from {}", file.display()))?;
+        let fmt = Format::from_path(&file)
+            .with_context(|| format!("detecting format of joined table file {}", file.display()))?;
+        let rows = load_all_with_numeric_hints(
+            &file,
+            fmt,
+            plan.numeric_column_hints_for_class(Some(&table)),
+        )
+        .await
+        .with_context(|| format!("loading joined table {table:?} from {}", file.display()))?;
         index.register_table(&table, &rows, &lookup_key);
         any_registered = true;
     }
@@ -969,8 +1050,8 @@ async fn load_directory_source(
 /// `Ok(None)` when no file matches (a missing joined table is a skip, not an
 /// error — only a missing *primary* table is fatal, enforced by the caller).
 fn find_table_file(dir: &Path, table_name: &str) -> Result<Option<PathBuf>> {
-    for entry in
-        std::fs::read_dir(dir).with_context(|| format!("reading source directory {}", dir.display()))?
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("reading source directory {}", dir.display()))?
     {
         let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
         let path = entry.path();
@@ -991,6 +1072,18 @@ fn find_table_file(dir: &Path, table_name: &str) -> Result<Option<PathBuf>> {
 // (see `linkml-map-schemaview`'s `resolve_default_curi_maps`), so schemas that
 // used to need an in-memory YAML fallback now load through the strict backend
 // directly.
+
+/// Return the scalar coercion appropriate for a built-in LinkML numeric range.
+/// Custom scalar types are intentionally left lexical: without the type's
+/// `typeof` chain, guessing would reintroduce the ZIP-code/enum coercion bug.
+fn numeric_column_kind(range: &str) -> Option<NumericColumnKind> {
+    match range.to_ascii_lowercase().as_str() {
+        "integer" | "nonnegativeinteger" | "positiveinteger" | "nonpositiveinteger"
+        | "negativeinteger" | "unsignedinteger" => Some(NumericColumnKind::Integer),
+        "float" | "double" | "decimal" => Some(NumericColumnKind::Float),
+        _ => None,
+    }
+}
 
 /// Load a source/target schema through `SchemaViewProvider`, applying any
 /// `source_schema_patches` (FK range augmentation etc.) before indexing.
@@ -1017,7 +1110,7 @@ pub fn load_transform_spec(path: &Path) -> Result<TransformationSpecification> {
 mod tests {
     use super::*;
     use linkml_map_core::value::Value;
-    use linkml_map_io::{write_vec, Format};
+    use linkml_map_io::{Format, write_vec};
     use std::collections::HashMap;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1317,7 +1410,9 @@ class_derivations:
             channel_depth: 64,
         };
 
-        let stats = run_pipeline(cfg).await.expect("directory-mode pipeline failed");
+        let stats = run_pipeline(cfg)
+            .await
+            .expect("directory-mode pipeline failed");
         assert_eq!(stats.rows_in, 1, "expected 1 primary (Measurement) row in");
         assert_eq!(stats.rows_out, 1, "expected 1 row out");
 
@@ -1480,9 +1575,10 @@ class_derivations:
         let mut seen_ids: HashMap<String, bool> = HashMap::new();
         for row in &loaded {
             if let Value::Map(m) = row
-                && let Some(Value::Str(id)) = m.get("id") {
-                    seen_ids.insert(id.clone(), true);
-                }
+                && let Some(Value::Str(id)) = m.get("id")
+            {
+                seen_ids.insert(id.clone(), true);
+            }
         }
         assert_eq!(seen_ids.len(), 1000, "not all IDs present in output");
 

@@ -30,7 +30,10 @@ pub mod writers;
 
 // Re-export the most commonly used items at crate root.
 pub use format::Format;
-pub use loaders::{load_all, load_stream, load_stream_auto};
+pub use loaders::{
+    NumericColumnHints, NumericColumnKind, load_all, load_all_with_numeric_hints, load_stream,
+    load_stream_auto, load_stream_with_numeric_hints,
+};
 pub use writers::{value_to_json, write_all, write_all_auto, write_vec};
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -179,6 +182,44 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_csv_numeric_hints_coerce_only_schema_numeric_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typed.csv");
+        tokio::fs::write(
+            &path,
+            "count,ratio,zip,status\n42,3.5,00123,007\nnot-a-number,NaN,00456,001\n",
+        )
+        .await
+        .unwrap();
+
+        let hints = NumericColumnHints::from([
+            ("count".to_owned(), NumericColumnKind::Integer),
+            ("ratio".to_owned(), NumericColumnKind::Float),
+        ]);
+        let loaded = load_all_with_numeric_hints(&path, Format::Csv, hints)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            loaded,
+            vec![
+                make_map_mixed(&[
+                    ("count", Value::Int(42)),
+                    ("ratio", Value::Float(3.5)),
+                    ("zip", Value::Str("00123".into())),
+                    ("status", Value::Str("007".into())),
+                ]),
+                make_map_mixed(&[
+                    ("count", Value::Str("not-a-number".into())),
+                    ("ratio", Value::Str("NaN".into())),
+                    ("zip", Value::Str("00456".into())),
+                    ("status", Value::Str("001".into())),
+                ]),
+            ]
+        );
+    }
+
     // ── TSV round-trip ──────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -198,6 +239,27 @@ mod tests {
         let loaded = load_all(&path, Format::Tsv).await.unwrap();
 
         assert_eq!(loaded, original, "TSV round-trip mismatch");
+    }
+
+    #[tokio::test]
+    async fn test_tsv_numeric_hints_are_applied_per_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("typed.tsv");
+        tokio::fs::write(&path, "score\tcode\n8.25\t0008\n")
+            .await
+            .unwrap();
+
+        let hints = NumericColumnHints::from([("score".to_owned(), NumericColumnKind::Float)]);
+        let loaded = load_all_with_numeric_hints(&path, Format::Tsv, hints)
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded,
+            vec![make_map_mixed(&[
+                ("score", Value::Float(8.25)),
+                ("code", Value::Str("0008".into())),
+            ])]
+        );
     }
 
     // ── Sparse TSV (upstream #210) ──────────────────────────────────────────

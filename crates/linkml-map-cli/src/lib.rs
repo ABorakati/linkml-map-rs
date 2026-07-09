@@ -91,6 +91,18 @@ impl MapDataConfig {
 ///
 /// Progress messages are written to stderr (same as the CLI).
 pub async fn run_map_data_config(cfg: MapDataConfig) -> Result<PipelineStats> {
+    run_map_data_config_with_options(cfg, false).await
+}
+
+/// Run `map-data` with its row-error policy.
+///
+/// `continue_on_error` mirrors the CLI flag of the same name.  It keeps
+/// processing after a row-level transformation error, reports the error at
+/// once, and returns a non-zero result after otherwise clean completion.
+pub async fn run_map_data_config_with_options(
+    cfg: MapDataConfig,
+    continue_on_error: bool,
+) -> Result<PipelineStats> {
     let source_format = parse_format_str(&cfg.input_format)?;
     let out_format = parse_format_str(&cfg.output_format)?;
 
@@ -117,7 +129,7 @@ pub async fn run_map_data_config(cfg: MapDataConfig) -> Result<PipelineStats> {
         cfg.input, cfg.output, cfg.spec
     );
 
-    let stats = linkml_map_pipeline::run_pipeline(pipeline_cfg).await?;
+    let stats = linkml_map_pipeline::run_pipeline_with_options(pipeline_cfg, continue_on_error).await?;
 
     eprintln!(
         "rows_in={} rows_out={} elapsed={:.3}s throughput={:.0} rows/s",

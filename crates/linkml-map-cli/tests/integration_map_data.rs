@@ -10,9 +10,9 @@
 
 use std::path::PathBuf;
 
-use linkml_map_cli::{run_map_data_config, MapDataConfig};
+use linkml_map_cli::{MapDataConfig, run_map_data_config, run_map_data_config_with_options};
 use linkml_map_core::value::Value;
-use linkml_map_io::{load_all, Format};
+use linkml_map_io::{Format, load_all};
 use tempfile::tempdir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -27,6 +27,86 @@ fn measurements_dir() -> PathBuf {
         .parent() // workspace root
         .unwrap()
         .join("tests/examples/measurements")
+}
+
+/// Make a two-row fixture where the first row fails `int()` coercion and the
+/// second one is valid. YAML input deliberately exercises the generic streaming
+/// path rather than the JSONL bulk fast path.
+fn write_continue_on_error_fixture(dir: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
+    let schema = dir.join("schema.yaml");
+    std::fs::write(
+        &schema,
+        r#"id: https://example.org/continue-on-error
+name: continue_on_error
+prefixes:
+  linkml: https://w3id.org/linkml/
+default_range: string
+imports:
+  - linkml:types
+classes:
+  Person:
+    attributes:
+      id:
+        identifier: true
+      age: {}
+  Result:
+    attributes:
+      id:
+        identifier: true
+      age:
+        range: integer
+"#,
+    )
+    .expect("writing schema");
+
+    let spec = dir.join("spec.yaml");
+    std::fs::write(
+        &spec,
+        r#"id: https://example.org/continue-on-error-transform
+class_derivations:
+  Result:
+    populated_from: Person
+    slot_derivations:
+      id:
+        populated_from: id
+      age:
+        expr: "int({age})"
+"#,
+    )
+    .expect("writing spec");
+
+    let input = dir.join("input.yaml");
+    std::fs::write(
+        &input,
+        r#"- id: bad
+  age: not-a-number
+- id: good
+  age: "7"
+"#,
+    )
+    .expect("writing input");
+
+    (schema, spec, input)
+}
+
+fn continue_on_error_config(
+    schema: &std::path::Path,
+    spec: &std::path::Path,
+    input: &std::path::Path,
+    output: &std::path::Path,
+) -> MapDataConfig {
+    MapDataConfig {
+        spec: spec.to_string_lossy().into_owned(),
+        source_schema: schema.to_string_lossy().into_owned(),
+        target_schema: Some(schema.to_string_lossy().into_owned()),
+        output: output.to_string_lossy().into_owned(),
+        source_class: Some("Person".to_owned()),
+        input_format: "yaml".to_owned(),
+        output_format: "json".to_owned(),
+        workers: 1,
+        unordered: false,
+        input: input.to_string_lossy().into_owned(),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -238,6 +318,53 @@ async fn test_map_data_measurements_002_two_rows() {
     assert_eq!(
         stats.rows_out, stats.rows_in,
         "all rows should transform without error"
+    );
+}
+
+/// `--continue-on-error` preserves the valid rows after a row-level transform
+/// error, but reports failure overall after output is completed.
+#[tokio::test]
+async fn test_continue_on_error_writes_later_valid_row_and_returns_error() {
+    let tmp = tempdir().expect("tempdir");
+    let (schema, spec, input) = write_continue_on_error_fixture(tmp.path());
+    let output = tmp.path().join("continued.json");
+
+    let err = run_map_data_config_with_options(
+        continue_on_error_config(&schema, &spec, &input, &output),
+        true,
+    )
+    .await
+    .expect_err("a completed run with a failed row must be non-zero");
+    assert!(
+        format!("{err:#}").contains("1 of 2 rows failed to transform"),
+        "unexpected error: {err:#}"
+    );
+
+    let rows = load_all(&output, Format::Json)
+        .await
+        .expect("continued output should be readable");
+    assert_eq!(rows.len(), 1, "only the successful row should be written");
+    let Value::Map(row) = &rows[0] else {
+        panic!("expected output object, got {:?}", rows[0]);
+    };
+    assert_eq!(row.get("id"), Some(&Value::Str("good".into())));
+    assert_eq!(row.get("age"), Some(&Value::Int(7)));
+}
+
+/// The long-standing public API is intentionally fail-fast unless the caller
+/// opts into continuation.
+#[tokio::test]
+async fn test_default_map_data_api_stays_fail_fast() {
+    let tmp = tempdir().expect("tempdir");
+    let (schema, spec, input) = write_continue_on_error_fixture(tmp.path());
+    let output = tmp.path().join("fail-fast.json");
+
+    let err = run_map_data_config(continue_on_error_config(&schema, &spec, &input, &output))
+        .await
+        .expect_err("the default API must stop at the first row error");
+    assert!(
+        format!("{err:#}").contains("transform error at row 0"),
+        "unexpected error: {err:#}"
     );
 }
 
