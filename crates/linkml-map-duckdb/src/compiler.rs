@@ -193,7 +193,7 @@ impl SqlCompiler {
                     .or(ac.join_on.as_deref())
                     .unwrap_or(alias.as_str());
                 s.push_str(&format!(
-                    "\nLEFT JOIN {table} AS {alias} ON {source}.{src_key} = {alias}.{lkp_key}"
+                    "\nLEFT JOIN (SELECT * FROM {table} QUALIFY row_number() OVER (PARTITION BY {lkp_key}) = 1) AS {alias} ON {source}.{src_key} = {alias}.{lkp_key}"
                 ));
             }
         }
@@ -395,6 +395,6 @@ mod tests {
         let compiled = SqlCompiler::new().compile(&simple_spec(cd));
         let sql = &compiled.statements[0].1;
         assert!(sql
-            .contains("LEFT JOIN Demographics AS demo ON RawPatient.patient_id = demo.patient_id"));
+            .contains("LEFT JOIN (SELECT * FROM Demographics QUALIFY row_number() OVER (PARTITION BY patient_id) = 1) AS demo ON RawPatient.patient_id = demo.patient_id"));
     }
 }

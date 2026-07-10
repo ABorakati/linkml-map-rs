@@ -1,0 +1,54 @@
+# codedb ignore (gitignore syntax) — keep the code-intelligence index code-only.
+# Added 2026-07-02 after per-project stores under ~/.codedb ballooned to GBs.
+
+# Build artifacts & dependency trees
+target/
+node_modules/
+dist/
+build/
+builds*/
+.venv*/
+venv*/
+.tox/
+site-packages/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Index / cache artifacts (codedb & other tooling)
+codedb.snapshot
+.codedb_tmp
+.codedb-index/
+.codedb-mcp/
+.kodegraf/
+.lean-ctx/
+.omc/
+.omx/
+
+# Data & binary blobs — not useful to a code index
+*.csv
+*.tsv
+*.parquet
+*.arrow
+*.lance
+*.duckdb
+*.db
+*.sqlite*
+*.jsonl
+*.ndjson
+*.gz
+*.zip
+*.tar
+*.7z
+*.exe
+*.dll
+*.pdb
+*.rlib
+*.bin
+*.onnx
+*.safetensors
+*.xlsx
+*.docx
+*.pptx
+*.pdf
