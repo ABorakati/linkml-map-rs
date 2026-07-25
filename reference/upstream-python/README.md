@@ -10,10 +10,10 @@ to Rust under the "mirror upstream Python" doctrine.
 | Field          | Value                                                        |
 |----------------|--------------------------------------------------------------|
 | Upstream repo  | https://github.com/linkml/linkml-map                        |
-| Pinned commit  | `66cbcc31b5169f8f95a70f164161a4cee1c6a2bb`                  |
-| Fetch date     | 2026-06-24 (initial nine files); refreshed 2026-07-07 for the pin bump to `66cbcc31b5` and the three newly-added files below |
+| Pinned commit  | `v0.5.3` tag                                                |
+| Fetch date     | 2026-06-24 (initial); 2026-07-07; 2026-07-25 (pin bump to `v0.5.3`) |
 
-Pin-drift history: see [`docs/upstream-sync-2026-07-07.md`](../../docs/upstream-sync-2026-07-07.md).
+Pin-drift history: see [`docs/upstream-sync-2026-07-25.md`](../../docs/upstream-sync-2026-07-25.md).
 
 ## Raw URL pattern
 

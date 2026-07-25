@@ -1,12 +1,11 @@
 # Compliance Suite Provenance
 
 ## Source Repository
-- **URL**: https://github.com/linkml/linkml-map
-- **Upstream Commit**: 66cbcc31b5169f8f95a70f164161a4cee1c6a2bb
+- **Upstream Commit**: `v0.5.3` tag (commit `ea0d4ee8c`)
 - **Clone Date**: 2026-06-13
-- **Pin history**: see [`docs/upstream-sync-2026-07-07.md`](../../docs/upstream-sync-2026-07-07.md)
-  for the 2026-07-07 pin-drift review that moved the pin from
-  `19b1985889ec0fc247145e9aa03eb74a4d7b3588` to this commit.
+- **Pin history**: see [`docs/upstream-sync-2026-07-25.md`](../../docs/upstream-sync-2026-07-25.md)
+  for the 2026-07-25 pin-drift review that moved the pin from
+  `66cbcc31b5169f8f95a70f164161a4cee1c6a2bb` to the `v0.5.3` tag.
 
 ## Contents
 

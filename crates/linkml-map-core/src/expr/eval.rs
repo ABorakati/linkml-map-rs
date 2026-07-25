@@ -5,19 +5,22 @@
 //! - SQL-style NULL propagation through arithmetic, ordering comparisons,
 //!   membership, unary ops, and function calls — but NOT through `==`/`!=`,
 //!   which use native Python equality.
-//! - Numeric-string coercion for comparisons; binary arithmetic tries native
-//!   first (so `str + str` is concatenation), then retries by coercing both
-//!   operands to float.
+//! - Numeric-string coercion for comparisons; arithmetic operators coerce
+//!   numeric-looking strings to match the other operand's type (so `"71" * 365`
+//!   is `25915`, not string repetition — mirroring upstream #285 fix).
+//! - Two strings keep native semantics (`"a" + "b"` concatenates, `"71" + "365"
+//!   == "71365"`); a list times a number stays genuine repetition.
 //! - `^` is bitwise XOR, `**` is power (per the Python doctests).
 //! - Attribute access distributes over lists/dicts.
 //! - A fixed function set with list-funcs (`max`/`min`/`len`) and distributing
 //!   scalar funcs.
 
 use indexmap::IndexMap;
+use log::warn;
 
 use super::error::{ExprError, ExprResult};
-use super::parser::{parse, Ast, BinOp, BoolOp, CmpOp, UnOp};
-use super::stmt::{is_multi_statement, parse_program, Program};
+use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp, parse};
+use super::stmt::{Program, is_multi_statement, parse_program};
 use crate::value::Value;
 
 /// Variable bindings: name → value mapping.
@@ -352,7 +355,7 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                     return Err(ExprError::Eval(format!(
                         "'{}' object is not iterable",
                         type_name(&other)
-                    )))
+                    )));
                 }
             };
             // Evaluate against a child scope that shadows the loop variable.
@@ -364,9 +367,10 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             for item in items {
                 scope.insert(var.clone(), item);
                 if let Some(c) = cond
-                    && !eval_ast(c, &scope)?.is_truthy() {
-                        continue;
-                    }
+                    && !eval_ast(c, &scope)?.is_truthy()
+                {
+                    continue;
+                }
                 out.push(eval_ast(elt, &scope)?);
             }
             Ok(Value::List(out))
@@ -429,7 +433,7 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
             return Err(ExprError::Eval(format!(
                 "slot() argument must be str, got {}",
                 type_name(other)
-            )))
+            )));
         }
     };
     let resolved = match vars.get("__slot_values") {
@@ -462,7 +466,7 @@ fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
                     return Err(ExprError::Eval(format!(
                         "list indices must be integers, not {}",
                         type_name(other)
-                    )))
+                    )));
                 }
             };
             let len = items.len() as i64;
@@ -481,7 +485,7 @@ fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
                     return Err(ExprError::Eval(format!(
                         "string indices must be integers, not {}",
                         type_name(other)
-                    )))
+                    )));
                 }
             };
             let len = chars.len() as i64;
@@ -821,15 +825,17 @@ fn maybe_coerce_numeric(left: &Value, right: &Value) -> (Value, Value) {
     // left numeric (non-bool), right str → coerce right to type(left)
     if is_real_number(left)
         && let Value::Str(s) = right
-            && let Some(coerced) = coerce_str_to_type_of(s, left) {
-                return (left.clone(), coerced);
-            }
+        && let Some(coerced) = coerce_str_to_type_of(s, left)
+    {
+        return (left.clone(), coerced);
+    }
     // right numeric (non-bool), left str → coerce left to type(right)
     if is_real_number(right)
         && let Value::Str(s) = left
-            && let Some(coerced) = coerce_str_to_type_of(s, right) {
-                return (coerced, right.clone());
-            }
+        && let Some(coerced) = coerce_str_to_type_of(s, right)
+    {
+        return (coerced, right.clone());
+    }
     (left.clone(), right.clone())
 }
 
@@ -860,20 +866,83 @@ fn coerce_str_to_type_of(s: &str, target: &Value) -> Option<Value> {
         _ => None,
     }
 }
-
-/// Parse a string as Python `int()` would (whitespace-trimmed, base-10, no
 /// decimal point).
 fn parse_python_int(s: &str) -> Option<i64> {
     s.trim().parse::<i64>().ok()
 }
 
+// --- arithmetic numeric-string coercion (mirrors upstream #285) ---
+// PARITY: _coerce_like, _maybe_coerce_arithmetic, _warn_non_numeric added in
+// upstream linkml/linkml-map PR #288 (commits 8966fe7eda, 328dc30f52)
+// to fix #285 — numeric-looking string-typed columns silently corrupting
+// arithmetic expressions via Python's string-repetition semantics.
+
+/// Convert numeric string `s` to `num`'s type, falling back to float.
+/// Returns `None` when `s` is not numeric-looking.
+/// Mirrors Python `_coerce_like` at `linkml_map.utils.eval_utils`.
+fn coerce_like(s: &str, num: &Value) -> Option<Value> {
+    match coerce_str_to_type_of(s, num) {
+        Some(v) => Some(v),
+        None => {
+            // Fallback: try numeric → float (mirrors _try_numeric(s)).
+            // `int("3.14")` fails but Python's _try_numeric returns 3.14.
+            crate::value::parse_python_float(s).map(Value::Float)
+        }
+    }
+}
+
+/// Coerce a numeric-string operand so an arithmetic operator evaluates
+/// numerically. Mirrors Python `_maybe_coerce_arithmetic`.
+///
+/// When exactly one operand is a real number (int/float, not bool) and the
+/// other is a numeric-looking string, the string is converted to a number
+/// matching the number's type when it parses cleanly, else float.
+///
+/// Two strings are returned unchanged (so `"a" + "b"` still concatenates).
+/// A number paired with a non-numeric string is returned unchanged.
+fn maybe_coerce_arithmetic(left: &Value, right: &Value) -> (Value, Value) {
+    // left str, right real-number (non-bool), coerce left to numeric
+    if let Value::Str(s) = left
+        && is_real_number(right)
+        && let Some(coerced) = coerce_like(s, right)
+    {
+        return (coerced, right.clone());
+    }
+    // right str, left real-number (non-bool), coerce right to numeric
+    if let Value::Str(s) = right
+        && is_real_number(left)
+        && let Some(coerced) = coerce_like(s, left)
+    {
+        return (left.clone(), coerced);
+    }
+    (left.clone(), right.clone())
+}
+
+/// Log that an operator got a non-numeric operand and is returning None.
+/// Mirrors Python `_warn_non_numeric`.
+fn warn_non_numeric(op_name: &str, left: &Value, right: &Value) {
+    warn!("Non-numeric operand in {op_name}: {left:?}, {right:?}; returning None");
+}
+
 // --- binary arithmetic / bitwise (null-propagating with numeric retry) ---
 
 fn eval_binary(op: BinOp, left: Value, right: Value) -> ExprResult<Value> {
+    // Null propagation.
     if left.is_null() || right.is_null() {
         return Ok(Value::Null);
     }
-    // Try native first (so str+str is concatenation, int op int stays int).
+    // PARITY: mirrors Python _null_propagating_arithmetic — coerce numeric-looking
+    // strings to numbers BEFORE trying the native op, so "71" * 365 == 25915 not
+    // string repetition (linkml/linkml-map#285).
+    let (left, right) = maybe_coerce_arithmetic(&left, &right);
+    // After coercion, a lone string opposite a number is non-numeric: treat it
+    // as a failed numeric op rather than letting * repeat the string.
+    if matches!(&left, Value::Str(_)) != matches!(&right, Value::Str(_)) {
+        warn_non_numeric(binop_name(op), &left, &right);
+        return Ok(Value::Null);
+    }
+    // Try native op first — two strings still concatenate, list*int stays
+    // repetition, int op int stays int.
     match try_native_binary(op, &left, &right) {
         Ok(Some(v)) => Ok(v),
         Ok(None) | Err(_) => {
@@ -883,11 +952,30 @@ fn eval_binary(op: BinOp, left: Value, right: Value) -> ExprResult<Value> {
             match (ln, rn) {
                 (Some(a), Some(b)) => numeric_binary_f64(op, a, b),
                 _ => {
-                    // warn + return None (enables case() guards)
+                    warn_non_numeric(binop_name(op), &left, &right);
                     Ok(Value::Null)
                 }
             }
         }
+    }
+}
+
+/// Human-readable name for a binary operator, used in warning messages.
+fn binop_name(op: BinOp) -> &'static str {
+    use BinOp::*;
+    match op {
+        Add => "add",
+        Sub => "sub",
+        Mul => "mul",
+        Div => "div",
+        FloorDiv => "floordiv",
+        Mod => "mod",
+        Pow => "pow",
+        LShift => "lshift",
+        RShift => "rshift",
+        BitAnd => "bitand",
+        BitOr => "bitor",
+        BitXor => "bitxor",
     }
 }
 
@@ -917,17 +1005,26 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
         };
     }
 
-    // str * int  / int * str  → repetition
+    // list * int  / int * list  → repetition (genuine Python list semantics)
     if op == BinOp::Mul {
-        if let (Str(s), Int(n)) = (left, right) {
-            return Ok(Some(repeat_str(s, *n)));
+        if let (List(items), Int(n)) = (left, right) {
+            let n = (*n).max(0) as usize;
+            let mut out = Vec::with_capacity(items.len() * n);
+            for _ in 0..n {
+                out.extend(items.iter().cloned());
+            }
+            return Ok(Some(List(out)));
         }
-        if let (Int(n), Str(s)) = (left, right) {
-            return Ok(Some(repeat_str(s, *n)));
+        if let (Int(n), List(items)) = (left, right) {
+            let n = (*n).max(0) as usize;
+            let mut out = Vec::with_capacity(items.len() * n);
+            for _ in 0..n {
+                out.extend(items.iter().cloned());
+            }
+            return Ok(Some(List(out)));
         }
     }
 
-    // Numeric (int/float; bool participates as int in Python arithmetic).
     let li = as_int_like(left);
     let ri = as_int_like(right);
     if let (Some(a), Some(b)) = (li, ri) {
@@ -944,14 +1041,6 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
 
     // Non-numeric, non-string-handled combination → retry path.
     Ok(None)
-}
-
-fn repeat_str(s: &str, n: i64) -> Value {
-    if n <= 0 {
-        Value::Str(String::new())
-    } else {
-        Value::Str(s.repeat(n as usize))
-    }
 }
 
 /// int-like: int or bool (Python treats bool as int in arithmetic), but NOT float.
@@ -1166,7 +1255,7 @@ fn eval_conditional(args: Vec<Value>) -> ExprResult<Value> {
             _ => {
                 return Err(ExprError::Eval(
                     "case() arguments must be (cond, value) pairs".into(),
-                ))
+                ));
             }
         };
         if pair[0].is_truthy() {
@@ -1187,11 +1276,12 @@ fn list_func_reduce(
     }
     // max/min/len accept the list as a single argument (no distribution).
     if args.len() == 1
-        && let Value::List(items) = &args[0] {
-            return f(items);
-        }
-        // max/min over multiple positional args also valid in Python, but the
-        // single-list form is what these expressions use.
+        && let Value::List(items) = &args[0]
+    {
+        return f(items);
+    }
+    // max/min over multiple positional args also valid in Python, but the
+    // single-list form is what these expressions use.
     // Multiple positional args: treat them as the iterable.
     f(&args).map_err(|_| ExprError::Eval(format!("{name}() argument error")))
 }
@@ -1503,17 +1593,13 @@ fn py_round(v: &Value, ndigits: Option<&Value>) -> ExprResult<Value> {
             if ndigits.is_none() {
                 return Ok(Value::Int(*b as i64));
             }
-            if *b {
-                1.0
-            } else {
-                0.0
-            }
+            if *b { 1.0 } else { 0.0 }
         }
         other => {
             return Err(ExprError::Eval(format!(
                 "type {} doesn't define __round__ method",
                 type_name(other)
-            )))
+            )));
         }
     };
     match ndigits {
@@ -1696,10 +1782,7 @@ mod tests {
         let mut vars = Bindings::new();
         vars.insert("a".into(), Value::Int(1));
         let err = eval_expr_with_mapping("{Nope.col}", &vars).unwrap_err();
-        assert!(
-            err.to_string().contains("unknown 'Nope'"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("unknown 'Nope'"), "got: {err}");
     }
 
     #[test]
@@ -1707,11 +1790,17 @@ mod tests {
         // Bare absent names and known-but-None roots null out rather than raising.
         let mut vars = Bindings::new();
         vars.insert("a".into(), Value::Int(1));
-        assert_eq!(eval_expr_with_mapping("{missing}", &vars).unwrap(), Value::Null);
+        assert_eq!(
+            eval_expr_with_mapping("{missing}", &vars).unwrap(),
+            Value::Null
+        );
         // Root `a` is bound (to None) → getattr(None, b) → Null, no raise.
         let mut vars2 = Bindings::new();
         vars2.insert("a".into(), Value::Null);
-        assert_eq!(eval_expr_with_mapping("{a.b}", &vars2).unwrap(), Value::Null);
+        assert_eq!(
+            eval_expr_with_mapping("{a.b}", &vars2).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
@@ -1739,5 +1828,114 @@ mod tests {
             eval_expr_with_mapping_strict("slot('present')", &vars2).unwrap(),
             Value::Int(1)
         );
+    }
+
+    // --- Task 3: arithmetic coercion (#285) ---
+
+    #[test]
+    fn test_arithmetic_multiply_numeric_string_is_numeric() {
+        // "71" * 365 == 25915 (int), not string repetition
+        let mut vars = Bindings::new();
+        vars.insert("col".into(), Value::Str("71".into()));
+        assert_eq!(
+            eval_expr_with_mapping("{col} * 365", &vars).unwrap(),
+            Value::Int(25915)
+        );
+        // Same result as with int column
+        vars.insert("col".into(), Value::Int(71));
+        assert_eq!(
+            eval_expr_with_mapping("{col} * 365", &vars).unwrap(),
+            Value::Int(25915)
+        );
+        // 365 * "71" (RHS path)
+        vars.insert("col".into(), Value::Str("71".into()));
+        assert_eq!(
+            eval_expr_with_mapping("365 * {col}", &vars).unwrap(),
+            Value::Int(25915)
+        );
+        // "3.14" * 365 ~= 1146.1
+        vars.insert("col".into(), Value::Str("3.14".into()));
+        let got = eval_expr_with_mapping("{col} * 365", &vars).unwrap();
+        match got {
+            Value::Float(f) => assert!((f - 1146.1).abs() < 0.5, "got {f}"),
+            _ => panic!("expected Float, got {got:?}"),
+        }
+        // ("71" * 365) + 1825 == 27740
+        vars.insert("col".into(), Value::Str("71".into()));
+        assert_eq!(
+            eval_expr_with_mapping("({col} * 365) + 1825", &vars).unwrap(),
+            Value::Int(27740)
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_multiply_string_and_number_preserves_concatenation_and_lists() {
+        let mut vars = Bindings::new();
+        // Two strings still concatenate with +
+        vars.insert("a".into(), Value::Str("foo".into()));
+        vars.insert("b".into(), Value::Str("bar".into()));
+        assert_eq!(
+            eval_expr_with_mapping("{a} + {b}", &vars).unwrap(),
+            Value::Str("foobar".into())
+        );
+        // "71" + "365" == "71365" (concatenation, not addition)
+        vars.insert("a".into(), Value::Str("71".into()));
+        vars.insert("b".into(), Value::Str("365".into()));
+        assert_eq!(
+            eval_expr_with_mapping("{a} + {b}", &vars).unwrap(),
+            Value::Str("71365".into())
+        );
+        // A list times a number is genuine repetition/distribution
+        vars.insert("x".into(), Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            eval_expr_with_mapping("{x} * 3", &vars).unwrap(),
+            Value::List(vec![
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(1),
+                Value::Int(2),
+                Value::Int(1),
+                Value::Int(2),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_non_numeric_string_returns_none() {
+        let mut vars = Bindings::new();
+        // Non-numeric string in arithmetic returns None
+        vars.insert("x".into(), Value::Str("100".into()));
+        vars.insert("y".into(), Value::Str("abc".into()));
+        assert_eq!(eval_expr_with_mapping("x / y", &vars).unwrap(), Value::Null);
+        // "abc" * 10 returns None, not "abcabc..."
+        vars.insert("x".into(), Value::Str("abc".into()));
+        vars.insert("y".into(), Value::Int(10));
+        assert_eq!(eval_expr_with_mapping("x * y", &vars).unwrap(), Value::Null);
+        // 10 * "abc" returns None
+        vars.insert("x".into(), Value::Int(10));
+        vars.insert("y".into(), Value::Str("abc".into()));
+        assert_eq!(eval_expr_with_mapping("x * y", &vars).unwrap(), Value::Null);
+        // "abc" + 10 returns None
+        vars.insert("x".into(), Value::Str("abc".into()));
+        vars.insert("y".into(), Value::Int(10));
+        assert_eq!(eval_expr_with_mapping("x + y", &vars).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn test_arithmetic_bool_not_treated_as_number() {
+        let mut vars = Bindings::new();
+        // bool is NOT a real number for coercion purposes
+        vars.insert("x".into(), Value::Bool(true));
+        vars.insert("y".into(), Value::Str("1".into()));
+        // Bool + "string" — bool is not treated as a number for _maybe_coerce_arithmetic.
+        // But in Python, bool IS treated as int for the native operator.
+        // The key test: True * "1" stays True * "1" (not coerced to 1 * 1).
+        // Since True is not `is_real_number`, maybe_coerce_arithmetic returns unchanged.
+        // Then the native op runs: True * "1" — but in Rust, try_native_binary
+        // with (Bool, Str) and op=Mul falls through to None → numeric retry.
+        // As it should: Python's `True * "1"` == "1" (repetition), but arithmetic
+        // wrapper prevents this.
+        let got = eval_expr_with_mapping("x * y", &vars).unwrap();
+        assert_eq!(got, Value::Null, "True * '1' should be None, not '1'");
     }
 }
