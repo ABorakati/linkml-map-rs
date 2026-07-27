@@ -9,7 +9,7 @@ use anyhow::Result;
 use linkml_map_core::schema::SchemaProvider;
 use linkml_map_core::validate::validate_spec_semantics;
 use linkml_map_io::Format;
-use linkml_map_pipeline::{load_transform_spec, PipelineConfig, PipelineStats};
+use linkml_map_pipeline::{PipelineConfig, PipelineStats, load_transform_spec};
 use linkml_map_schemaview::SchemaViewProvider;
 
 /// Re-exported from `linkml-map-core` so callers/tests of [`run_validate_config`]
@@ -45,7 +45,8 @@ pub struct MapDataConfig {
     pub source_schema: String,
     /// Path to the target LinkML schema YAML. `None` → same as `source_schema`.
     pub target_schema: Option<String>,
-    /// Output file path (-o). Required (stdout not yet supported).
+    /// Output file path (-o).  Pass `"-"` to write to stdout (requires explicit
+    /// output_format).
     pub output: String,
     /// Source class name hint. `None` → engine resolves from spec.
     pub source_class: Option<String>,
@@ -129,7 +130,8 @@ pub async fn run_map_data_config_with_options(
         cfg.input, cfg.output, cfg.spec
     );
 
-    let stats = linkml_map_pipeline::run_pipeline_with_options(pipeline_cfg, continue_on_error).await?;
+    let stats =
+        linkml_map_pipeline::run_pipeline_with_options(pipeline_cfg, continue_on_error).await?;
 
     eprintln!(
         "rows_in={} rows_out={} elapsed={:.3}s throughput={:.0} rows/s",

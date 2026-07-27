@@ -41,7 +41,7 @@ use linkml_map_core::{
 };
 use linkml_map_io::{
     Format, NumericColumnHints, NumericColumnKind, load_all_with_numeric_hints,
-    load_stream_with_numeric_hints, write_all,
+    load_stream_with_numeric_hints, write_all, write_all_writer,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
@@ -526,11 +526,17 @@ pub async fn run_pipeline_with_options(
         .unwrap_or_else(|| Format::from_path(&config.source_path))
         .with_context(|| format!("detecting source format for {}", config.source_path))?;
 
-    let out_format = config
-        .out_format
-        .map(Ok)
-        .unwrap_or_else(|| Format::from_path(&config.out_path))
-        .with_context(|| format!("detecting output format for {}", config.out_path))?;
+    let out_format = if config.out_path == "-" {
+        config.out_format.ok_or_else(|| anyhow::anyhow!(
+            "output format is required when writing to stdout; pass --output-format (jsonl|json|csv|tsv|yaml)"
+        ))?
+    } else {
+        config
+            .out_format
+            .map(Ok)
+            .unwrap_or_else(|| Format::from_path(&config.out_path))
+            .with_context(|| format!("detecting output format for {}", config.out_path))?
+    };
 
     let rows_in;
     let rows_out;
@@ -632,13 +638,9 @@ pub async fn run_pipeline_with_options(
             .context("FK transform task")?;
 
             rows_out = n;
-            use tokio::io::AsyncWriteExt;
-            let out_file = tokio::fs::File::create(&config.out_path)
+            write_bytes_to_output(&config.out_path, buf.as_bytes(), "FK output")
                 .await
-                .with_context(|| format!("creating FK output {}", config.out_path))?;
-            let mut writer = tokio::io::BufWriter::with_capacity(1 << 20, out_file);
-            writer.write_all(buf.as_bytes()).await?;
-            writer.flush().await?;
+                .with_context(|| format!("writing FK output to {}", config.out_path))?;
         } else {
             // Other formats: parallel transform → Vec<Value>, then the generic
             // (serial) writer for that format.
@@ -668,7 +670,7 @@ pub async fn run_pipeline_with_options(
 
             rows_out = values.len();
             let stream = futures::stream::iter(values.into_iter().map(Ok::<_, anyhow::Error>));
-            write_all(&config.out_path, out_format, stream)
+            write_stream_to_output(&config.out_path, out_format, stream)
                 .await
                 .with_context(|| format!("writing FK output to {}", config.out_path))?;
         }
@@ -824,7 +826,7 @@ pub async fn run_pipeline_with_options(
             rx.recv().await.map(|result| (result, rx))
         })
         .boxed();
-        write_all(&config.out_path, out_format, out_stream)
+        write_stream_to_output(&config.out_path, out_format, out_stream)
             .await
             .with_context(|| format!("writing output to {}", config.out_path))?;
 
@@ -876,12 +878,70 @@ fn build_rayon_pool(workers: usize) -> Result<Arc<Option<rayon::ThreadPool>>> {
     Ok(Arc::new(pool))
 }
 
+// ── Output writing helpers (file vs stdout) ───────────────────────────────────
+
+/// Write a raw byte buffer to the output destination.
+///
+/// When `out_path` is `"-"` the data is written to stdout; BrokenPipe is
+/// treated as normal termination (downstream pipe closed).
+async fn write_bytes_to_output(out_path: &str, buf: &[u8], label: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    if out_path == "-" {
+        let mut stdout = tokio::io::stdout();
+        if let Err(e) = stdout.write_all(buf).await {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(()); // normal: downstream closed
+            }
+            return Err(e).with_context(|| format!("writing {} to stdout", label));
+        }
+        if let Err(e) = stdout.flush().await {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(e).with_context(|| format!("flushing {} to stdout", label));
+        }
+    } else {
+        let file = tokio::fs::File::create(out_path)
+            .await
+            .with_context(|| format!("creating {} {}", label, out_path))?;
+        let mut writer = tokio::io::BufWriter::with_capacity(1 << 20, file);
+        writer.write_all(buf).await?;
+        writer.flush().await?;
+    }
+    Ok(())
+}
+
+/// Write a [`Value`] stream to the output destination.
+///
+/// When `out_path` is `"-"` the stream is written to stdout via
+/// [`write_all_writer`]; BrokenPipe is treated as normal termination.
+async fn write_stream_to_output<S>(out_path: &str, out_format: Format, stream: S) -> Result<()>
+where
+    S: futures::Stream<Item = Result<Value>> + Unpin,
+{
+    if out_path == "-" {
+        match write_all_writer(tokio::io::stdout(), out_format, stream).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                if e.downcast_ref::<std::io::Error>()
+                    .map(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+                    .unwrap_or(false)
+                {
+                    return Ok(());
+                }
+                Err(e)
+            }
+        }
+    } else {
+        write_all(out_path, out_format, stream).await
+    }
+}
+
 async fn transform_jsonl_parallel(
     config: &PipelineConfig,
     plan: Arc<CompiledPlan>,
 ) -> Result<(usize, usize)> {
     use rayon::prelude::*;
-    use tokio::io::{AsyncWriteExt, BufWriter};
 
     let pool = build_rayon_pool(config.workers)?;
 
@@ -930,12 +990,9 @@ async fn transform_jsonl_parallel(
     let t_xform = t1.elapsed();
 
     let t2 = Instant::now();
-    let out_file = tokio::fs::File::create(&config.out_path)
+    write_bytes_to_output(&config.out_path, out_buf.as_bytes(), "JSONL output")
         .await
-        .with_context(|| format!("creating JSONL output {}", config.out_path))?;
-    let mut writer = BufWriter::with_capacity(1 << 20, out_file);
-    writer.write_all(out_buf.as_bytes()).await?;
-    writer.flush().await?;
+        .with_context(|| format!("writing JSONL output to {}", config.out_path))?;
     let t_write = t2.elapsed();
 
     if dbg {

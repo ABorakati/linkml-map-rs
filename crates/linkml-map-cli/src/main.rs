@@ -10,8 +10,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use linkml_map_cli::{
-    parse_format_str, run_map_data_config_with_options, run_validate_config, MapDataConfig, Severity,
-    ValidateConfig,
+    MapDataConfig, Severity, ValidateConfig, parse_format_str, run_map_data_config_with_options,
+    run_validate_config,
 };
 use linkml_map_core::inference::SchemaMapper;
 use linkml_map_pipeline::load_transform_spec;
@@ -19,7 +19,7 @@ use linkml_map_schemaview::SchemaViewProvider;
 
 // ── Top-level CLI ─────────────────────────────────────────────────────────────
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(
     name = "linkml-tr-rs",
     version = "0.1.0",
@@ -31,19 +31,20 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     /// Transform a source data file using a LinkML transformation spec.
     MapData(MapDataArgs),
     /// Derive a target schema from a transformation spec.
     DeriveSchema(DeriveSchemaArgs),
     /// Validate a transformation spec against its source/target schemas.
+    #[command(visible_alias = "validate-spec")]
     Validate(ValidateArgs),
 }
 
 // ── map-data ──────────────────────────────────────────────────────────────────
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct MapDataArgs {
     /// Transformation specification YAML file (-T / --specification).
     #[arg(short = 'T', long = "specification", value_name = "SPEC_YAML")]
@@ -57,7 +58,7 @@ struct MapDataArgs {
     #[arg(long = "target-schema", value_name = "TARGET_YAML")]
     target_schema: Option<String>,
 
-    /// Output file path.  Required (stdout streaming is not yet supported).
+    /// Output file path.  Pass `-` to write to stdout (requires --output-format).
     #[arg(short = 'o', long = "output", value_name = "OUT_FILE")]
     output: String,
 
@@ -107,7 +108,7 @@ struct MapDataArgs {
 
 // ── derive-schema ─────────────────────────────────────────────────────────────
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct DeriveSchemaArgs {
     /// Transformation specification YAML file.
     #[arg(short = 'T', long = "specification", value_name = "SPEC_YAML")]
@@ -124,7 +125,7 @@ struct DeriveSchemaArgs {
 
 // ── validate ──────────────────────────────────────────────────────────────────
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 struct ValidateArgs {
     /// Transformation specification YAML file (-T / --specification).
     #[arg(short = 'T', long = "specification", value_name = "SPEC_YAML")]
@@ -234,4 +235,54 @@ async fn main() -> Result<()> {
         Commands::Validate(args) => dispatch_validate(args)?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// Both `validate` and `validate-spec` MUST parse as the Validate subcommand
+    /// and dispatch to the same handler.  This keeps the CLI a drop-in
+    /// replacement for upstream `linkml-tr`.  The alias is `visible_alias` so
+    /// `--help` advertises the upstream-compatible name.
+    #[test]
+    fn test_validate_and_validate_spec_both_parse() {
+        let args1 = Cli::try_parse_from(["linkml-tr-rs", "validate", "-T", "spec.yaml"]);
+        assert!(args1.is_ok(), "`validate` should parse: {args1:?}");
+        let cli1 = args1.unwrap();
+        assert!(matches!(cli1.command, Commands::Validate(_)));
+
+        let args2 = Cli::try_parse_from(["linkml-tr-rs", "validate-spec", "-T", "spec.yaml"]);
+        assert!(args2.is_ok(), "`validate-spec` should parse: {args2:?}");
+        let cli2 = args2.unwrap();
+        assert!(matches!(cli2.command, Commands::Validate(_)));
+    }
+
+    /// `validate-spec` with the same flags as `validate` must parse identically.
+    #[test]
+    fn test_validate_spec_full_flags() {
+        let args = Cli::try_parse_from([
+            "linkml-tr-rs",
+            "validate-spec",
+            "-T",
+            "spec.yaml",
+            "-s",
+            "source.yaml",
+            "--target-schema",
+            "target.yaml",
+            "--strict",
+        ]);
+        assert!(args.is_ok(), "{args:?}");
+        let cli = args.unwrap();
+        match cli.command {
+            Commands::Validate(v) => {
+                assert_eq!(v.spec, "spec.yaml");
+                assert_eq!(v.source_schema.unwrap(), "source.yaml");
+                assert_eq!(v.target_schema.unwrap(), "target.yaml");
+                assert!(v.strict);
+            }
+            _ => panic!("expected Validate, got something else"),
+        }
+    }
 }

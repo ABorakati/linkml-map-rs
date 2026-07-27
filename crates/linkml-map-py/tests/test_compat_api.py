@@ -501,6 +501,66 @@ class TestFreeFunctions:
         expected2 = yaml.safe_load(second_expected_path.read_text(encoding="utf-8"))
         assert results == [expected1, expected2]
 
+class TestCompiledExprsCache:
+    """Verify that CompiledExprs pre-compiles expression ASTs and caches them across multi-row transforms."""
+
+    def test_multi_row_expression_evaluation(self) -> None:
+        case = _measurements_case()
+        second_input_path = case.input_path.parent / "PersonQuantityValue-002.yaml"
+        second_expected_path = case.expected_path.parent / "PersonQuantityValue-002.transformed.yaml"
+        if not (second_input_path.exists() and second_expected_path.exists()):
+            pytest.skip("PersonQuantityValue-002 fixture files not found")
+
+        # 1. Native Transformer with transform_many
+        t = Transformer(
+            source_schema=str(case.source_schema_path),
+            spec=str(case.transform_path),
+            source_class="Person",
+        )
+        obj1 = case.load_input()
+        obj2 = yaml.safe_load(second_input_path.read_text(encoding="utf-8"))
+
+        # Batch transform using cached ASTs across rows
+        results_batch = t.transform_many([obj1, obj2])
+
+        # Individual transforms using the same cached AST instance on PyTransformer
+        res1 = t.transform(obj1)
+        res2 = t.transform(obj2)
+
+        expected1 = case.load_expected()
+        expected2 = yaml.safe_load(second_expected_path.read_text(encoding="utf-8"))
+
+        assert results_batch == [expected1, expected2]
+        assert res1 == expected1
+        assert res2 == expected2
+
+        # 2. Free functions batch transform (pre-compiles ASTs once for the batch)
+        free_results = transform_objects(
+            [obj1, obj2],
+            source_schema=str(case.source_schema_path),
+            spec=str(case.transform_path),
+            source_class="Person",
+        )
+        assert free_results == [expected1, expected2]
+
+    def test_invalid_expression_syntax_fails_at_build_time(self) -> None:
+        case = _measurements_case()
+        bad_spec = """
+id: bad_expr
+class_derivations:
+  Person:
+    populated_from: Person
+    slot_derivations:
+      id:
+      height_in_cm:
+        expr: "case( (invalid syntax ++"
+"""
+        with pytest.raises(ValueError, match=r"(parse error|Failed to compile expression)"):
+            Transformer.from_yaml(
+                source_schema_yaml=case.source_schema_path.read_text(encoding="utf-8"),
+                spec_yaml=bad_spec,
+                source_class="Person",
+            )
 
 class TestObjectTransformerShim:
     """`linkml_map.transformer.object_transformer.ObjectTransformer` surface."""

@@ -381,3 +381,94 @@ fn test_parse_format_str_auto_is_none() {
     let result = linkml_map_cli::parse_format_str("auto").unwrap();
     assert!(result.is_none(), "auto should map to None");
 }
+
+// ── Stdout output tests ─────────────────────────────────────────────────────
+
+/// `-o -` with explicit `--output-format` must succeed (output goes to test-harness stdout).
+#[tokio::test]
+async fn test_map_data_stdout_with_explicit_format() {
+    let fix = measurements_dir();
+
+    let cfg = linkml_map_cli::MapDataConfig {
+        spec: fix
+            .join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        source_schema: fix
+            .join("source/quantity_value.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        target_schema: Some(
+            fix.join("target/quantity_value_flat.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        ),
+        output: "-".to_string(),
+        source_class: Some("Person".to_owned()),
+        input_format: "auto".to_owned(),
+        output_format: "jsonl".to_owned(),
+        workers: 2,
+        unordered: false,
+        input: fix
+            .join("data/PersonQuantityValue-001.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    };
+
+    let result = linkml_map_cli::run_map_data_config(cfg).await;
+    assert!(
+        result.is_ok(),
+        "stdout output should succeed: {:?}",
+        result.err()
+    );
+    let stats = result.unwrap();
+    assert!(stats.rows_out > 0, "should produce at least one output row");
+}
+
+/// `-o -` WITHOUT `--output-format` must fail with a clear message.
+#[tokio::test]
+async fn test_map_data_stdout_missing_format_is_rejected() {
+    let fix = measurements_dir();
+
+    let cfg = linkml_map_cli::MapDataConfig {
+        spec: fix
+            .join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        source_schema: fix
+            .join("source/quantity_value.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+        target_schema: Some(
+            fix.join("target/quantity_value_flat.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        ),
+        output: "-".to_string(),
+        source_class: Some("Person".to_owned()),
+        input_format: "auto".to_owned(),
+        output_format: "auto".to_owned(), // "auto" maps to None → error
+        workers: 2,
+        unordered: false,
+        input: fix
+            .join("data/PersonQuantityValue-001.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    };
+
+    let result = linkml_map_cli::run_map_data_config(cfg).await;
+    assert!(result.is_err(), "stdout without format must fail");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("output format is required when writing to stdout"),
+        "error must mention --output-format, got: {msg}"
+    );
+}

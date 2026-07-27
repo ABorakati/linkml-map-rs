@@ -37,16 +37,25 @@ where
         .await
         .with_context(|| format!("creating {:?}", path))?;
     let mut writer = BufWriter::new(file);
-
-    match format {
-        Format::Jsonl => write_jsonl(&mut writer, stream).await?,
-        Format::Json => write_json(&mut writer, stream).await?,
-        Format::Csv => write_csv(&mut writer, b',', stream).await?,
-        Format::Tsv => write_csv(&mut writer, b'\t', stream).await?,
-        Format::Yaml => write_yaml(&mut writer, stream).await?,
-    }
-
+    write_all_inner(&mut writer, format, stream).await?;
     writer.flush().await.context("flushing output")?;
+    Ok(())
+}
+
+/// Write every item from *stream* into *writer* using *format*.
+///
+/// The caller owns the writer — this function buffers it internally and
+/// flushes before returning.  Use this instead of [`write_all`] when the
+/// destination is not a filesystem path (e.g. stdout, a network socket, or
+/// an in-memory buffer).
+pub async fn write_all_writer<W, S>(writer: W, format: Format, stream: S) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    S: Stream<Item = Result<Value>> + Unpin,
+{
+    let mut buf = BufWriter::new(writer);
+    write_all_inner(&mut buf, format, stream).await?;
+    buf.flush().await.context("flushing output")?;
     Ok(())
 }
 
@@ -66,9 +75,26 @@ pub async fn write_vec(path: impl AsRef<Path>, format: Format, values: Vec<Value
     write_all(path, format, stream).await
 }
 
+// ─── Inner writer (shared by write_all / write_all_writer) ────────────────────
+
+async fn write_all_inner<W, S>(writer: &mut W, format: Format, mut stream: S) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    S: Stream<Item = Result<Value>> + Unpin,
+{
+    match format {
+        Format::Jsonl => write_jsonl(writer, &mut stream).await?,
+        Format::Json => write_json(writer, &mut stream).await?,
+        Format::Csv => write_csv(writer, b',', &mut stream).await?,
+        Format::Tsv => write_csv(writer, b'\t', &mut stream).await?,
+        Format::Yaml => write_yaml(writer, &mut stream).await?,
+    }
+    Ok(())
+}
+
 // ─── JSONL ───────────────────────────────────────────────────────────────────
 
-async fn write_jsonl<W, S>(writer: &mut W, mut stream: S) -> Result<()>
+async fn write_jsonl<W, S>(writer: &mut W, stream: &mut S) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     S: Stream<Item = Result<Value>> + Unpin,
@@ -85,7 +111,7 @@ where
 
 // ─── JSON array ──────────────────────────────────────────────────────────────
 
-async fn write_json<W, S>(writer: &mut W, mut stream: S) -> Result<()>
+async fn write_json<W, S>(writer: &mut W, stream: &mut S) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     S: Stream<Item = Result<Value>> + Unpin,
@@ -108,7 +134,7 @@ where
 
 // ─── CSV / TSV ───────────────────────────────────────────────────────────────
 
-async fn write_csv<W, S>(writer: &mut W, delimiter: u8, mut stream: S) -> Result<()>
+async fn write_csv<W, S>(writer: &mut W, delimiter: u8, stream: &mut S) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     S: Stream<Item = Result<Value>> + Unpin,
@@ -152,7 +178,7 @@ where
 
 // ─── YAML ────────────────────────────────────────────────────────────────────
 
-async fn write_yaml<W, S>(writer: &mut W, mut stream: S) -> Result<()>
+async fn write_yaml<W, S>(writer: &mut W, stream: &mut S) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     S: Stream<Item = Result<Value>> + Unpin,
