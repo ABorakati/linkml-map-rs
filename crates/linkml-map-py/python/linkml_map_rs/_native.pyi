@@ -20,8 +20,9 @@ class Transformer:
     ``Transformer.derived_specification``. Top-level ``slot_derivations`` are
     supported for this check. A reference that cannot be keyed, resolved, or
     hosted raises ``ValueError`` here rather than silently yielding ``null`` at
-    transform time. Synthesis runs once per constructed transformer, so
-    ``transform`` / ``transform_many`` reuse the derived spec.
+    transform time. Expression ASTs are pre-compiled and cached once at build time.
+    Synthesis runs once per constructed transformer, so ``transform`` / ``transform_many``
+    reuse the derived spec and compiled expression AST cache.
     """
 
     def __init__(

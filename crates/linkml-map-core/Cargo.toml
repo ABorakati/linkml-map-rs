@@ -11,6 +11,7 @@ indexmap = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

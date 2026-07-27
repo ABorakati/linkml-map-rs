@@ -74,8 +74,8 @@ use pyo3::prelude::*;
 
 use linkml_map_core::{
     datamodel::TransformationSpecification,
-    engine::{LookupIndex, ObjectTransformer},
-    validate::{validate_spec_semantics, ValidationMessage},
+    engine::{CompiledExprs, LookupIndex, ObjectTransformer},
+    validate::{ValidationMessage, validate_spec_semantics},
     value::Value,
 };
 use linkml_map_schemaview::SchemaViewProvider;
@@ -123,8 +123,9 @@ fn schema_to_json_str(py: Python<'_>, sv: &Bound<'_, PyAny>) -> PyResult<String>
         let s: String = sv.extract()?;
         let path = std::path::Path::new(&s);
         if path.exists() && path.is_file() {
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| PyValueError::new_err(format!("Cannot read schema file '{s}': {e}")))?;
+            let content = std::fs::read_to_string(path).map_err(|e| {
+                PyValueError::new_err(format!("Cannot read schema file '{s}': {e}"))
+            })?;
             return Ok(content);
         }
         return Ok(s);
@@ -250,6 +251,7 @@ fn derive_spec(
 /// `source_class` is `None` → engine infers from `tree_root` or first derivation.
 /// `lookup_index` is `None` unless the caller registered joined-table rows via
 /// `Transformer.register_join_table` — see that method for the resolution path.
+#[allow(clippy::too_many_arguments)]
 fn run_transform(
     py: Python<'_>,
     obj: &Bound<'_, PyAny>,
@@ -258,6 +260,7 @@ fn run_transform(
     target_provider: Option<&SchemaViewProvider>,
     source_class: Option<&str>,
     lookup_index: Option<&Arc<LookupIndex>>,
+    compiled_exprs: Option<&CompiledExprs>,
 ) -> PyResult<PyObject> {
     let input_value = py_to_value(py, obj)?;
 
@@ -266,10 +269,12 @@ fn run_transform(
         Some(source_provider as &dyn linkml_map_core::schema::SchemaProvider),
         target_provider.map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
     );
+    if let Some(ce) = compiled_exprs {
+        engine = engine.with_compiled_exprs(ce);
+    }
     if let Some(li) = lookup_index {
         engine = engine.with_lookup_index(Arc::clone(li));
     }
-
     // `map_container` builds a foreign-key ObjectIndex from the whole input
     // first, then maps — handling cross-row FK joins. For non-FK input the index
     // is empty and this is identical to `map_object`.
@@ -308,6 +313,7 @@ struct PyTransformer {
     source_provider: SchemaViewProvider,
     target_provider: Option<SchemaViewProvider>,
     source_class: Option<String>,
+    compiled_exprs: CompiledExprs,
     /// Cross-table join data, populated via `register_join_table`. `None`
     /// until the first registration; attached to the engine on every
     /// `transform` / `transform_many` / `map_object` call once present.
@@ -327,6 +333,9 @@ impl PyTransformer {
         let spec_parsed = load_spec(&spec)?;
         let source_provider = load_source_provider(&source_schema, &spec_parsed)?;
         let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
+        let compiled_exprs = CompiledExprs::build(&spec_parsed).map_err(|e| {
+            PyValueError::new_err(format!("Failed to compile expression ASTs: {e}"))
+        })?;
         let target_provider = target_schema
             .as_deref()
             .map(load_schema_provider)
@@ -336,6 +345,7 @@ impl PyTransformer {
             source_provider,
             target_provider,
             source_class,
+            compiled_exprs,
             lookup_index: None,
         })
     }
@@ -358,6 +368,9 @@ impl PyTransformer {
         )
         .map_err(|e| PyValueError::new_err(format!("Failed to parse source schema YAML: {e}")))?;
         let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
+        let compiled_exprs = CompiledExprs::build(&spec_parsed).map_err(|e| {
+            PyValueError::new_err(format!("Failed to compile expression ASTs: {e}"))
+        })?;
         let target_provider = target_schema_yaml
             .as_deref()
             .map(|y| {
@@ -371,6 +384,7 @@ impl PyTransformer {
             source_provider,
             target_provider,
             source_class,
+            compiled_exprs,
             lookup_index: None,
         })
     }
@@ -398,6 +412,9 @@ impl PyTransformer {
         )
         .map_err(|e| PyValueError::new_err(format!("Failed to parse source schema JSON: {e}")))?;
         let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
+        let compiled_exprs = CompiledExprs::build(&spec_parsed).map_err(|e| {
+            PyValueError::new_err(format!("Failed to compile expression ASTs: {e}"))
+        })?;
 
         let target_provider = target_schemaview
             .map(|t| {
@@ -413,6 +430,7 @@ impl PyTransformer {
             source_provider,
             target_provider,
             source_class,
+            compiled_exprs,
             lookup_index: None,
         })
     }
@@ -427,6 +445,7 @@ impl PyTransformer {
             self.target_provider.as_ref(),
             self.source_class.as_deref(),
             self.lookup_index.as_ref(),
+            Some(&self.compiled_exprs),
         )
     }
 
@@ -448,6 +467,7 @@ impl PyTransformer {
             self.target_provider.as_ref(),
             source_class,
             self.lookup_index.as_ref(),
+            Some(&self.compiled_exprs),
         )
     }
 
@@ -467,6 +487,7 @@ impl PyTransformer {
                     self.target_provider.as_ref(),
                     self.source_class.as_deref(),
                     self.lookup_index.as_ref(),
+                    Some(&self.compiled_exprs),
                 )
             })
             .collect()
@@ -563,6 +584,8 @@ fn transform_object(
     let spec_parsed = load_spec(&spec)?;
     let source = load_source_provider(&source_schema, &spec_parsed)?;
     let spec_parsed = derive_spec(spec_parsed, &source)?;
+    let compiled_exprs = CompiledExprs::build(&spec_parsed)
+        .map_err(|e| PyValueError::new_err(format!("Failed to compile expression ASTs: {e}")))?;
     let target_opt: Option<SchemaViewProvider> = target_schema
         .as_deref()
         .map(load_schema_provider)
@@ -576,6 +599,7 @@ fn transform_object(
         target_opt.as_ref(),
         source_class.as_deref(),
         None,
+        Some(&compiled_exprs),
     )
 }
 
@@ -611,6 +635,8 @@ fn transform_objects(
     let spec_parsed = load_spec(&spec)?;
     let source = load_source_provider(&source_schema, &spec_parsed)?;
     let spec_parsed = derive_spec(spec_parsed, &source)?;
+    let compiled_exprs = CompiledExprs::build(&spec_parsed)
+        .map_err(|e| PyValueError::new_err(format!("Failed to compile expression ASTs: {e}")))?;
     let target_opt: Option<SchemaViewProvider> = target_schema
         .as_deref()
         .map(load_schema_provider)
@@ -627,6 +653,7 @@ fn transform_objects(
                 target_opt.as_ref(),
                 source_class.as_deref(),
                 None,
+                Some(&compiled_exprs),
             )
         })
         .collect()
@@ -759,7 +786,10 @@ fn validate_spec(
         strict,
     );
 
-    Ok(messages.into_iter().map(PyValidationMessage::from).collect())
+    Ok(messages
+        .into_iter()
+        .map(PyValidationMessage::from)
+        .collect())
 }
 
 // ── Module ────────────────────────────────────────────────────────────────────

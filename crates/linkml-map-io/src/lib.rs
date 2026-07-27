@@ -34,7 +34,7 @@ pub use loaders::{
     NumericColumnHints, NumericColumnKind, load_all, load_all_with_numeric_hints, load_stream,
     load_stream_auto, load_stream_with_numeric_hints,
 };
-pub use writers::{value_to_json, write_all, write_all_auto, write_vec};
+pub use writers::{value_to_json, write_all, write_all_auto, write_all_writer, write_vec};
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -509,5 +509,21 @@ mod tests {
             .unwrap();
         let loaded = load_all(&path, Format::Jsonl).await.unwrap();
         assert_eq!(loaded, original);
+    }
+
+    /// `write_all_writer` writes to any `AsyncWrite` — Vec<u8> here.
+    #[tokio::test]
+    async fn test_write_all_writer_vec() {
+        let val = make_map(&[("id", "1"), ("name", "Alice")]);
+        let stream = futures::stream::iter(vec![Ok(val)]);
+
+        let mut buf = Vec::new();
+        super::write_all_writer(&mut buf, Format::Jsonl, stream)
+            .await
+            .unwrap();
+
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("\"id\":\"1\""));
+        assert!(out.contains("\"name\":\"Alice\""));
     }
 }

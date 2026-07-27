@@ -15,3 +15,8 @@
 .codedb-mcp/
 .kodegraf/
 /codedb.snapshot
+
+# Alternate cargo target dirs. Concurrent agents/sessions building in the same
+# checkout set CARGO_TARGET_DIR to a per-worker path so they don't block each
+# other on cargo's target lock.
+/target-*/

@@ -1364,6 +1364,7 @@ version = "0.1.19"
 dependencies = [
  "anyhow",
  "indexmap",
+ "log",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
