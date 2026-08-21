@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use linkml_map_cli::{run_validate_config, Severity, ValidateConfig};
+use linkml_map_cli::{Severity, ValidateConfig, run_validate_config};
 use tempfile::tempdir;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

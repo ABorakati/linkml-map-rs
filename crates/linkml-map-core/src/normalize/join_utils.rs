@@ -222,7 +222,10 @@ mod tests {
             .add_slot("B", slot("b_id", true))
             .add_slot("B", slot("subject_id", false))
             .build();
-        assert_eq!(infer_join_key(&sv, "A", "B"), Some("subject_id".to_string()));
+        assert_eq!(
+            infer_join_key(&sv, "A", "B"),
+            Some("subject_id".to_string())
+        );
     }
 
     #[test]

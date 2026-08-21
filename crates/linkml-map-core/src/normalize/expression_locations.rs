@@ -17,7 +17,7 @@ use indexmap::IndexMap;
 use crate::datamodel::{
     ClassDerivation, EnumDerivation, KeyVal, PermissibleValueDerivation, SlotDerivation,
 };
-use crate::expr::{expression_asts, Ast, ExprResult};
+use crate::expr::{Ast, ExprResult, expression_asts};
 
 // ── expression enumeration ──────────────────────────────────────────────────
 
@@ -166,12 +166,7 @@ fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visit: &mut F) {
             }
         }
         // Leaf nodes.
-        Ast::Int(_)
-        | Ast::Float(_)
-        | Ast::Str(_)
-        | Ast::Bool(_)
-        | Ast::None
-        | Ast::Name(_) => {}
+        Ast::Int(_) | Ast::Float(_) | Ast::Str(_) | Ast::Bool(_) | Ast::None | Ast::Name(_) => {}
     }
 }
 
@@ -296,10 +291,7 @@ mod tests {
     fn expression_to_value_mappings_keys_are_exprs() {
         let sd = SlotDerivation {
             name: "x".into(),
-            expression_to_value_mappings: Some(map1(
-                "{A.col} == 1",
-                kv("{A.col} == 1", "literal"),
-            )),
+            expression_to_value_mappings: Some(map1("{A.col} == 1", kv("{A.col} == 1", "literal"))),
             ..Default::default()
         };
         assert_eq!(sd.expressions(), vec!["{A.col} == 1".to_string()]);
@@ -351,16 +343,20 @@ mod tests {
 
     #[test]
     fn extract_ignores_bare_column() {
-        assert!(extract_table_references("{score}", &tables())
-            .unwrap()
-            .is_empty());
+        assert!(
+            extract_table_references("{score}", &tables())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn extract_ignores_attribute_on_non_table() {
-        assert!(extract_table_references("{notatable.x}", &tables())
-            .unwrap()
-            .is_empty());
+        assert!(
+            extract_table_references("{notatable.x}", &tables())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -398,8 +394,10 @@ mod tests {
             ["Reading"].into_iter().map(String::from).collect()
         );
         // A bare braced reference has no attribute root.
-        assert!(extract_braced_reference_roots("{score}")
-            .unwrap()
-            .is_empty());
+        assert!(
+            extract_braced_reference_roots("{score}")
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -67,10 +67,11 @@ impl LookupIndex {
         let mut index: HashMap<String, Vec<IndexMap<String, Value>>> = HashMap::new();
         for row in rows {
             if let Value::Map(m) = row
-                && let Some(key_val) = m.get(key_column) {
-                    let key_str = value_to_key(key_val);
-                    index.entry(key_str).or_default().push(m.clone());
-                }
+                && let Some(key_val) = m.get(key_column)
+            {
+                let key_str = value_to_key(key_val);
+                index.entry(key_str).or_default().push(m.clone());
+            }
         }
         self.tables
             .insert(name.to_string(), (key_column.to_string(), index));

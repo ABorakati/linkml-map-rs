@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Supported I/O formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -114,9 +114,10 @@ fn strip_annotation(tok: &str) -> &str {
     let tok = tok.trim();
     // Drop a trailing `{...}` annotation if present.
     if let Some(open) = tok.find('{')
-        && tok.ends_with('}') {
-            return tok[..open].trim();
-        }
+        && tok.ends_with('}')
+    {
+        return tok[..open].trim();
+    }
     tok
 }
 
@@ -448,31 +449,35 @@ fn bridge_factor(
     }
     // mass ↔ amount via molecular weight (g → mol = g / mw)
     if let Some(mw) = mw
-        && mw > 0.0 {
-            match (f_num, t_num) {
-                (S::Mass, S::AmountOfSubstance) => return Some(1.0 / mw),
-                (S::AmountOfSubstance, S::Mass) => return Some(mw),
-                _ => {}
-            }
+        && mw > 0.0
+    {
+        match (f_num, t_num) {
+            (S::Mass, S::AmountOfSubstance) => return Some(1.0 / mw),
+            (S::AmountOfSubstance, S::Mass) => return Some(mw),
+            _ => {}
         }
+    }
     // equivalents ↔ amount via valence (Eq → mol = Eq / valence)
     if let Some(v) = valence
-        && v > 0.0 {
-            match (f_num, t_num) {
-                (S::Equivalents, S::AmountOfSubstance) => return Some(1.0 / v),
-                (S::AmountOfSubstance, S::Equivalents) => return Some(v),
-                _ => {}
-            }
+        && v > 0.0
+    {
+        match (f_num, t_num) {
+            (S::Equivalents, S::AmountOfSubstance) => return Some(1.0 / v),
+            (S::AmountOfSubstance, S::Equivalents) => return Some(v),
+            _ => {}
         }
+    }
     // mass ↔ equivalents needs both (g → Eq = g/mw * valence)
     if let (Some(mw), Some(v)) = (mw, valence)
-        && mw > 0.0 && v > 0.0 {
-            match (f_num, t_num) {
-                (S::Mass, S::Equivalents) => return Some(v / mw),
-                (S::Equivalents, S::Mass) => return Some(mw / v),
-                _ => {}
-            }
+        && mw > 0.0
+        && v > 0.0
+    {
+        match (f_num, t_num) {
+            (S::Mass, S::Equivalents) => return Some(v / mw),
+            (S::Equivalents, S::Mass) => return Some(mw / v),
+            _ => {}
         }
+    }
     None
 }
 

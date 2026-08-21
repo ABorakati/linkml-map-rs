@@ -21,10 +21,10 @@ use linkml_map_core::{
     datamodel::TransformationSpecification, engine::ObjectTransformer, schema::SchemaProvider,
 };
 use linkml_map_schemaview::SchemaViewProvider;
-use serde_json::{json, Value as J};
+use serde_json::{Value as J, json};
 use serde_yaml_ng as serde_yaml;
 
-use crate::{first_diff, json_to_value, normalise, value_to_json, RunResult, Status};
+use crate::{RunResult, Status, first_diff, json_to_value, normalise, value_to_json};
 
 /// One ported compliance combo.
 struct Case {

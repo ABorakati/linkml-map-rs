@@ -26,8 +26,8 @@
 //! path is untouched.
 
 use super::error::{ExprError, ExprResult};
-use super::eval::{eval_ast_public, Bindings};
-use super::parser::{parse, Ast};
+use super::eval::{Bindings, eval_ast_public};
+use super::parser::{Ast, parse};
 use crate::value::Value;
 
 /// A parsed statement.

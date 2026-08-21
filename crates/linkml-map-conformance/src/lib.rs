@@ -19,9 +19,7 @@ use std::{
 use anyhow::Context;
 use indexmap::IndexMap;
 use linkml_map_core::{
-    datamodel::TransformationSpecification,
-    engine::ObjectTransformer,
-    schema::SchemaProvider,
+    datamodel::TransformationSpecification, engine::ObjectTransformer, schema::SchemaProvider,
     value::Value,
 };
 use linkml_map_schemaview::SchemaViewProvider;
@@ -253,7 +251,6 @@ fn load_source_schema(hint_path: &Path) -> anyhow::Result<SchemaViewProvider> {
     }
 }
 
-
 // ─── YAML / JSON loading helpers ──────────────────────────────────────────────
 
 /// Load a YAML or JSON file as a `serde_json::Value` (common interchange).
@@ -470,7 +467,7 @@ pub(crate) fn first_diff(expected: &serde_json::Value, actual: &serde_json::Valu
             for (k, ev) in e.iter() {
                 match a.get(k) {
                     None => {
-                        return format!("key '{}' missing in actual (expected {:?})", k, short(ev))
+                        return format!("key '{}' missing in actual (expected {:?})", k, short(ev));
                     }
                     Some(av) => {
                         if av != ev {

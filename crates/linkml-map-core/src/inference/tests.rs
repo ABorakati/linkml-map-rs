@@ -125,18 +125,22 @@ fn invert_complex_expr_errors_in_strict_mode() {
             ..Default::default()
         }],
     )]);
-    assert!(TransformationSpecificationInverter::new(&schema)
-        .invert(&fwd)
-        .is_err());
+    assert!(
+        TransformationSpecificationInverter::new(&schema)
+            .invert(&fwd)
+            .is_err()
+    );
     // Non-strict drops the slot instead.
     let inv = TransformationSpecificationInverter::non_strict(&schema)
         .invert(&fwd)
         .unwrap();
-    assert!(inv.class_derivations.unwrap()[0]
-        .slot_derivations
-        .as_ref()
-        .unwrap()
-        .is_empty());
+    assert!(
+        inv.class_derivations.unwrap()[0]
+            .slot_derivations
+            .as_ref()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ── Structural: stringification toggles `reversed` ────────────────────────────

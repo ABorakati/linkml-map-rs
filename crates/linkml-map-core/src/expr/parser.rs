@@ -4,7 +4,7 @@
 //! what simpleeval inherits). Comparison chaining (`a < b < c`) is supported.
 
 use super::error::{ExprError, ExprResult};
-use super::lexer::{lex, Token};
+use super::lexer::{Token, lex};
 
 /// Binary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,7 +411,7 @@ impl Parser {
                         other => {
                             return Err(ExprError::Parse(format!(
                                 "expected attribute name after '.', found {other:?}"
-                            )))
+                            )));
                         }
                     };
                     node = Ast::Attribute {
@@ -492,7 +492,7 @@ impl Parser {
                         other => {
                             return Err(ExprError::Parse(format!(
                                 "expected loop variable after 'for', found {other:?}"
-                            )))
+                            )));
                         }
                     };
                     self.expect(Token::In)?;

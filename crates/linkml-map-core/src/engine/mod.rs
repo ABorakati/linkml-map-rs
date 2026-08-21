@@ -42,8 +42,8 @@ use crate::{
     },
     error::{Error, Result},
     expr::{
-        eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict,
-        parse_expr, Bindings, ExprResult, ParsedExpr,
+        Bindings, ExprResult, ParsedExpr, eval_expr_with_mapping, eval_expr_with_mapping_strict,
+        eval_parsed, eval_parsed_strict, parse_expr,
     },
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
@@ -278,15 +278,17 @@ impl<'s> ObjectTransformer<'s> {
     ) -> Result<Value> {
         // Enum pass-through: if source_type is an enum, transform via enum derivation.
         if let Some(ss) = self.source_schema
-            && ss.all_enum_names().contains(&source_type.to_string()) {
-                return self.transform_enum(source_obj, &[source_type.to_string()], source_obj);
-            }
+            && ss.all_enum_names().contains(&source_type.to_string())
+        {
+            return self.transform_enum(source_obj, &[source_type.to_string()], source_obj);
+        }
 
         // Scalar pass-through: if it's a known type, return as-is.
         if let Some(ss) = self.source_schema
-            && ss.all_type_names().contains(&source_type.to_string()) {
-                return Ok(source_obj.clone());
-            }
+            && ss.all_type_names().contains(&source_type.to_string())
+        {
+            return Ok(source_obj.clone());
+        }
 
         // Must be a map.
         let source_map = match source_obj {
@@ -437,12 +439,13 @@ impl<'s> ObjectTransformer<'s> {
         let mut results = Vec::new();
         for sname in &slots_to_melt {
             if let Some(v) = source_map.get(sname)
-                && !v.is_null() {
-                    let mut rec = base.clone();
-                    rec.insert(pivot.variable_slot.clone(), Value::Str(sname.clone()));
-                    rec.insert(pivot.value_slot.clone(), v.clone());
-                    results.push(Value::Map(rec));
-                }
+                && !v.is_null()
+            {
+                let mut rec = base.clone();
+                rec.insert(pivot.variable_slot.clone(), Value::Str(sname.clone()));
+                rec.insert(pivot.value_slot.clone(), v.clone());
+                results.push(Value::Map(rec));
+            }
         }
         Ok(Value::List(results))
     }
@@ -464,9 +467,10 @@ impl<'s> ObjectTransformer<'s> {
         for v in source_map.values() {
             if let Value::List(items) = v
                 && let Some(Value::Map(first)) = items.first()
-                    && first.contains_key(&pivot.variable_slot) {
-                        return Ok(unmelt_collection(pivot, items));
-                    }
+                && first.contains_key(&pivot.variable_slot)
+            {
+                return Ok(unmelt_collection(pivot, items));
+            }
         }
         // Nothing to unmelt → pass through.
         Ok(Value::Map(source_map.clone()))
@@ -602,7 +606,8 @@ impl<'s> ObjectTransformer<'s> {
 
         // ── Post-processing: range coercion + cardinality ─────────────────────
 
-        v = self.apply_range_coercion(v, slot_deriv, class_deriv, source_slot_def.as_ref(), index)?;
+        v =
+            self.apply_range_coercion(v, slot_deriv, class_deriv, source_slot_def.as_ref(), index)?;
 
         // ── URI / CURIE coercion (applied after other coercions) ──────────────
         //
@@ -611,16 +616,18 @@ impl<'s> ObjectTransformer<'s> {
         // map.  When `range: curie`, compress an absolute URI to a CURIE.
         // This mirrors Python `ObjectTransformer._coerce_uri` behaviour.
         if !v.is_null()
-            && let Some(target_range) = slot_deriv.range.as_deref() {
-                v = self.coerce_uri_curie(v, target_range);
-            }
+            && let Some(target_range) = slot_deriv.range.as_deref()
+        {
+            v = self.coerce_uri_curie(v, target_range);
+        }
 
         // ── Offset (longitudinal baseline ± offset_value * offset_field) ──────
         //    Mirrors Python `ObjectTransformer._apply_offset`.
         if let Some(off) = &slot_deriv.offset
-            && !v.is_null() {
-                v = apply_offset(off, v, source_map);
-            }
+            && !v.is_null()
+        {
+            v = apply_offset(off, v, source_map);
+        }
 
         Ok(v)
     }
@@ -652,7 +659,9 @@ impl<'s> ObjectTransformer<'s> {
             .as_ref()
             .and_then(|vm| vm.get(&key))
         {
-            Ok(Value::from(kv.value.as_ref().unwrap_or(&serde_json::Value::Null)))
+            Ok(Value::from(
+                kv.value.as_ref().unwrap_or(&serde_json::Value::Null),
+            ))
         } else if let Some(kv) = slot_deriv
             .expression_mappings
             .as_ref()
@@ -688,14 +697,16 @@ impl<'s> ObjectTransformer<'s> {
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
         if let Some(ssd) = source_slot_def
-            && !v.is_null() && !slot_deriv.hide.unwrap_or(false) {
-                v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
-                v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
-                if let Some(target_range) = slot_deriv.range.as_deref() {
-                    v = coerce_datatype(v, target_range);
-                }
-                v = self.reshape_collection(v, slot_deriv, ssd)?;
+            && !v.is_null()
+            && !slot_deriv.hide.unwrap_or(false)
+        {
+            v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
+            v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
+            if let Some(target_range) = slot_deriv.range.as_deref() {
+                v = coerce_datatype(v, target_range);
             }
+            v = self.reshape_collection(v, slot_deriv, ssd)?;
+        }
         Ok(v)
     }
 
@@ -762,16 +773,17 @@ impl<'s> ObjectTransformer<'s> {
         let spec_unit = uc.source_unit.clone();
 
         if let (Some(su), Some(pu)) = (&schema_unit, &spec_unit)
-            && su != pu {
-                return Err(Error::SlotTransform {
-                    class: source_type.to_string(),
-                    slot: slot_deriv.name.clone(),
-                    cause: format!(
-                        "mismatch in source units for slot '{src_key}': schema unit \
+            && su != pu
+        {
+            return Err(Error::SlotTransform {
+                class: source_type.to_string(),
+                slot: slot_deriv.name.clone(),
+                cause: format!(
+                    "mismatch in source units for slot '{src_key}': schema unit \
                          '{su}' vs. transformation spec '{pu}'"
-                    ),
-                });
-            }
+                ),
+            });
+        }
         // Resolved 'from' unit from schema or spec (may still be overridden by
         // a structured value's unit slot below).
         let mut from_unit: Option<String> = schema_unit.clone().or_else(|| spec_unit.clone());
@@ -788,22 +800,23 @@ impl<'s> ObjectTransformer<'s> {
                         cause: format!(
                             "source_unit_slot set but value for '{src_key}' is not a map"
                         ),
-                    })
+                    });
                 }
             };
             match map.get(unit_slot) {
                 Some(Value::Str(u)) if !u.is_empty() => {
                     if let Some(fu) = &from_unit
-                        && u != fu {
-                            return Err(Error::SlotTransform {
-                                class: source_type.to_string(),
-                                slot: slot_deriv.name.clone(),
-                                cause: format!(
-                                    "value unit '{u}' does not match expected '{fu}' \
+                        && u != fu
+                    {
+                        return Err(Error::SlotTransform {
+                            class: source_type.to_string(),
+                            slot: slot_deriv.name.clone(),
+                            cause: format!(
+                                "value unit '{u}' does not match expected '{fu}' \
                                      for slot '{src_key}'"
-                                ),
-                            });
-                        }
+                            ),
+                        });
+                    }
                     from_unit = Some(u.clone());
                 }
                 _ => {
@@ -811,7 +824,7 @@ impl<'s> ObjectTransformer<'s> {
                         class: source_type.to_string(),
                         slot: slot_deriv.name.clone(),
                         cause: format!("missing unit in structured value for slot '{src_key}'"),
-                    })
+                    });
                 }
             }
             let mag_slot = uc.source_magnitude_slot.as_deref().unwrap_or("value");
@@ -824,7 +837,7 @@ impl<'s> ObjectTransformer<'s> {
                         cause: format!(
                             "missing magnitude in structured value for slot '{src_key}'"
                         ),
-                    })
+                    });
                 }
             }
         } else {
@@ -862,13 +875,13 @@ impl<'s> ObjectTransformer<'s> {
                     return Err(Error::UnitConversion {
                         slot: slot_deriv.name.clone(),
                         msg: format!("undefined unit '{u}'"),
-                    })
+                    });
                 }
                 Err(units::ConvError::Dimensionality(f, t)) => {
                     return Err(Error::UnitConversion {
                         slot: slot_deriv.name.clone(),
                         msg: format!("cannot convert '{f}' to '{t}': incompatible dimensions"),
-                    })
+                    });
                 }
             },
             // No units resolvable at all: pass the magnitude through.
@@ -995,7 +1008,8 @@ impl<'s> ObjectTransformer<'s> {
                         _ => return None,
                     };
                     let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
-                    li.lookup_row(table, &key_str).map(|r| Value::Map(r.clone()))
+                    li.lookup_row(table, &key_str)
+                        .map(|r| Value::Map(r.clone()))
                 });
                 bindings.insert(alias.clone(), row.unwrap_or(Value::Null));
             }
@@ -1057,9 +1071,10 @@ impl<'s> ObjectTransformer<'s> {
         }
         // Schema says range is a class → FK by definition.
         if let Some(ss) = self.source_schema
-            && let Ok(slot) = ss.induced_slot(slot_name, source_type) {
-                return slot.range_class().is_some();
-            }
+            && let Ok(slot) = ss.induced_slot(slot_name, source_type)
+        {
+            return slot.range_class().is_some();
+        }
         // Fallback: scalar (or list of scalars) that the index can resolve.
         match value {
             Value::Str(s) => index.contains_id(s),
@@ -1128,13 +1143,14 @@ impl<'s> ObjectTransformer<'s> {
         if matches!(source_range, RangeKind::None) && !source_slot.any_of_enums.is_empty() {
             let enum_names = source_slot.any_of_enums.clone();
             if source_slot.multivalued
-                && let Value::List(items) = v {
-                    let mapped: Result<Vec<Value>> = items
-                        .iter()
-                        .map(|item| self.transform_enum(item, &enum_names, item))
-                        .collect();
-                    return Ok(Value::List(mapped?));
-                }
+                && let Value::List(items) = v
+            {
+                let mapped: Result<Vec<Value>> = items
+                    .iter()
+                    .map(|item| self.transform_enum(item, &enum_names, item))
+                    .collect();
+                return Ok(Value::List(mapped?));
+            }
             return self.transform_enum(v, &enum_names, v);
         }
 
@@ -1149,7 +1165,9 @@ impl<'s> ObjectTransformer<'s> {
                     if let Value::List(items) = v {
                         let mapped: Result<Vec<Value>> = items
                             .iter()
-                            .map(|item| self.transform_enum(item, std::slice::from_ref(enum_name), item))
+                            .map(|item| {
+                                self.transform_enum(item, std::slice::from_ref(enum_name), item)
+                            })
                             .collect();
                         return Ok(Value::List(mapped?));
                     }
@@ -1296,55 +1314,57 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         if let Some(key_slot) = dict_key
-            && let Value::List(items) = v {
-                let mut result: IndexMap<String, Value> = IndexMap::new();
-                for item in items {
-                    if let Value::Map(mut m) = item {
-                        let key_val = m
-                            .shift_remove(&key_slot)
-                            .map(|kv| value_to_string_key(&kv))
-                            .unwrap_or_default();
-                        result.insert(key_val, Value::Map(m));
-                    }
-                    // Non-map items in a list being keyed: skip (no key to extract).
+            && let Value::List(items) = v
+        {
+            let mut result: IndexMap<String, Value> = IndexMap::new();
+            for item in items {
+                if let Value::Map(mut m) = item {
+                    let key_val = m
+                        .shift_remove(&key_slot)
+                        .map(|kv| value_to_string_key(&kv))
+                        .unwrap_or_default();
+                    result.insert(key_val, Value::Map(m));
                 }
-                return Ok(Value::Map(result));
+                // Non-map items in a list being keyed: skip (no key to extract).
             }
+            return Ok(Value::Map(result));
+        }
 
         // ── Keyed dict → list ────────────────────────────────────────────────
         if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as
-            && let Value::Map(m) = v {
-                // Look up the identifier slot of the source range class so we
-                // can re-inject the key into each value object.
-                let id_slot_name: Option<String> =
-                    if let Some(range_class) = source_slot.range_class() {
-                        self.source_schema
-                            .and_then(|ss| ss.identifier_slot(range_class).ok())
-                            .flatten()
-                            .map(|s| s.name)
-                    } else {
-                        None
-                    };
+            && let Value::Map(m) = v
+        {
+            // Look up the identifier slot of the source range class so we
+            // can re-inject the key into each value object.
+            let id_slot_name: Option<String> = if let Some(range_class) = source_slot.range_class()
+            {
+                self.source_schema
+                    .and_then(|ss| ss.identifier_slot(range_class).ok())
+                    .flatten()
+                    .map(|s| s.name)
+            } else {
+                None
+            };
 
-                let list: Vec<Value> = m
-                    .into_iter()
-                    .map(|(k, val)| {
-                        if let Some(ref id_slot) = id_slot_name {
-                            // Re-inject key into the value map.
-                            if let Value::Map(mut inner) = val {
-                                inner.insert(id_slot.clone(), Value::Str(k));
-                                Value::Map(inner)
-                            } else {
-                                val
-                            }
+            let list: Vec<Value> = m
+                .into_iter()
+                .map(|(k, val)| {
+                    if let Some(ref id_slot) = id_slot_name {
+                        // Re-inject key into the value map.
+                        if let Value::Map(mut inner) = val {
+                            inner.insert(id_slot.clone(), Value::Str(k));
+                            Value::Map(inner)
                         } else {
-                            // No identifier slot — return bare values.
                             val
                         }
-                    })
-                    .collect();
-                return Ok(Value::List(list));
-            }
+                    } else {
+                        // No identifier slot — return bare values.
+                        val
+                    }
+                })
+                .collect();
+            return Ok(Value::List(list));
+        }
 
         Ok(v)
     }
@@ -1553,15 +1573,17 @@ impl<'s> ObjectTransformer<'s> {
         }
         // stringification reversed = split → list.
         if let Some(s) = &sd.stringification
-            && s.reversed.unwrap_or(false) {
-                return true;
-            }
+            && s.reversed.unwrap_or(false)
+        {
+            return true;
+        }
         // Target schema says multivalued.
         if let Some(ts) = self.target_schema
             && let Ok(slot) = ts.induced_slot(&sd.name, &cd.name)
-                && slot.multivalued {
-                    return true;
-                }
+            && slot.multivalued
+        {
+            return true;
+        }
         // Fallback: when the source slot is multivalued and no explicit
         // single-valued directive applied, treat the target as multivalued too
         // (a scalar value is wrapped in a one-element list). Mirrors Python
@@ -1574,20 +1596,23 @@ impl<'s> ObjectTransformer<'s> {
 
     fn is_coerce_to_singlevalued(&self, sd: &SlotDerivation, cd: &ClassDerivation) -> bool {
         if let Some(cast_as) = &sd.cast_collection_as
-            && matches!(cast_as, CollectionType::SingleValued) {
-                return true;
-            }
+            && matches!(cast_as, CollectionType::SingleValued)
+        {
+            return true;
+        }
         // stringification not reversed = join → string.
         if let Some(s) = &sd.stringification
-            && !s.reversed.unwrap_or(false) {
-                return true;
-            }
+            && !s.reversed.unwrap_or(false)
+        {
+            return true;
+        }
         // Target schema says single-valued.
         if let Some(ts) = self.target_schema
             && let Ok(slot) = ts.induced_slot(&sd.name, &cd.name)
-                && !slot.multivalued {
-                    return true;
-                }
+            && !slot.multivalued
+        {
+            return true;
+        }
         false
     }
 
@@ -1595,19 +1620,20 @@ impl<'s> ObjectTransformer<'s> {
         // If stringification.reversed: split the string.
         if let Some(s) = &sd.stringification
             && s.reversed.unwrap_or(false)
-                && let Value::Str(ref sv) = v
-                    && let Some(delim) = &s.delimiter {
-                        let parts: Vec<Value> = sv
-                            .split(delim.as_str())
-                            .map(|p| Value::Str(p.to_string()))
-                            .collect();
-                        let parts = if parts == vec![Value::Str(String::new())] {
-                            vec![]
-                        } else {
-                            parts
-                        };
-                        return Ok(Value::List(parts));
-                    }
+            && let Value::Str(ref sv) = v
+            && let Some(delim) = &s.delimiter
+        {
+            let parts: Vec<Value> = sv
+                .split(delim.as_str())
+                .map(|p| Value::Str(p.to_string()))
+                .collect();
+            let parts = if parts == vec![Value::Str(String::new())] {
+                vec![]
+            } else {
+                parts
+            };
+            return Ok(Value::List(parts));
+        }
         Ok(Value::List(vec![v]))
     }
 
@@ -1628,7 +1654,7 @@ impl<'s> ObjectTransformer<'s> {
                             class: String::new(),
                             slot: sd.name.clone(),
                             cause: "TURTLE stringification not supported".into(),
-                        })
+                        });
                     }
                 };
                 return Ok(Value::Str(out));
@@ -1693,9 +1719,10 @@ impl<'s> ObjectTransformer<'s> {
                     (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
                 };
                 if let Ok(v) = evaled
-                    && !v.is_null() {
-                        return Ok(v);
-                    }
+                    && !v.is_null()
+                {
+                    return Ok(v);
+                }
             }
 
             // Permissible value derivations.
@@ -1705,9 +1732,10 @@ impl<'s> ObjectTransformer<'s> {
                     // populated_from match — v0.6.0 list-form (#250): a single
                     // string or a list of source PVs, any of which maps here.
                     if let Some(sources) = &pvd.populated_from
-                        && sources.iter().any(|s| s == &src_str) {
-                            return Ok(Value::Str(pvd.name.clone()));
-                        }
+                        && sources.iter().any(|s| s == &src_str)
+                    {
+                        return Ok(Value::Str(pvd.name.clone()));
+                    }
                 }
             }
 
@@ -1734,7 +1762,7 @@ impl<'s> ObjectTransformer<'s> {
                 return Err(Error::NoClassDerivation {
                     source_type: source_type.to_string(),
                     count: 0,
-                })
+                });
             }
         };
 
@@ -1819,9 +1847,10 @@ impl<'s> ObjectTransformer<'s> {
 
         // Fall back to first class derivation name.
         if let Some(derivations) = &self.spec.class_derivations
-            && let Some(first) = derivations.first() {
-                return Ok(first.name.clone());
-            }
+            && let Some(first) = derivations.first()
+        {
+            return Ok(first.name.clone());
+        }
 
         Err(Error::SourceTypeUnresolvable(
             "no source_type provided, no tree root, and spec has no class_derivations".to_string(),
@@ -1839,8 +1868,6 @@ impl<'s> ObjectTransformer<'s> {
 fn float_to_value(f: f64) -> Value {
     Value::Float(f)
 }
-
-
 
 // ── Join key helpers (mirrors Python `_resolve_joined_row`) ──────────────────
 
@@ -1901,25 +1928,26 @@ fn resolve_aggregation_source(
         let alias = &src_key[..dot];
         let field = &src_key[dot + 1..];
         if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
-            && let Some(ac) = joins.get(alias) {
-                let table = ac.class_named.as_deref().unwrap_or(alias);
-                let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
-                if let Some(key_val) = key_val {
-                    let key_str = match key_val {
-                        Value::Str(s) => s.clone(),
-                        Value::Int(i) => i.to_string(),
-                        _ => String::new(),
-                    };
-                    let items: Vec<Value> = li
-                        .lookup_rows(table, &key_str)
-                        .iter()
-                        .filter_map(|row| row.get(field).cloned())
-                        .collect();
-                    return Value::List(items);
-                } else {
-                    return Value::Null;
-                }
+            && let Some(ac) = joins.get(alias)
+        {
+            let table = ac.class_named.as_deref().unwrap_or(alias);
+            let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
+            if let Some(key_val) = key_val {
+                let key_str = match key_val {
+                    Value::Str(s) => s.clone(),
+                    Value::Int(i) => i.to_string(),
+                    _ => String::new(),
+                };
+                let items: Vec<Value> = li
+                    .lookup_rows(table, &key_str)
+                    .iter()
+                    .filter_map(|row| row.get(field).cloned())
+                    .collect();
+                return Value::List(items);
+            } else {
+                return Value::Null;
             }
+        }
     }
     source_map.get(src_key).cloned().unwrap_or(Value::Null)
 }
@@ -1950,25 +1978,32 @@ fn resolve_populated_from_raw(
         // Mirrors `if "." in populated_from and self._is_inline_path(...)` at the
         // top of Python `_resolve_fk_or_literal`.
         if is_inline_path(populated_from, source_type, source_map, source_schema) {
-            return resolve_inline_path(populated_from, source_type, source_map, source_schema, slot_deriv);
+            return resolve_inline_path(
+                populated_from,
+                source_type,
+                source_map,
+                source_schema,
+                slot_deriv,
+            );
         }
         let alias = &populated_from[..dot];
         let field = &populated_from[dot + 1..];
         if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
-            && let Some(ac) = joins.get(alias) {
-                let table = ac.class_named.as_deref().unwrap_or(alias);
-                return Ok(source_map
-                    .get(join_source_key(ac).unwrap_or(""))
-                    .and_then(|kv| {
-                        let ks = match kv {
-                            Value::Str(s) => s.clone(),
-                            Value::Int(i) => i.to_string(),
-                            _ => return None,
-                        };
-                        li.lookup_row(table, &ks)?.get(field).cloned()
-                    })
-                    .unwrap_or(Value::Null));
-            }
+            && let Some(ac) = joins.get(alias)
+        {
+            let table = ac.class_named.as_deref().unwrap_or(alias);
+            return Ok(source_map
+                .get(join_source_key(ac).unwrap_or(""))
+                .and_then(|kv| {
+                    let ks = match kv {
+                        Value::Str(s) => s.clone(),
+                        Value::Int(i) => i.to_string(),
+                        _ => return None,
+                    };
+                    li.lookup_row(table, &ks)?.get(field).cloned()
+                })
+                .unwrap_or(Value::Null));
+        }
         // No join index — fall through to plain map lookup.
         return Ok(source_map
             .get(populated_from)
@@ -2003,9 +2038,11 @@ fn is_inline_path(
     let slot = source_schema.and_then(|sv| sv.induced_slot(first_segment, source_type).ok());
     // `slot.range in sv.all_classes()` is encoded directly by `RangeKind::Class`.
     if let Some(slot) = &slot
-        && slot.is_object_range() && (slot.inlined || slot.inlined_as_list) {
-            return true;
-        }
+        && slot.is_object_range()
+        && (slot.inlined || slot.inlined_as_list)
+    {
+        return true;
+    }
     matches!(
         source_map.get(first_segment),
         Some(Value::Map(_)) | Some(Value::List(_))
@@ -4978,11 +5015,9 @@ mod tests {
                     "same-table hollow nested object retained"
                 );
                 match &o["full_name"] {
-                    Value::Map(inner) => assert_eq!(
-                        inner["first"],
-                        Value::Null,
-                        "inner null slot stays present"
-                    ),
+                    Value::Map(inner) => {
+                        assert_eq!(inner["first"], Value::Null, "inner null slot stays present")
+                    }
                     other => panic!("expected Map for full_name, got {other:?}"),
                 }
                 assert_eq!(o["note"], Value::Null, "scalar null stays present");
@@ -5549,7 +5584,12 @@ mod lookup_index_tests {
 
         let spec = make_spec(
             "Measurement",
-            vec![slot_nested("observation", "Observation", "readings", "score")],
+            vec![slot_nested(
+                "observation",
+                "Observation",
+                "readings",
+                "score",
+            )],
             Some(joins),
         );
 
@@ -5621,7 +5661,12 @@ mod lookup_index_tests {
         // Parent class must be "Result" so the target-schema slot lookup matches.
         let spec = make_spec(
             "Result",
-            vec![slot_nested("observations", "Observation", "readings", "score")],
+            vec![slot_nested(
+                "observations",
+                "Observation",
+                "readings",
+                "score",
+            )],
             Some(joins),
         );
 
@@ -5836,7 +5881,10 @@ mod inline_dotpath_tests {
     #[test]
     fn test_non_dict_mid_path_raises() {
         let schema = eml_schema(true).build();
-        let spec = make_spec("EMLDocument", vec![slot_pf("title", "dataset.title.deeper")]);
+        let spec = make_spec(
+            "EMLDocument",
+            vec![slot_pf("title", "dataset.title.deeper")],
+        );
         // `dataset.title` is a scalar string; descending into `.deeper` must error.
         let err = ObjectTransformer::new(spec, Some(&schema), None)
             .map_object(&input_data(), Some("EMLDocument"))

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use linkml_map_core::value::Value;
-use linkml_map_io::{write_vec, Format};
+use linkml_map_io::{Format, write_vec};
 use linkml_map_pipeline::{CompiledPlan, PipelineConfig};
 use std::sync::Arc;
 use std::time::Instant;

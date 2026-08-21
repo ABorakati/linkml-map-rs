@@ -844,59 +844,64 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
     if let Some(obj) = root.as_object_mut() {
         // ── class_derivations: top-level mapping -> Vec ────────────────────────
         if let Some(cd) = obj.get_mut("class_derivations")
-            && cd.is_object() {
-                let mapping = std::mem::replace(cd, serde_json::Value::Null);
-                let mut list = Vec::new();
-                if let serde_json::Value::Object(m) = mapping {
-                    for (class_name, mut val) in m {
-                        if val.is_null() {
-                            val = serde_json::json!({});
-                        }
-                        if let Some(o) = val.as_object_mut() {
-                            o.insert("name".into(), serde_json::Value::String(class_name.clone()));
-                            normalise_class_derivation_body(o);
-                        }
-                        list.push(val);
+            && cd.is_object()
+        {
+            let mapping = std::mem::replace(cd, serde_json::Value::Null);
+            let mut list = Vec::new();
+            if let serde_json::Value::Object(m) = mapping {
+                for (class_name, mut val) in m {
+                    if val.is_null() {
+                        val = serde_json::json!({});
                     }
+                    if let Some(o) = val.as_object_mut() {
+                        o.insert("name".into(), serde_json::Value::String(class_name.clone()));
+                        normalise_class_derivation_body(o);
+                    }
+                    list.push(val);
                 }
-                *cd = serde_json::Value::Array(list);
             }
+            *cd = serde_json::Value::Array(list);
+        }
 
         // ── top-level slot_derivations: inject `name` from the mapping key ────
         if let Some(sd) = obj.get_mut("slot_derivations")
-            && let Some(sdm) = sd.as_object_mut() {
-                normalise_slot_derivations(sdm);
-            }
+            && let Some(sdm) = sd.as_object_mut()
+        {
+            normalise_slot_derivations(sdm);
+        }
 
         // ── enum_derivations: inject `name` ───────────────────────────────────
         if let Some(ed) = obj.get_mut("enum_derivations")
-            && let Some(edm) = ed.as_object_mut() {
-                for (enum_name, enum_val) in edm.iter_mut() {
-                    if enum_val.is_null() {
-                        *enum_val = serde_json::json!({});
+            && let Some(edm) = ed.as_object_mut()
+        {
+            for (enum_name, enum_val) in edm.iter_mut() {
+                if enum_val.is_null() {
+                    *enum_val = serde_json::json!({});
+                }
+                if let Some(eo) = enum_val.as_object_mut() {
+                    if !eo.contains_key("name") {
+                        eo.insert("name".into(), serde_json::Value::String(enum_name.clone()));
                     }
-                    if let Some(eo) = enum_val.as_object_mut() {
-                        if !eo.contains_key("name") {
-                            eo.insert("name".into(), serde_json::Value::String(enum_name.clone()));
-                        }
-                        if let Some(pvds) = eo.get_mut("permissible_value_derivations")
-                            && let Some(pvm) = pvds.as_object_mut() {
-                                for (pv_name, pv_val) in pvm.iter_mut() {
-                                    if pv_val.is_null() {
-                                        *pv_val = serde_json::json!({});
-                                    }
-                                    if let Some(po) = pv_val.as_object_mut()
-                                        && !po.contains_key("name") {
-                                            po.insert(
-                                                "name".into(),
-                                                serde_json::Value::String(pv_name.clone()),
-                                            );
-                                        }
-                                }
+                    if let Some(pvds) = eo.get_mut("permissible_value_derivations")
+                        && let Some(pvm) = pvds.as_object_mut()
+                    {
+                        for (pv_name, pv_val) in pvm.iter_mut() {
+                            if pv_val.is_null() {
+                                *pv_val = serde_json::json!({});
                             }
+                            if let Some(po) = pv_val.as_object_mut()
+                                && !po.contains_key("name")
+                            {
+                                po.insert(
+                                    "name".into(),
+                                    serde_json::Value::String(pv_name.clone()),
+                                );
+                            }
+                        }
                     }
                 }
             }
+        }
 
         // source_schema / target_schema accept either a bare string or a full
         // mapping natively (see `deserialize_schema_reference_option`), so no
@@ -904,26 +909,29 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
 
         // ── prefixes: string values -> KeyVal maps ─────────────────────────────
         if let Some(pfx) = obj.get_mut("prefixes")
-            && let Some(m) = pfx.as_object_mut() {
-                for (_, v) in m.iter_mut() {
-                    if v.is_string() {
-                        let s = v.as_str().unwrap().to_string();
-                        *v = serde_json::json!({ "key": s, "value": s });
-                    }
+            && let Some(m) = pfx.as_object_mut()
+        {
+            for (_, v) in m.iter_mut() {
+                if v.is_string() {
+                    let s = v.as_str().unwrap().to_string();
+                    *v = serde_json::json!({ "key": s, "value": s });
                 }
             }
+        }
 
         // ── creator / author / reviewer: inject default agent `type` ──────────
         for key in &["creator", "author", "reviewer"] {
             if let Some(agents) = obj.get_mut(*key)
-                && let Some(arr) = agents.as_array_mut() {
-                    for agent in arr.iter_mut() {
-                        if let Some(o) = agent.as_object_mut()
-                            && !o.contains_key("type") {
-                                o.insert("type".into(), serde_json::Value::String("Agent".into()));
-                            }
+                && let Some(arr) = agents.as_array_mut()
+            {
+                for agent in arr.iter_mut() {
+                    if let Some(o) = agent.as_object_mut()
+                        && !o.contains_key("type")
+                    {
+                        o.insert("type".into(), serde_json::Value::String("Agent".into()));
                     }
                 }
+            }
         }
     }
 }
@@ -934,9 +942,10 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
 /// expected to be set by the caller (from the mapping key).
 fn normalise_class_derivation_body(o: &mut serde_json::Map<String, serde_json::Value>) {
     if let Some(sd) = o.get_mut("slot_derivations")
-        && let Some(sdm) = sd.as_object_mut() {
-            normalise_slot_derivations(sdm);
-        }
+        && let Some(sdm) = sd.as_object_mut()
+    {
+        normalise_slot_derivations(sdm);
+    }
     // ── joins: inject `alias` from the mapping key ─────────────────────────
     // `joins` is a mapping keyed by alias name (`Option<IndexMap<String,
     // AliasedClass>>`); `AliasedClass.alias` is required, so mirror the
@@ -944,17 +953,18 @@ fn normalise_class_derivation_body(o: &mut serde_json::Map<String, serde_json::V
     // derivations. Only fill `alias` when absent so an explicit `alias:` in
     // the YAML (e.g. the `class_named` divergence pattern) wins.
     if let Some(j) = o.get_mut("joins")
-        && let Some(jm) = j.as_object_mut() {
-            for (alias_name, join_val) in jm.iter_mut() {
-                if join_val.is_null() {
-                    *join_val = serde_json::json!({});
-                }
-                if let Some(jo) = join_val.as_object_mut() {
-                    jo.entry("alias")
-                        .or_insert_with(|| serde_json::Value::String(alias_name.clone()));
-                }
+        && let Some(jm) = j.as_object_mut()
+    {
+        for (alias_name, join_val) in jm.iter_mut() {
+            if join_val.is_null() {
+                *join_val = serde_json::json!({});
+            }
+            if let Some(jo) = join_val.as_object_mut() {
+                jo.entry("alias")
+                    .or_insert_with(|| serde_json::Value::String(alias_name.clone()));
             }
         }
+    }
 }
 
 /// Normalise a `slot_derivations` mapping in place: inject `name` from the key,
@@ -973,18 +983,19 @@ fn normalise_slot_derivations(sdm: &mut serde_json::Map<String, serde_json::Valu
             // Slot-level nested class_derivations stay a mapping (IndexMap);
             // inject each class name from its key and recurse.
             if let Some(cd) = so.get_mut("class_derivations")
-                && let Some(cdm) = cd.as_object_mut() {
-                    for (cls_name, cls_val) in cdm.iter_mut() {
-                        if cls_val.is_null() {
-                            *cls_val = serde_json::json!({});
-                        }
-                        if let Some(co) = cls_val.as_object_mut() {
-                            co.entry("name")
-                                .or_insert_with(|| serde_json::Value::String(cls_name.clone()));
-                            normalise_class_derivation_body(co);
-                        }
+                && let Some(cdm) = cd.as_object_mut()
+            {
+                for (cls_name, cls_val) in cdm.iter_mut() {
+                    if cls_val.is_null() {
+                        *cls_val = serde_json::json!({});
+                    }
+                    if let Some(co) = cls_val.as_object_mut() {
+                        co.entry("name")
+                            .or_insert_with(|| serde_json::Value::String(cls_name.clone()));
+                        normalise_class_derivation_body(co);
                     }
                 }
+            }
         }
     }
 }
@@ -1002,9 +1013,10 @@ fn normalise_keyval_mapping(obj: &mut serde_json::Map<String, serde_json::Value>
                 o.entry("key")
                     .or_insert_with(|| serde_json::Value::String(key.clone()));
                 if !o.contains_key("value")
-                    && let Some(expr) = o.remove("expr") {
-                        o.insert("value".into(), expr);
-                    }
+                    && let Some(expr) = o.remove("expr")
+                {
+                    o.insert("value".into(), expr);
+                }
             }
             _ => {
                 let scalar = std::mem::replace(value, serde_json::Value::Null);

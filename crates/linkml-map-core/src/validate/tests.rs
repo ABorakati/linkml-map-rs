@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::expr_refs::{extract_expr_attribute_references, extract_expr_slot_references};
 use super::*;
-use crate::datamodel::{normalise_spec_json, TransformationSpecification};
+use crate::datamodel::{TransformationSpecification, normalise_spec_json};
 use crate::schema::{ClassDef, EnumDef, InMemorySchema, InMemorySchemaBuilder, RangeKind, SlotDef};
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -57,7 +57,9 @@ fn spec(mut value: serde_json::Value) -> TransformationSpecification {
 }
 
 fn errors(msgs: &[ValidationMessage]) -> Vec<&ValidationMessage> {
-    msgs.iter().filter(|m| m.severity == Severity::Error).collect()
+    msgs.iter()
+        .filter(|m| m.severity == Severity::Error)
+        .collect()
 }
 
 // ── validate_spec_semantics: class / slot resolution ─────────────────────────
@@ -128,10 +130,8 @@ fn missing_source_slot_populated_from_is_error() {
     }));
     let msgs = validate_spec_semantics(&s, Some(&sv), Some(&sv), false);
     let errs = errors(&msgs);
-    assert!(errs
-        .iter()
-        .any(|e| e.message.contains("nonexistent_slot")
-            && e.message.contains("not found on source class")));
+    assert!(errs.iter().any(|e| e.message.contains("nonexistent_slot")
+        && e.message.contains("not found on source class")));
 }
 
 // ── expression slot references ───────────────────────────────────────────────
@@ -224,8 +224,10 @@ fn required_target_slot_without_derivation_warns() {
         }
     }));
     let msgs = validate_spec_semantics(&s, None, Some(&sv), false);
-    assert!(msgs.iter().any(|m| m.severity == Severity::Warning
-        && m.message.contains("Required target slot 'name'")));
+    assert!(
+        msgs.iter().any(|m| m.severity == Severity::Warning
+            && m.message.contains("Required target slot 'name'"))
+    );
 }
 
 // ── is_a / mixins resolution ─────────────────────────────────────────────────
@@ -268,9 +270,11 @@ fn is_a_resolving_to_neither_is_error() {
         "class_derivations": {"Person": {"populated_from": "Person", "is_a": "Ghost"}}
     }));
     let msgs = validate_spec_semantics(&s, None, Some(&sv), false);
-    assert!(errors(&msgs)
-        .iter()
-        .any(|e| e.message.contains("is_a: Ghost") && e.message.contains("does not resolve")));
+    assert!(
+        errors(&msgs)
+            .iter()
+            .any(|e| e.message.contains("is_a: Ghost") && e.message.contains("does not resolve"))
+    );
 }
 
 #[test]
@@ -319,12 +323,21 @@ fn cross_table_implicit_resolvable_emits_info() {
     let sv = joinable_schema();
     let s = nested_cross_table_spec();
     let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
-    let info: Vec<_> = msgs.iter().filter(|m| m.severity == Severity::Info).collect();
+    let info: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.severity == Severity::Info)
+        .collect();
     assert_eq!(info.len(), 1, "got {msgs:?}");
-    assert!(info[0].message.contains("implicit join will be synthesized on column 'subject_id'"));
-    assert!(info[0]
-        .path
-        .contains("slot_derivations[reading].class_derivations[Reading]"));
+    assert!(
+        info[0]
+            .message
+            .contains("implicit join will be synthesized on column 'subject_id'")
+    );
+    assert!(
+        info[0]
+            .path
+            .contains("slot_derivations[reading].class_derivations[Reading]")
+    );
 }
 
 #[test]
@@ -349,10 +362,17 @@ fn cross_table_no_shared_column_emits_warning() {
         }
     }));
     let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
-    let warns: Vec<_> = msgs.iter().filter(|m| m.severity == Severity::Warning).collect();
+    let warns: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.severity == Severity::Warning)
+        .collect();
     assert_eq!(warns.len(), 1, "got {msgs:?}");
     assert!(warns[0].message.contains("no columns are shared"));
-    assert!(warns[0].message.contains("no implicit join can be synthesized"));
+    assert!(
+        warns[0]
+            .message
+            .contains("no implicit join can be synthesized")
+    );
 }
 
 #[test]
@@ -379,7 +399,10 @@ fn cross_table_ambiguous_emits_warning() {
         }
     }));
     let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
-    let warns: Vec<_> = msgs.iter().filter(|m| m.severity == Severity::Warning).collect();
+    let warns: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.severity == Severity::Warning)
+        .collect();
     assert_eq!(warns.len(), 1, "got {msgs:?}");
     assert!(warns[0].message.contains("multiple candidate join columns"));
     assert!(warns[0].message.contains("'site', 'zone'"));
@@ -400,8 +423,10 @@ fn cross_table_explicit_empty_join_emits_warning() {
         }
     }));
     let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
-    assert!(msgs.iter().any(|m| m.severity == Severity::Warning
-        && m.message.contains("is missing keys")));
+    assert!(
+        msgs.iter()
+            .any(|m| m.severity == Severity::Warning && m.message.contains("is missing keys"))
+    );
 }
 
 #[test]
@@ -455,9 +480,11 @@ fn enum_derivation_invalid_target_is_error() {
         "enum_derivations": {"Bogus": {"populated_from": "VitalStatus"}}
     }));
     let msgs = validate_spec_semantics(&s, None, Some(&sv), false);
-    assert!(errors(&msgs)
-        .iter()
-        .any(|e| e.message.contains("Target enum 'Bogus' not found")));
+    assert!(
+        errors(&msgs)
+            .iter()
+            .any(|e| e.message.contains("Target enum 'Bogus' not found"))
+    );
 }
 
 #[test]
@@ -467,9 +494,10 @@ fn enum_derivation_invalid_source_is_error() {
         "enum_derivations": {"VitalStatus": {"populated_from": "Ghost"}}
     }));
     let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
-    assert!(errors(&msgs)
-        .iter()
-        .any(|e| e.message.contains("Source enum 'Ghost' (populated_from) not found")));
+    assert!(errors(&msgs).iter().any(|e| {
+        e.message
+            .contains("Source enum 'Ghost' (populated_from) not found")
+    }));
 }
 
 // ── no schemas ───────────────────────────────────────────────────────────────

@@ -56,7 +56,10 @@ fn mr_schema() -> InMemorySchema {
         .add_class(class("Reading"))
         .add_slot("Reading", slot("id", str_range(), true))
         .add_slot("Reading", slot("subject_id", str_range(), false))
-        .add_slot("Reading", slot("score", RangeKind::Type("float".into()), false))
+        .add_slot(
+            "Reading",
+            slot("score", RangeKind::Type("float".into()), false),
+        )
         .build()
 }
 
@@ -68,7 +71,10 @@ fn no_common_schema() -> InMemorySchema {
         .add_slot("Measurement", slot("method", str_range(), false))
         .add_class(class("Reading"))
         .add_slot("Reading", slot("reading_id", str_range(), true))
-        .add_slot("Reading", slot("score", RangeKind::Type("float".into()), false))
+        .add_slot(
+            "Reading",
+            slot("score", RangeKind::Type("float".into()), false),
+        )
         .build()
 }
 
@@ -128,11 +134,18 @@ fn expr_reference_synthesizes_join() {
     let mut spec = spec_with(vec![cd(
         "Result",
         "Measurement",
-        vec![sd("id"), sd("method"), sd_expr("reading_score", "{Reading.score}")],
+        vec![
+            sd("id"),
+            sd("method"),
+            sd_expr("reading_score", "{Reading.score}"),
+        ],
     )]);
     synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
     let joins = result_cd(&spec).joins.as_ref().unwrap();
-    assert_eq!(joins.get("Reading").unwrap().join_on.as_deref(), Some("subject_id"));
+    assert_eq!(
+        joins.get("Reading").unwrap().join_on.as_deref(),
+        Some("subject_id")
+    );
 }
 
 #[test]
@@ -187,13 +200,14 @@ fn nested_class_derivation_synthesizes_join() {
     let mut inner = cd("Obs", "Reading", vec![sd_pf("value", "score")]);
     inner.populated_from = Some("Reading".into());
     let mut readings = sd("readings");
-    readings.class_derivations = Some(
-        std::iter::once(("Obs".to_string(), inner)).collect(),
-    );
+    readings.class_derivations = Some(std::iter::once(("Obs".to_string(), inner)).collect());
     let mut spec = spec_with(vec![cd("Result", "Measurement", vec![readings])]);
     synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
     let joins = result_cd(&spec).joins.as_ref().unwrap();
-    assert_eq!(joins.get("Reading").unwrap().join_on.as_deref(), Some("subject_id"));
+    assert_eq!(
+        joins.get("Reading").unwrap().join_on.as_deref(),
+        Some("subject_id")
+    );
 }
 
 // ── fail-loud cases ─────────────────────────────────────────────────────────
@@ -201,7 +215,10 @@ fn nested_class_derivation_synthesizes_join() {
 fn assert_join_err(spec: &mut TransformationSpecification, sv: &dyn SchemaProvider, needle: &str) {
     let err = synthesize_implicit_joins(spec, sv).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains(needle), "expected {needle:?} in error, got: {msg}");
+    assert!(
+        msg.contains(needle),
+        "expected {needle:?} in error, got: {msg}"
+    );
 }
 
 #[test]
@@ -239,7 +256,11 @@ fn expr_same_row_qualified_root_is_allowed() {
 #[test]
 fn expr_declared_join_alias_is_allowed() {
     // `{myreading.score}` rooted in a declared join alias (alias != class) → ok.
-    let mut result = cd("Result", "Measurement", vec![sd_expr("s", "{myreading.score}")]);
+    let mut result = cd(
+        "Result",
+        "Measurement",
+        vec![sd_expr("s", "{myreading.score}")],
+    );
     result.joins = Some(
         std::iter::once((
             "myreading".to_string(),
@@ -357,7 +378,10 @@ fn flat_dotted_populated_from_synthesizes_join() {
     )]);
     synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
     let joins = result_cd(&spec).joins.as_ref().unwrap();
-    assert_eq!(joins.get("Reading").unwrap().join_on.as_deref(), Some("subject_id"));
+    assert_eq!(
+        joins.get("Reading").unwrap().join_on.as_deref(),
+        Some("subject_id")
+    );
 }
 
 #[test]
@@ -419,7 +443,11 @@ fn fk_path_dotted_populated_from_is_not_flagged() {
 
 #[test]
 fn explicit_join_is_preserved() {
-    let mut result = cd("Result", "Measurement", vec![sd_expr("s", "{Reading.score}")]);
+    let mut result = cd(
+        "Result",
+        "Measurement",
+        vec![sd_expr("s", "{Reading.score}")],
+    );
     result.joins = Some(
         std::iter::once((
             "Reading".to_string(),
@@ -435,7 +463,12 @@ fn explicit_join_is_preserved() {
     synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
     // The declared join (keyed on `id`) is preserved, not replaced by a
     // synthesized one keyed on `subject_id`.
-    let ac = result_cd(&spec).joins.as_ref().unwrap().get("Reading").unwrap();
+    let ac = result_cd(&spec)
+        .joins
+        .as_ref()
+        .unwrap()
+        .get("Reading")
+        .unwrap();
     assert_eq!(ac.source_key.as_deref(), Some("id"));
     assert!(ac.join_on.is_none());
 }
@@ -459,5 +492,8 @@ fn expression_mapping_reference_synthesizes_join() {
     let mut spec = spec_with(vec![cd("Result", "Measurement", vec![sd])]);
     synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
     let joins = result_cd(&spec).joins.as_ref().unwrap();
-    assert_eq!(joins.get("Reading").unwrap().join_on.as_deref(), Some("subject_id"));
+    assert_eq!(
+        joins.get("Reading").unwrap().join_on.as_deref(),
+        Some("subject_id")
+    );
 }

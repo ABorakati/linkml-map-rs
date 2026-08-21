@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use linkml_map_core::value::Value;
 use tokio::fs::File;

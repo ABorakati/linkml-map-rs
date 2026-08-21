@@ -11,9 +11,8 @@ pub mod stmt;
 
 pub use error::{ExprError, ExprResult};
 pub use eval::{
-    eval_expr, eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed,
-    eval_parsed_strict, expression_asts, parse_expr, Bindings, ParsedExpr, FUNCTION_NAMES,
-    INJECTED_EVAL_NAMES,
+    Bindings, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr, eval_expr_with_mapping,
+    eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict, expression_asts, parse_expr,
 };
 pub use parser::Ast;
 
@@ -23,7 +22,7 @@ mod tests {
     // (_try_numeric / _maybe_coerce_numeric in utils/eval_utils.py); keep the exact
     // value and silence approx_constant rather than diverge from the reference.
     #![allow(clippy::approx_constant)]
-    use super::eval::{eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr, Bindings};
+    use super::eval::{Bindings, eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr};
     use crate::value::Value;
     use indexmap::IndexMap;
 
@@ -587,8 +586,7 @@ mod tests {
         // `first_known_event`: indented single-statement body referencing a
         // subscripted attribute path.
         let vars = src_with_events(vec![("BIRTH", "1990-01-01")]);
-        let expr =
-            "if src.has_important_life_events:\n  target = src.has_important_life_events[0].important_event_date";
+        let expr = "if src.has_important_life_events:\n  target = src.has_important_life_events[0].important_event_date";
         let parsed = parse_expr(expr).unwrap();
         assert_eq!(parsed.eval(&vars).unwrap(), s("1990-01-01"));
     }

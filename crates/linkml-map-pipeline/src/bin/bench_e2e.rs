@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use linkml_map_io::Format;
-use linkml_map_pipeline::{run_pipeline, PipelineConfig};
+use linkml_map_pipeline::{PipelineConfig, run_pipeline};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

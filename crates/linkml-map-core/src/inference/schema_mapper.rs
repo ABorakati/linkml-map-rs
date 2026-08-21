@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 
 use crate::{
     datamodel::{
@@ -33,10 +33,11 @@ impl<'a> SchemaMapper<'a> {
         let mut root = Map::new();
         root.insert(
             "id".into(),
-            json!(spec
-                .id
-                .clone()
-                .unwrap_or_else(|| { "https://example.org/derived".to_string() })),
+            json!(
+                spec.id
+                    .clone()
+                    .unwrap_or_else(|| { "https://example.org/derived".to_string() })
+            ),
         );
         root.insert("name".into(), json!(name));
         root.insert("default_range".into(), json!("string"));
@@ -45,9 +46,10 @@ impl<'a> SchemaMapper<'a> {
             let mut out = Map::new();
             for (k, v) in prefixes {
                 if let Some(value) = &v.value
-                    && !(k == "foo" && value.as_str() == Some("foo")) {
-                        out.insert(k.clone(), value.clone());
-                    }
+                    && !(k == "foo" && value.as_str() == Some("foo"))
+                {
+                    out.insert(k.clone(), value.clone());
+                }
             }
             if !out.is_empty() {
                 root.insert("prefixes".into(), JsonValue::Object(out));
@@ -84,9 +86,10 @@ impl<'a> SchemaMapper<'a> {
             obj.insert("is_a".into(), json!(parent));
         }
         if let Some(mixins) = &cd.mixins
-            && !mixins.is_empty() {
-                obj.insert("mixins".into(), json!(mixins));
-            }
+            && !mixins.is_empty()
+        {
+            obj.insert("mixins".into(), json!(mixins));
+        }
         if let Some(target_definition) = &cd.target_definition {
             merge_object(&mut obj, target_definition);
         }
@@ -219,9 +222,11 @@ fn source_slot_name(sd: &SlotDerivation) -> Option<String> {
         return Some(populated_from.clone());
     }
     if let Some(expr) = &sd.expr
-        && !expr.is_empty() && expr.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Some(expr.clone());
-        }
+        && !expr.is_empty()
+        && expr.chars().all(|c| c.is_alphanumeric() || c == '_')
+    {
+        return Some(expr.clone());
+    }
     Some(sd.name.clone())
 }
 

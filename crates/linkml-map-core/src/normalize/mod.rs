@@ -50,7 +50,7 @@ use crate::expr::{ExprError, FUNCTION_NAMES, INJECTED_EVAL_NAMES};
 use crate::schema::SchemaProvider;
 
 use expression_locations::{
-    extract_braced_reference_roots, extract_table_references, ExpressionBearing,
+    ExpressionBearing, extract_braced_reference_roots, extract_table_references,
 };
 use join_utils::infer_join_key;
 

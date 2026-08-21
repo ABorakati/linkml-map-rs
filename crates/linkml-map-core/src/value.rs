@@ -138,9 +138,11 @@ impl From<&serde_json::Value> for Value {
             }
             serde_json::Value::String(s) => Value::Str(s.clone()),
             serde_json::Value::Array(arr) => Value::List(arr.iter().map(Value::from).collect()),
-            serde_json::Value::Object(map) => {
-                Value::Map(map.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect())
-            }
+            serde_json::Value::Object(map) => Value::Map(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), Value::from(v)))
+                    .collect(),
+            ),
         }
     }
 }
@@ -162,7 +164,9 @@ impl From<&Value> for serde_json::Value {
                 serde_json::Value::Array(items.iter().map(serde_json::Value::from).collect())
             }
             Value::Map(m) => serde_json::Value::Object(
-                m.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(v))).collect(),
+                m.iter()
+                    .map(|(k, v)| (k.clone(), serde_json::Value::from(v)))
+                    .collect(),
             ),
         }
     }

@@ -145,12 +145,8 @@ pub fn validate_spec_semantics(
         target: target_schema,
         strict,
         pool: collect_class_derivation_pool(spec),
-        source_classes: source_schema
-            .map(class_name_set)
-            .unwrap_or_default(),
-        target_classes: target_schema
-            .map(class_name_set)
-            .unwrap_or_default(),
+        source_classes: source_schema.map(class_name_set).unwrap_or_default(),
+        target_classes: target_schema.map(class_name_set).unwrap_or_default(),
     };
 
     for cd in spec.class_derivations.iter().flatten() {
@@ -278,7 +274,10 @@ fn validate_class_derivation(
         && source_class_slots.is_none()
     {
         let fallback = match parent_cd {
-            Some(parent) => parent.populated_from.as_deref().unwrap_or(parent.name.as_str()),
+            Some(parent) => parent
+                .populated_from
+                .as_deref()
+                .unwrap_or(parent.name.as_str()),
             None => cd_name,
         };
         if !fallback.is_empty() && ctx.source_classes.contains(fallback) {
@@ -400,11 +399,7 @@ fn check_cross_table_join(
     }
 
     // Explicit join present: verify it carries enough keys to resolve a row.
-    if let Some(join_spec) = parent_cd
-        .joins
-        .as_ref()
-        .and_then(|j| j.get(nested_source))
-    {
+    if let Some(join_spec) = parent_cd.joins.as_ref().and_then(|j| j.get(nested_source)) {
         let join_on = join_spec.join_on.as_deref();
         let source_key = join_spec.source_key.as_deref();
         let lookup_key = join_spec.lookup_key.as_deref();
@@ -432,8 +427,18 @@ fn check_cross_table_join(
                 ]
             } else {
                 vec![
-                    (source_key.unwrap(), &parent_slots, parent_source, "source_key"),
-                    (lookup_key.unwrap(), &nested_slots, nested_source, "lookup_key"),
+                    (
+                        source_key.unwrap(),
+                        &parent_slots,
+                        parent_source,
+                        "source_key",
+                    ),
+                    (
+                        lookup_key.unwrap(),
+                        &nested_slots,
+                        nested_source,
+                        "lookup_key",
+                    ),
                 ]
             };
             for (key_value, slot_set, class_name, key_label) in key_checks {
@@ -661,7 +666,9 @@ fn validate_enum_derivation(
             messages.push(ValidationMessage::new(
                 Severity::Error,
                 &ed_path,
-                format!("Source enum '{populated_from}' (populated_from) not found in source schema"),
+                format!(
+                    "Source enum '{populated_from}' (populated_from) not found in source schema"
+                ),
             ));
         }
     }

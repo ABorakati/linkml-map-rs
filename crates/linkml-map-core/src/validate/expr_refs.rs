@@ -24,7 +24,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::expr::stmt::{is_multi_statement, parse_program};
-use crate::expr::{expression_asts, Ast, FUNCTION_NAMES, INJECTED_EVAL_NAMES};
+use crate::expr::{Ast, FUNCTION_NAMES, INJECTED_EVAL_NAMES, expression_asts};
 
 /// Names that must never be treated as slot references in an expression.
 ///
@@ -92,12 +92,7 @@ fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visit: &mut F) {
                 walk_ast(v, visit);
             }
         }
-        Ast::Int(_)
-        | Ast::Float(_)
-        | Ast::Str(_)
-        | Ast::Bool(_)
-        | Ast::None
-        | Ast::Name(_) => {}
+        Ast::Int(_) | Ast::Float(_) | Ast::Str(_) | Ast::Bool(_) | Ast::None | Ast::Name(_) => {}
     }
 }
 
