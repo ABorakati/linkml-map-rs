@@ -27,8 +27,10 @@ Three items are actionable, in priority order:
    exist in the Rust CLI at all, so a drop-in caller passing them fails.
 
 Everything else is N/A (CI, packaging, dependency bumps, test-only churn, or
-Python-implementation-specific), **already matching**, or a deliberate
-divergence recorded below.
+Python-implementation-specific) or **already matching**. The one item that
+initially looked like a divergence — `0db653b539`, comprehension attribute
+access — is **not** one; §4 records the corrected analysis and why restricting
+Rust would break the golden corpus.
 
 This review was produced by four parallel investigation agents; their raw
 per-slice findings are retained in
@@ -46,7 +48,7 @@ this document was re-verified directly against the vendored pin copy in
 | `302ed8eff8` | 2026-08-04 | Support Python 3.14: drop requires-python upper cap | **N/A (packaging).** See recommendation on our `python-compat` matrix. |
 | `5e9df524f7` | 2026-08-04 | Hold ucumvert at 0.2.x while Python 3.10 is still supported | **N/A.** Upstream pins its own unit-conversion backend; Rust implements units natively in `crates/linkml-map-core/src/engine/units.rs`. |
 | `29df3c9bc2` | 2026-08-04 | Add Dependabot and a scheduled Python support-window check | **N/A.** CI automation. |
-| `0db653b539` | 2026-08-04 | Name the real cause when an expression attributes a comprehension variable | **Deliberate divergence.** Works around a `simpleeval` scoping limit Rust does not have; upstream now *refuses* a construct Rust *supports*. See below. |
+| `0db653b539` | 2026-08-04 | Name the real cause when an expression attributes a comprehension variable | **N/A to Rust.** Re-diagnoses a `simpleeval` scoping limit Rust does not have, and only in *restricted* mode — upstream still permits the construct under `--unrestricted-eval`, which is the mode Rust is always in and the one `tests/golden/personinfo_basic` requires. See below. |
 | `5f92b32129` | 2026-08-04 | Collapse map-data onto a single writer API | **Already matching.** `crates/linkml-map-io/src/writers.rs` already routes every format and both sinks (file, stdout) through one async writer. Output bytes unchanged upstream. |
 | `f27372b431` | 2026-08-04 | Lint with the ruff from uv.lock instead of a separate pre-commit pin | **N/A.** Python lint tooling. |
 | `47d02d706a` | 2026-08-04 | Bump the actions group with 4 updates | **N/A.** Dependabot. |
@@ -199,38 +201,73 @@ review.
 
 ---
 
-## 4. `0db653b539` — comprehension-bound attribute access (deliberate divergence)
+## 4. `0db653b539` — comprehension-bound attribute access
+
+**Corrected 2026-08-21 (second pass).** The first pass of this section claimed
+"Rust accepts a spec upstream rejects" and flagged restricting Rust as an open
+decision. That framing was **wrong**, because it omitted the mode condition.
+Restricting Rust would break the golden corpus. The corrected analysis follows.
 
 Upstream's `simpleeval` binds comprehension targets in a scope that
-`_eval_attribute`'s root lookup deliberately bypasses, so `[c.code for c in codes]`
-reported a nonexistent typo. Upstream's fix does **not** make the construct work
-— it renames the diagnosis, telling the author that attribute access on a
-comprehension-bound name "is not supported" and to declare a `class_derivation`
-instead.
+`_eval_attribute`'s root lookup bypasses, so `[c.code for c in codes]` reported a
+nonexistent typo. Upstream's fix renames the diagnosis, telling the author that
+attribute access on a comprehension-bound name "is not supported".
 
-Rust has no such limitation: `Ast::ListComp` evaluates the body against a child
-scope with the loop variable inserted
-(`crates/linkml-map-core/src/expr/eval.rs:365-374`), so the unbound-root guard at
-`eval.rs:314-323` never fires for a loop variable and
-`[c.code for c in codes]` simply evaluates. Rust keeps the identical
-`"…no such source class, join, or slot. Typo or stale reference?"` message for a
-genuinely unknown root (`eval.rs:319-322`), matching upstream's non-comprehension
-branch.
+**The critical qualifier: that refusal only applies in _restricted_ (safe) mode.**
+`_eval_attribute` lives in `RestrictedEvaluator`, the `simpleeval` path. When the
+user opts in with `--unrestricted-eval`, the expression is evaluated by `asteval`
+instead, which resolves comprehension variables correctly and evaluates the
+construct fine. Upstream's own `ea0d4ee8ec` says so explicitly, in a comment it
+added to the head of the `personinfo_basic` spec:
 
-**Consequence:** Rust **accepts a spec upstream rejects.** This is a divergence
-in the permissive direction. Recording it rather than acting on it: the
-alternative is to add an artificial restriction that deletes working, tested Rust
-functionality in order to reproduce a Python implementation artifact. Flagging
-for a deliberate decision — under a strict drop-in reading, a spec that
-transforms in Rust and errors in Python is a real difference, and upstream's
-message asserts the construct is unsupported *by design* (it bypasses range,
-cardinality, and datatype coercion), not merely unimplemented.
+> Run this spec with `linkml-map map-data --unrestricted-eval`. Several Agent
+> derivations use `src.` accessors and **comprehensions**, which safe mode does
+> not provide; without the flag `src` resolves to None and the derivation fails.
 
-**Suggested upstream issue (not filed, per doctrine):** upstream's stated reason
-for refusing the construct is semantic (expression-built records skip coercion),
-but the enforcement is incidental — it only triggers because `simpleeval` cannot
-resolve the root. A `class_derivation`-shaped alternative is prescribed in the
-error text without a supported path for the simple projection case.
+and its `test_map_data` asserts that **with** `--unrestricted-eval` this spec
+reproduces the committed expected output — the same output this port keeps as a
+golden fixture.
+
+**Rust is therefore already correct for the mode our corpus uses.** Rust has no
+`unrestricted_eval` gate: the restricted and unrestricted paths are merged
+(`expr/eval.rs`, `expr/stmt.rs`), so Rust behaves as permanently-unrestricted —
+exactly the mode in which upstream permits the construct. `Ast::ListComp`
+evaluates the body against a child scope with the loop variable inserted
+(`crates/linkml-map-core/src/expr/eval.rs:365-374`), matching `asteval`. Rust
+keeps the identical `"…no such source class, join, or slot. Typo or stale
+reference?"` message for a genuinely unknown root (`eval.rs:319-322`).
+
+**Restricting Rust would break the golden corpus.** `tests/golden/personinfo_basic`
+depends on the construct in two slot derivations:
+
+```yaml
+driving_since:
+  expr: |
+    d_test = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == "PASSED_DRIVING_TEST"]
+    ...
+death_date:
+  expr: |
+    death_dates = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == "DEATH"]
+```
+
+Both use `x.attr` on a comprehension-bound `x`. The committed expected output
+`tests/golden/personinfo_basic/output/Person-001.transformed.yaml` carries
+`driving_since: 2014-03-31`, produced by precisely that expression. Adding an
+unconditional refusal would turn both slots into errors and fail the fixture.
+
+**Verdict: N/A to Rust — no action.** There is no divergence to fix in the mode
+this port operates in.
+
+**The real residual gap** is not comprehensions: it is that Rust cannot
+reproduce upstream's *restricted* mode at all, because it has no
+`unrestricted_eval` gate. A spec that upstream refuses without the flag is
+accepted by Rust. Closing that properly means implementing the gate — splitting
+the merged evaluator into a restricted path and an opt-in unrestricted path —
+which is a substantial piece of work, not a local edit, and is the item to file
+if cross-mode parity is wanted. Restricting comprehensions alone would be the
+wrong shape of fix: it would break the unrestricted mode (which our fixtures
+need) while still not reproducing restricted mode (`src.` accessors, statement
+blocks, and everything else the gate governs would stay permissive).
 
 ---
 
@@ -301,8 +338,16 @@ tests to pin them down and will need its own head-to-head fixtures.
   the primary/displayed name differs (`validate`). The drop-in gap for
   invocation is therefore already closed; what remains is a cosmetic decision
   about which name is canonical in `--help`.
-- **Comprehension attribute access** (new, see §4): keep Rust's working support,
-  or restrict to match upstream's refusal.
+- **Comprehension attribute access** (see §4): **closed, no action.** Upstream's
+  refusal is restricted-mode only; Rust is effectively always unrestricted,
+  which is the mode where upstream permits the construct and the mode our
+  golden corpus requires. Restricting Rust would fail
+  `tests/golden/personinfo_basic`.
+- **The `unrestricted_eval` gate** (new, replaces the above): Rust has no gate,
+  so it accepts specs upstream refuses *without* `--unrestricted-eval`. Closing
+  this means splitting the merged evaluator into a restricted path plus an
+  opt-in unrestricted path, and threading the flag through the CLI and the PyO3
+  surface. Substantial; not scoped here.
 
 ## Recommendations, in priority order
 
