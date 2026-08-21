@@ -377,13 +377,36 @@ review. Their status is recorded inline below.
    `log::Log` implementation writes to **stderr** so log output cannot
    contaminate the `-o -` stdout data path; no new third-party dependency
    (`log` was already a workspace dependency).
-4. **Decide the two open questions above** and record the decisions. Still
-   outstanding.
-5. **Consider widening the `python-compat` CI matrix.** Upstream dropped its
-   `requires-python` upper cap and now tests Python 3.14; our matrix is 3.11 and
-   3.12. This is a recommendation, not a parity requirement — the wheel's own
-   floor is declared separately in `crates/linkml-map-py/pyproject.toml`.
-   Still outstanding.
+4. **Decide the two open questions above** and record the decisions. The
+   comprehension question is now closed (§4); the subcommand-naming one is
+   cosmetic; the `unrestricted_eval` gate is the real outstanding item.
+5. **Widen the `python-compat` CI matrix.** ✅ **Partly done — 3.13 added,
+   3.14 blocked.** The matrix is now `['3.11', '3.12', '3.13']`.
+
+   The ceiling is set by **PyO3, not by `pyproject.toml`**. `pyo3-ffi`'s build
+   script at the pinned `v0.23.5` declares
+   `SUPPORTED_VERSIONS_CPYTHON { min: 3.7, max: 3.13 }` and hard-errors when the
+   interpreter is newer than `max`, so a `'3.14'` entry would fail at **build**
+   time, not test time. Upstream's move to 3.14 (`302ed8eff8`) can only be
+   matched after bumping PyO3 (3.14 support landed in PyO3 #4811, 2025-04-26,
+   after 0.23.5) — which is a real upgrade, since 0.23 → current carries
+   breaking API changes (e.g. `Python::with_gil` → `Python::attach`).
+
+   The wheel is **not** abi3 (no `abi3` feature in
+   `crates/linkml-map-py/Cargo.toml`), so maturin builds one version-specific
+   wheel per matrix entry and every listed interpreter must be independently
+   supported by PyO3.
+
+   Verified before committing, reproducing the CI steps locally on CPython
+   3.13.15: clean venv with exactly `pytest pyyaml linkml-runtime`, wheel built
+   via maturin (`linkml_map_rs-0.1.0-cp313-cp313-win_amd64.whl`), installed, and
+   `pytest crates/linkml-map-py/tests/test_compat_api.py` → **36 passed**.
+
+   Side note, not changed: `crates/linkml-map-py/pyproject.toml` declares
+   `requires-python = ">=3.8"`, but no 3.8/3.9/3.10 wheel is built or tested and
+   3.8 is EOL. It is misleading metadata rather than a functional bug (the
+   version-specific wheel tag constrains installation anyway). Worth tightening
+   to `>=3.11` to match what is actually proven.
 6. **Consider adding coverage for the two retained NMDC scenarios**
    (`e3236180a7eb`): two-level inlined dotpath null propagation, and multiple
    class derivations targeting one class. Rust implements both; neither is

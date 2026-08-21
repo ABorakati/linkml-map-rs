@@ -118,8 +118,9 @@ jobs:
   #
   # REQUIRED-CHECK NOTE: a GitHub check only *blocks merges* if a repo admin
   # adds it to the master branch-protection required-checks list. The check
-  # names produced by this job are "python-compat (3.11)" and
-  # "python-compat (3.12)" (job id `python-compat`, matrixed on python-version).
+  # names produced by this job are "python-compat (3.11)",
+  # "python-compat (3.12)" and "python-compat (3.13)" (job id `python-compat`,
+  # matrixed on python-version).
   # The YAML here only guarantees the job RUNS unconditionally on every PR and
   # FAILS on drift; it cannot make itself "required" — that is a branch-
   # protection setting.
@@ -129,10 +130,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # pyproject.toml declares requires-python = ">=3.8"; test the two most
-        # commonly deployed in-range interpreters. Widen only if the wheel is
-        # actually built/tested for more.
-        python-version: ['3.11', '3.12']
+        # Ceiling is set by PyO3, not by pyproject.toml: pyo3 0.23.5 (pinned in
+        # the workspace) supports CPython up to 3.13 and hard-errors when the
+        # interpreter is NEWER than its maximum, so a 3.14 entry would fail at
+        # build time, not test time. Upstream linkml-map now tests 3.14
+        # (302ed8eff8); matching that needs a pyo3 bump (3.14 support landed in
+        # PyO3 #4811, after 0.23.5) — do that first, then add '3.14' here.
+        #
+        # The wheel is NOT abi3 (crates/linkml-map-py/Cargo.toml has no abi3
+        # feature), so maturin builds one version-specific wheel per entry and
+        # every listed interpreter must be independently supported by pyo3.
+        python-version: ['3.11', '3.12', '3.13']
 
     steps:
     - uses: actions/checkout@v4
