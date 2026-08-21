@@ -27,8 +27,62 @@ use linkml_map_schemaview::SchemaViewProvider;
     long_about = None,
 )]
 struct Cli {
+    /// Suppress warnings; only report errors.
+    #[arg(short = 'q', long = "quiet", global = true, action = clap::ArgAction::SetTrue)]
+    quiet: bool,
+
+    /// Increase log verbosity; repeat for debug.
+    #[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+//
+// PARITY: upstream `src/linkml_map/cli/cli.py` (commit `c69db3e0fe`) declares
+// `-v/--verbose` (count) and `-q/--quiet` (is_flag) as group-level options, so
+// they are global in clap and may precede the subcommand. The resolved root
+// level ladder is: (none) -> WARNING, -q -> ERROR, -v -> INFO, -vv -> DEBUG.
+// Upstream's `main()` body sets the verbose level first, then overrides to
+// ERROR when `quiet` is truthy, so `-q` wins when both flags are passed. We
+// mirror that precedence exactly in `resolve_log_level` below.
+
+/// Resolve the global `log::LevelFilter` from the CLI verbosity flags.
+fn resolve_log_level(verbose: u8, quiet: bool) -> log::LevelFilter {
+    let level = match verbose {
+        0 => log::LevelFilter::Warn,
+        1 => log::LevelFilter::Info,
+        _ => log::LevelFilter::Debug,
+    };
+    if quiet {
+        log::LevelFilter::Error
+    } else {
+        level
+    }
+}
+
+/// Minimal `log::Log` implementation for the CLI.
+///
+/// Writes every record to stderr so log output never contaminates the `-o -`
+/// stdout data path (the `map-data` subcommand can stream transformed rows to
+/// stdout). Level filtering is enforced by the global `log::set_max_level`
+/// call in `main`, not re-implemented here.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        // The `log!` macros check the global max level (set via
+        // `log::set_max_level`) before calling this; accept what reaches us.
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        eprintln!("{}: {}", record.level(), record.args());
+    }
+
+    fn flush(&self) {}
 }
 
 #[derive(Subcommand, Debug)]
@@ -229,9 +283,18 @@ fn dispatch_validate(args: ValidateArgs) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Install the logger and apply the verbosity flags before dispatch.
+    let filter = resolve_log_level(cli.verbose, cli.quiet);
+    // `set_logger` returns `Err` if a logger is already installed (e.g. a test
+    // process invoking `main` more than once); ignore that and just apply the
+    // level filter for this invocation.
+    let _ = log::set_logger(&StderrLogger);
+    log::set_max_level(filter);
+
     match cli.command {
         Commands::MapData(args) => dispatch_map_data(args).await?,
-        Commands::DeriveSchema(ref args) => dispatch_derive_schema(args)?,
+        Commands::DeriveSchema(args) => dispatch_derive_schema(&args)?,
         Commands::Validate(args) => dispatch_validate(args)?,
     }
     Ok(())
@@ -284,5 +347,49 @@ mod tests {
             }
             _ => panic!("expected Validate, got something else"),
         }
+    }
+
+    /// Each of `-q`, `--quiet`, `-v`, `--verbose` placed BEFORE a subcommand
+    /// parses successfully and does NOT consume the subcommand. This pins the
+    /// upstream bug fixed in `c69db3e0fe` (a value-taking `-q` swallowed the
+    /// subcommand and printed group help instead of running).
+    #[test]
+    fn test_logging_flags_do_not_consume_subcommand() {
+        for flag in ["-q", "--quiet", "-v", "--verbose"] {
+            let args = Cli::try_parse_from(["linkml-tr-rs", flag, "validate", "-T", "spec.yaml"]);
+            assert!(
+                args.is_ok(),
+                "{flag} before a subcommand should parse: {args:?}"
+            );
+            let cli = args.unwrap();
+            assert!(
+                matches!(cli.command, Commands::Validate(_)),
+                "{flag} swallowed the subcommand"
+            );
+        }
+    }
+
+    /// `-v` accumulates: `-vv` yields `verbose == 2`.
+    #[test]
+    fn test_verbose_counts() {
+        let cli = Cli::try_parse_from(["linkml-tr-rs", "-vv", "validate", "-T", "spec.yaml"])
+            .expect("-vv should parse");
+        assert_eq!(cli.verbose, 2);
+        assert!(!cli.quiet);
+    }
+
+    /// The flag -> level ladder pins upstream's exact mapping:
+    /// (none) -> WARN, -q -> ERROR, -v -> INFO, -vv -> DEBUG, and -q wins
+    /// over -v when both are passed.
+    #[test]
+    fn test_resolve_log_level_ladder() {
+        use log::LevelFilter;
+        assert_eq!(resolve_log_level(0, false), LevelFilter::Warn);
+        assert_eq!(resolve_log_level(0, true), LevelFilter::Error);
+        assert_eq!(resolve_log_level(1, false), LevelFilter::Info);
+        assert_eq!(resolve_log_level(2, false), LevelFilter::Debug);
+        // Quiet wins over verbose when both are passed (upstream applies the
+        // quiet override after the verbose ladder).
+        assert_eq!(resolve_log_level(2, true), LevelFilter::Error);
     }
 }

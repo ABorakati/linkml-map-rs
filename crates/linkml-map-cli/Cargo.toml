@@ -17,6 +17,7 @@ clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde_yaml_ng = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

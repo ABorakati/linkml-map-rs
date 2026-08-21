@@ -851,8 +851,17 @@ impl<'s> ObjectTransformer<'s> {
                 if uc.none_if_non_numeric.unwrap_or(false) {
                     return Ok(Value::Null);
                 }
-                // No numeric magnitude and not told to null it: leave unchanged.
-                return Ok(curr_v.clone());
+                // PARITY: object_transformer.py:1060-1065 — `float(magnitude)`
+                // then a bare `raise` on TypeError/ValueError. With
+                // none_if_non_numeric unset/false a non-numeric magnitude is an
+                // error, not a pass-through.
+                return Err(Error::SlotTransform {
+                    class: source_type.to_string(),
+                    slot: slot_deriv.name.clone(),
+                    cause: format!(
+                        "non-numeric magnitude value '{magnitude_val:?}' for slot '{src_key}'"
+                    ),
+                });
             }
         };
 
@@ -1679,7 +1688,7 @@ impl<'s> ObjectTransformer<'s> {
         &self,
         source_value: &Value,
         enum_names: &[String],
-        _source_obj: &Value,
+        source_obj: &Value,
     ) -> Result<Value> {
         let enum_derivations = match &self.spec.enum_derivations {
             Some(m) => m,
@@ -1701,10 +1710,16 @@ impl<'s> ObjectTransformer<'s> {
             // Expr evaluation on the enum level (rare).
             if let Some(expr) = &ed.expr {
                 let mut bindings: Bindings = IndexMap::new();
-                if let Value::Map(m) = _source_obj {
+                // PARITY: upstream transform_enum (object_transformer.py, post
+                // 7cffbf0a59) binds {**source_obj, "NULL": None} when the source
+                // is a Mapping, else {"src": source_obj, "NULL": None}. The
+                // Mapping branch carries no "src" key — mirror that exactly.
+                if let Value::Map(m) = source_obj {
                     for (k, v) in m {
                         bindings.insert(k.clone(), v.clone());
                     }
+                } else {
+                    bindings.insert("src".to_string(), source_obj.clone());
                 }
                 bindings.insert("NULL".to_string(), Value::Null);
                 // Cached-AST fast path mirrors the slot path; falls back to the
@@ -1718,10 +1733,26 @@ impl<'s> ObjectTransformer<'s> {
                     (None, false) => eval_expr_with_mapping(expr, &bindings),
                     (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
                 };
-                if let Ok(v) = evaled
-                    && !v.is_null()
-                {
-                    return Ok(v);
+                match evaled {
+                    Ok(v) if !v.is_null() => return Ok(v),
+                    // A null result still falls through to the PV derivations
+                    // below — upstream returns only when `v is not None`.
+                    Ok(_) => {}
+                    // PARITY: upstream transform_enum re-raises
+                    // InvalidExpression/TypeError/ValueError unless
+                    // unrestricted_eval is enabled. Rust merges the restricted
+                    // and unrestricted evaluator paths (expr/eval.rs,
+                    // expr/stmt.rs), so upstream's
+                    // `if not self.unrestricted_eval: raise` collapses to an
+                    // unconditional raise here. No slot name is in scope: use
+                    // the enum name for `class` and the derivation key for `slot`.
+                    Err(e) => {
+                        return Err(Error::ExprEval {
+                            class: enum_name.to_string(),
+                            slot: ed_key.to_string(),
+                            cause: e.to_string(),
+                        });
+                    }
                 }
             }
 
@@ -3460,6 +3491,132 @@ mod tests {
         assert_eq!(out["gender"], Value::Str("nonbinary man".into()));
     }
 
+    // ── enum expr: scalar `src` binding + error propagation ──────────────────
+
+    /// Enum `expr:` referencing `src` against a scalar source value.
+    #[test]
+    fn test_enum_expr_scalar_src_binding() {
+        let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
+        enum_derivations.insert(
+            "GenderType".into(),
+            EnumDerivation {
+                name: "GenderType".into(),
+                populated_from: Some("GenderType".into()),
+                expr: Some("'X:' + src".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            enum_derivations: Some(enum_derivations),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let v = engine
+            .transform_enum(
+                &Value::Str("red".into()),
+                &["GenderType".to_string()],
+                &Value::Str("red".into()),
+            )
+            .unwrap();
+        assert_eq!(v, Value::Str("X:red".into()));
+    }
+
+    /// Enum `expr:` against a Map source still spreads its keys (no `src`).
+    #[test]
+    fn test_enum_expr_map_source_binds_keys() {
+        let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
+        enum_derivations.insert(
+            "GenderType".into(),
+            EnumDerivation {
+                name: "GenderType".into(),
+                populated_from: Some("GenderType".into()),
+                expr: Some("'X:' + code".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            enum_derivations: Some(enum_derivations),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let mut m = IndexMap::new();
+        m.insert("code".into(), Value::Str("red".into()));
+        let v = engine
+            .transform_enum(
+                &Value::Str("ignored".into()),
+                &["GenderType".to_string()],
+                &Value::Map(m),
+            )
+            .unwrap();
+        assert_eq!(v, Value::Str("X:red".into()));
+    }
+
+    /// Enum `expr:` that fails to evaluate returns an error instead of
+    /// silently falling through to the permissible-value derivations.
+    #[test]
+    fn test_enum_expr_error_propagates() {
+        let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
+        enum_derivations.insert(
+            "GenderType".into(),
+            EnumDerivation {
+                name: "GenderType".into(),
+                populated_from: Some("GenderType".into()),
+                expr: Some("1 +".into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            enum_derivations: Some(enum_derivations),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let result = engine.transform_enum(
+            &Value::Str("red".into()),
+            &["GenderType".to_string()],
+            &Value::Str("red".into()),
+        );
+        assert!(matches!(result, Err(Error::ExprEval { .. })));
+    }
+
+    /// Enum `expr:` evaluating to null still falls through to the PV
+    /// derivations — upstream returns only when `v is not None`.
+    #[test]
+    fn test_enum_expr_null_falls_through_to_pv() {
+        let mut pvds: IndexMap<String, PermissibleValueDerivation> = IndexMap::new();
+        pvds.insert(
+            "ACTIVE".into(),
+            PermissibleValueDerivation {
+                name: "ACTIVE".into(),
+                populated_from: Some(vec!["red".into()]),
+                ..Default::default()
+            },
+        );
+        let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
+        enum_derivations.insert(
+            "GenderType".into(),
+            EnumDerivation {
+                name: "GenderType".into(),
+                populated_from: Some("GenderType".into()),
+                expr: Some("None".into()),
+                permissible_value_derivations: Some(pvds),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            enum_derivations: Some(enum_derivations),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let v = engine
+            .transform_enum(
+                &Value::Str("red".into()),
+                &["GenderType".to_string()],
+                &Value::Str("red".into()),
+            )
+            .unwrap();
+        assert_eq!(v, Value::Str("ACTIVE".into()));
+    }
+
     // ── Test 14: coerce_datatype ──────────────────────────────────────────────
 
     #[test]
@@ -4330,6 +4487,75 @@ mod tests {
             _ => panic!(),
         };
         assert_eq!(out["out"], Value::Null);
+    }
+
+    /// Non-numeric magnitude with `none_if_non_numeric` unset raises, mirroring
+    /// upstream's bare `raise` (object_transformer.py:1060-1065).
+    #[test]
+    fn unit_conversion_non_numeric_raises_unset() {
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "out".into(),
+            SlotDerivation {
+                name: "out".into(),
+                populated_from: Some("v".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    source_unit: Some("cm".into()),
+                    target_unit: Some("m".into()),
+                    none_if_non_numeric: None,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Out".into(),
+                populated_from: Some("Rec".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let mut m = IndexMap::new();
+        m.insert("v".into(), Value::Str("not-a-number".into()));
+        let err = engine.map_object(&Value::Map(m), Some("Rec")).unwrap_err();
+        assert!(matches!(err, Error::SlotTransform { .. }));
+    }
+
+    /// Same, with `none_if_non_numeric: false` stated explicitly.
+    #[test]
+    fn unit_conversion_non_numeric_raises_false() {
+        let mut slots: IndexMap<String, SlotDerivation> = IndexMap::new();
+        slots.insert(
+            "out".into(),
+            SlotDerivation {
+                name: "out".into(),
+                populated_from: Some("v".into()),
+                unit_conversion: Some(crate::datamodel::UnitConversionConfiguration {
+                    source_unit: Some("cm".into()),
+                    target_unit: Some("m".into()),
+                    none_if_non_numeric: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: "Out".into(),
+                populated_from: Some("Rec".into()),
+                slot_derivations: Some(slots),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None);
+        let mut m = IndexMap::new();
+        m.insert("v".into(), Value::Str("not-a-number".into()));
+        let err = engine.map_object(&Value::Map(m), Some("Rec")).unwrap_err();
+        assert!(matches!(err, Error::SlotTransform { .. }));
     }
 
     // ── reshape_collection tests ──────────────────────────────────────────────
