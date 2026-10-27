@@ -7,6 +7,10 @@
 //! `_validate_slot_derivation`, `_validate_enum_derivation`), plus the two
 //! expression-reference extractors in [`expr_refs`].
 //!
+//! Later upstream validator changes ported on top: `cbf2f97` (dotted references
+//! through joined tables), `e373d93` (`_check_join_keys`), `b332fc7`
+//! (`range-override`) and the `unknown-range` check of `f299f3a`.
+//!
 //! # What this checks
 //!
 //! Given a spec and the source and/or target [`SchemaProvider`]s, it

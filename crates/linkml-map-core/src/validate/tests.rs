@@ -959,6 +959,55 @@ fn slot_range_known_via_enum_derivation_and_target_schema() {
     );
 }
 
+// ── constant `value:` needs no source slot (upstream d2297e5) ────────────────
+
+/// `Row { person_id, note }` (source) and `Out { person_id, note, tag }` (target).
+fn constant_value_schemas() -> (InMemorySchema, InMemorySchema) {
+    let source = InMemorySchemaBuilder::new()
+        .add_class(class("Row"))
+        .add_slot("Row", slot("person_id", false, false))
+        .add_slot("Row", slot("note", false, false))
+        .build();
+    let target = InMemorySchemaBuilder::new()
+        .add_class(class("Out"))
+        .add_slot("Out", slot("person_id", false, false))
+        .add_slot("Out", slot("note", false, false))
+        .add_slot("Out", slot("tag", false, false))
+        .build();
+    (source, target)
+}
+
+/// A constant `value:` has no `populated_from`, so it is never checked against
+/// the source class. Regression for upstream #338 / #326 (the induced
+/// `populated_from: tag` produced a spurious "not found on source class" error);
+/// Rust never synthesises `populated_from`, so this pins the contract.
+#[test]
+fn constant_value_needs_no_source_slot() {
+    let (source, target) = constant_value_schemas();
+    let s = spec(json!({
+        "class_derivations": {
+            "Out": {
+                "populated_from": "Row",
+                "slot_derivations": {
+                    "person_id": {"populated_from": "person_id"},
+                    "note": {"populated_from": "note"},
+                    "tag": {"value": 7},
+                },
+            }
+        }
+    }));
+    for (src, tgt) in [
+        (
+            Some(&source as &dyn SchemaProvider),
+            Some(&target as &dyn SchemaProvider),
+        ),
+        (Some(&source), None),
+    ] {
+        let msgs = validate_spec_semantics(&s, src, tgt, false);
+        assert!(errors(&msgs).is_empty(), "{msgs:?}");
+    }
+}
+
 // ── enum derivations ─────────────────────────────────────────────────────────
 
 fn enum_schema() -> InMemorySchema {
