@@ -50,8 +50,9 @@ fn cases() -> Vec<(PathBuf, Option<String>)> {
 
 /// Run one case in every format it lists; return one message per mismatching format.
 fn replay(dir: &Path) -> Vec<String> {
-    let meta: Value = serde_json::from_str(&fs::read_to_string(dir.join("case.json")).expect("case.json"))
-        .expect("case.json is valid JSON");
+    let meta: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("case.json")).expect("case.json"))
+            .expect("case.json is valid JSON");
     let get = |k: &str| meta.get(k).and_then(Value::as_str).map(str::to_owned);
     let schema = dir.join(get("schema").expect("schema"));
     let spec = dir.join(get("spec").expect("spec"));
@@ -61,18 +62,30 @@ fn replay(dir: &Path) -> Vec<String> {
     let flags: Vec<String> = meta
         .get("flags")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
     let formats: Vec<String> = meta
         .get("formats")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_else(|| FORMATS.iter().map(|s| (*s).to_owned()).collect());
 
     let mut problems = Vec::new();
     for fmt in formats {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_linkml-tr-rs"));
-        cmd.arg("map-data").arg("-T").arg(&spec).arg("-s").arg(&schema);
+        cmd.arg("map-data")
+            .arg("-T")
+            .arg(&spec)
+            .arg("-s")
+            .arg(&schema);
         if let Some(t) = &target {
             cmd.arg("--target-schema").arg(t);
         }
@@ -103,7 +116,10 @@ fn replay(dir: &Path) -> Vec<String> {
         } else if expected_err.is_file() {
             let info = fs::read_to_string(&expected_err).unwrap_or_default();
             if code == Some(0) {
-                problems.push(format!("{fmt}: upstream failed ({}) but Rust succeeded", info.replace('\n', " ")));
+                problems.push(format!(
+                    "{fmt}: upstream failed ({}) but Rust succeeded",
+                    info.replace('\n', " ")
+                ));
             } else if code == Some(101) || stderr.contains("panicked at") {
                 problems.push(format!("{fmt}: Rust panicked: {stderr}"));
             }
@@ -121,7 +137,11 @@ fn reason(note: &str) -> String {
 #[test]
 fn corpus_matches_upstream() {
     let all = cases();
-    assert!(!all.is_empty(), "no corpus cases under {}", corpus_dir().display());
+    assert!(
+        !all.is_empty(),
+        "no corpus cases under {}",
+        corpus_dir().display()
+    );
     let (known, regular): (Vec<_>, Vec<_>) = all.into_iter().partition(|(_, note)| note.is_some());
 
     let mut failures = Vec::new();
@@ -136,9 +156,15 @@ fn corpus_matches_upstream() {
         let name = dir.file_name().unwrap().to_string_lossy();
         let note = note.as_deref().unwrap_or("");
         if replay(dir).is_empty() {
-            eprintln!("NOTE {name}: now matches upstream; delete expected_divergence.md ({})", reason(note));
+            eprintln!(
+                "NOTE {name}: now matches upstream; delete expected_divergence.md ({})",
+                reason(note)
+            );
         } else {
-            eprintln!("SKIP {name}: known divergence from upstream ({})", reason(note));
+            eprintln!(
+                "SKIP {name}: known divergence from upstream ({})",
+                reason(note)
+            );
         }
     }
     eprintln!(
@@ -146,7 +172,11 @@ fn corpus_matches_upstream() {
         regular.len(),
         known.len()
     );
-    assert!(failures.is_empty(), "differential regressions:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "differential regressions:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
@@ -164,5 +194,10 @@ fn known_divergences_now_match() {
             ));
         }
     }
-    assert!(failures.is_empty(), "{} divergent case(s):\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} divergent case(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
