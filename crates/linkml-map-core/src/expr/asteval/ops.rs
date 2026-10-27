@@ -145,7 +145,9 @@ fn add(a: &Py, b: &Py) -> PyRes<Py> {
     // safe_add
     if let (Py::Str(x), Py::Str(y)) = (a, b) {
         if (x.chars().count() + y.chars().count()) as i64 > MAX_STR_LEN {
-            return runtime_err(format!("String length exceeded, max string length is {MAX_STR_LEN}"));
+            return runtime_err(format!(
+                "String length exceeded, max string length is {MAX_STR_LEN}"
+            ));
         }
         let mut s = String::with_capacity(x.len() + y.len());
         s.push_str(x);
@@ -220,7 +222,9 @@ fn mult(a: &Py, b: &Py) -> PyRes<Py> {
     // safe_mult
     if let (Py::Str(s), Some(n)) = (a, is_int_like(b)) {
         if (s.chars().count() as i128) * (n as i128) > MAX_STR_LEN as i128 {
-            return runtime_err(format!("String length exceeded, max string length is {MAX_STR_LEN}"));
+            return runtime_err(format!(
+                "String length exceeded, max string length is {MAX_STR_LEN}"
+            ));
         }
     }
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
@@ -287,7 +291,11 @@ fn div(a: &Py, b: &Py) -> PyRes<Py> {
         let both_int = matches!((x, y), (NumV::I(_), NumV::I(_)));
         let d = to_f(y);
         if d == 0.0 {
-            return zero_div(if both_int { "division by zero" } else { "float division by zero" });
+            return zero_div(if both_int {
+                "division by zero"
+            } else {
+                "float division by zero"
+            });
         }
         return Ok(Py::Float(to_f(x) / d));
     }
@@ -303,7 +311,11 @@ fn floordiv(a: &Py, b: &Py) -> PyRes<Py> {
                 }
                 let q = x.checked_div(y).map_or_else(int_overflow, Ok)?;
                 let r = x % y;
-                Ok(Py::Int(if r != 0 && ((r < 0) != (y < 0)) { q - 1 } else { q }))
+                Ok(Py::Int(if r != 0 && ((r < 0) != (y < 0)) {
+                    q - 1
+                } else {
+                    q
+                }))
             }
             (x, y) => Ok(Py::Float(float_floordiv(to_f(x), to_f(y))?)),
         };
@@ -319,7 +331,11 @@ fn modulo(a: &Py, b: &Py) -> PyRes<Py> {
                     return zero_div("integer modulo by zero");
                 }
                 let r = x.checked_rem(y).unwrap_or(0);
-                Ok(Py::Int(if r != 0 && ((r < 0) != (y < 0)) { r + y } else { r }))
+                Ok(Py::Int(if r != 0 && ((r < 0) != (y < 0)) {
+                    r + y
+                } else {
+                    r
+                }))
             }
             (x, y) => Ok(Py::Float(float_mod(to_f(x), to_f(y))?)),
         };
@@ -385,7 +401,11 @@ fn rshift(a: &Py, b: &Py) -> PyRes<Py> {
             if n < 0 {
                 return value_err("negative shift count");
             }
-            Ok(Py::Int(if n >= 64 { if x < 0 { -1 } else { 0 } } else { x >> n }))
+            Ok(Py::Int(if n >= 64 {
+                if x < 0 { -1 } else { 0 }
+            } else {
+                x >> n
+            }))
         }
         _ => unsupported_operand(">>", a, b),
     }
@@ -458,7 +478,9 @@ pub(crate) fn unaryop(op: UnaryOp, a: &Py) -> PyRes<Py> {
         UnaryOp::Not => Ok(Py::Bool(!a.truthy())),
         UnaryOp::USub => match a {
             Py::Bool(b) => Ok(Py::Int(-(*b as i64))),
-            Py::Int(i) => i.checked_neg().map_or_else(int_overflow, |v| Ok(Py::Int(v))),
+            Py::Int(i) => i
+                .checked_neg()
+                .map_or_else(int_overflow, |v| Ok(Py::Int(v))),
             Py::Float(f) => Ok(Py::Float(-f)),
             _ => type_err(format!("bad operand type for unary -: '{}'", a.type_name())),
         },
@@ -649,7 +671,10 @@ pub(crate) fn py_len(v: &Py) -> PyRes<i64> {
         Py::Range(a, b, c) => range_len(*a, *b, *c),
         Py::Iter(it) if it.borrow().kind.starts_with("dict_") => it.borrow().items.len() as i64,
         other => {
-            return type_err(format!("object of type '{}' has no len()", other.type_name()));
+            return type_err(format!(
+                "object of type '{}' has no len()",
+                other.type_name()
+            ));
         }
     })
 }
@@ -663,9 +688,9 @@ fn slice_indices(s: &(Py, Py, Py), len: i64) -> PyRes<(i64, i64, i64)> {
             Py::None => Ok(None),
             other => match is_int_like(other) {
                 Some(i) => Ok(Some(i)),
-                None => type_err(
-                    "slice indices must be integers or None or have an __index__ method",
-                ),
+                None => {
+                    type_err("slice indices must be integers or None or have an __index__ method")
+                }
             },
         }
     };
@@ -718,7 +743,10 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
                 let l = l.borrow();
                 let (a, b, c) = slice_indices(s, l.len() as i64)?;
                 return Ok(Py::list(
-                    slice_positions(a, b, c).into_iter().map(|i| l[i as usize].clone()).collect(),
+                    slice_positions(a, b, c)
+                        .into_iter()
+                        .map(|i| l[i as usize].clone())
+                        .collect(),
                 ));
             }
             let i = index_of(key, "list")?;
@@ -733,7 +761,10 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
             if let Py::Slice(s) = key {
                 let (a, b, c) = slice_indices(s, t.len() as i64)?;
                 return Ok(Py::tuple(
-                    slice_positions(a, b, c).into_iter().map(|i| t[i as usize].clone()).collect(),
+                    slice_positions(a, b, c)
+                        .into_iter()
+                        .map(|i| t[i as usize].clone())
+                        .collect(),
                 ));
             }
             let i = index_of(key, "tuple")?;
@@ -748,7 +779,10 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
             if let Py::Slice(sl) = key {
                 let (a, b, c) = slice_indices(sl, chars.len() as i64)?;
                 return Ok(Py::str(
-                    slice_positions(a, b, c).into_iter().map(|i| chars[i as usize]).collect::<String>(),
+                    slice_positions(a, b, c)
+                        .into_iter()
+                        .map(|i| chars[i as usize])
+                        .collect::<String>(),
                 ));
             }
             let i = match is_int_like(key) {
@@ -769,7 +803,10 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
         Py::Bytes(b) => {
             if let Py::Slice(sl) = key {
                 let (a, bb, c) = slice_indices(sl, b.len() as i64)?;
-                let v: Vec<u8> = slice_positions(a, bb, c).into_iter().map(|i| b[i as usize]).collect();
+                let v: Vec<u8> = slice_positions(a, bb, c)
+                    .into_iter()
+                    .map(|i| b[i as usize])
+                    .collect();
                 return Ok(Py::Bytes(v.into()));
             }
             let i = index_of(key, "byte")?;
@@ -806,7 +843,10 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
         Py::Iter(it) if it.borrow().kind.starts_with("dict_") => {
             type_err(format!("'{}' object is not subscriptable", obj.type_name()))
         }
-        other => type_err(format!("'{}' object is not subscriptable", other.type_name())),
+        other => type_err(format!(
+            "'{}' object is not subscriptable",
+            other.type_name()
+        )),
     }
 }
 
@@ -815,7 +855,8 @@ pub(crate) fn setitem(obj: &Py, key: &Py, val: Py) -> PyRes<()> {
     match obj {
         Py::List(l) => {
             if let Py::Slice(s) = key {
-                let items = to_vec(&val).map_err(|_| exc("TypeError", "can only assign an iterable"))?;
+                let items =
+                    to_vec(&val).map_err(|_| exc("TypeError", "can only assign an iterable"))?;
                 let len = l.borrow().len() as i64;
                 let (a, b, c) = slice_indices(s, len)?;
                 let mut list = l.borrow_mut();
@@ -912,8 +953,16 @@ pub(crate) fn deepcopy(v: &Py) -> Py {
             .iter()
             .map(|(h, (k, v))| (h.clone(), (deepcopy(k), deepcopy(v))))
             .collect())),
-        Py::Set(s) => Py::Set(rf(s.borrow().iter().map(|(h, v)| (h.clone(), deepcopy(v))).collect())),
-        Py::Obj(o) => Py::Obj(rf(o.borrow().iter().map(|(k, v)| (k.clone(), deepcopy(v))).collect())),
+        Py::Set(s) => Py::Set(rf(s
+            .borrow()
+            .iter()
+            .map(|(h, v)| (h.clone(), deepcopy(v)))
+            .collect())),
+        Py::Obj(o) => Py::Obj(rf(o
+            .borrow()
+            .iter()
+            .map(|(k, v)| (k.clone(), deepcopy(v)))
+            .collect())),
         Py::Iter(it) => {
             let i = it.borrow();
             Py::Iter(rf(PyIter {

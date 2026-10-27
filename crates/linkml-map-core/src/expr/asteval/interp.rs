@@ -24,23 +24,84 @@ const STACK_BUDGET: usize = 1024 * 1024;
 
 /// `astutils.RESERVED_WORDS`.
 const RESERVED_WORDS: [&str; 41] = [
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
-    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
-    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
-    "with", "yield", "exec", "eval", "execfile", "__import__", "__package__", "__fstring__",
+    "False",
+    "None",
+    "True",
+    "and",
+    "as",
+    "assert",
+    "async",
+    "await",
+    "break",
+    "class",
+    "continue",
+    "def",
+    "del",
+    "elif",
+    "else",
+    "except",
+    "finally",
+    "for",
+    "from",
+    "global",
+    "if",
+    "import",
+    "in",
+    "is",
+    "lambda",
+    "nonlocal",
+    "not",
+    "or",
+    "pass",
+    "raise",
+    "return",
+    "try",
+    "while",
+    "with",
+    "yield",
+    "exec",
+    "eval",
+    "execfile",
+    "__import__",
+    "__package__",
+    "__fstring__",
 ];
 
 /// `astutils.UNSAFE_ATTRS`.
 const UNSAFE_ATTRS: [&str; 25] = [
-    "__subclasses__", "__bases__", "__globals__", "__code__", "__reduce__", "__reduce_ex__",
-    "__mro__", "__closure__", "__func__", "__self__", "__module__", "__dict__", "__class__",
-    "__call__", "__get__", "__getattribute__", "__subclasshook__", "__new__", "__init__",
-    "func_globals", "func_code", "func_closure", "im_class", "im_func", "im_self",
+    "__subclasses__",
+    "__bases__",
+    "__globals__",
+    "__code__",
+    "__reduce__",
+    "__reduce_ex__",
+    "__mro__",
+    "__closure__",
+    "__func__",
+    "__self__",
+    "__module__",
+    "__dict__",
+    "__class__",
+    "__call__",
+    "__get__",
+    "__getattribute__",
+    "__subclasshook__",
+    "__new__",
+    "__init__",
+    "func_globals",
+    "func_code",
+    "func_closure",
+    "im_class",
+    "im_func",
+    "im_self",
 ];
 
 fn unsafe_attr(name: &str) -> bool {
     UNSAFE_ATTRS.contains(&name)
-        || matches!(name, "gi_code" | "gi_frame" | "f_locals" | "__asteval__" | "mro")
+        || matches!(
+            name,
+            "gi_code" | "gi_frame" | "f_locals" | "__asteval__" | "mro"
+        )
         || (name.starts_with("__") && name.ends_with("__"))
 }
 
@@ -158,7 +219,8 @@ impl<'a> Interp<'a> {
     }
 
     fn has_symbol(&self, name: &str) -> bool {
-        self.sym.contains_key(name) || (!self.removed.contains(name) && lookup_builtin(name).is_some())
+        self.sym.contains_key(name)
+            || (!self.removed.contains(name) && lookup_builtin(name).is_some())
     }
 
     // --- errors ---------------------------------------------------------------
@@ -314,7 +376,9 @@ impl<'a> Interp<'a> {
         };
         // Python frames: `run` and the handler.
         let here = 0u8;
-        let used = self.stack_base.saturating_sub(std::ptr::addr_of!(here) as usize);
+        let used = self
+            .stack_base
+            .saturating_sub(std::ptr::addr_of!(here) as usize);
         if self.frames + 2 > MAX_FRAMES || used > STACK_BUDGET {
             let e = exc("RecursionError", "maximum recursion depth exceeded");
             let rc = Rc::new(*e);
@@ -546,7 +610,9 @@ impl<'a> Interp<'a> {
             Const::Bool(b) => Py::Bool(*b),
             Const::Int(i) => Py::Int(*i),
             Const::BigInt(_) => {
-                return overflow_err("integer literal out of range (big integers are not supported)");
+                return overflow_err(
+                    "integer literal out of range (big integers are not supported)",
+                );
             }
             Const::Float(f) => Py::Float(*f),
             Const::Str(s) => Py::Str(s.clone()),
@@ -635,7 +701,10 @@ impl<'a> Interp<'a> {
     // --- calls ------------------------------------------------------------------
 
     fn is_callable(v: &Py) -> bool {
-        matches!(v, Py::Builtin(_) | Py::Type(_) | Py::Method(_) | Py::Proc(_))
+        matches!(
+            v,
+            Py::Builtin(_) | Py::Type(_) | Py::Method(_) | Py::Proc(_)
+        )
     }
 
     fn on_call(&mut self, node: &Expr, func: &Expr, args: &[Expr], kws: &[Keyword]) -> PyRes<Py> {
@@ -734,7 +803,9 @@ impl<'a> Interp<'a> {
                         args.len()
                     ));
                 }
-                let Py::Str(n) = &name else { return Ok(Py::None) };
+                let Py::Str(n) = &name else {
+                    return Ok(Py::None);
+                };
                 Ok(self
                     .slot_values
                     .as_ref()
@@ -753,7 +824,12 @@ impl<'a> Interp<'a> {
     }
 
     /// `Procedure.__call__`.
-    fn call_procedure(&mut self, p: &Rc<Procedure>, args: Vec<Py>, mut kwargs: Kwargs) -> PyRes<Py> {
+    fn call_procedure(
+        &mut self,
+        p: &Rc<Procedure>,
+        args: Vec<Py>,
+        mut kwargs: Kwargs,
+    ) -> PyRes<Py> {
         if self.frames + 1 > MAX_FRAMES {
             return Err(exc("RecursionError", "maximum recursion depth exceeded"));
         }
@@ -1132,7 +1208,9 @@ impl<'a> Interp<'a> {
             Stmt::For(target, iter, body, orelse) => self.on_for(target, iter, body, orelse),
             Stmt::With(items, body) => self.on_with(items, body),
             Stmt::Raise(exc_node, cause) => self.on_raise(exc_node.as_ref(), cause.as_ref()),
-            Stmt::Try(body, handlers, orelse, finalbody) => self.on_try(body, handlers, orelse, finalbody),
+            Stmt::Try(body, handlers, orelse, finalbody) => {
+                self.on_try(body, handlers, orelse, finalbody)
+            }
             Stmt::Assert(test, msg) => self.on_assert(test, msg.as_ref()),
             Stmt::FunctionDef(def) => self.on_functiondef(def),
             Stmt::Unsupported(kind) => match *kind {
@@ -1230,7 +1308,13 @@ impl<'a> Interp<'a> {
                 let strs: Option<Vec<String>> = e
                     .args
                     .iter()
-                    .map(|a| if let Py::Str(s) = a { Some(s.to_string()) } else { None })
+                    .map(|a| {
+                        if let Py::Str(s) = a {
+                            Some(s.to_string())
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
                 match strs {
                     Some(v) => v.join(" "),
@@ -1238,7 +1322,10 @@ impl<'a> Interp<'a> {
                 }
             }
             Py::None => {
-                return Err(exc("AttributeError", "'NoneType' object has no attribute 'args'"));
+                return Err(exc(
+                    "AttributeError",
+                    "'NoneType' object has no attribute 'args'",
+                ));
             }
             Py::Type(_) => " ".to_string(),
             other => {
@@ -1348,7 +1435,10 @@ impl<'a> Interp<'a> {
                     if matched {
                         self.error = Vec::new();
                         if let Some(name) = &hnd.name {
-                            let v = last.exc_info.as_ref().map_or(Py::None, |i| Py::Exc(i.clone()));
+                            let v = last
+                                .exc_info
+                                .as_ref()
+                                .map_or(Py::None, |i| Py::Exc(i.clone()));
                             self.set_symbol(name, v);
                         }
                         for tline in &hnd.body {
@@ -1478,21 +1568,97 @@ fn set_kw(kws: &mut Kwargs, k: String, v: Py) {
 }
 
 /// `__builtins__.get(name)` for an `except` clause: only Python's real
-/// builtins resolve (classes, functions); anything else is `None`.
+/// builtins resolve (classes, functions); anything else (including `asteval`'s
+/// math functions) is `None`, which the handler treats as a catch-all.
 fn builtin_for_except(name: &str) -> Option<Py> {
-    // Python builtins beyond `asteval`'s own table also resolve here.
-    const EXTRA_FUNCS: [&str; 19] = [
-        "callable", "compile", "delattr", "eval", "exec", "getattr", "globals", "hasattr",
-        "input", "iter", "locals", "next", "object", "setattr", "vars", "super", "property",
-        "staticmethod", "classmethod",
+    const CLASSES: [&str; 26] = [
+        "bool",
+        "bytearray",
+        "bytes",
+        "classmethod",
+        "complex",
+        "dict",
+        "enumerate",
+        "filter",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "map",
+        "memoryview",
+        "object",
+        "property",
+        "range",
+        "reversed",
+        "set",
+        "slice",
+        "staticmethod",
+        "str",
+        "super",
+        "tuple",
+        "type",
+        "zip",
     ];
-    if let Some(v) = lookup_builtin(name) {
-        return Some(v);
-    }
+    const FUNCS: [&str; 42] = [
+        "abs",
+        "aiter",
+        "all",
+        "anext",
+        "any",
+        "ascii",
+        "bin",
+        "breakpoint",
+        "callable",
+        "chr",
+        "compile",
+        "delattr",
+        "dir",
+        "divmod",
+        "eval",
+        "exec",
+        "format",
+        "getattr",
+        "globals",
+        "hasattr",
+        "hash",
+        "help",
+        "hex",
+        "id",
+        "input",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "locals",
+        "max",
+        "min",
+        "next",
+        "oct",
+        "open",
+        "ord",
+        "pow",
+        "print",
+        "repr",
+        "round",
+        "setattr",
+        "sorted",
+    ];
     if let Some(c) = exc_class(name) {
         return Some(Py::Type(c));
     }
-    EXTRA_FUNCS.iter().find(|n| **n == name).map(|n| Py::Builtin(n))
+    if let Some(c) = CLASSES.iter().find(|c| **c == name) {
+        return Some(Py::Type(c));
+    }
+    if let Some(f) = FUNCS.iter().find(|f| **f == name) {
+        return Some(Py::Builtin(f));
+    }
+    if name == "sum" {
+        return Some(Py::Builtin("sum"));
+    }
+    if name == "vars" {
+        return Some(Py::Builtin("vars"));
+    }
+    None
 }
 
 impl Caller for Interp<'_> {

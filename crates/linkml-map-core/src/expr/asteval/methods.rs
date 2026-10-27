@@ -9,30 +9,98 @@ use super::value::*;
 use crate::expr::pystr;
 
 const STR_METHODS: &[&str] = &[
-    "capitalize", "casefold", "center", "count", "encode", "endswith", "expandtabs", "find",
-    "format", "format_map", "index", "isalnum", "isalpha", "isascii", "isdecimal", "isdigit",
-    "isidentifier", "islower", "isnumeric", "isprintable", "isspace", "istitle", "isupper",
-    "join", "ljust", "lower", "lstrip", "maketrans", "partition", "removeprefix", "removesuffix",
-    "replace", "rfind", "rindex", "rjust", "rpartition", "rsplit", "rstrip", "split", "splitlines",
-    "startswith", "strip", "swapcase", "title", "translate", "upper", "zfill",
+    "capitalize",
+    "casefold",
+    "center",
+    "count",
+    "encode",
+    "endswith",
+    "expandtabs",
+    "find",
+    "format",
+    "format_map",
+    "index",
+    "isalnum",
+    "isalpha",
+    "isascii",
+    "isdecimal",
+    "isdigit",
+    "isidentifier",
+    "islower",
+    "isnumeric",
+    "isprintable",
+    "isspace",
+    "istitle",
+    "isupper",
+    "join",
+    "ljust",
+    "lower",
+    "lstrip",
+    "maketrans",
+    "partition",
+    "removeprefix",
+    "removesuffix",
+    "replace",
+    "rfind",
+    "rindex",
+    "rjust",
+    "rpartition",
+    "rsplit",
+    "rstrip",
+    "split",
+    "splitlines",
+    "startswith",
+    "strip",
+    "swapcase",
+    "title",
+    "translate",
+    "upper",
+    "zfill",
 ];
 const LIST_METHODS: &[&str] = &[
     "append", "clear", "copy", "count", "extend", "index", "insert", "pop", "remove", "reverse",
     "sort",
 ];
 const DICT_METHODS: &[&str] = &[
-    "clear", "copy", "fromkeys", "get", "items", "keys", "pop", "popitem", "setdefault", "update",
+    "clear",
+    "copy",
+    "fromkeys",
+    "get",
+    "items",
+    "keys",
+    "pop",
+    "popitem",
+    "setdefault",
+    "update",
     "values",
 ];
 const SET_METHODS: &[&str] = &[
-    "add", "clear", "copy", "difference", "difference_update", "discard", "intersection",
-    "intersection_update", "isdisjoint", "issubset", "issuperset", "pop", "remove",
-    "symmetric_difference", "symmetric_difference_update", "union", "update",
+    "add",
+    "clear",
+    "copy",
+    "difference",
+    "difference_update",
+    "discard",
+    "intersection",
+    "intersection_update",
+    "isdisjoint",
+    "issubset",
+    "issuperset",
+    "pop",
+    "remove",
+    "symmetric_difference",
+    "symmetric_difference_update",
+    "union",
+    "update",
 ];
 const TUPLE_METHODS: &[&str] = &["count", "index"];
 const BYTES_METHODS: &[&str] = &["decode", "hex", "startswith", "endswith"];
 const INT_METHODS: &[&str] = &[
-    "as_integer_ratio", "bit_count", "bit_length", "conjugate", "is_integer",
+    "as_integer_ratio",
+    "bit_count",
+    "bit_length",
+    "conjugate",
+    "is_integer",
 ];
 const FLOAT_METHODS: &[&str] = &["as_integer_ratio", "conjugate", "is_integer"];
 const RANGE_METHODS: &[&str] = &["count", "index"];
@@ -104,7 +172,10 @@ pub(crate) fn set_attr(obj: &Py, name: &str, val: Py) -> PyRes<()> {
         Py::Proc(_) => type_err("procedure is read-only"),
         other => Err(exc(
             "AttributeError",
-            format!("'{}' object has no attribute '{name}' and no __dict__ for setting new attributes", other.type_name()),
+            format!(
+                "'{}' object has no attribute '{name}' and no __dict__ for setting new attributes",
+                other.type_name()
+            ),
         )),
     }
 }
@@ -113,9 +184,15 @@ fn nargs(name: &str, args: &[Py], min: usize, max: usize) -> PyRes<()> {
     let n = args.len();
     if n < min || n > max {
         return type_err(if min == max {
-            format!("{name}() takes exactly {min} argument{} ({n} given)", if min == 1 { "" } else { "s" })
+            format!(
+                "{name}() takes exactly {min} argument{} ({n} given)",
+                if min == 1 { "" } else { "s" }
+            )
         } else if n < min {
-            format!("{name}() takes at least {min} argument{} ({n} given)", if min == 1 { "" } else { "s" })
+            format!(
+                "{name}() takes at least {min} argument{} ({n} given)",
+                if min == 1 { "" } else { "s" }
+            )
         } else {
             format!("{name}() takes at most {max} arguments ({n} given)")
         });
@@ -164,9 +241,12 @@ fn clamp_range(start: Option<i64>, end: Option<i64>, len: i64) -> (i64, i64) {
 }
 
 fn kwarg_or_pos(args: &[Py], kwargs: &Kwargs, pos: usize, name: &str) -> Option<Py> {
-    args.get(pos)
-        .cloned()
-        .or_else(|| kwargs.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()))
+    args.get(pos).cloned().or_else(|| {
+        kwargs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    })
 }
 
 /// Call a bound built-in method.
@@ -201,9 +281,13 @@ fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
             let i = int_of(recv)?;
             Ok(Py::Int(64 - i.unsigned_abs().leading_zeros() as i64))
         }
-        (Py::Int(_) | Py::Bool(_), "bit_count") => Ok(Py::Int(int_of(recv)?.unsigned_abs().count_ones() as i64)),
+        (Py::Int(_) | Py::Bool(_), "bit_count") => {
+            Ok(Py::Int(int_of(recv)?.unsigned_abs().count_ones() as i64))
+        }
         (Py::Int(_) | Py::Bool(_), "is_integer") => Ok(Py::Bool(true)),
-        (Py::Int(_) | Py::Bool(_), "as_integer_ratio") => Ok(Py::tuple(vec![Py::Int(int_of(recv)?), Py::Int(1)])),
+        (Py::Int(_) | Py::Bool(_), "as_integer_ratio") => {
+            Ok(Py::tuple(vec![Py::Int(int_of(recv)?), Py::Int(1)]))
+        }
         (Py::Float(f), "conjugate") => Ok(Py::Float(*f)),
         (Py::Float(f), "is_integer") => Ok(Py::Bool(f.is_finite() && f.fract() == 0.0)),
         (Py::Float(f), "as_integer_ratio") => {
@@ -234,13 +318,21 @@ fn bytes_method(b: &Arc<[u8]>, name: &str, args: Vec<Py>) -> PyRes<Py> {
         "decode" => String::from_utf8(b.to_vec())
             .map(Py::str)
             .map_err(|_| exc("UnicodeDecodeError", "'utf-8' codec can't decode bytes")),
-        "hex" => Ok(Py::str(b.iter().map(|x| format!("{x:02x}")).collect::<String>())),
+        "hex" => Ok(Py::str(
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>(),
+        )),
         "startswith" | "endswith" => {
             nargs(name, &args, 1, 1)?;
             let Py::Bytes(p) = &args[0] else {
-                return type_err(format!("{name} first arg must be bytes or a tuple of bytes"));
+                return type_err(format!(
+                    "{name} first arg must be bytes or a tuple of bytes"
+                ));
             };
-            Ok(Py::Bool(if name == "startswith" { b.starts_with(p) } else { b.ends_with(p) }))
+            Ok(Py::Bool(if name == "startswith" {
+                b.starts_with(p)
+            } else {
+                b.ends_with(p)
+            }))
         }
         _ => Err(exc("AttributeError", format!("no method {name}"))),
     }
@@ -250,7 +342,12 @@ fn seq_method(name: &str, items: Vec<Py>, args: Vec<Py>) -> PyRes<Py> {
     match name {
         "count" => {
             nargs(name, &args, 1, 1)?;
-            Ok(Py::Int(items.iter().filter(|x| x.is(&args[0]) || py_eq(x, &args[0])).count() as i64))
+            Ok(Py::Int(
+                items
+                    .iter()
+                    .filter(|x| x.is(&args[0]) || py_eq(x, &args[0]))
+                    .count() as i64,
+            ))
         }
         "index" => {
             nargs(name, &args, 1, 3)?;
@@ -348,8 +445,14 @@ fn list_method(
                 }
             }
             let items = l.borrow().clone();
-            let key = kwargs.iter().find(|(k, _)| k == "key").map(|(_, v)| v.clone());
-            let rev = kwargs.iter().find(|(k, _)| k == "reverse").map(|(_, v)| v.clone());
+            let key = kwargs
+                .iter()
+                .find(|(k, _)| k == "key")
+                .map(|(_, v)| v.clone());
+            let rev = kwargs
+                .iter()
+                .find(|(k, _)| k == "reverse")
+                .map(|(_, v)| v.clone());
             let sorted = sort_items(c, items, key.as_ref(), rev.as_ref())?;
             *l.borrow_mut() = sorted;
             Ok(Py::None)
@@ -382,22 +485,34 @@ fn dict_method(recv: &Py, d: &Rf<PyDict>, name: &str, args: Vec<Py>, kwargs: Kwa
         "get" => {
             nargs(name, &args, 1, 2)?;
             let k = hkey(&args[0])?;
-            Ok(d.borrow().get(&k).map(|(_, v)| v.clone()).unwrap_or_else(|| args.get(1).cloned().unwrap_or(Py::None)))
+            Ok(d.borrow()
+                .get(&k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| args.get(1).cloned().unwrap_or(Py::None)))
         }
         "items" => {
             nargs(name, &args, 0, 0)?;
             Ok(view(
                 "dict_items",
-                d.borrow().values().map(|(k, v)| Py::tuple(vec![k.clone(), v.clone()])).collect(),
+                d.borrow()
+                    .values()
+                    .map(|(k, v)| Py::tuple(vec![k.clone(), v.clone()]))
+                    .collect(),
             ))
         }
         "keys" => {
             nargs(name, &args, 0, 0)?;
-            Ok(view("dict_keys", d.borrow().values().map(|(k, _)| k.clone()).collect()))
+            Ok(view(
+                "dict_keys",
+                d.borrow().values().map(|(k, _)| k.clone()).collect(),
+            ))
         }
         "values" => {
             nargs(name, &args, 0, 0)?;
-            Ok(view("dict_values", d.borrow().values().map(|(_, v)| v.clone()).collect()))
+            Ok(view(
+                "dict_values",
+                d.borrow().values().map(|(_, v)| v.clone()).collect(),
+            ))
         }
         "pop" => {
             nargs(name, &args, 1, 2)?;
@@ -438,7 +553,12 @@ fn dict_method(recv: &Py, d: &Rf<PyDict>, name: &str, args: Vec<Py>, kwargs: Kwa
                 }
             }
             for (k, v) in kwargs {
-                dict_set(&mut d.borrow_mut(), HKey::Str(k.as_str().into()), Py::str(k.as_str()), v);
+                dict_set(
+                    &mut d.borrow_mut(),
+                    HKey::Str(k.as_str().into()),
+                    Py::str(k.as_str()),
+                    v,
+                );
             }
             Ok(Py::None)
         }
@@ -446,7 +566,10 @@ fn dict_method(recv: &Py, d: &Rf<PyDict>, name: &str, args: Vec<Py>, kwargs: Kwa
             nargs(name, &args, 1, 2)?;
             let mut out = PyDict::new();
             for k in to_vec(&args[0])? {
-                { let h = hkey(&k)?; dict_set(&mut out, h, k, args.get(1).cloned().unwrap_or(Py::None)); }
+                {
+                    let h = hkey(&k)?;
+                    dict_set(&mut out, h, k, args.get(1).cloned().unwrap_or(Py::None));
+                }
             }
             Ok(Py::Dict(rf(out)))
         }
@@ -583,7 +706,9 @@ fn char_find(hay: &[char], needle: &[char], start: usize, end: usize, rev: bool)
     }
     let last = end - needle.len();
     if rev {
-        (start..=last).rev().find(|&i| hay[i..i + needle.len()] == *needle)
+        (start..=last)
+            .rev()
+            .find(|&i| hay[i..i + needle.len()] == *needle)
     } else {
         (start..=last).find(|&i| hay[i..i + needle.len()] == *needle)
     }
@@ -678,10 +803,7 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
                     }
                 }
                 Some(other) => {
-                    return type_err(format!(
-                        "must be str or None, not {}",
-                        other.type_name()
-                    ));
+                    return type_err(format!("must be str or None, not {}", other.type_name()));
                 }
             };
             Ok(Py::list(parts.into_iter().map(Py::str).collect()))
@@ -693,7 +815,18 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             let mut cur = String::new();
             let mut chars = sv.chars().peekable();
             while let Some(c) = chars.next() {
-                if matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+                if matches!(
+                    c,
+                    '\n' | '\r'
+                        | '\x0b'
+                        | '\x0c'
+                        | '\x1c'
+                        | '\x1d'
+                        | '\x1e'
+                        | '\u{85}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                ) {
                     let mut eol = c.to_string();
                     if c == '\r' && chars.peek() == Some(&'\n') {
                         eol.push('\n');
@@ -756,11 +889,23 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
         "startswith" | "endswith" => {
             nargs(name, &args, 1, 3)?;
             let chars: Vec<char> = sv.chars().collect();
-            let (a, b) = clamp_range(opt_int(args.get(1))?, opt_int(args.get(2))?, chars.len() as i64);
-            let hay: String = if a <= b { chars[a as usize..b as usize].iter().collect() } else { String::new() };
+            let (a, b) = clamp_range(
+                opt_int(args.get(1))?,
+                opt_int(args.get(2))?,
+                chars.len() as i64,
+            );
+            let hay: String = if a <= b {
+                chars[a as usize..b as usize].iter().collect()
+            } else {
+                String::new()
+            };
             let test = |p: &Py| -> PyRes<bool> {
                 match p {
-                    Py::Str(p) => Ok(if name == "startswith" { hay.starts_with(&**p) } else { hay.ends_with(&**p) }),
+                    Py::Str(p) => Ok(if name == "startswith" {
+                        hay.starts_with(&**p)
+                    } else {
+                        hay.ends_with(&**p)
+                    }),
                     other => type_err(format!(
                         "tuple for {name} must only contain str, not {}",
                         other.type_name()
@@ -787,8 +932,16 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             nargs(name, &args, 1, 3)?;
             let needle: Vec<char> = want_str(name, &args[0], "argument")?.chars().collect();
             let hay: Vec<char> = sv.chars().collect();
-            let (a, b) = clamp_range(opt_int(args.get(1))?, opt_int(args.get(2))?, hay.len() as i64);
-            let r = if a > b { None } else { char_find(&hay, &needle, a as usize, b as usize, name.starts_with('r')) };
+            let (a, b) = clamp_range(
+                opt_int(args.get(1))?,
+                opt_int(args.get(2))?,
+                hay.len() as i64,
+            );
+            let r = if a > b {
+                None
+            } else {
+                char_find(&hay, &needle, a as usize, b as usize, name.starts_with('r'))
+            };
             match (r, name.ends_with("index")) {
                 (Some(i), _) => Ok(Py::Int(i as i64)),
                 (None, false) => Ok(Py::Int(-1)),
@@ -799,7 +952,11 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             nargs(name, &args, 1, 3)?;
             let needle: Vec<char> = want_str(name, &args[0], "argument")?.chars().collect();
             let hay: Vec<char> = sv.chars().collect();
-            let (a, b) = clamp_range(opt_int(args.get(1))?, opt_int(args.get(2))?, hay.len() as i64);
+            let (a, b) = clamp_range(
+                opt_int(args.get(1))?,
+                opt_int(args.get(2))?,
+                hay.len() as i64,
+            );
             if a > b {
                 return Ok(Py::Int(0));
             }
@@ -819,7 +976,9 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             let fill = match args.get(1) {
                 None => ' ',
                 Some(Py::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap_or(' '),
-                Some(_) => return type_err("The fill character must be exactly one character long"),
+                Some(_) => {
+                    return type_err("The fill character must be exactly one character long");
+                }
             };
             let len = sv.chars().count() as i64;
             if w <= len {
@@ -859,14 +1018,20 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             if sep.is_empty() {
                 return value_err("empty separator");
             }
-            let found = if name == "partition" { sv.find(sep) } else { sv.rfind(sep) };
+            let found = if name == "partition" {
+                sv.find(sep)
+            } else {
+                sv.rfind(sep)
+            };
             Ok(match found {
                 Some(i) => Py::tuple(vec![
                     Py::str(&sv[..i]),
                     Py::str(sep),
                     Py::str(&sv[i + sep.len()..]),
                 ]),
-                None if name == "partition" => Py::tuple(vec![Py::Str(s.clone()), Py::str(""), Py::str("")]),
+                None if name == "partition" => {
+                    Py::tuple(vec![Py::Str(s.clone()), Py::str(""), Py::str("")])
+                }
                 None => Py::tuple(vec![Py::str(""), Py::str(""), Py::Str(s.clone())]),
             })
         }
@@ -885,12 +1050,18 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             let r = match name {
                 "isalpha" => !sv.is_empty() && sv.chars().all(char::is_alphabetic),
                 "isalnum" => !sv.is_empty() && sv.chars().all(char::is_alphanumeric),
-                "isdigit" | "isdecimal" => !sv.is_empty() && sv.chars().all(pystr::is_decimal_digit),
+                "isdigit" | "isdecimal" => {
+                    !sv.is_empty() && sv.chars().all(pystr::is_decimal_digit)
+                }
                 "isnumeric" => !sv.is_empty() && sv.chars().all(char::is_numeric),
                 "isascii" => sv.is_ascii(),
                 "isspace" => !sv.is_empty() && sv.chars().all(pystr::is_py_space),
-                "isupper" => sv.chars().any(char::is_uppercase) && !sv.chars().any(char::is_lowercase),
-                "islower" => sv.chars().any(char::is_lowercase) && !sv.chars().any(char::is_uppercase),
+                "isupper" => {
+                    sv.chars().any(char::is_uppercase) && !sv.chars().any(char::is_lowercase)
+                }
+                "islower" => {
+                    sv.chars().any(char::is_lowercase) && !sv.chars().any(char::is_uppercase)
+                }
                 "istitle" => {
                     let mut prev_cased = false;
                     let mut any = false;
@@ -916,7 +1087,8 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
                 }
                 "isidentifier" => {
                     let mut it = sv.chars();
-                    it.next().is_some_and(super::lex::is_id_start) && it.all(super::lex::is_id_continue)
+                    it.next().is_some_and(super::lex::is_id_start)
+                        && it.all(super::lex::is_id_continue)
                 }
                 _ => sv.chars().all(is_printable),
             };
@@ -952,7 +1124,10 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             }
             st(out)
         }
-        _ => Err(exc("NotImplementedError", format!("str.{name} is not supported"))),
+        _ => Err(exc(
+            "NotImplementedError",
+            format!("str.{name} is not supported"),
+        )),
     }
 }
 

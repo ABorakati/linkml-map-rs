@@ -58,7 +58,6 @@ pub(crate) fn parse_module(text: &str) -> PResult<Parsed> {
     let mut p = Parser {
         toks,
         pos: 0,
-        src: &source,
         depth: 0,
         spans: Vec::new(),
         last_value_span: None,
@@ -87,7 +86,6 @@ pub(crate) fn parses_as_expression(text: &str) -> bool {
     let mut p = Parser {
         toks,
         pos: 0,
-        src: &source,
         depth: 0,
         spans: Vec::new(),
         last_value_span: None,
@@ -123,7 +121,6 @@ fn parse_field_expr(text: &str) -> PResult<Expr> {
     let mut p = Parser {
         toks,
         pos: 0,
-        src: &wrapped,
         depth: 0,
         spans: Vec::new(),
         last_value_span: None,
@@ -137,10 +134,9 @@ fn parse_field_expr(text: &str) -> PResult<Expr> {
     Ok(e)
 }
 
-struct Parser<'a> {
+struct Parser {
     toks: Vec<Token>,
     pos: usize,
-    src: &'a str,
     depth: usize,
     spans: Vec<(usize, usize)>,
     /// Source span of the value of the last assignment / expression statement.
@@ -151,10 +147,10 @@ struct Parser<'a> {
 }
 
 const KEYWORDS: [&str; 35] = [
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
-    "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if",
-    "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try",
-    "while", "with", "yield",
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
 ];
 
 fn is_keyword(s: &str) -> bool {
@@ -165,7 +161,7 @@ fn err<T>(msg: &str) -> PResult<T> {
     Err(msg.to_string())
 }
 
-impl Parser<'_> {
+impl Parser {
     // --- token helpers ----------------------------------------------------
 
     fn peek(&self) -> &Tok {
@@ -295,7 +291,9 @@ impl Parser<'_> {
                     if was_first && out.len() > before {
                         let kind = stmt_kind(&out[before]);
                         let span = match &out[before] {
-                            Stmt::Expr(_) | Stmt::Assign(..) | Stmt::AugAssign(..) => self.last_value_span,
+                            Stmt::Expr(_) | Stmt::Assign(..) | Stmt::AugAssign(..) => {
+                                self.last_value_span
+                            }
                             _ => None,
                         };
                         self.first = Some((kind, span));
@@ -456,7 +454,11 @@ impl Parser<'_> {
                     return Ok(Stmt::Raise(Some(e), cause));
                 }
                 "global" | "nonlocal" => {
-                    let which = if n.as_str() == "global" { "Global" } else { "Nonlocal" };
+                    let which = if n.as_str() == "global" {
+                        "Global"
+                    } else {
+                        "Nonlocal"
+                    };
                     self.advance();
                     self.name()?;
                     while self.eat_op(",") {
@@ -1293,7 +1295,12 @@ impl Parser<'_> {
             self.expression()?;
             return Ok(Expr::Unsupported("YieldFrom"));
         }
-        if !self.at_stmt_end() && !self.is_op(")") && !self.is_op("=") && !self.is_op("]") && !self.is_op("}") {
+        if !self.at_stmt_end()
+            && !self.is_op(")")
+            && !self.is_op("=")
+            && !self.is_op("]")
+            && !self.is_op("}")
+        {
             self.star_expressions()?;
         }
         Ok(Expr::Unsupported("Yield"))
@@ -1318,7 +1325,13 @@ impl Parser<'_> {
     /// Whether the next token can start an expression (used after a comma).
     fn starts_expression(&self) -> bool {
         match self.peek() {
-            Tok::Name(n) => !is_keyword(n) || matches!(n.as_str(), "None" | "True" | "False" | "not" | "lambda" | "await" | "yield"),
+            Tok::Name(n) => {
+                !is_keyword(n)
+                    || matches!(
+                        n.as_str(),
+                        "None" | "True" | "False" | "not" | "lambda" | "await" | "yield"
+                    )
+            }
             Tok::Number(_) | Tok::Str(_) => true,
             Tok::Op(o) => matches!(*o, "(" | "[" | "{" | "-" | "+" | "~" | "..." | "*"),
             _ => false,
@@ -1383,7 +1396,11 @@ impl Parser<'_> {
                 return err("expected 'else' after 'if' expression");
             }
             let orelse = self.expression()?;
-            return Ok(Expr::IfExp(Box::new(test), Box::new(body), Box::new(orelse)));
+            return Ok(Expr::IfExp(
+                Box::new(test),
+                Box::new(body),
+                Box::new(orelse),
+            ));
         }
         Ok(body)
     }
@@ -1680,7 +1697,10 @@ impl Parser<'_> {
             }
             if self.eat_op("**") {
                 let v = self.expression()?;
-                kws.push(Keyword { arg: None, value: v });
+                kws.push(Keyword {
+                    arg: None,
+                    value: v,
+                });
                 seen_kw = true;
                 seen_dstar = true;
             } else if self.eat_op("*") {
@@ -1689,12 +1709,18 @@ impl Parser<'_> {
                 }
                 self.expression()?;
                 args.push(Expr::Starred(Box::new(Expr::Constant(Const::None))));
-            } else if matches!(self.peek(), Tok::Name(n) if !is_keyword(n)) && self.is_op_at(1, "=") {
-                let Tok::Name(n) = self.peek().clone() else { unreachable!() };
+            } else if matches!(self.peek(), Tok::Name(n) if !is_keyword(n)) && self.is_op_at(1, "=")
+            {
+                let Tok::Name(n) = self.peek().clone() else {
+                    unreachable!()
+                };
                 self.advance();
                 self.advance();
                 let v = self.expression()?;
-                kws.push(Keyword { arg: Some(n), value: v });
+                kws.push(Keyword {
+                    arg: Some(n),
+                    value: v,
+                });
                 seen_kw = true;
             } else {
                 let e = self.named_expression()?;

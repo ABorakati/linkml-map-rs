@@ -196,7 +196,9 @@ impl Py {
             (Py::Bool(a), Py::Bool(b)) => a == b,
             (Py::Int(a), Py::Int(b)) => a == b,
             (Py::Float(a), Py::Float(b)) => a.to_bits() == b.to_bits(),
-            (Py::Str(a), Py::Str(b)) => Arc::ptr_eq(a, b) || (a.len() <= 1 && a == b) || (a.is_empty() && b.is_empty()),
+            (Py::Str(a), Py::Str(b)) => {
+                Arc::ptr_eq(a, b) || (a.len() <= 1 && a == b) || (a.is_empty() && b.is_empty())
+            }
             (Py::Bytes(a), Py::Bytes(b)) => Arc::ptr_eq(a, b),
             (Py::List(a), Py::List(b)) => Rc::ptr_eq(a, b),
             (Py::Tuple(a), Py::Tuple(b)) => Rc::ptr_eq(a, b) || (a.is_empty() && b.is_empty()),
@@ -304,7 +306,10 @@ pub(crate) fn exc_class(name: &str) -> Option<&'static str> {
         "EnvironmentError" | "IOError" => "OSError",
         n => n,
     };
-    EXC_PARENTS.iter().find(|(c, _)| *c == name).map(|(c, _)| *c)
+    EXC_PARENTS
+        .iter()
+        .find(|(c, _)| *c == name)
+        .map(|(c, _)| *c)
 }
 
 /// `issubclass(class, base)` for exception classes.
@@ -323,15 +328,49 @@ pub(crate) fn exc_subclass(class: &str, base: &str) -> bool {
 
 /// The exception classes `asteval` puts in its symbol table.
 pub(crate) const EXC_BUILTINS: [&str; 43] = [
-    "ArithmeticError", "AssertionError", "AttributeError", "BaseException", "BufferError",
-    "BytesWarning", "DeprecationWarning", "EOFError", "EnvironmentError", "Exception",
-    "FloatingPointError", "IOError", "ImportError", "ImportWarning", "IndentationError",
-    "IndexError", "KeyError", "KeyboardInterrupt", "LookupError", "MemoryError", "NameError",
-    "NotImplementedError", "OSError", "OverflowError", "ReferenceError", "RuntimeError",
-    "RuntimeWarning", "StopIteration", "SyntaxError", "SyntaxWarning", "SystemError", "TypeError",
-    "UnboundLocalError", "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError",
-    "UnicodeTranslateError", "UnicodeWarning", "ValueError", "Warning", "ZeroDivisionError",
-    "GeneratorExit", "SystemExit",
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "BaseException",
+    "BufferError",
+    "BytesWarning",
+    "DeprecationWarning",
+    "EOFError",
+    "EnvironmentError",
+    "Exception",
+    "FloatingPointError",
+    "IOError",
+    "ImportError",
+    "ImportWarning",
+    "IndentationError",
+    "IndexError",
+    "KeyError",
+    "KeyboardInterrupt",
+    "LookupError",
+    "MemoryError",
+    "NameError",
+    "NotImplementedError",
+    "OSError",
+    "OverflowError",
+    "ReferenceError",
+    "RuntimeError",
+    "RuntimeWarning",
+    "StopIteration",
+    "SyntaxError",
+    "SyntaxWarning",
+    "SystemError",
+    "TypeError",
+    "UnboundLocalError",
+    "UnicodeDecodeError",
+    "UnicodeEncodeError",
+    "UnicodeError",
+    "UnicodeTranslateError",
+    "UnicodeWarning",
+    "ValueError",
+    "Warning",
+    "ZeroDivisionError",
+    "GeneratorExit",
+    "SystemExit",
 ];
 
 impl ExcObj {
@@ -569,7 +608,11 @@ fn write_map(m: &IndexMap<String, Py>, out: &mut String, seen: &mut Vec<usize>) 
 }
 
 pub(crate) fn bytes_repr(b: &[u8]) -> String {
-    let quote = if b.contains(&b'\'') && !b.contains(&b'"') { '"' } else { '\'' };
+    let quote = if b.contains(&b'\'') && !b.contains(&b'"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut out = String::from("b");
     out.push(quote);
     for &c in b {
@@ -679,7 +722,11 @@ fn write_repr(v: &Py, out: &mut String, seen: &mut Vec<usize>, _top: bool) {
             write_repr(&s.2, out, seen, false);
             out.push(')');
         }
-        Py::Iter(it) => out.push_str(&format!("<{} object at 0x{:x}>", it.borrow().kind, v.addr())),
+        Py::Iter(it) => out.push_str(&format!(
+            "<{} object at 0x{:x}>",
+            it.borrow().kind,
+            v.addr()
+        )),
         Py::Obj(_) => out.push_str(&format!(
             "<linkml_map.utils.dynamic_object.DynObj object at 0x{:x}>",
             v.addr()
@@ -742,7 +789,10 @@ pub(crate) fn from_value(v: &Value) -> Py {
         Value::Float(f) => Py::Float(*f),
         Value::Str(s) => Py::str(s.as_str()),
         Value::List(l) => Py::list(l.iter().map(from_value).collect()),
-        Value::Map(m) => Py::Obj(rf(m.iter().map(|(k, v)| (k.clone(), from_value(v))).collect())),
+        Value::Map(m) => Py::Obj(rf(m
+            .iter()
+            .map(|(k, v)| (k.clone(), from_value(v)))
+            .collect())),
         Value::Decimal(d) => Py::str(d.to_string()),
         Value::Temporal(t) => Py::str(t.to_string()),
     }
@@ -762,7 +812,12 @@ pub(crate) fn to_value(v: &Py, depth: usize) -> Value {
         Py::Str(s) => Value::Str(s.to_string()),
         Py::List(l) => Value::List(l.borrow().iter().map(|x| to_value(x, depth + 1)).collect()),
         Py::Tuple(t) => Value::List(t.iter().map(|x| to_value(x, depth + 1)).collect()),
-        Py::Set(s) => Value::List(s.borrow().values().map(|x| to_value(x, depth + 1)).collect()),
+        Py::Set(s) => Value::List(
+            s.borrow()
+                .values()
+                .map(|x| to_value(x, depth + 1))
+                .collect(),
+        ),
         Py::Dict(d) => Value::Map(
             d.borrow()
                 .values()
@@ -785,7 +840,10 @@ pub(crate) fn plain_from_value(v: &crate::value::Value) -> Py {
         Value::Map(m) => {
             let mut d = PyDict::new();
             for (k, x) in m {
-                d.insert(HKey::Str(k.as_str().into()), (Py::str(k.as_str()), plain_from_value(x)));
+                d.insert(
+                    HKey::Str(k.as_str().into()),
+                    (Py::str(k.as_str()), plain_from_value(x)),
+                );
             }
             Py::Dict(rf(d))
         }
@@ -793,7 +851,6 @@ pub(crate) fn plain_from_value(v: &crate::value::Value) -> Py {
         other => from_value(other),
     }
 }
-
 
 /// `d[key] = val`: an existing key keeps its original object (`d[1.0] = x` on
 /// `{1: y}` leaves the key `1`).

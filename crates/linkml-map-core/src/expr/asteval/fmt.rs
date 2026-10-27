@@ -50,7 +50,10 @@ fn parse_spec(spec: &str) -> PyRes<Spec> {
         i += 1;
     }
     if !w.is_empty() {
-        s.width = Some(w.parse().map_err(|_| exc("ValueError", "Too many decimal digits in format string"))?);
+        s.width = Some(
+            w.parse()
+                .map_err(|_| exc("ValueError", "Too many decimal digits in format string"))?,
+        );
     }
     if i < c.len() && matches!(c[i], ',' | '_') {
         s.grouping = Some(c[i]);
@@ -66,7 +69,10 @@ fn parse_spec(spec: &str) -> PyRes<Spec> {
         if p.is_empty() {
             return value_err("Format specifier missing precision");
         }
-        s.precision = Some(p.parse().map_err(|_| exc("ValueError", "Too many decimal digits in format string"))?);
+        s.precision = Some(
+            p.parse()
+                .map_err(|_| exc("ValueError", "Too many decimal digits in format string"))?,
+        );
     }
     if i < c.len() {
         s.ty = Some(c[i]);
@@ -134,7 +140,11 @@ fn float_body(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
     match ty.to_ascii_lowercase() {
         'f' => {
             let s = format!("{x:.*}", prec.unwrap_or(6));
-            if alt && prec == Some(0) { format!("{s}.") } else { s }
+            if alt && prec == Some(0) {
+                format!("{s}.")
+            } else {
+                s
+            }
         }
         'e' => fix_exp(&format!("{x:.*e}", prec.unwrap_or(6)), upper),
         '%' => {
@@ -148,7 +158,9 @@ fn float_body(x: f64, ty: char, prec: Option<usize>, alt: bool) -> String {
                 Some(p) => p,
             };
             let sci = format!("{x:.*e}", p - 1);
-            let exp: i32 = sci.split_once('e').map_or(0, |(_, e)| e.parse().unwrap_or(0));
+            let exp: i32 = sci
+                .split_once('e')
+                .map_or(0, |(_, e)| e.parse().unwrap_or(0));
             let mut s = if exp >= -4 && exp < p as i32 {
                 format!("{x:.*}", (p as i32 - 1 - exp).max(0) as usize)
             } else {
@@ -185,7 +197,11 @@ fn format_float_spec(x: f64, s: &Spec) -> PyRes<String> {
                 Some(p) => {
                     // Like 'g' but with at least one digit after the point.
                     let g = float_body(x, 'g', Some(p.max(1)), false);
-                    if g.contains(['.', 'e', 'n', 'i']) { g } else { format!("{g}.0") }
+                    if g.contains(['.', 'e', 'n', 'i']) {
+                        g
+                    } else {
+                        format!("{g}.0")
+                    }
                 }
             };
             if x.is_nan() { "nan".into() } else { b }
@@ -263,7 +279,13 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
         ""
     };
     if let Some(sep) = s.grouping {
-        let size = if matches!(ty, 'd' | 'n') && sep == ',' { 3 } else if sep == '_' && matches!(ty, 'd' | 'n') { 3 } else { 4 };
+        let size = if matches!(ty, 'd' | 'n') && sep == ',' {
+            3
+        } else if sep == '_' && matches!(ty, 'd' | 'n') {
+            3
+        } else {
+            4
+        };
         body = group(&body, sep, size);
     }
     let sign = match (neg, s.sign) {
@@ -378,7 +400,8 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
             key = Some(chars[i + 1..j - 1].iter().collect());
             i = j;
         }
-        let (mut left, mut plus, mut space, mut alt, mut zero) = (false, false, false, false, false);
+        let (mut left, mut plus, mut space, mut alt, mut zero) =
+            (false, false, false, false, false);
         while let Some(&f) = chars.get(i) {
             match f {
                 '-' => left = true,
@@ -411,7 +434,9 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
         let mut width: Option<usize> = None;
         if chars.get(i) == Some(&'*') {
             let w = take_arg(&mut next_arg)?;
-            let Py::Int(w) = w else { return pct_err("* wants int") };
+            let Py::Int(w) = w else {
+                return pct_err("* wants int");
+            };
             if w < 0 {
                 left = true;
             }
@@ -432,7 +457,9 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
             i += 1;
             if chars.get(i) == Some(&'*') {
                 let p = take_arg(&mut next_arg)?;
-                let Py::Int(p) = p else { return pct_err("* wants int") };
+                let Py::Int(p) = p else {
+                    return pct_err("* wants int");
+                };
                 precision = Some(p.max(0) as usize);
                 i += 1;
             } else {
@@ -459,7 +486,13 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
         let spec = Spec {
             fill: None,
             align: Some(if left { '<' } else { '>' }),
-            sign: if plus { Some('+') } else if space { Some(' ') } else { None },
+            sign: if plus {
+                Some('+')
+            } else if space {
+                Some(' ')
+            } else {
+                None
+            },
             alt,
             zero: zero && !left,
             width,
@@ -469,12 +502,25 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
         };
         let piece = match conv {
             's' | 'r' | 'a' => {
-                let t = if conv == 's' { to_str(&arg) } else { repr(&arg) };
+                let t = if conv == 's' {
+                    to_str(&arg)
+                } else {
+                    repr(&arg)
+                };
                 let t: String = match precision {
                     Some(p) => t.chars().take(p).collect(),
                     None => t,
                 };
-                pad(&t, "", &Spec { zero: false, ..spec }, if left { '<' } else { '>' }, false)
+                pad(
+                    &t,
+                    "",
+                    &Spec {
+                        zero: false,
+                        ..spec
+                    },
+                    if left { '<' } else { '>' },
+                    false,
+                )
             }
             'd' | 'i' | 'u' => {
                 let n = match &arg {
@@ -488,7 +534,15 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
                         ));
                     }
                 };
-                format_int_spec(n, &Spec { ty: Some('d'), precision: None, ..spec }, false)?
+                format_int_spec(
+                    n,
+                    &Spec {
+                        ty: Some('d'),
+                        precision: None,
+                        ..spec
+                    },
+                    false,
+                )?
             }
             'o' | 'x' | 'X' => {
                 let n = match &arg {
@@ -501,7 +555,15 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
                         ));
                     }
                 };
-                format_int_spec(n, &Spec { ty: Some(conv), precision: None, ..spec }, false)?
+                format_int_spec(
+                    n,
+                    &Spec {
+                        ty: Some(conv),
+                        precision: None,
+                        ..spec
+                    },
+                    false,
+                )?
             }
             'e' | 'E' | 'f' | 'F' | 'g' | 'G' => {
                 let x = match &arg {
@@ -509,20 +571,41 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
                     Py::Bool(b) => *b as i64 as f64,
                     Py::Float(f) => *f,
                     other => {
-                        return pct_err(format!(
-                            "must be real number, not {}",
-                            other.type_name()
-                        ));
+                        return pct_err(format!("must be real number, not {}", other.type_name()));
                     }
                 };
-                format_float_spec(x, &Spec { ty: Some(conv), ..spec })?
+                format_float_spec(
+                    x,
+                    &Spec {
+                        ty: Some(conv),
+                        ..spec
+                    },
+                )?
             }
             'c' => match &arg {
                 Py::Int(n) => match u32::try_from(*n).ok().and_then(char::from_u32) {
-                    Some(ch) => pad(&ch.to_string(), "", &Spec { zero: false, ..spec }, '>', false),
+                    Some(ch) => pad(
+                        &ch.to_string(),
+                        "",
+                        &Spec {
+                            zero: false,
+                            ..spec
+                        },
+                        '>',
+                        false,
+                    ),
                     None => return overflow_err("%c arg not in range(0x110000)"),
                 },
-                Py::Str(s) if s.chars().count() == 1 => pad(s, "", &Spec { zero: false, ..spec }, '>', false),
+                Py::Str(s) if s.chars().count() == 1 => pad(
+                    s,
+                    "",
+                    &Spec {
+                        zero: false,
+                        ..spec
+                    },
+                    '>',
+                    false,
+                ),
                 _ => return pct_err("%c requires int or char"),
             },
             other => {

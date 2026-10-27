@@ -101,9 +101,9 @@ impl Program {
                         None => First::Unavailable(kind.to_string()),
                     }
                 }
-                Some(("Import", _)) => First::Syntax(ExprError::Eval(
-                    "Sorry, 'import' is not allowed.".into(),
-                )),
+                Some(("Import", _)) => {
+                    First::Syntax(ExprError::Eval("Sorry, 'import' is not allowed.".into()))
+                }
                 Some((kind, _)) => First::Unavailable(kind.to_string()),
             },
         };
@@ -415,6 +415,7 @@ struct Span {
 /// A logical line before `;` splitting: physical lines joined across brackets
 /// and backslash continuations, comments removed.
 struct RawLine {
+    #[allow(dead_code)]
     indent: usize,
     text: String,
     span: Span,
@@ -621,7 +622,6 @@ fn split_assignment(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,7 +689,10 @@ mod tests {
         let Ok(SingleOrProgram::Program(p)) = parse_single_or_program("{1 + }") else {
             panic!("expected a program");
         };
-        assert_eq!(p.syntax_error(), parse_single_expression("{1 + }").err().as_ref());
+        assert_eq!(
+            p.syntax_error(),
+            parse_single_expression("{1 + }").err().as_ref()
+        );
     }
 
     #[test]

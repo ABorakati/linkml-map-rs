@@ -72,7 +72,10 @@ pub(crate) fn is_id_start(c: char) -> bool {
 }
 
 fn is_other_id_start(c: char) -> bool {
-    matches!(c as u32, 0x2118 | 0x212E | 0x309B | 0x309C | 0x1885 | 0x1886)
+    matches!(
+        c as u32,
+        0x2118 | 0x212E | 0x309B | 0x309C | 0x1885 | 0x1886
+    )
 }
 
 /// `XID_Continue` approximated: letters, digits, `_`, and the common combining
@@ -92,11 +95,10 @@ pub(crate) fn is_id_continue(c: char) -> bool {
             | 0xFF3F | 0xE0100..=0xE01EF)
 }
 
-struct Lexer<'a> {
+struct Lexer {
     chars: Vec<char>,
     /// Byte offset of each char (plus the end).
     offs: Vec<usize>,
-    src: &'a str,
     i: usize,
     line: u32,
     line_start: usize,
@@ -128,7 +130,6 @@ pub(crate) fn tokenize(src: &str) -> PResult<Vec<Token>> {
     let mut lx = Lexer {
         chars,
         offs,
-        src,
         i: 0,
         line: 1,
         line_start: 0,
@@ -140,7 +141,7 @@ pub(crate) fn tokenize(src: &str) -> PResult<Vec<Token>> {
     Ok(lx.out)
 }
 
-impl Lexer<'_> {
+impl Lexer {
     fn peek(&self, k: usize) -> Option<char> {
         self.chars.get(self.i + k).copied()
     }
@@ -243,9 +244,7 @@ impl Lexer<'_> {
                     }
                     let (t, at) = *self.indents.last().expect("indent stack");
                     if col != t {
-                        return Err(
-                            "unindent does not match any outer indentation level".into()
-                        );
+                        return Err("unindent does not match any outer indentation level".into());
                     }
                     if altcol != at {
                         return Err("inconsistent use of tabs and spaces in indentation".into());
@@ -280,24 +279,22 @@ impl Lexer<'_> {
                         self.bump_newline();
                     }
                 }
-                '\\' => {
-                    match self.peek(1) {
-                        Some('\n') => {
-                            self.i += 1;
-                            self.bump_newline();
-                            if self.peek(0).is_none() {
-                                return Err("unexpected EOF while parsing".into());
-                            }
-                        }
-                        None => return Err("unexpected EOF while parsing".into()),
-                        Some(_) => {
-                            return Err(
-                                "unexpected character after line continuation character".into()
-                            );
+                '\\' => match self.peek(1) {
+                    Some('\n') => {
+                        self.i += 1;
+                        self.bump_newline();
+                        if self.peek(0).is_none() {
+                            return Err("unexpected EOF while parsing".into());
                         }
                     }
-                }
-                c if c.is_ascii_digit() || (c == '.' && self.peek(1).is_some_and(|d| d.is_ascii_digit())) => {
+                    None => return Err("unexpected EOF while parsing".into()),
+                    Some(_) => {
+                        return Err("unexpected character after line continuation character".into());
+                    }
+                },
+                c if c.is_ascii_digit()
+                    || (c == '.' && self.peek(1).is_some_and(|d| d.is_ascii_digit())) =>
+                {
                     let n = self.number()?;
                     self.push(Tok::Number(n), start_i, line, lo);
                     line_has_tokens = true;
@@ -323,7 +320,8 @@ impl Lexer<'_> {
                         );
                         if valid {
                             self.i = end;
-                            let t = self.string(lw.contains('r'), lw.contains('b'), lw.contains('f'))?;
+                            let t =
+                                self.string(lw.contains('r'), lw.contains('b'), lw.contains('f'))?;
                             self.push(Tok::Str(t), start_i, line, lo);
                             line_has_tokens = true;
                             continue;
@@ -407,7 +405,10 @@ impl Lexer<'_> {
             return Ok(&OPS1[pos..pos + 1]);
         }
         if c.is_control() || c.is_whitespace() {
-            Err(format!("invalid non-printable character U+{:04X}", c as u32))
+            Err(format!(
+                "invalid non-printable character U+{:04X}",
+                c as u32
+            ))
         } else {
             Err(format!("invalid character '{c}'"))
         }
@@ -485,7 +486,16 @@ impl Lexer<'_> {
                 self.verify_end_of_number(what)?;
                 return Ok(match i64::from_str_radix(&ds, radix) {
                     Ok(v) => Num::Int(v),
-                    Err(_) => Num::Big(format!("0{}{ds}", if radix == 16 { 'x' } else if radix == 8 { 'o' } else { 'b' })),
+                    Err(_) => Num::Big(format!(
+                        "0{}{ds}",
+                        if radix == 16 {
+                            'x'
+                        } else if radix == 8 {
+                            'o'
+                        } else {
+                            'b'
+                        }
+                    )),
                 });
             }
         }
@@ -502,7 +512,9 @@ impl Lexer<'_> {
                             zeros.push('0');
                             self.i += 1;
                         }
-                        Some('_') if self.peek(1).is_some_and(|d| d.is_ascii_digit()) => self.i += 1,
+                        Some('_') if self.peek(1).is_some_and(|d| d.is_ascii_digit()) => {
+                            self.i += 1
+                        }
                         _ => break,
                     }
                 }

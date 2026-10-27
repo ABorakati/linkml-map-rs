@@ -19,18 +19,89 @@ pub(crate) trait Caller {
 pub(crate) type Kwargs = Vec<(String, Py)>;
 
 const BUILTIN_FUNCS: &[&str] = &[
-    "abs", "all", "any", "bin", "chr", "divmod", "format", "hash", "hex", "id", "isinstance",
-    "len", "max", "min", "oct", "ord", "repr", "round", "sorted", "sum", "type", "open", "print",
+    "abs",
+    "all",
+    "any",
+    "bin",
+    "chr",
+    "dir",
+    "divmod",
+    "format",
+    "hash",
+    "hex",
+    "id",
+    "isinstance",
+    "len",
+    "max",
+    "min",
+    "oct",
+    "ord",
+    "repr",
+    "round",
+    "sorted",
+    "sum",
+    "type",
+    "open",
+    "print",
     // math
-    "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "ceil", "copysign", "cos", "cosh",
-    "degrees", "exp", "fabs", "factorial", "floor", "fmod", "frexp", "fsum", "hypot", "isinf",
-    "isnan", "ldexp", "log", "log10", "log1p", "modf", "pow", "radians", "sin", "sinh", "sqrt",
-    "tan", "tanh", "trunc", "uuid5",
+    "acos",
+    "acosh",
+    "asin",
+    "asinh",
+    "atan",
+    "atan2",
+    "atanh",
+    "ceil",
+    "copysign",
+    "cos",
+    "cosh",
+    "degrees",
+    "exp",
+    "fabs",
+    "factorial",
+    "floor",
+    "fmod",
+    "frexp",
+    "fsum",
+    "hypot",
+    "isinf",
+    "isnan",
+    "ldexp",
+    "log",
+    "log10",
+    "log1p",
+    "modf",
+    "pow",
+    "radians",
+    "sin",
+    "sinh",
+    "sqrt",
+    "tan",
+    "tanh",
+    "trunc",
+    "uuid5",
 ];
 
 const BUILTIN_TYPES: &[&str] = &[
-    "bool", "bytearray", "bytes", "complex", "dict", "enumerate", "filter", "float", "frozenset",
-    "int", "list", "map", "range", "reversed", "set", "slice", "str", "tuple", "zip",
+    "bool",
+    "bytearray",
+    "bytes",
+    "complex",
+    "dict",
+    "enumerate",
+    "filter",
+    "float",
+    "frozenset",
+    "int",
+    "list",
+    "map",
+    "range",
+    "reversed",
+    "set",
+    "slice",
+    "str",
+    "tuple",
+    "zip",
 ];
 
 /// The value of `name` in a fresh `asteval` symbol table (before user
@@ -83,19 +154,33 @@ fn check_args(name: &str, args: &[Py], min: usize, max: usize) -> PyRes<()> {
         } else if is_math(name) && min == max {
             format!(
                 "math.{name}() takes exactly {} argument{} ({n} given)",
-                if min == 1 { "one".to_string() } else { min.to_string() },
+                if min == 1 {
+                    "one".to_string()
+                } else {
+                    min.to_string()
+                },
                 if min == 1 { "" } else { "s" }
             )
         } else if min == max {
             format!(
                 "{name}() takes exactly {} argument{} ({n} given)",
-                if min == 1 { "one".to_string() } else { min.to_string() },
+                if min == 1 {
+                    "one".to_string()
+                } else {
+                    min.to_string()
+                },
                 if min == 1 { "" } else { "s" }
             )
         } else if n < min {
-            format!("{name} expected at least {min} argument{}, got {n}", if min == 1 { "" } else { "s" })
+            format!(
+                "{name} expected at least {min} argument{}, got {n}",
+                if min == 1 { "" } else { "s" }
+            )
         } else {
-            format!("{name} expected at most {max} argument{}, got {n}", if max == 1 { "" } else { "s" })
+            format!(
+                "{name} expected at most {max} argument{}, got {n}",
+                if max == 1 { "" } else { "s" }
+            )
         };
         return type_err(msg);
     }
@@ -106,10 +191,41 @@ fn check_args(name: &str, args: &[Py], min: usize, max: usize) -> PyRes<()> {
 fn is_math(name: &str) -> bool {
     matches!(
         name,
-        "acos" | "acosh" | "asin" | "asinh" | "atan" | "atan2" | "atanh" | "ceil" | "copysign"
-            | "cos" | "cosh" | "degrees" | "exp" | "fabs" | "factorial" | "floor" | "fmod" | "frexp"
-            | "fsum" | "hypot" | "isinf" | "isnan" | "ldexp" | "log" | "log10" | "log1p" | "modf"
-            | "pow" | "radians" | "sin" | "sinh" | "sqrt" | "tan" | "tanh" | "trunc"
+        "acos"
+            | "acosh"
+            | "asin"
+            | "asinh"
+            | "atan"
+            | "atan2"
+            | "atanh"
+            | "ceil"
+            | "copysign"
+            | "cos"
+            | "cosh"
+            | "degrees"
+            | "exp"
+            | "fabs"
+            | "factorial"
+            | "floor"
+            | "fmod"
+            | "frexp"
+            | "fsum"
+            | "hypot"
+            | "isinf"
+            | "isnan"
+            | "ldexp"
+            | "log"
+            | "log10"
+            | "log1p"
+            | "modf"
+            | "pow"
+            | "radians"
+            | "sin"
+            | "sinh"
+            | "sqrt"
+            | "tan"
+            | "tanh"
+            | "trunc"
     )
 }
 
@@ -165,11 +281,15 @@ pub(crate) fn call_builtin(
             check_args(name, &args, 1, 1)?;
             match &args[0] {
                 Py::Bool(b) => Ok(Py::Int(*b as i64)),
-                Py::Int(i) => i
-                    .checked_abs()
-                    .map_or_else(|| overflow_err("integer result out of range"), |v| Ok(Py::Int(v))),
+                Py::Int(i) => i.checked_abs().map_or_else(
+                    || overflow_err("integer result out of range"),
+                    |v| Ok(Py::Int(v)),
+                ),
                 Py::Float(f) => Ok(Py::Float(f.abs())),
-                other => type_err(format!("bad operand type for abs(): '{}'", other.type_name())),
+                other => type_err(format!(
+                    "bad operand type for abs(): '{}'",
+                    other.type_name()
+                )),
             }
         }
         "all" | "any" => {
@@ -193,7 +313,10 @@ pub(crate) fn call_builtin(
                 "hex" => ("0x", format!("{:x}", i.unsigned_abs())),
                 _ => ("0o", format!("{:o}", i.unsigned_abs())),
             };
-            Ok(Py::str(format!("{}{p}{body}", if i < 0 { "-" } else { "" })))
+            Ok(Py::str(format!(
+                "{}{p}{body}",
+                if i < 0 { "-" } else { "" }
+            )))
         }
         "chr" => {
             no_kwargs(name, &kwargs)?;
@@ -201,7 +324,9 @@ pub(crate) fn call_builtin(
             let i = int_arg(&args[0])?;
             match u32::try_from(i).ok().and_then(char::from_u32) {
                 Some(ch) => Ok(Py::str(ch.to_string())),
-                None if (0xD800..0xE000).contains(&i) => value_err("chr() surrogates are not supported"),
+                None if (0xD800..0xE000).contains(&i) => {
+                    value_err("chr() surrogates are not supported")
+                }
                 None => value_err("chr() arg not in range(0x110000)"),
             }
         }
@@ -209,7 +334,9 @@ pub(crate) fn call_builtin(
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 1, 1)?;
             match &args[0] {
-                Py::Str(s) if s.chars().count() == 1 => Ok(Py::Int(s.chars().next().map_or(0, |c| c as i64))),
+                Py::Str(s) if s.chars().count() == 1 => {
+                    Ok(Py::Int(s.chars().next().map_or(0, |c| c as i64)))
+                }
                 Py::Str(s) => type_err(format!(
                     "ord() expected a character, but string of length {} found",
                     s.chars().count()
@@ -314,19 +441,35 @@ pub(crate) fn call_builtin(
             let fname = args.first().map(to_str).unwrap_or_default();
             Err(exc(
                 "FileNotFoundError",
-                format!("[Errno 2] No such file or directory: {}", crate::pyfmt::py_repr_str(&fname)),
+                format!(
+                    "[Errno 2] No such file or directory: {}",
+                    crate::pyfmt::py_repr_str(&fname)
+                ),
             ))
         }
         "print" => Ok(Py::None),
+        "dir" => {
+            // `dir()` lists the locals of `Interpreter.on_call`.
+            if args.is_empty() {
+                return Ok(Py::list(
+                    [
+                        "args", "func", "keywords", "kwargs", "node", "self", "starargs",
+                    ]
+                    .into_iter()
+                    .map(Py::str)
+                    .collect(),
+                ));
+            }
+            runtime_err("dir(object) is not supported")
+        }
         "uuid5" => {
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 2, 2)?;
             let (Py::Str(ns), Py::Str(nm)) = (&args[0], &args[1]) else {
                 return match (&args[0], &args[1]) {
-                    (Py::Str(_), other) => type_err(format!(
-                        "can't concat {} to bytes",
-                        other.type_name()
-                    )),
+                    (Py::Str(_), other) => {
+                        type_err(format!("can't concat {} to bytes", other.type_name()))
+                    }
                     (other, _) => Err(exc(
                         "AttributeError",
                         format!("'{}' object has no attribute 'encode'", other.type_name()),
@@ -334,7 +477,9 @@ pub(crate) fn call_builtin(
                 };
             };
             let derived = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, ns.as_bytes());
-            Ok(Py::str(uuid::Uuid::new_v5(&derived, nm.as_bytes()).to_string()))
+            Ok(Py::str(
+                uuid::Uuid::new_v5(&derived, nm.as_bytes()).to_string(),
+            ))
         }
         _ => math_func(name, &args, &kwargs),
     }
@@ -376,7 +521,11 @@ fn py_hash(v: &Py) -> PyRes<i64> {
                 hx -= 1u64 << BITS;
             }
         }
-        let e = if e >= 0 { e % BITS } else { BITS - 1 - ((-1 - e) % BITS) };
+        let e = if e >= 0 {
+            e % BITS
+        } else {
+            BITS - 1 - ((-1 - e) % BITS)
+        };
         hx = ((hx << e) & ((1u64 << BITS) - 1)) | (hx >> (BITS - e));
         let mut h = hx as i64;
         if x < 0.0 {
@@ -439,6 +588,8 @@ pub(crate) fn isinstance(obj: &Py, cls: &Py) -> PyRes<bool> {
 
 fn instance_of(obj: &Py, t: &str) -> bool {
     match (obj, t) {
+        (_, "object") => true,
+        (Py::Type(_), "type") => true,
         (Py::Bool(_), "bool" | "int") => true,
         (Py::Int(_), "int") => true,
         (Py::Float(_), "float") => true,
@@ -465,7 +616,9 @@ fn min_max(c: &mut dyn Caller, name: &str, args: Vec<Py>, kwargs: Kwargs) -> PyR
             "key" => key = if v.is_none() { None } else { Some(v) },
             "default" => default = Some(v),
             other => {
-                return type_err(format!("{name}() got an unexpected keyword argument '{other}'"));
+                return type_err(format!(
+                    "{name}() got an unexpected keyword argument '{other}'"
+                ));
             }
         }
     }
@@ -630,7 +783,10 @@ fn py_sum(c: &mut dyn Caller, args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
         return type_err("sum() takes at least 1 positional argument (0 given)");
     }
     if args.len() > 2 || (args.len() == 2 && start.is_some()) {
-        return type_err(format!("sum() takes at most 2 arguments ({} given)", args.len()));
+        return type_err(format!(
+            "sum() takes at most 2 arguments ({} given)",
+            args.len()
+        ));
     }
     let start = start.or_else(|| args.get(1).cloned()).unwrap_or(Py::Int(0));
     let mut it = iterate(&args[0])?;
@@ -658,9 +814,14 @@ fn py_sum(c: &mut dyn Caller, args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
                         Py::Bool(b) => b as i64,
                         _ => 0,
                     };
-                    i_acc = i_acc
-                        .checked_add(v)
-                        .map_or_else(|| overflow_err("integer result out of range (big integers are not supported)"), Ok)?;
+                    i_acc = i_acc.checked_add(v).map_or_else(
+                        || {
+                            overflow_err(
+                                "integer result out of range (big integers are not supported)",
+                            )
+                        },
+                        Ok,
+                    )?;
                 }
                 Py::Float(_) => {
                     acc = Py::Float(i_acc as f64);
@@ -856,7 +1017,9 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
             let n = match &args[0] {
                 Py::Int(i) => *i,
                 Py::Bool(b) => *b as i64,
-                Py::Float(_) => return type_err("'float' object cannot be interpreted as an integer"),
+                Py::Float(_) => {
+                    return type_err("'float' object cannot be interpreted as an integer");
+                }
                 other => {
                     return type_err(format!(
                         "'{}' object cannot be interpreted as an integer",
@@ -897,10 +1060,16 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
         "modf" => {
             let x = one(args)?;
             if x.is_infinite() {
-                return Ok(Py::tuple(vec![Py::Float(0.0_f64.copysign(x)), Py::Float(x)]));
+                return Ok(Py::tuple(vec![
+                    Py::Float(0.0_f64.copysign(x)),
+                    Py::Float(x),
+                ]));
             }
             let i = x.trunc();
-            Ok(Py::tuple(vec![Py::Float((x - i).copysign(x)), Py::Float(i)]))
+            Ok(Py::tuple(vec![
+                Py::Float((x - i).copysign(x)),
+                Py::Float(i),
+            ]))
         }
         "fsum" => {
             check_args(name, args, 1, 1)?;
@@ -934,7 +1103,10 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
         }
         "isinf" => Ok(Py::Bool(one(args)?.is_infinite())),
         "isnan" => Ok(Py::Bool(one(args)?.is_nan())),
-        _ => Err(exc("NotImplementedError", format!("{name} is not supported"))),
+        _ => Err(exc(
+            "NotImplementedError",
+            format!("{name} is not supported"),
+        )),
     }
 }
 
@@ -1026,7 +1198,9 @@ pub(crate) fn call_type(
             no_kwargs_except(name, &kwargs, &["base"])?;
             check_args(name, &args, 0, 2)?;
             let base = args.get(1).or_else(|| kw(&kwargs, "base"));
-            let Some(x) = args.first() else { return Ok(Py::Int(0)) };
+            let Some(x) = args.first() else {
+                return Ok(Py::Int(0));
+            };
             if let Some(b) = base {
                 let b = int_arg(b)?;
                 return match x {
@@ -1056,7 +1230,12 @@ pub(crate) fn call_type(
                 Some(Py::Int(i)) => Ok(Py::Float(*i as f64)),
                 Some(Py::Bool(b)) => Ok(Py::Float(*b as i64 as f64)),
                 Some(Py::Str(s)) => builtins::parse_py_float(s).map(Py::Float).map_or_else(
-                    || value_err(format!("could not convert string to float: {}", crate::pyfmt::py_repr_str(s))),
+                    || {
+                        value_err(format!(
+                            "could not convert string to float: {}",
+                            crate::pyfmt::py_repr_str(s)
+                        ))
+                    },
                     Ok,
                 ),
                 Some(other) => type_err(format!(
@@ -1069,7 +1248,9 @@ pub(crate) fn call_type(
             check_args(name, &args, 0, 3)?;
             Ok(match args.first() {
                 None => Py::str(""),
-                Some(Py::Bytes(b)) if args.len() > 1 => Py::str(String::from_utf8_lossy(b).to_string()),
+                Some(Py::Bytes(b)) if args.len() > 1 => {
+                    Py::str(String::from_utf8_lossy(b).to_string())
+                }
                 Some(v) => Py::str(to_str(v)),
             })
         }
@@ -1144,7 +1325,10 @@ pub(crate) fn call_type(
                 .enumerate()
                 .map(|(i, x)| Py::tuple(vec![Py::Int(start + i as i64), x]))
                 .collect();
-            Ok(Py::Iter(rf(PyIter { kind: "enumerate", items })))
+            Ok(Py::Iter(rf(PyIter {
+                kind: "enumerate",
+                items,
+            })))
         }
         "zip" => {
             let strict = kw(&kwargs, "strict").is_some_and(Py::truthy);
@@ -1194,20 +1378,29 @@ pub(crate) fn call_type(
                     items.push_back(x);
                 }
             }
-            Ok(Py::Iter(rf(PyIter { kind: "filter", items })))
+            Ok(Py::Iter(rf(PyIter {
+                kind: "filter",
+                items,
+            })))
         }
         "reversed" => {
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 1, 1)?;
             let items: VecDeque<Py> = match &args[0] {
-                Py::List(_) | Py::Tuple(_) | Py::Str(_) | Py::Range(..) | Py::Bytes(_) | Py::Dict(_) => {
-                    to_vec(&args[0])?.into_iter().rev().collect()
-                }
+                Py::List(_)
+                | Py::Tuple(_)
+                | Py::Str(_)
+                | Py::Range(..)
+                | Py::Bytes(_)
+                | Py::Dict(_) => to_vec(&args[0])?.into_iter().rev().collect(),
                 other => {
                     return type_err(format!("'{}' object is not reversible", other.type_name()));
                 }
             };
-            Ok(Py::Iter(rf(PyIter { kind: "reversed", items })))
+            Ok(Py::Iter(rf(PyIter {
+                kind: "reversed",
+                items,
+            })))
         }
         "bytes" | "bytearray" => {
             check_args(name, &args, 0, 3)?;
@@ -1263,7 +1456,10 @@ fn parse_int_py(s: &str, base: i64) -> PyRes<Py> {
 
 fn build_dict(args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
     if args.len() > 1 {
-        return type_err(format!("dict expected at most 1 argument, got {}", args.len()));
+        return type_err(format!(
+            "dict expected at most 1 argument, got {}",
+            args.len()
+        ));
     }
     let mut d = PyDict::new();
     if let Some(src) = args.first() {
@@ -1275,7 +1471,10 @@ fn build_dict(args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
             }
             other => {
                 let items = to_vec(other).map_err(|_| {
-                    exc("TypeError", format!("'{}' object is not iterable", other.type_name()))
+                    exc(
+                        "TypeError",
+                        format!("'{}' object is not iterable", other.type_name()),
+                    )
                 })?;
                 for (i, item) in items.into_iter().enumerate() {
                     let pair = to_vec(&item).map_err(|_| {

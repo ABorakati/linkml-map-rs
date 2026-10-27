@@ -646,6 +646,12 @@ thread_local! {
 
 /// Run `f` with object-attribute semantics enabled, restoring the prior mode
 /// afterwards (nesting-safe).
+///
+/// No longer called: statement blocks run in [`super::asteval`], which has its
+/// own `DynObj`. The `object_attr_mode_enabled()` branches in this module and
+/// in `compound`/`gate` are dead and can go with the next clean-up of the
+/// restricted evaluator (kept now to leave that code to its own owners).
+#[allow(dead_code)]
 pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
     OBJECT_ATTR_MODE.with(|m| {
         let prev = m.get();

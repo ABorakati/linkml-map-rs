@@ -95,7 +95,8 @@ pub(crate) fn walk_expr(e: &Expr, f: &mut dyn FnMut(&Expr) -> bool) {
 
 /// Visit every expression in a statement (pre-order), descending into bodies.
 pub(crate) fn walk_stmt(s: &Stmt, f: &mut dyn FnMut(&Expr) -> bool) {
-    let body = |b: &[Stmt], f: &mut dyn FnMut(&Expr) -> bool| b.iter().for_each(|x| walk_stmt(x, f));
+    let body =
+        |b: &[Stmt], f: &mut dyn FnMut(&Expr) -> bool| b.iter().for_each(|x| walk_stmt(x, f));
     match s {
         Stmt::Expr(e) => walk_expr(e, f),
         Stmt::Assign(ts, v) => {
@@ -207,12 +208,7 @@ pub(crate) fn execute(
         if let Some(first) = interp.error.first() {
             if first.exc == Some("NameError") {
                 let detail = interp.error_detail(first);
-                let name = first
-                    .msg
-                    .split('\'')
-                    .nth(1)
-                    .unwrap_or_default()
-                    .to_string();
+                let name = first.msg.split('\'').nth(1).unwrap_or_default().to_string();
                 return Err(ExecError::Undefined {
                     name,
                     message: format!(
