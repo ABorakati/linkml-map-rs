@@ -15,6 +15,8 @@
 //! - A fixed function set with list-funcs (`max`/`min`/`len`) and distributing
 //!   scalar funcs.
 
+use std::borrow::Cow;
+
 use indexmap::IndexMap;
 use log::warn;
 
@@ -23,7 +25,9 @@ use super::compound;
 use super::error::{ExprError, ExprResult};
 use super::gate::{self, EvalMode, eval_parsed_gated};
 use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
+use super::pymethods;
 use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
+use super::syntax;
 use crate::value::{Value, cmp_int_float};
 
 /// Variable bindings: name → value mapping.
@@ -141,6 +145,12 @@ fn strict_mode_enabled() -> bool {
 fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
     match vars.get(name) {
         Some(v) => Ok(v.clone()),
+        // PARITY: simpleeval's `_eval_name` falls back to `self.functions[name]`, so
+        // a bare function name (`upper`, `max`) evaluates to the function itself,
+        // which has no `Value`.
+        None if !object_attr_mode_enabled() && is_function_name(name) => {
+            Err(ExprError::unrepresentable("function"))
+        }
         None => {
             if strict_mode_enabled() || object_attr_mode_enabled() {
                 let message = format!("name '{name}' is not defined");
@@ -341,6 +351,86 @@ pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
     })
 }
 
+/// The object whose attribute `value.attr` reads: the part of
+/// `LinkMLEvaluator._eval_attribute` before `_distributed_getattr`. A bound root
+/// name is borrowed from `vars` (resolving it would clone a whole record to read
+/// one attribute).
+pub(super) fn attribute_receiver<'a>(
+    value: &Ast,
+    attr: &str,
+    vars: &'a Bindings,
+) -> ExprResult<Cow<'a, Value>> {
+    // A qualified `{Name.attr}` whose root Name is genuinely unbound —
+    // not an injected eval name, not a function, and absent from the
+    // bindings — is a broken reference (a typo or a missing/renamed
+    // table) and fails loud even in lax mode. Mirrors upstream
+    // `RestrictedEvaluator._eval_attribute` (utils/eval_utils.py at
+    // 66cbcc31b5), where the root is resolved via the base name lookup
+    // and a `NameNotDefined` there becomes a `NameError`. A *bare*
+    // `{col}` (a Name, not an Attribute) and a root that resolves to
+    // None (a sparse-join miss, or an absent schema slot bound to Null)
+    // both stay null — only a root with no possible binding errors.
+    if let Ast::Name(root) = value
+        && !INJECTED_EVAL_NAMES.contains(&root.as_str())
+        && !is_function_name(root)
+    {
+        // PARITY: the root is resolved from the bindings the expression
+        // was given, never from an enclosing comprehension's scope
+        // (`super()._eval_name` bypasses the swapped-in comprehension
+        // name handler), so `x.attr` on a loop variable `x` is refused
+        // in restricted mode; asteval, behind `unrestricted_eval`,
+        // evaluates it. See [`gate::comprehension_root`].
+        match gate::comprehension_root(root) {
+            gate::ComprehensionRoot::NotATarget => {}
+            gate::ComprehensionRoot::Outer(outer) => {
+                return Ok(Cow::Owned(outer));
+            }
+            gate::ComprehensionRoot::Unbound => {
+                let message = format!(
+                    "Attribute access on comprehension-bound '{root}' in '{root}.{attr}' \
+                     is not supported. Building records in an expression bypasses the \
+                     range, cardinality, and datatype coercion applied to derived objects; \
+                     declare a class_derivation keyed on the source range class and reduce \
+                     the slot to populated_from instead."
+                );
+                return Err(ExprError::Undefined {
+                    name: root.clone(),
+                    message,
+                });
+            }
+        }
+    }
+    if let Ast::Name(root) = value
+        && !INJECTED_EVAL_NAMES.contains(&root.as_str())
+        && !is_function_name(root)
+        && !vars.contains_key(root)
+    {
+        let message = format!(
+            "Expression references unknown '{root}' in '{root}.{attr}': \
+             no such source class, join, or slot. Typo or stale reference?"
+        );
+        return Err(ExprError::Undefined {
+            name: root.clone(),
+            message,
+        });
+    }
+    // A bound root name (`x.attr`, or `{x}.attr` outside a statement
+    // block, where `{x}` is just `x`) is read in place: `resolve_name`
+    // would clone the whole bound value (a nested record, say) to read
+    // one attribute.
+    let root_ast = match value {
+        Ast::Brace(inner) if !object_attr_mode_enabled() => inner.as_ref(),
+        other => other,
+    };
+    if let Ast::Name(root) = root_ast
+        && let Some(bound) = vars.get(root.as_str())
+    {
+        return Ok(Cow::Borrowed(bound));
+    }
+
+    Ok(Cow::Owned(eval_ast(value, vars)?))
+}
+
 pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
     match node {
         Ast::Int(i) => Ok(Value::Int(*i)),
@@ -375,87 +465,17 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         }
 
         Ast::Attribute { value, attr } => {
-            // A qualified `{Name.attr}` whose root Name is genuinely unbound —
-            // not an injected eval name, not a function, and absent from the
-            // bindings — is a broken reference (a typo or a missing/renamed
-            // table) and fails loud even in lax mode. Mirrors upstream
-            // `RestrictedEvaluator._eval_attribute` (utils/eval_utils.py at
-            // 66cbcc31b5), where the root is resolved via the base name lookup
-            // and a `NameNotDefined` there becomes a `NameError`. A *bare*
-            // `{col}` (a Name, not an Attribute) and a root that resolves to
-            // None (a sparse-join miss, or an absent schema slot bound to Null)
-            // both stay null — only a root with no possible binding errors.
-            if let Ast::Name(root) = value.as_ref()
-                && !INJECTED_EVAL_NAMES.contains(&root.as_str())
-                && !is_function_name(root)
-            {
-                // PARITY: the root is resolved from the bindings the expression
-                // was given, never from an enclosing comprehension's scope
-                // (`super()._eval_name` bypasses the swapped-in comprehension
-                // name handler), so `x.attr` on a loop variable `x` is refused
-                // in restricted mode; asteval, behind `unrestricted_eval`,
-                // evaluates it. See [`gate::comprehension_root`].
-                match gate::comprehension_root(root) {
-                    gate::ComprehensionRoot::NotATarget => {}
-                    gate::ComprehensionRoot::Outer(outer) => {
-                        return distributed_getattr(&outer, attr);
-                    }
-                    gate::ComprehensionRoot::Unbound => {
-                        let message = format!(
-                            "Attribute access on comprehension-bound '{root}' in '{root}.{attr}' \
-                             is not supported. Building records in an expression bypasses the \
-                             range, cardinality, and datatype coercion applied to derived objects; \
-                             declare a class_derivation keyed on the source range class and reduce \
-                             the slot to populated_from instead."
-                        );
-                        return Err(ExprError::Undefined {
-                            name: root.clone(),
-                            message,
-                        });
-                    }
-                }
-            }
-            if let Ast::Name(root) = value.as_ref()
-                && !INJECTED_EVAL_NAMES.contains(&root.as_str())
-                && !is_function_name(root)
-                && !vars.contains_key(root)
-            {
-                let message = format!(
-                    "Expression references unknown '{root}' in '{root}.{attr}': \
-                     no such source class, join, or slot. Typo or stale reference?"
-                );
-                return Err(ExprError::Undefined {
-                    name: root.clone(),
-                    message,
-                });
-            }
-            // A bound root name (`x.attr`, or `{x}.attr` outside a statement
-            // block, where `{x}` is just `x`) is read in place: `resolve_name`
-            // would clone the whole bound value (a nested record, say) to read
-            // one attribute.
-            let root_ast = match value.as_ref() {
-                Ast::Brace(inner) if !object_attr_mode_enabled() => inner.as_ref(),
-                other => other,
-            };
-            if let Ast::Name(root) = root_ast
-                && let Some(bound) = vars.get(root.as_str())
-            {
-                return distributed_getattr(bound, attr);
-            }
-            let obj = eval_ast(value, vars)?;
+            let obj = attribute_receiver(value, attr, vars)?;
             distributed_getattr(&obj, attr)
         }
 
-        Ast::List(elts) => {
-            let mut out = Vec::with_capacity(elts.len());
-            for e in elts {
-                out.push(eval_ast(e, vars)?);
-            }
-            Ok(Value::List(out))
-        }
+        Ast::List(elts) => syntax::eval_elements(elts, vars, true).map(Value::List),
 
         Ast::Subscript { value, index } => {
             let obj = eval_ast(value, vars)?;
+            if let Ast::Slice { lower, upper, step } = &**index {
+                return syntax::subscript_slice(&obj, lower, upper, step, vars);
+            }
             let idx = eval_ast(index, vars)?;
             eval_subscript(&obj, &idx)
         }
@@ -463,11 +483,7 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         Ast::Tuple(elts) => {
             // Tuples are only meaningful as case() pair arguments; represent as
             // a list so the evaluator can index into them.
-            let mut out = Vec::with_capacity(elts.len());
-            for e in elts {
-                out.push(eval_ast(e, vars)?);
-            }
-            Ok(Value::List(out))
+            syntax::eval_elements(elts, vars, false).map(Value::List)
         }
 
         Ast::Unary { op, operand } => {
@@ -476,6 +492,9 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         }
 
         Ast::Binary { op, left, right } => {
+            if *op == BinOp::MatMul {
+                return syntax::matmul_refused();
+            }
             let l = eval_ast(left, vars)?;
             let r = eval_ast(right, vars)?;
             eval_binary(*op, l, r)
@@ -489,6 +508,17 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         Ast::BoolOp { op, values } => eval_boolop(*op, values, vars),
 
+        Ast::Imag(_)
+        | Ast::Bytes(_)
+        | Ast::Ellipsis
+        | Ast::FString(_)
+        | Ast::Slice { .. }
+        | Ast::Starred(_)
+        | Ast::DictUnpack
+        | Ast::Lambda(_)
+        | Ast::NamedExpr { .. }
+        | Ast::CallValue { .. } => syntax::eval_syntax(node, vars),
+
         Ast::Call {
             func,
             args,
@@ -496,10 +526,7 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         } => {
             // case() arguments are (cond, val) pairs that must be evaluated;
             // they go through the generic arg evaluation below.
-            let mut evaled = Vec::with_capacity(args.len());
-            for a in args {
-                evaled.push(eval_ast(a, vars)?);
-            }
+            let evaled = syntax::eval_call_args(args, vars)?;
             if func == "slot" {
                 if let Some((name, _)) = keywords.first() {
                     return Err(ExprError::Eval(format!(
@@ -511,10 +538,7 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             if keywords.is_empty() {
                 return builtins::call_function(func, evaled);
             }
-            let mut kwargs = Vec::with_capacity(keywords.len());
-            for (name, value) in keywords {
-                kwargs.push((name.clone(), eval_ast(value, vars)?));
-            }
+            let kwargs = syntax::eval_call_keywords(keywords, vars)?;
             builtins::call_function_kw(func, evaled, kwargs)
         }
     }
@@ -599,6 +623,15 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
             Ok(Value::Str(chars[resolved as usize].to_string()))
         }
         Value::Map(m) => {
+            // An unhashable key is a `TypeError`, a rejection; a missing hashable
+            // one a `KeyError`. (PARITY: `m[(1, 2)]`, a tuple key, is hashable
+            // upstream, but a tuple is a list here.)
+            if matches!(idx, Value::List(_) | Value::Map(_)) {
+                return Err(ExprError::Eval(format!(
+                    "unhashable type: '{}'",
+                    type_name(idx)
+                )));
+            }
             let key = match idx {
                 Value::Str(k) => k.clone(),
                 other => py_str(other),
@@ -650,7 +683,7 @@ pub(super) fn object_attr_mode_enabled() -> bool {
     OBJECT_ATTR_MODE.with(|c| c.get())
 }
 
-fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
+pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
         // PARITY: a `NameError` upstream (`_distributed_getattr`), which
         // `_eval_expr` never catches.
@@ -659,6 +692,8 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
         )));
     }
     match obj {
+        // asteval reads an attribute of the list itself (`getattr(list, attr, None)`).
+        Value::List(_) if object_attr_mode_enabled() => pymethods::list_getattr(attr),
         Value::List(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
@@ -686,12 +721,10 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
             Ok(Value::List(out))
         }
         Value::Null => Ok(Value::Null),
-        // A scalar has no attributes; Python getattr would raise AttributeError.
-        // `AttributeError` upstream: not caught by `_eval_expr`.
-        other => Err(ExprError::Uncaught(format!(
-            "value of type {} has no attribute '{attr}'",
-            type_name(other)
-        ))),
+        // A scalar's attributes are those of the Python object (`s.upper`,
+        // `x.real`); a missing one is an `AttributeError` upstream, which
+        // `_eval_expr` does not catch (asteval's `safe_getattr` gives None).
+        other => pymethods::scalar_getattr(other, attr, object_attr_mode_enabled()),
     }
 }
 
@@ -789,10 +822,15 @@ fn eval_compare(
     // Python chained comparison: a OP1 b OP2 c == (a OP1 b) and (b OP2 c),
     // each adjacent pair evaluated independently, b evaluated once.
     let mut cur = eval_ast(left, vars)?;
+    let mut cur_node = left;
     let mut result = Value::Bool(true);
     for (op, rhs_node) in ops.iter().zip(comparators) {
         let rhs = eval_ast(rhs_node, vars)?;
-        let pair = eval_single_compare(*op, &cur, &rhs)?;
+        let pair = if matches!(op, CmpOp::Is | CmpOp::IsNot) {
+            syntax::identity_compare(*op, cur_node, &cur, rhs_node, &rhs)
+        } else {
+            eval_single_compare(*op, &cur, &rhs)?
+        };
         // Short-circuit on a false/null result, like `and`.
         match &pair {
             Value::Bool(true) => {}
@@ -800,6 +838,7 @@ fn eval_compare(
         }
         result = pair;
         cur = rhs;
+        cur_node = rhs_node;
     }
     Ok(result)
 }
@@ -834,6 +873,8 @@ fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Val
                 }
             }
         }
+        // Identity needs the operand expressions: see `syntax::identity_compare`.
+        CmpOp::Is | CmpOp::IsNot => Ok(Value::Bool(false)),
         CmpOp::In | CmpOp::NotIn => {
             // _null_propagating (no coercion wrapper in Python for In/NotIn).
             if left.is_null() || right.is_null() {
@@ -918,6 +959,8 @@ fn cmp_symbol(op: CmpOp) -> &'static str {
         CmpOp::NotEq => "!=",
         CmpOp::In => "in",
         CmpOp::NotIn => "not in",
+        CmpOp::Is => "is",
+        CmpOp::IsNot => "is not",
     }
 }
 
@@ -1141,6 +1184,7 @@ fn binop_symbol(op: BinOp) -> &'static str {
         BinOp::BitAnd => "&",
         BinOp::BitOr => "|",
         BinOp::BitXor => "^",
+        BinOp::MatMul => "@",
     }
 }
 
@@ -1160,6 +1204,7 @@ fn binop_name(op: BinOp) -> &'static str {
         BitAnd => "bitand",
         BitOr => "bitor",
         BitXor => "bitxor",
+        MatMul => "matmul",
     }
 }
 
@@ -1399,6 +1444,8 @@ fn int_binary(op: BinOp, a: i64, b: i64) -> ExprResult<Option<Value>> {
         BinOp::BitAnd => Value::Int(a & b),
         BinOp::BitOr => Value::Int(a | b),
         BinOp::BitXor => Value::Int(a ^ b),
+        // Refused before any operand is evaluated (see `syntax::matmul_refused`).
+        BinOp::MatMul => return Ok(None),
     };
     Ok(Some(v))
 }
@@ -1484,7 +1531,12 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
             Value::Float(float_pow(a, b)?)
         }
         // Bitwise/shift on floats is a TypeError in Python → retry path.
-        BinOp::LShift | BinOp::RShift | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+        BinOp::LShift
+        | BinOp::RShift
+        | BinOp::BitAnd
+        | BinOp::BitOr
+        | BinOp::BitXor
+        | BinOp::MatMul => {
             return Ok(None);
         }
     };

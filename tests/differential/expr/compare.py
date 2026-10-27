@@ -19,6 +19,11 @@ def compare(py: dict, rs: dict) -> dict | None:
         return {"kind": "rs_crash", "rs_kind": rs["err"], "rs_msg": rs.get("message", "")[:200]}
     if rs.get("err") == "unrepresentable":
         return None
+    # A SyntaxError in a statement block is swallowed by asteval (the result is null); Rust
+    # refuses the expression when it parses it (plan-build time), which is deliberate. The
+    # restricted campaign covers parse-level agreement.
+    if py.get("via") == "asteval-block" and py.get("ok", 1) is None and rs.get("err") in ("lex", "parse"):
+        return None
     po, ro = outcome(py), outcome(rs)
     if po == "err" and ro == "err":
         return None

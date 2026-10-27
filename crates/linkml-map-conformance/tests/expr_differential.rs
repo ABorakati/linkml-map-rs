@@ -85,6 +85,8 @@ fn run_with_status(status: &str) -> Vec<String> {
 #[test]
 fn corpus_agreeing_entries_still_match_upstream() {
     let failures = run_with_status("pass");
+    // The quiet panic hook swallows the assertion message below, so print it.
+    eprintln!("{}", failures.join("\n"));
     assert!(
         failures.is_empty(),
         "{} regression(s):\n{}",
@@ -97,6 +99,7 @@ fn corpus_agreeing_entries_still_match_upstream() {
 #[ignore = "divergence: known gaps vs upstream, see tests/differential/expr/corpus (status: divergence)"]
 fn corpus_known_divergences_match_upstream() {
     let failures = run_with_status("divergence");
+    eprintln!("{}", failures.join("\n"));
     assert!(
         failures.is_empty(),
         "{} divergence(s) remain:\n{}",
