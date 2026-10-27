@@ -64,7 +64,9 @@ spec["class_derivations"][0]["name"]                 # 'Agent'
 Native counterpart of upstream `linkml_map.utils.loaders.load_specification`:
 a dict is normalised like a file's contents (dict-keyed `class_derivations`
 become a named list, and so on) and validated against the specification
-datamodel. **Divergence:** upstream returns a pydantic
+datamodel (as upstream's pydantic model: an unknown field is an error, derivation
+sections may be lists, deprecated `sources` / `object_derivations` still load).
+**Divergence:** upstream returns a pydantic
 `TransformationSpecification` and normalises a dict argument in place; the
 native function returns the normalised plain **dict** (a new one) and leaves its
 argument untouched. The `linkml_map` shim below mirrors upstream more closely.

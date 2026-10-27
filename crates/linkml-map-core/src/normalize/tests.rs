@@ -200,7 +200,7 @@ fn nested_class_derivation_synthesizes_join() {
     let mut inner = cd("Obs", "Reading", vec![sd_pf("value", "score")]);
     inner.populated_from = Some("Reading".into());
     let mut readings = sd("readings");
-    readings.class_derivations = Some(std::iter::once(("Obs".to_string(), inner)).collect());
+    readings.class_derivations = Some(vec![inner]);
     let mut spec = spec_with(vec![cd("Result", "Measurement", vec![readings])]);
     synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
     let joins = result_cd(&spec).joins.as_ref().unwrap();

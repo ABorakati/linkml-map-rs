@@ -138,8 +138,8 @@ Each is marked `PARITY:` in the code.
   does, with tables matched like upstream `DataLoader` (directory stems; a single
   file is the table named by `--source-type`, else its stem). Remaining nuance:
   `--source-type` on a directory overrides every block's source type, as
-  upstream, but Rust's lenient source-slot handling then succeeds where upstream
-  fails with "No such slot".
+  upstream, and a `populated_from` (or same-name copy) that is not a slot of that
+  type now fails with "No such slot", as upstream does (closed: error parity).
 - **Unrestricted mode is a native interpreter, not asteval.** The gate is ported
   (`expr/gate.rs`): restricted by default, `--unrestricted-eval` / `with_unrestricted_eval`
   / `unrestricted_eval=` to opt in. Unrestricted blocks cover assignments, `if` and
@@ -171,8 +171,11 @@ Each is marked `PARITY:` in the code.
   conversion removes its staging file.
 - **`validate`:** the schemaview backend does not load `linkml:types` and builtins
   are matched by name, so unknown-range is slightly lenient.
-- **An undeclared target slot is skipped**, not raised as Python's `induced_slot`
-  would.
+- **An undeclared target slot** now raises, as Python's `induced_slot` does
+  (closed: error parity). Not modelled: `induced_slot` also finds a *schema-level* slot the
+  class does not list, and resolves a name through `slot_name_mappings` (`related_to` for
+  `related to`); here only the class's induced slots count, so those cases raise where
+  upstream does not.
 - **`load_specification`** returns a dict-backed `TransformationSpecification`
   stand-in (no pydantic): unset or misspelt fields read `None`.
   `PathNotFoundError` subclasses both `FileNotFoundError` and `ValueError`.
@@ -223,6 +226,15 @@ Each is marked `PARITY:` in the code.
 - `_unrestricted_eval` errors go to asteval's stderr writer and are swallowed
   (a typo such as `src.evnts` silently gives `None`).
 
+- A constant `value: [a, b]` (and `overrides`, `target_definition`, a copy
+  directive's `include`/`exclude`/`add`) is silently truncated to its first
+  element by `ReferenceValidator`, which treats an `Any`-ranged slot as
+  single-valued; `[[...]]` raises `NotImplementedError: List of Lists`.
+- `perform_unit_conversion` ignores `unit_conversion` on a slot with no
+  `populated_from` (`source_obj.get(None)`) instead of using the slot name, and
+  writes a `None` key when `target_magnitude_slot` is set without
+  `target_unit_slot`.
+
 ## Still deferred
 
 - **DuckDB set-based join engine** (`510b0a50ca`) and **SCAN/MIGRATE
@@ -246,10 +258,25 @@ Each is marked `PARITY:` in the code.
   `type: Agent`. Low priority.
 - **`python-compat` CI matrix** is capped at Python 3.13 by PyO3 0.23 (upstream
   supports 3.14).
-- **Three Rust gaps exposed by the `a62221f` triage, not addressed here:** a
-  slot-level `pivot_operation` is ignored by the engine; the UNMELT fallback
-  passes the row through where upstream returns the `id_slots` subset; and a
-  missing source unit is not an error where upstream raises `ValueError`.
+- **The three Rust gaps exposed by the `a62221f` triage are closed** (engine
+  parity pass, port/fixengine): `engine/pivot.rs` is a faithful port of
+  `transformer/pivot.py` (slot-level `pivot_operation` melts; the UNMELT
+  fallback returns the `id_slots` subset; `slot_name_template` follows
+  `str.format`), and a missing source unit is a `ValueError`. The same pass
+  fixed the other engine gaps in the differential corpus: `str(True)` as the
+  `value_mappings` key; `offset` applied before the range coercion with
+  Python's arithmetic (a `TypeError` on a non-numeric operand); `_coerce_cardinality`
+  in upstream's order (a scalar bound for a multivalued target is split on the
+  delimiter; `delimiter.join` raises on non-strings; a reversed JSON/YAML
+  `stringification` parses); a scalar in a multivalued source slot wrapped in
+  `_map_value_by_range` (which needs the induced slot to take the schema's
+  `default_range`, as `SchemaView.induced_slot` does); enum-derivation `expr:`
+  seeing the whole row for an `any_of` enum slot; slot-level `class_derivations`
+  as a *list* (repeated names kept); a scalar for any list field of the spec
+  wrapped; and the `Any`-list collapse extended to `SlotDerivation.value`.
+  Still open: a list of lists in an `Any` field raises `NotImplementedError` at
+  upstream's spec load (here it collapses to its first list), and an unset
+  `target_unit_slot` writes a `None` key upstream (omitted here).
 
 ## Verification
 
@@ -264,3 +291,51 @@ Each is marked `PARITY:` in the code.
 Start from **`1323cc8`** (`v0.6.0-rc1`). If the **`v0.6.0` final tag** exists by
 then, review `1323cc8..v0.6.0` first, since the final release may differ from the
 release candidate.
+
+## Error parity (round 2c)
+
+Where upstream raises, the port now raises (non-zero exit, equivalent message); each is marked
+`PARITY:` in the code and replayed from `tests/differential/corpus`.
+
+- **`validate-spec`** is upstream's command: positional `SPEC_FILES...` (files or directories),
+  `<path>: ok [(with warnings)]` on stdout and the findings on stderr, `--merge`, `--entity`,
+  `--emit-spec`, `--list-entities`, `--no-warnings`, `--strict`, exit status 1 on an error (or a
+  warning under `--strict`). The deprecated-field scan (`spec_scan`) is ported;
+  the structural layer is serde's deserialisation, so its messages differ from jsonschema's
+  (and stop at the first unknown field).
+  `--emit-spec` key order follows the Rust datamodel, not pydantic.
+- **Spec loading is as permissive and as strict as the pydantic model**: `extra="forbid"` at
+  every level (`deny_unknown_fields`), list forms and compact keys everywhere, `copy_directives`
+  keyed by element name, deprecated `sources` / `object_derivations` / `derived_from` accepted
+  and migrated. `SchemaReference` has upstream's fields (`name`, `version`, `schema_uri`,
+  `source_file`); `unit_conversion.molecular_weight` / `valence` remain Rust extensions that
+  upstream rejects.
+- **Engine raises**: a slot that is not on the source class, a derived slot the target class lacks
+  (`_is_coerce_to_*` / `_target_slot_datatype`), a nested derivation without a target schema,
+  an enum-ranged source slot without exactly one enum derivation, a join with a key value and no
+  lookup index or table, a YAML join table (`LookupIndex does not yet support 'yaml' files`).
+- **Laziness**: `CompiledExprs::build` no longer fails the plan on an expression the parser rejects
+  (the row path reports it on first use). Join synthesis still parses every `expr:` while
+  building the plan, because upstream does too (`ast.parse` raises `SyntaxError` there, even with
+  no rows); a Python-valid expression the Rust parser lacks therefore still fails early.
+
+Remaining, not modelled:
+- An explicit `permissible_value_derivations: null` (the legacy `attic/transform-s1-to-s2` spec)
+  makes upstream's `derive-schema` and `transform_enum` raise `AttributeError`; the datamodel cannot
+  tell an explicit null from an absent field, so Rust derives the schema
+  (`tests/derive_schema/cases.json`: `known_divergence`).
+- A populated_from dotted path that is neither a join alias, the source class, an inlined path nor
+  an FK path raises upstream ("requires a matching join spec or FK path"); Rust reads it from the row.
+- A nested derivation with a different `populated_from` and no join spec raises upstream
+  (`no implicit join could be synthesized`); Rust derives it from the parent row.
+- A target schema without `imports: linkml:types` has no `integer` etc. upstream, so nothing is
+  coerced; the schemaview backend treats builtin type names as types regardless.
+- Rows of a joined TSV/CSV table: upstream's `LookupIndex` parses *every* digit-bearing string cell
+  with `int()` then `float()` (`_parse_numeric`); Rust coerces only columns whose schema range is
+  numeric.
+
+Suggested upstream issues (not filed):
+- `schema_mapper._derive_enum` and `transform_enum` crash on an explicit `permissible_value_derivations: null`
+  (pydantic accepts the null; the `default_factory=dict` default only covers an absent field).
+- `LookupIndex.lookup_row` applies `_parse_numeric` to every cell, so a joined text column such as `"007"` becomes `7`.
+- A join over a table with no file fails with DuckDB's `CatalogException` rather than a message naming the join.

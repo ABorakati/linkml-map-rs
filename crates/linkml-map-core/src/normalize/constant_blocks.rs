@@ -128,7 +128,7 @@ pub fn is_constant_slot(slot_deriv: &SlotDerivation) -> bool {
         .as_ref()
         .filter(|n| !n.is_empty())
     {
-        return slot_deriv.value.is_none() && nested.values().all(|cd| reads_no_input(cd, false));
+        return slot_deriv.value.is_none() && nested.iter().all(|cd| reads_no_input(cd, false));
     }
     slot_deriv.value.is_some()
 }

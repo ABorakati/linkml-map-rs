@@ -108,7 +108,7 @@ def sweep(up: Path, mode: str) -> tuple[list[dict], list[dict]]:
         rs_run = H.run_rust(["derive-schema", "-T", str(fx["spec"]), "-s", str(fx["schema"])])
         other.append({"fixture": fx["name"], "cmd": "derive-schema", "res": H.classify("-", up_run, rs_run)})
         vargs_up = ["validate-spec", str(fx["spec"]), "--source-schema", str(fx["schema"])]
-        vargs_rs = ["validate-spec", "-T", str(fx["spec"]), "-s", str(fx["schema"])]
+        vargs_rs = ["validate-spec", str(fx["spec"]), "--source-schema", str(fx["schema"])]
         if fx["target"]:
             vargs_up += ["--target-schema", str(fx["target"])]
             vargs_rs += ["--target-schema", str(fx["target"])]

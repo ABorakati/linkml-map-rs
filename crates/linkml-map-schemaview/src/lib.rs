@@ -663,7 +663,9 @@ impl SchemaViewProvider {
         let def = slot_view.definition();
 
         // -- range --
-        let range = match def.range.as_deref() {
+        // PARITY: `SchemaView.induced_slot` falls back to the schema's
+        // `default_range` for a slot that declares no range.
+        let range = match def.range.as_deref().or(self.cache.default_range.as_deref()) {
             Some(r) => self.classify_range(r),
             None => RangeKind::None,
         };
@@ -1105,6 +1107,39 @@ classes:
             matches!(s1.range, RangeKind::Class(ref c) if c == "Donor"),
             "patched range should be Class(Donor): {:?}",
             s1.range
+        );
+    }
+
+    // PARITY: `SchemaView.induced_slot` gives a slot with no range the schema's
+    // `default_range`.
+    #[test]
+    fn slot_without_range_takes_the_default_range() {
+        const NO_RANGE: &str = r#"
+id: https://example.org/s
+name: s
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+default_range: string
+classes:
+  Row:
+    attributes:
+      tags:
+        multivalued: true
+"#;
+        let p = SchemaViewProvider::from_yaml_str(NO_RANGE).unwrap();
+        let tags = p.induced_slot("tags", "Row").unwrap();
+        assert!(
+            matches!(tags.range, RangeKind::Type(ref t) if t == "string"),
+            "{:?}",
+            tags.range
+        );
+        let no_default = NO_RANGE.replace("default_range: string\n", "");
+        let p = SchemaViewProvider::from_yaml_str(&no_default).unwrap();
+        assert_eq!(
+            p.induced_slot("tags", "Row").unwrap().range,
+            RangeKind::None
         );
     }
 

@@ -628,7 +628,7 @@ class TestObjectTransformerShim:
 class TestDictValueBridge:
     """dict<->Value round-trip: nested dict, list, int, float, str, bool, null."""
 
-    def test_nested_structure_round_trips_faithfully(self) -> None:
+    def test_nested_structure_round_trips_faithfully(self, tmp_path) -> None:
         # A minimal identity-shaped transform spec (populated_from == attribute
         # name for every field) so the ONLY thing under test is the dict<->Value
         # JSON bridge, not derivation logic. Uses the measurements source schema
@@ -650,6 +650,14 @@ class TestDictValueBridge:
         # needs an explicit (identity) `QuantityValue` derivation alongside
         # `Person`, each field its own `populated_from`.
         case = _measurements_case()
+        # Upstream looks every `populated_from` up on the source class (`induced_slot`
+        # raises "No such slot ..."), so `meta` must be declared on QuantityValue: write
+        # a copy of the schema that declares it (a string-ranged slot is copied through
+        # as is, whatever it holds).
+        schema = yaml.safe_load(case.source_schema_path.read_text(encoding="utf-8"))
+        schema["classes"]["QuantityValue"].setdefault("attributes", {})["meta"] = {}
+        schema_path = tmp_path / "quantity_value_meta.yaml"
+        schema_path.write_text(yaml.safe_dump(schema), encoding="utf-8")
         spec_dict = {
             "id": "bridge-roundtrip",
             "class_derivations": {
@@ -671,7 +679,7 @@ class TestDictValueBridge:
             },
         }
         ot = ObjectTransformer(
-            source_schemaview=str(case.source_schema_path),
+            source_schemaview=str(schema_path),
             specification=spec_dict,
         )
         obj = {

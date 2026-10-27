@@ -254,7 +254,7 @@ pub(crate) fn collect_all_joins(class_deriv: &ClassDerivation) -> Result<BTreeMa
             out.insert(table, lookup_key.to_string());
         }
         for (_, sd) in cd.slot_derivations.iter().flatten() {
-            for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+            for nested in sd.class_derivations.iter().flatten() {
                 collect_from(nested, out)?;
             }
         }
@@ -273,7 +273,9 @@ type JoinCache = (BTreeMap<String, String>, Option<Arc<LookupIndex>>);
 ///
 /// Mirrors the registration in `transform_spec`: every table of
 /// [`collect_all_joins`] that has data is registered, and a join whose table has
-/// none is skipped (its reference resolves to null). Upstream registers them for
+/// none is skipped: a reference then fails for a row with a join key value (the engine
+/// raises, as DuckDB does upstream) and is null for one without. A YAML table cannot be
+/// registered (upstream's `LookupIndex` reads CSV, TSV and JSON). Upstream registers them for
 /// the block and drops them when it is done; here the index lives until the next
 /// block needs a different one, so consecutive blocks with the same joins share
 /// it. `None` when the block joins nothing that exists (an empty index would only
@@ -302,6 +304,13 @@ async fn lookup_index_for(
         };
         let fmt = Format::from_path(&file)
             .with_context(|| format!("detecting format of joined table file {}", file.display()))?;
+        // PARITY: `lookup_index._duckdb_read_expr` reads CSV, TSV and JSON only and raises
+        // `NotImplementedError("LookupIndex does not yet support 'yaml' files")` for a YAML
+        // table, when the block registers its joins (so even with no rows to look up).
+        // JSONL tables are a Rust extension (upstream's loader never finds them).
+        if fmt == Format::Yaml {
+            anyhow::bail!("LookupIndex does not yet support 'yaml' files");
+        }
         let rows = load_all_with_numeric_hints(
             &file,
             fmt,
