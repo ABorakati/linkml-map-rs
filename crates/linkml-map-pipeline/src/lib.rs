@@ -39,7 +39,8 @@ use futures::StreamExt;
 use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::{
-        CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer, TargetCoercions,
+        CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer,
+        ResolvedDerivations, TargetCoercions,
     },
     normalize::constant_blocks::{Block, classify_blocks},
     schema::{RangeKind, SchemaProvider},
@@ -191,6 +192,9 @@ pub struct CompiledPlan {
     /// warn-once state), resolved once and shared (by borrow) into every
     /// per-row engine. `None` without a target schema.
     target_coercions: Option<TargetCoercions>,
+    /// Class derivations resolved (and `is_a` / `mixins` merged) once per source
+    /// type, shared (by borrow) into every per-row engine.
+    resolved_derivations: ResolvedDerivations,
     /// Strict mode, applied to every per-row engine. See [`PipelineConfig::strict`].
     strict: bool,
     /// Unrestricted evaluation, applied to every per-row engine. See
@@ -338,6 +342,10 @@ impl CompiledPlan {
             .as_deref()
             .map(|target| TargetCoercions::build(&spec, target));
 
+        // Resolve each source type's class derivation (with its `is_a` /
+        // `mixins` ancestors merged) ONCE, so the per-row engines only look it up.
+        let resolved_derivations = ResolvedDerivations::build(&spec);
+
         // Classify every block once, as upstream `transform_spec` does before it
         // streams anything: merge `is_a`/`mixins`, then tell constants-only
         // blocks (emitted once, reading no input) from row blocks.
@@ -373,6 +381,7 @@ impl CompiledPlan {
             target_provider,
             compiled_exprs,
             target_coercions,
+            resolved_derivations,
             strict: false,
             unrestricted_eval: false,
             source_class,
@@ -565,6 +574,7 @@ impl CompiledPlan {
             engine = engine.with_target_coercions(coercions);
         }
         engine = engine
+            .with_resolved_derivations(&self.resolved_derivations)
             .with_strict_exprs(self.strict)
             .with_unrestricted_eval(self.unrestricted_eval);
         if let Some(ids) = &self.content_ids {

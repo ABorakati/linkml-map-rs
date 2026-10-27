@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 log = { workspace = true }
 deunicode = { workspace = true }
 unicode-normalization = { workspace = true }
+foldhash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

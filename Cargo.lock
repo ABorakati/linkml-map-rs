@@ -1011,6 +1011,7 @@ version = "0.1.28"
 dependencies = [
  "anyhow",
  "deunicode",
+ "foldhash 0.2.0",
  "indexmap",
  "log",
  "proptest",
@@ -1090,6 +1091,7 @@ name = "linkml-map-schemaview"
 version = "0.1.28"
 dependencies = [
  "anyhow",
+ "foldhash 0.2.0",
  "indexmap",
  "linkml-map-core",
  "linkml_meta",
