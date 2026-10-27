@@ -21,6 +21,19 @@ pub enum ExprError {
     /// Evaluation failed (unknown function, bad arity, private attr, ...).
     #[error("eval error: {0}")]
     Eval(String),
+
+    /// A name that has no binding was read. Displays exactly like
+    /// [`ExprError::Eval`]; it is a separate variant so the statement
+    /// interpreter can tell an undefined name (Python `NameError`, which
+    /// upstream re-raises) from every other evaluation error (which asteval
+    /// swallows). See [`crate::expr::stmt::Program::eval`].
+    #[error("eval error: {message}")]
+    Undefined {
+        /// The unbound identifier.
+        name: String,
+        /// The message shown when the error is surfaced as-is.
+        message: String,
+    },
 }
 
 /// Convenience alias.

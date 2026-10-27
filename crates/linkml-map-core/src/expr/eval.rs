@@ -19,8 +19,8 @@ use indexmap::IndexMap;
 use log::warn;
 
 use super::error::{ExprError, ExprResult};
-use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp, parse};
-use super::stmt::{Program, is_multi_statement, parse_program};
+use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
+use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
 use crate::value::Value;
 
 /// Variable bindings: name → value mapping.
@@ -95,12 +95,22 @@ fn strict_mode_enabled() -> bool {
 
 /// Resolve `name` from `vars`, honouring the current strict mode: in lax mode an
 /// unbound name yields [`Value::Null`]; in strict mode it is an error.
+///
+/// PARITY: inside a statement block (see [`with_object_attr_mode`]) an unbound
+/// name is always an error, strict or not. asteval has no lax mode: reading a
+/// name missing from its symbol table is a `NameError`
+/// (`asteval.Interpreter._getsym`), which upstream `_unrestricted_eval`
+/// re-raises as `ValueError`.
 fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
     match vars.get(name) {
         Some(v) => Ok(v.clone()),
         None => {
-            if strict_mode_enabled() {
-                Err(ExprError::Eval(format!("name '{name}' is not defined")))
+            if strict_mode_enabled() || object_attr_mode_enabled() {
+                let message = format!("name '{name}' is not defined");
+                Err(ExprError::Undefined {
+                    name: name.to_string(),
+                    message,
+                })
             } else {
                 Ok(Value::Null)
             }
@@ -199,17 +209,14 @@ pub fn parse_expr(expr: &str) -> ExprResult<ParsedExpr> {
             inner: ParsedInner::NoneLiteral,
         });
     }
-    // Multi-statement (`asteval`-style) blocks route to the statement parser;
-    // single expressions keep the cached single-AST fast path untouched.
-    if is_multi_statement(expr) {
-        let program = parse_program(expr)?;
-        return Ok(ParsedExpr {
-            inner: ParsedInner::Program(program),
-        });
-    }
-    let ast = parse(expr)?;
+    // Statement blocks route to the statement parser; single expressions keep
+    // the cached single-AST fast path untouched. The split mirrors upstream
+    // `_is_statement_block`: whatever parses as one expression is one.
     Ok(ParsedExpr {
-        inner: ParsedInner::Single(ast),
+        inner: match parse_single_or_program(expr)? {
+            SingleOrProgram::Single(ast) => ParsedInner::Single(ast),
+            SingleOrProgram::Program(program) => ParsedInner::Program(program),
+        },
     })
 }
 
@@ -221,7 +228,7 @@ pub fn eval_parsed(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
     match &parsed.inner {
         ParsedInner::NoneLiteral => Ok(Value::Null),
         ParsedInner::Single(ast) => eval_ast(ast, vars),
-        ParsedInner::Program(program) => with_object_attr_mode(|| program.eval(vars)),
+        ParsedInner::Program(program) => program.eval(vars),
     }
 }
 
@@ -280,11 +287,10 @@ pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
     if expr == "None" {
         return Ok(vec![Ast::None]);
     }
-    if is_multi_statement(expr) {
-        let program = parse_program(expr)?;
-        return Ok(program.exprs().into_iter().cloned().collect());
-    }
-    Ok(vec![parse(expr)?])
+    Ok(match parse_single_or_program(expr)? {
+        SingleOrProgram::Single(ast) => vec![ast],
+        SingleOrProgram::Program(program) => program.exprs().into_iter().cloned().collect(),
+    })
 }
 
 fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
@@ -316,10 +322,14 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                 && !is_function_name(root)
                 && !vars.contains_key(root)
             {
-                return Err(ExprError::Eval(format!(
+                let message = format!(
                     "Expression references unknown '{root}' in '{root}.{attr}': \
                      no such source class, join, or slot. Typo or stale reference?"
-                )));
+                );
+                return Err(ExprError::Undefined {
+                    name: root.clone(),
+                    message,
+                });
             }
             let obj = eval_ast(value, vars)?;
             distributed_getattr(&obj, attr)
@@ -443,7 +453,10 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
     match resolved {
         Some(v) => Ok(v),
         None => {
-            if strict_mode_enabled() {
+            // PARITY: in a statement block `slot` is the plain lambda
+            // `tgt_attrs.get(name)` (ObjectTransformer._derive_class), so an
+            // unresolved slot is None there, whatever the strict setting.
+            if strict_mode_enabled() && !object_attr_mode_enabled() {
                 Err(ExprError::Eval(format!(
                     "slot '{slot_name}' is not defined"
                 )))
@@ -542,6 +555,11 @@ pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
     })
 }
 
+/// True while a statement block is being evaluated (see [`with_object_attr_mode`]).
+fn object_attr_mode_enabled() -> bool {
+    OBJECT_ATTR_MODE.with(|c| c.get())
+}
+
 fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
         return Err(ExprError::Eval(format!(
@@ -566,7 +584,7 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
             //    like Python's `DynObj.__getattr__` (vars(self).get(p, None)).
             //  * default (single-expr) mode: distribute over the map's values,
             //    matching `_distributed_getattr` over a bare dict.
-            if OBJECT_ATTR_MODE.with(|c| c.get()) {
+            if object_attr_mode_enabled() {
                 return Ok(Value::Null);
             }
             let mut out = Vec::with_capacity(m.len());

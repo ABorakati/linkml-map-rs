@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::expr::stmt::{is_multi_statement, parse_program};
+use crate::expr::stmt::{is_statement_block, parse_program};
 use crate::expr::{Ast, FUNCTION_NAMES, INJECTED_EVAL_NAMES, expression_asts};
 
 /// Names that must never be treated as slot references in an expression.
@@ -107,7 +107,7 @@ fn parse_for_scan(expr: &str) -> Option<(Vec<Ast>, BTreeSet<String>)> {
     // PARITY: upstream collects `Store`-context ast.Name nodes into `bound`;
     // this crate keeps assignment targets on Stmt::Assign, so recover them from
     // the parsed program (multi-statement exprs only).
-    if is_multi_statement(expr)
+    if is_statement_block(expr)
         && let Ok(program) = parse_program(expr)
     {
         bound.extend(program.assigned_names());
