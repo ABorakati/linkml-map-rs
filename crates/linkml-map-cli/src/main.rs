@@ -121,7 +121,11 @@ struct MapDataArgs {
     output: Option<String>,
 
     /// Source type/class name for the input data.
-    /// When omitted, the engine resolves it from the first class_derivation.
+    /// For a single tabular file: the table the file holds (default: its file stem);
+    /// only class derivations reading that table stream it. For a directory: the
+    /// source type used for every class derivation (default: each one's own table).
+    /// For YAML/JSON input, when omitted the engine resolves it from the first
+    /// class_derivation.
     /// `--source-class` is the earlier Rust name for this flag.
     #[arg(
         long = "source-type",
@@ -186,11 +190,10 @@ struct MapDataArgs {
     #[arg(long = "no-strict", overrides_with = "strict")]
     no_strict: bool,
 
-    /// Allow unrestricted evaluation of expressions. Accepted for drop-in
-    /// compatibility; it has no effect.
-    // PARITY: upstream cli.py `--unrestricted-eval/--no-unrestricted-eval`
-    // gates asteval. The Rust evaluator merges the restricted and unrestricted
-    // paths and always behaves as unrestricted, so both spellings are no-ops.
+    /// Allow unrestricted evaluation of expressions: `expr:` blocks of Python
+    /// statements run with the source object as `src`, and an expression the
+    /// safe evaluator rejects yields null instead of an error. Only use this with
+    /// trusted specifications. The default is the restricted evaluator.
     #[arg(
         long = "unrestricted-eval",
         default_value_t = false,
@@ -198,18 +201,18 @@ struct MapDataArgs {
     )]
     unrestricted_eval: bool,
 
-    /// Restrict expression evaluation (the upstream default). Has no effect.
+    /// Use the restricted evaluator (the default).
     #[arg(long = "no-unrestricted-eval", overrides_with = "unrestricted_eval")]
     no_unrestricted_eval: bool,
 
     /// Input data file, or a directory of tables for multi-table joins.
     ///
     /// A single file (default) is transformed row-by-row. A *directory* enables
-    /// multi-table mode: each file is a named table matched by filename stem to a
-    /// source class, the primary table (the source class) is streamed, and every
-    /// table referenced by a spec `joins:` block is loaded into a lookup index so
-    /// `{Table.col}` join references resolve. Joined tables absent from the
-    /// directory resolve to null.
+    /// multi-table mode: each file is a named table matched by filename stem, every
+    /// class derivation streams its own table in spec order (one with no file is
+    /// skipped), and every table referenced by a spec `joins:` block is loaded into
+    /// a lookup index so `{Table.col}` join references resolve. Joined tables absent
+    /// from the directory resolve to null.
     #[arg(value_name = "INPUT")]
     input: String,
 }
@@ -279,6 +282,7 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
             ..WriteOptions::default()
         },
         strict: args.strict,
+        unrestricted_eval: args.unrestricted_eval,
     };
 
     run_map_data_config_with_options(cfg, args.continue_on_error).await?;
@@ -466,8 +470,13 @@ mod tests {
         assert!(parse(&["--strict"]).strict);
         assert!(!parse(&["--strict", "--no-strict"]).strict);
         assert!(parse(&["--no-strict", "--strict"]).strict);
+        assert!(
+            !parse(&[]).unrestricted_eval,
+            "restricted is the upstream default"
+        );
         assert!(parse(&["--unrestricted-eval"]).unrestricted_eval);
         assert!(!parse(&["--unrestricted-eval", "--no-unrestricted-eval"]).unrestricted_eval);
+        assert!(parse(&["--no-unrestricted-eval", "--unrestricted-eval"]).unrestricted_eval);
     }
 
     /// `-v` accumulates: `-vv` yields `verbose == 2`.

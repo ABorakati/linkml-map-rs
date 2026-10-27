@@ -332,7 +332,7 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
 /// The message of an evaluator error, without the `eval error:` prefix.
 fn expr_cause(e: ExprError) -> String {
     match e {
-        ExprError::Eval(m) | ExprError::Lex(m) | ExprError::Parse(m) => m,
+        ExprError::Eval(m) | ExprError::Uncaught(m) | ExprError::Lex(m) | ExprError::Parse(m) => m,
         other => other.to_string(),
     }
 }

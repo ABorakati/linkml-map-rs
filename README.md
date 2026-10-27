@@ -124,6 +124,16 @@ linkml-tr-rs map-data \
   --source-type Person -o out.jsonl data.jsonl
 ```
 
+**Restricted evaluation is the default**, as upstream: an `expr:` is one
+expression over the source slots (plus `NULL`, join aliases and the built-in
+functions). It has no `src`, runs only the first statement of a block, and
+refuses attribute access on a comprehension variable. A spec that uses
+statement blocks, `src.` accessors or `[x.attr for x in ...]` (upstream's
+`personinfo_basic` is one) needs `--unrestricted-eval`, or
+`unrestricted_eval=True` in Python and `.with_unrestricted_eval(true)` in Rust.
+Only enable it for trusted specs. (Earlier releases always ran unrestricted, so
+this is a behaviour change for existing users.)
+
 Output follows upstream `linkml-map` byte for byte where it can: JSON, JSONL and
 YAML drop `null` slots, stream YAML is a key-sorted multi-document stream, and
 CSV/TSV flatten nested objects with `__`. `-f/--output-format` overrides the
@@ -168,7 +178,9 @@ converted with `str()`, so a `date`/`datetime` anywhere in the input, including 
 `yaml.safe_load`-parsed spec dict passed to `create_transformer_specification`,
 comes back as a plain `str`, never a native `datetime.date`/`datetime.datetime`.
 Schema and specification arguments accept a `str` or `os.PathLike`;
-`ObjectTransformer(..., strict=True)` turns on strict mode, and
+`ObjectTransformer(..., strict=True)` turns on strict mode,
+`ObjectTransformer(..., unrestricted_eval=True)` enables statement blocks (the
+default is the restricted evaluator, as upstream), and
 `linkml_map.load_specification(path_or_dict)` loads and validates a specification.
 
 <details>
@@ -221,6 +233,10 @@ use linkml_map_core::{engine::ObjectTransformer, value::Value};
 let engine = ObjectTransformer::new(spec, Some(&source_provider), None);
 let out = engine.map_container(&input, Some("Person"))?;
 ```
+
+`ObjectTransformer::with_strict_exprs(true)` and
+`with_unrestricted_eval(true)` mirror upstream's `strict` and `unrestricted_eval`;
+the latter defaults to off (restricted evaluation, see the CLI quickstart).
 
 ## Performance
 
@@ -277,13 +293,20 @@ identifier minting (see [Identifiers](#identifiers)), Parquet/DuckDB output
 > slot-level `class_derivations`. `source_schema`/`target_schema` are structured
 > `SchemaReference` objects (a bare string still parses as the schema name).
 
-**Streaming tabular input** (`.tsv`/`.csv` or a directory of tables) applies
-`is_a`/`mixins` inheritance to every field of a class derivation, including
-inherited `joins`. A class derivation built only from constant `value:`s (no
-`populated_from`, `joins`, `copy_directives`, `expr` or row-reading slot, and not
-named after a source class) is emitted **once** and reads no input; a spec made
-only of such blocks needs no data. The pipeline streams one primary table, so a
-spec with several row blocks emits only the first (upstream streams each block).
+**Streaming tabular input** (`.tsv`/`.csv` or a directory of tables) works as
+upstream's `transform_spec`: every class derivation is a *block*, visited in spec
+order. A block built only from constant `value:`s (no `populated_from`, `joins`,
+`copy_directives`, `expr` or row-reading slot, and not named after a source class)
+is emitted **once**, at its position, and reads no input; a spec made only of such
+blocks needs no data. Every other block streams the rows of its own table
+(`populated_from`, else its name), matched like upstream's `DataLoader`: in a
+directory the file with that stem (`.tsv`, `.csv`, `.yaml`, `.yml`, `.json`, then
+`.jsonl`); for a single file only the table named by `--source-type`, else the
+file stem. A block with no table is skipped, and the run fails ("No input data for
+any class derivation") when none has one. `is_a`/`mixins` inheritance, including
+inherited `joins`, applies to every block. Blocks run one after another; rows
+within a block are transformed in parallel. Single YAML/JSON/JSONL input is
+single-object input (one source class, as upstream's `map-data`).
 
 **Not implemented** (out of scope): spec→Python/SQL compilation and JSON-schema
 validation of output.

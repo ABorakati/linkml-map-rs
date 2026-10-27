@@ -26,6 +26,10 @@
 //! (`pathlib.Path`); a missing file raises `PathNotFoundError`, a
 //! `FileNotFoundError` that is also a `ValueError`. `strict=True` is upstream's
 //! `ObjectTransformer.strict` (the engine's `with_strict_exprs`).
+//! `unrestricted_eval=True` is upstream's `ObjectTransformer.unrestricted_eval`
+//! (the engine's `with_unrestricted_eval`); the default, as upstream, is the
+//! restricted evaluator, so a spec that needs statement blocks, `src.` accessors
+//! or comprehension attribute access must opt in.
 //!
 //! ```python
 //! from pathlib import Path
@@ -559,6 +563,7 @@ fn run_transform(
     lookup_index: Option<&Arc<LookupIndex>>,
     compiled_exprs: Option<&CompiledExprs>,
     strict: bool,
+    unrestricted_eval: bool,
 ) -> PyResult<PyObject> {
     let input_value = py_to_value(py, obj)?;
 
@@ -570,6 +575,9 @@ fn run_transform(
     // Upstream `ObjectTransformer(strict=...)`: raise on unresolved expression
     // references instead of warning and yielding null.
     engine = engine.with_strict_exprs(strict);
+    // Upstream `ObjectTransformer(unrestricted_eval=...)`: statement blocks with
+    // `src` and the asteval fallback. Off by default, as upstream.
+    engine = engine.with_unrestricted_eval(unrestricted_eval);
     if let Some(ce) = compiled_exprs {
         engine = engine.with_compiled_exprs(ce);
     }
@@ -617,6 +625,8 @@ struct PyTransformer {
     compiled_exprs: CompiledExprs,
     /// Upstream `ObjectTransformer.strict`; forwarded to the engine on every call.
     strict: bool,
+    /// Upstream `ObjectTransformer.unrestricted_eval`; forwarded to the engine on every call.
+    unrestricted_eval: bool,
     /// Cross-table join data, populated via `register_join_table`. `None`
     /// until the first registration; attached to the engine on every
     /// `transform` / `transform_many` / `map_object` call once present.
@@ -626,13 +636,14 @@ struct PyTransformer {
 #[pymethods]
 impl PyTransformer {
     #[new]
-    #[pyo3(signature = (source_schema, spec, target_schema=None, source_class=None, *, strict=false))]
+    #[pyo3(signature = (source_schema, spec, target_schema=None, source_class=None, *, strict=false, unrestricted_eval=false))]
     fn new(
         source_schema: PathArg,
         spec: PathArg,
         target_schema: Option<PathArg>,
         source_class: Option<String>,
         strict: bool,
+        unrestricted_eval: bool,
     ) -> PyResult<Self> {
         let spec_parsed = load_spec(&spec.0)?;
         let source_provider = load_source_provider(&source_schema.0, &spec_parsed)?;
@@ -651,6 +662,7 @@ impl PyTransformer {
             source_class,
             compiled_exprs,
             strict,
+            unrestricted_eval,
             lookup_index: None,
         })
     }
@@ -659,13 +671,14 @@ impl PyTransformer {
     /// Used by the `linkml_map`-compatible shim, which dumps SchemaView / spec
     /// objects to YAML. Schemas/spec are parsed once here.
     #[staticmethod]
-    #[pyo3(signature = (source_schema_yaml, spec_yaml, target_schema_yaml=None, source_class=None, *, strict=false))]
+    #[pyo3(signature = (source_schema_yaml, spec_yaml, target_schema_yaml=None, source_class=None, *, strict=false, unrestricted_eval=false))]
     fn from_yaml(
         source_schema_yaml: String,
         spec_yaml: String,
         target_schema_yaml: Option<String>,
         source_class: Option<String>,
         strict: bool,
+        unrestricted_eval: bool,
     ) -> PyResult<Self> {
         let spec_parsed = parse_spec_yaml(&spec_yaml)?;
         let source_provider = SchemaViewProvider::from_yaml_str_with_patch(
@@ -692,6 +705,7 @@ impl PyTransformer {
             source_class,
             compiled_exprs,
             strict,
+            unrestricted_eval,
             lookup_index: None,
         })
     }
@@ -699,7 +713,7 @@ impl PyTransformer {
     /// Build from direct Python SchemaView and specification objects (or strings).
     /// Bypasses Python-side YAML dumping/parsing via JSON coercion.
     #[staticmethod]
-    #[pyo3(signature = (source_schemaview, spec, target_schemaview=None, source_class=None, *, strict=false))]
+    #[pyo3(signature = (source_schemaview, spec, target_schemaview=None, source_class=None, *, strict=false, unrestricted_eval=false))]
     fn from_python(
         py: Python<'_>,
         source_schemaview: Bound<'_, PyAny>,
@@ -707,6 +721,7 @@ impl PyTransformer {
         target_schemaview: Option<Bound<'_, PyAny>>,
         source_class: Option<String>,
         strict: bool,
+        unrestricted_eval: bool,
     ) -> PyResult<Self> {
         let mut spec_val = spec_to_json_value(py, &spec)?;
         linkml_map_core::datamodel::normalise_spec_json(&mut spec_val);
@@ -740,6 +755,7 @@ impl PyTransformer {
             source_class,
             compiled_exprs,
             strict,
+            unrestricted_eval,
             lookup_index: None,
         })
     }
@@ -756,6 +772,7 @@ impl PyTransformer {
             self.lookup_index.as_ref(),
             Some(&self.compiled_exprs),
             self.strict,
+            self.unrestricted_eval,
         )
     }
 
@@ -779,6 +796,7 @@ impl PyTransformer {
             self.lookup_index.as_ref(),
             Some(&self.compiled_exprs),
             self.strict,
+            self.unrestricted_eval,
         )
     }
 
@@ -800,6 +818,7 @@ impl PyTransformer {
                     self.lookup_index.as_ref(),
                     Some(&self.compiled_exprs),
                     self.strict,
+                    self.unrestricted_eval,
                 )
             })
             .collect()
@@ -884,7 +903,7 @@ impl PyTransformer {
 /// dict
 ///     The transformed object.
 #[pyfunction]
-#[pyo3(signature = (source_obj, *, source_schema, spec, target_schema=None, source_class=None, strict=false))]
+#[pyo3(signature = (source_obj, *, source_schema, spec, target_schema=None, source_class=None, strict=false, unrestricted_eval=false))]
 fn transform_object(
     py: Python<'_>,
     source_obj: Bound<'_, PyAny>,
@@ -893,6 +912,7 @@ fn transform_object(
     target_schema: Option<PathArg>,
     source_class: Option<String>,
     strict: bool,
+    unrestricted_eval: bool,
 ) -> PyResult<PyObject> {
     let spec_parsed = load_spec(&spec.0)?;
     let source = load_source_provider(&source_schema.0, &spec_parsed)?;
@@ -914,6 +934,7 @@ fn transform_object(
         None,
         Some(&compiled_exprs),
         strict,
+        unrestricted_eval,
     )
 }
 
@@ -937,7 +958,7 @@ fn transform_object(
 /// list[dict]
 ///     List of transformed objects.
 #[pyfunction]
-#[pyo3(signature = (source_objs, *, source_schema, spec, target_schema=None, source_class=None, strict=false))]
+#[pyo3(signature = (source_objs, *, source_schema, spec, target_schema=None, source_class=None, strict=false, unrestricted_eval=false))]
 fn transform_objects(
     py: Python<'_>,
     source_objs: Vec<Bound<'_, PyAny>>,
@@ -946,6 +967,7 @@ fn transform_objects(
     target_schema: Option<PathArg>,
     source_class: Option<String>,
     strict: bool,
+    unrestricted_eval: bool,
 ) -> PyResult<Vec<PyObject>> {
     let spec_parsed = load_spec(&spec.0)?;
     let source = load_source_provider(&source_schema.0, &spec_parsed)?;
@@ -970,6 +992,7 @@ fn transform_objects(
                 None,
                 Some(&compiled_exprs),
                 strict,
+                unrestricted_eval,
             )
         })
         .collect()
