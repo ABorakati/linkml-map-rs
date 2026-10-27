@@ -5,9 +5,14 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  # Weekly randomised differential run vs upstream Python (job `differential`).
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
 
 jobs:
   harness-gate:
+    if: github.event_name != 'schedule'
     # Fails when a changed crates/** path has no owner in harness-ownership.toml,
     # or when the public Rust API / PyO3 binding changed without the Python
     # surface (.pyi / shim / docs). Bypass a single change with [skip-harness]
@@ -38,6 +43,7 @@ jobs:
       run: cargo xtask harness-gate --base "${{ steps.base.outputs.ref }}"
 
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -126,6 +132,7 @@ jobs:
   # protection setting.
   # ───────────────────────────────────────────────────────────────────────────
   python-compat:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -173,3 +180,83 @@ jobs:
     - name: Run PyO3 drop-in compat tests
       run: |
         pytest crates/linkml-map-py/tests/test_compat_api.py -v
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # differential: Rust CLI vs real upstream Python linkml-map, end to end.
+  #
+  # Upstream is installed from its own uv.lock at the PINNED TAG into its own
+  # venv (upstream/.venv), separate from `test` (which installs unpinned
+  # upstream with pip) and from `python-compat` (which must stay upstream-free).
+  # The job runs (1) the deterministic examples sweep and (2) a Hypothesis
+  # campaign: time-boxed (~5 min, fixed seed) on PRs, longer and randomly seeded
+  # on the weekly schedule. Counterexamples (shrunk, with upstream's expected
+  # output) are uploaded as artefacts. Known divergences are listed in
+  # tests/differential/known_sweep_divergences.txt and in the corpus
+  # (expected_divergence.md); only NEW divergences fail the job. The corpus
+  # replay itself runs without Python in `cargo test` (test job).
+  # ───────────────────────────────────────────────────────────────────────────
+  differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Checkout upstream linkml-map at the pinned tag
+      uses: actions/checkout@v4
+      with:
+        repository: linkml/linkml-map
+        ref: v0.6.0-rc1
+        path: upstream/linkml-map
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Install upstream linkml-map (frozen lock) + hypothesis into its own venv
+      working-directory: upstream/linkml-map
+      run: |
+        uv sync --frozen
+        uv pip install --python .venv/bin/python 'hypothesis==6.170.0'
+
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Build the Rust CLI
+      run: cargo build --release -p linkml-map-cli
+
+    - name: Examples sweep
+      env:
+        UPSTREAM_PY: ${{ github.workspace }}/upstream/linkml-map/.venv/bin/python
+        UPSTREAM_DIR: ${{ github.workspace }}/upstream/linkml-map
+        LINKML_TR_RS: ${{ github.workspace }}/target/release/linkml-tr-rs
+      run: tests/differential/run.sh --examples --fail-on-diff --report "$RUNNER_TEMP/examples_report.md"
+
+    - name: Hypothesis campaign
+      env:
+        UPSTREAM_PY: ${{ github.workspace }}/upstream/linkml-map/.venv/bin/python
+        UPSTREAM_DIR: ${{ github.workspace }}/upstream/linkml-map
+        LINKML_TR_RS: ${{ github.workspace }}/target/release/linkml-tr-rs
+      run: |
+        if [ "${{ github.event_name }}" = "schedule" ]; then
+          SEED="${{ github.run_id }}"; BUDGET=3000
+        else
+          SEED=1; BUDGET=300
+        fi
+        tests/differential/run.sh --fuzz 1000000 --seed "$SEED" --time-budget "$BUDGET" \
+          --corpus "$RUNNER_TEMP/counterexamples" --fail-on-diff --known-from-corpus
+
+    - name: Upload counterexamples and reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: differential-results
+        path: |
+          ${{ runner.temp }}/counterexamples
+          ${{ runner.temp }}/examples_report.md
+        if-no-files-found: ignore
