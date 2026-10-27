@@ -95,6 +95,9 @@ RULES = [
      "Rust's YAML/spec reader rejects integers outside i64/u64 (`JSON number out of range`) and TSV integers above i64 stay strings; Python ints are arbitrary precision.",
      lambda c, f: "number out of range" in rs_msg(f) or has(c, r"\d{19,}") or any(
          re.search(r"\d{19,}", p.read_text()) for p in (c["dir"] / "data").rglob("*") if p.is_file())),
+    ("rust-gap: TSV/CSV numeric-column parsing (e.g. '1.0' in an integer column)",
+     "Upstream's delimited loader tries int then float on numeric-range columns ('1.0' -> 1.0 -> 1); Rust keeps the string and int('1.0') fails.",
+     lambda c, f: "invalid literal for int()" in rs_msg(f) and f["up_out"] is not None),
     ("port:exprsyntax: expression syntax not supported",
      "Rust's expression parser rejects syntax upstream's evaluator accepts (reported at plan-compile time, even with no rows).",
      lambda c, f: "parse error" in rs_msg(f) or "could not parse expression" in rs_msg(f)),
@@ -109,7 +112,7 @@ RULES = [
      lambda c, f: "does not support item assignment" in up_msg(f)),
     ("upstream-quirk: list-valued `value:` truncated to its first element",
      "Upstream's spec loader keeps only the first item of `value: [a, b]`; Rust keeps the list.",
-     lambda c, f: has(c, r"(?ms)value:\n\s+- ") and f["up_out"] is not None and f["rs_out"] is not None),
+     lambda c, f: has(c, r"(?m)^\s+value:\n\s+- ") and f["up_out"] is not None and f["rs_out"] is not None),
     ("port:restricted-eval: restricted evaluator gate",
      "Upstream's default (restricted) evaluator rejects what Rust (always unrestricted) evaluates.",
      lambda c, f: "--unrestricted-eval" not in c["flags"] and f["up_err"] is not None and f["rs_out"] is not None

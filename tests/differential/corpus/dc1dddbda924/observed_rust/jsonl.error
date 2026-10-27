@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "compiling plan: loading spec /home/user/wt/difffuzz/tests/differential/corpus/dc1dddbda924/spec.yaml: parsing transform YAML: class_derivations.Agent.slot_derivations.out_a.value: JSON number out of range at line 9 column 16"
+}

@@ -1,5 +1,5 @@
 {
   "exit_code": 1,
   "class": "error",
-  "message": "compiling plan: synthesizing implicit joins for spec /tmp/claude-0/cap2/a8c78e8ca56d/spec.yaml: could not parse expression during join synthesis: parse error: expected RParen, found Name(\"v\")"
+  "message": "compiling plan: synthesizing implicit joins for spec /home/user/wt/difffuzz/tests/differential/corpus/9221eb7f362d/spec.yaml: could not parse expression during join synthesis: parse error: expected RParen, found Name(\"v\")"
 }

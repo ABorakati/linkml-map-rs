@@ -1,5 +1,5 @@
 {
   "exit_code": 1,
   "class": "error",
-  "message": "writing output to -: transform error at row 0: transform error: transformation error in 'Agent.name': expr eval failed for slot 'name' in class 'Person': eval error: name 'score' is not defined"
+  "message": "writing output to -: transform error at row 0: transformation error in 'Agent.name': expr eval failed for slot 'name' in class 'Person': eval error: name 'score' is not defined"
 }

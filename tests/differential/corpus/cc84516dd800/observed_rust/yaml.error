@@ -1,5 +1,5 @@
 {
   "exit_code": 1,
   "class": "error",
-  "message": "compiling plan: loading spec /tmp/claude-0/cap2/a4807fb6da0b/spec.yaml: parsing spec /tmp/claude-0/cap2/a4807fb6da0b/spec.yaml: invalid type: sequence, expected a map"
+  "message": "compiling plan: loading spec /home/user/wt/difffuzz/tests/differential/corpus/cc84516dd800/spec.yaml: parsing spec /home/user/wt/difffuzz/tests/differential/corpus/cc84516dd800/spec.yaml: invalid type: sequence, expected a map"
 }

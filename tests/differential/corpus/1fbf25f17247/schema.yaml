@@ -1,0 +1,22 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+types:
+  MyStr:
+    typeof: string
+    description: a string type
+  MyInt:
+    typeof: integer
+classes:
+  Person:
+    attributes:
+      id:
+        range: string
+        identifier: true
+      name:
+        range: string
