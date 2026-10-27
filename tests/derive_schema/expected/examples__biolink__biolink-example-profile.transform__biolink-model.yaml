@@ -1,0 +1,670 @@
+name: Biolink-Model-derived
+id: https://w3id.org/biolink/biolink-model-derived
+imports:
+- linkml:types
+prefixes:
+  AGRKB:
+    prefix_prefix: AGRKB
+    prefix_reference: https://www.alliancegenome.org/
+  apollo:
+    prefix_prefix: apollo
+    prefix_reference: https://github.com/GMOD/Apollo
+  AspGD:
+    prefix_prefix: AspGD
+    prefix_reference: http://www.aspergillusgenome.org/cgi-bin/locus.pl?dbid=
+  biolink:
+    prefix_prefix: biolink
+    prefix_reference: https://w3id.org/biolink/vocab/
+  bioschemas:
+    prefix_prefix: bioschemas
+    prefix_reference: https://bioschemas.org/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  CAID:
+    prefix_prefix: CAID
+    prefix_reference: http://reg.clinicalgenome.org/redmine/projects/registry/genboree_registry/by_caid?caid=
+  CHADO:
+    prefix_prefix: CHADO
+    prefix_reference: http://gmod.org/wiki/Chado/
+  ChemBank:
+    prefix_prefix: ChemBank
+    prefix_reference: http://chembank.broadinstitute.org/chemistry/viewMolecule.htm?cbid=
+  CHEMBL.MECHANISM:
+    prefix_prefix: CHEMBL.MECHANISM
+    prefix_reference: https://www.ebi.ac.uk/chembl/mechanism/inspect/
+  CID:
+    prefix_prefix: CID
+    prefix_reference: http://pubchem.ncbi.nlm.nih.gov/compound/
+  CLINVAR:
+    prefix_prefix: CLINVAR
+    prefix_reference: http://identifiers.org/clinvar
+  COAR_RESOURCE:
+    prefix_prefix: COAR_RESOURCE
+    prefix_reference: http://purl.org/coar/resource_type/
+  COG:
+    prefix_prefix: COG
+    prefix_reference: https://www.ncbi.nlm.nih.gov/research/cog-project/
+  ComplexPortal:
+    prefix_prefix: ComplexPortal
+    prefix_reference: https://www.ebi.ac.uk/complexportal/complex/
+  CPT:
+    prefix_prefix: CPT
+    prefix_reference: https://www.ama-assn.org/practice-management/cpt/
+  CTD.CHEMICAL:
+    prefix_prefix: CTD.CHEMICAL
+    prefix_reference: http://ctdbase.org/detail.go?type=chem&acc=
+  CTD.DISEASE:
+    prefix_prefix: CTD.DISEASE
+    prefix_reference: http://ctdbase.org/detail.go?type=disease&db=MESH&acc=
+  CTD.GENE:
+    prefix_prefix: CTD.GENE
+    prefix_reference: http://ctdbase.org/detail.go?type=gene&acc=
+  CTD:
+    prefix_prefix: CTD
+    prefix_reference: http://ctdbase.org/
+  DGIdb:
+    prefix_prefix: DGIdb
+    prefix_reference: https://www.dgidb.org/interaction_types
+  dcat:
+    prefix_prefix: dcat
+    prefix_reference: http://www.w3.org/ns/dcat#
+  dct:
+    prefix_prefix: dct
+    prefix_reference: http://purl.org/dc/terms/
+  dcid:
+    prefix_prefix: dcid
+    prefix_reference: https://datacommons.org/browser/
+  doi:
+    prefix_prefix: doi
+    prefix_reference: https://doi.org/
+  DOID-PROPERTY:
+    prefix_prefix: DOID-PROPERTY
+    prefix_reference: http://purl.obolibrary.org/obo/doid#
+  DrugCentral:
+    prefix_prefix: DrugCentral
+    prefix_reference: http://drugcentral.org/drugcard/
+  ECTO:
+    prefix_prefix: ECTO
+    prefix_reference: http://purl.obolibrary.org/obo/ECTO_
+  EDAM-DATA:
+    prefix_prefix: EDAM-DATA
+    prefix_reference: http://edamontology.org/data_
+  EDAM-FORMAT:
+    prefix_prefix: EDAM-FORMAT
+    prefix_reference: http://edamontology.org/format_
+  EDAM-OPERATION:
+    prefix_prefix: EDAM-OPERATION
+    prefix_reference: http://edamontology.org/operation_
+  EDAM-TOPIC:
+    prefix_prefix: EDAM-TOPIC
+    prefix_reference: http://edamontology.org/topic_
+  EFO:
+    prefix_prefix: EFO
+    prefix_reference: http://www.ebi.ac.uk/efo/EFO_
+  ExO:
+    prefix_prefix: ExO
+    prefix_reference: http://purl.obolibrary.org/obo/ExO_
+  fabio:
+    prefix_prefix: fabio
+    prefix_reference: http://purl.org/spar/fabio/
+  foaf:
+    prefix_prefix: foaf
+    prefix_reference: http://xmlns.com/foaf/0.1/
+  foodb.food:
+    prefix_prefix: foodb.food
+    prefix_reference: http://foodb.ca/compounds/
+  foodb.compound:
+    prefix_prefix: foodb.compound
+    prefix_reference: http://foodb.ca/foods/
+  FYECO:
+    prefix_prefix: FYECO
+    prefix_reference: https://www.pombase.org/term/
+  FYPO:
+    prefix_prefix: FYPO
+    prefix_reference: http://purl.obolibrary.org/obo/FYPO_
+  gff3:
+    prefix_prefix: gff3
+    prefix_reference: https://github.com/The-Sequence-Ontology/Specifications/blob/master/gff3.md#
+  GOREL:
+    prefix_prefix: GOREL
+    prefix_reference: http://purl.obolibrary.org/obo/GOREL_
+  GOP:
+    prefix_prefix: GOP
+    prefix_reference: http://purl.obolibrary.org/obo/go#
+  gpi:
+    prefix_prefix: gpi
+    prefix_reference: https://github.com/geneontology/go-annotation/blob/master/specs/gpad-gpi-2-0.md#
+  GSID:
+    prefix_prefix: GSID
+    prefix_reference: https://scholar.google.com/citations?user=
+  GTEx:
+    prefix_prefix: GTEx
+    prefix_reference: https://www.gtexportal.org/home/gene/
+  GTOPDB:
+    prefix_prefix: GTOPDB
+    prefix_reference: https://www.guidetopharmacology.org/GRAC/LigandDisplayForward?ligandId=
+  gtpo:
+    prefix_prefix: gtpo
+    prefix_reference: https://rdf.guidetopharmacology.org/ns/gtpo#
+  HANCESTRO:
+    prefix_prefix: HANCESTRO
+    prefix_reference: http://www.ebi.ac.uk/ancestro/ancestro_
+  HCPCS:
+    prefix_prefix: HCPCS
+    prefix_reference: http://purl.bioontology.org/ontology/HCPCS/
+  HsapDv:
+    prefix_prefix: HsapDv
+    prefix_reference: http://purl.obolibrary.org/obo/HsapDv_
+  ICD10:
+    prefix_prefix: ICD10
+    prefix_reference: https://icd.codes/icd9cm/
+  ICD9:
+    prefix_prefix: ICD9
+    prefix_reference: http://translator.ncats.nih.gov/ICD9_
+  interpro:
+    prefix_prefix: interpro
+    prefix_reference: https://www.ebi.ac.uk/interpro/entry/
+  INO:
+    prefix_prefix: INO
+    prefix_reference: http://purl.obolibrary.org/obo/INO_
+  isbn:
+    prefix_prefix: isbn
+    prefix_reference: https://www.isbn-international.org/identifier/
+  isni:
+    prefix_prefix: isni
+    prefix_reference: https://isni.org/isni/
+  issn:
+    prefix_prefix: issn
+    prefix_reference: https://portal.issn.org/resource/ISSN/
+  ncats.drug:
+    prefix_prefix: ncats.drug
+    prefix_reference: https://drugs.ncats.io/drug/
+  KEGG.BRITE:
+    prefix_prefix: KEGG.BRITE
+    prefix_reference: http://www.kegg.jp/entry/
+  KEGG.DGROUP:
+    prefix_prefix: KEGG.DGROUP
+    prefix_reference: http://www.kegg.jp/entry/
+  KEGG.ENZYME:
+    prefix_prefix: KEGG.ENZYME
+    prefix_reference: http://www.kegg.jp/entry/
+  KEGG.GENE:
+    prefix_prefix: KEGG.GENE
+    prefix_reference: http://www.kegg.jp/entry/
+  KEGG.PATHWAY:
+    prefix_prefix: KEGG.PATHWAY
+    prefix_reference: https://www.kegg.jp/entry/
+  KEGG.RCLASS:
+    prefix_prefix: KEGG.RCLASS
+    prefix_reference: http://www.kegg.jp/entry/
+  LOINC:
+    prefix_prefix: LOINC
+    prefix_reference: http://loinc.org/rdf/
+  MAXO:
+    prefix_prefix: MAXO
+    prefix_reference: http://purl.obolibrary.org/obo/MAXO_
+  medgen:
+    prefix_prefix: medgen
+    prefix_reference: https://www.ncbi.nlm.nih.gov/medgen/
+  metacyc.reaction:
+    prefix_prefix: metacyc.reaction
+    prefix_reference: 'http://identifiers.org/metacyc.reaction:'
+  METANETX.REACTION:
+    prefix_prefix: METANETX.REACTION
+    prefix_reference: https://www.metanetx.org/equa_info/
+  MESH:
+    prefix_prefix: MESH
+    prefix_reference: http://id.nlm.nih.gov/mesh/
+  MI:
+    prefix_prefix: MI
+    prefix_reference: http://purl.obolibrary.org/obo/MI_
+  mirbase:
+    prefix_prefix: mirbase
+    prefix_reference: http://identifiers.org/mirbase
+  mmmp.biomaps:
+    prefix_prefix: mmmp.biomaps
+    prefix_reference: 'https://bioregistry.io/mmmp.biomaps:'
+  MmusDv:
+    prefix_prefix: MmusDv
+    prefix_reference: http://purl.obolibrary.org/obo/MMUSDV_
+  MSigDB:
+    prefix_prefix: MSigDB
+    prefix_reference: https://www.gsea-msigdb.org/gsea/msigdb/
+  NBO-PROPERTY:
+    prefix_prefix: NBO-PROPERTY
+    prefix_reference: http://purl.obolibrary.org/obo/nbo#
+  ncats.bioplanet:
+    prefix_prefix: ncats.bioplanet
+    prefix_reference: https://tripod.nih.gov/bioplanet/detail.jsp?pid=
+  NCBIGene:
+    prefix_prefix: NCBIGene
+    prefix_reference: http://identifiers.org/ncbigene/
+  NCIT-OBO:
+    prefix_prefix: NCIT-OBO
+    prefix_reference: http://purl.obolibrary.org/obo/ncit#
+  NDDF:
+    prefix_prefix: NDDF
+    prefix_reference: http://purl.bioontology.org/ontology/NDDF/
+  NLMID:
+    prefix_prefix: NLMID
+    prefix_reference: https://www.ncbi.nlm.nih.gov/nlmcatalog/?term=
+  OBAN:
+    prefix_prefix: OBAN
+    prefix_reference: http://purl.org/oban/
+  oboformat:
+    prefix_prefix: oboformat
+    prefix_reference: http://www.geneontology.org/formats/oboInOwl#
+  OMIM.PS:
+    prefix_prefix: OMIM.PS
+    prefix_reference: https://www.omim.org/phenotypicSeries/
+  ORCID:
+    prefix_prefix: ORCID
+    prefix_reference: https://orcid.org/
+  orphanet:
+    prefix_prefix: orphanet
+    prefix_reference: http://www.orpha.net/ORDO/Orphanet_
+  os:
+    prefix_prefix: os
+    prefix_reference: https://github.com/cmungall/owlstar/blob/master/owlstar.ttl
+  PANTHER.FAMILY:
+    prefix_prefix: PANTHER.FAMILY
+    prefix_reference: http://www.pantherdb.org/panther/family.do?clsAccession=
+  PathWhiz:
+    prefix_prefix: PathWhiz
+    prefix_reference: http://smpdb.ca/pathways/#
+  pav:
+    prefix_prefix: pav
+    prefix_reference: http://purl.org/pav/
+  PHAROS:
+    prefix_prefix: PHAROS
+    prefix_reference: http://pharos.nih.gov
+  PomBase:
+    prefix_prefix: PomBase
+    prefix_reference: https://www.pombase.org/gene/
+  prov:
+    prefix_prefix: prov
+    prefix_reference: http://www.w3.org/ns/prov#
+  qud:
+    prefix_prefix: qud
+    prefix_reference: http://qudt.org/1.1/schema/qudt#
+  REPODB:
+    prefix_prefix: REPODB
+    prefix_reference: http://apps.chiragjpgroup.org/repoDB/
+  ResearchID:
+    prefix_prefix: ResearchID
+    prefix_reference: https://publons.com/researcher/
+  RO:
+    prefix_prefix: RO
+    prefix_reference: http://purl.obolibrary.org/obo/RO_
+  RXNORM:
+    prefix_prefix: RXNORM
+    prefix_reference: http://purl.bioontology.org/ontology/RXNORM/
+  RXCUI:
+    prefix_prefix: RXCUI
+    prefix_reference: https://mor.nlm.nih.gov/RxNav/search?searchBy=RXCUI&searchTerm=
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+  ScopusID:
+    prefix_prefix: ScopusID
+    prefix_reference: https://www.scopus.com/authid/detail.uri?authorId=
+  SEED.REACTION:
+    prefix_prefix: SEED.REACTION
+    prefix_reference: https://modelseed.org/biochem/reactions/
+  SEMMEDDB:
+    prefix_prefix: SEMMEDDB
+    prefix_reference: https://skr3.nlm.nih.gov/SemMedDB
+  SIO:
+    prefix_prefix: SIO
+    prefix_reference: http://semanticscience.org/resource/SIO_
+  SNOMEDCT:
+    prefix_prefix: SNOMEDCT
+    prefix_reference: http://snomed.info/id/
+  SPDI:
+    prefix_prefix: SPDI
+    prefix_reference: https://api.ncbi.nlm.nih.gov/variation/v0/spdi/
+  UBERGRAPH:
+    prefix_prefix: UBERGRAPH
+    prefix_reference: http://translator.renci.org/ubergraph-axioms.ofn#
+  UBERON_CORE:
+    prefix_prefix: UBERON_CORE
+    prefix_reference: http://purl.obolibrary.org/obo/uberon/core#
+  UBERON_NONAMESPACE:
+    prefix_prefix: UBERON_NONAMESPACE
+    prefix_reference: http://purl.obolibrary.org/obo/core#
+  STY:
+    prefix_prefix: STY
+    prefix_reference: http://purl.bioontology.org/ontology/STY/
+  UMLSSG:
+    prefix_prefix: UMLSSG
+    prefix_reference: https://lhncbc.nlm.nih.gov/semanticnetwork/download/sg_archive/SemGroups-v04.txt
+  UniProtKB:
+    prefix_prefix: UniProtKB
+    prefix_reference: http://purl.uniprot.org/uniprot/
+  UNIPROT.ISOFORM:
+    prefix_prefix: UNIPROT.ISOFORM
+    prefix_reference: http://purl.uniprot.org/isoforms/
+  VANDF:
+    prefix_prefix: VANDF
+    prefix_reference: https://www.nlm.nih.gov/research/umls/sourcereleasedocs/current/VANDF/
+  UO-PROPERTY:
+    prefix_prefix: UO-PROPERTY
+    prefix_reference: http://purl.obolibrary.org/obo/uo#
+  VMC:
+    prefix_prefix: VMC
+    prefix_reference: https://github.com/ga4gh/vr-spec/
+  WBls:
+    prefix_prefix: WBls
+    prefix_reference: http://purl.obolibrary.org/obo/WBBL_
+  WBbt:
+    prefix_prefix: WBbt
+    prefix_reference: http://purl.obolibrary.org/obo/WBBT_
+  WBVocab:
+    prefix_prefix: WBVocab
+    prefix_reference: http://bio2rdf.org/wormbase_vocabulary
+  WIKIDATA:
+    prefix_prefix: WIKIDATA
+    prefix_reference: https://www.wikidata.org/wiki/
+  WIKIDATA_PROPERTY:
+    prefix_prefix: WIKIDATA_PROPERTY
+    prefix_reference: 'https://www.wikidata.org/wiki/Property:'
+  wgs:
+    prefix_prefix: wgs
+    prefix_reference: http://www.w3.org/2003/01/geo/wgs84_pos
+  XPO:
+    prefix_prefix: XPO
+    prefix_reference: http://purl.obolibrary.org/obo/XPO_
+  Xenbase:
+    prefix_prefix: Xenbase
+    prefix_reference: http://www.xenbase.org/gene/showgene.do?method=display&geneId=
+default_prefix: https://w3id.org/biolink/biolink-model-derived/
+default_range: string
+classes:
+  NamedThing:
+    name: NamedThing
+    description: a databased entity or concept/class
+    exact_mappings:
+    - BFO:0000001
+    - WIKIDATA:Q35120
+    - UMLSSG:OBJC
+    - STY:T071
+    - dcid:Thing
+    attributes:
+      id:
+        name: id
+        description: A unique identifier for an entity. Must be either a CURIE shorthand
+          for a URI or a complete URI
+        in_subset:
+        - translator_minimal
+        exact_mappings:
+        - AGRKB:primaryId
+        - gff3:ID
+        - gpi:DB_Object_ID
+        domain: entity
+        identifier: true
+        required: true
+      name:
+        name: name
+        description: A human-readable name for an attribute or entity.
+        in_subset:
+        - translator_minimal
+        - samples
+        aliases:
+        - label
+        - display name
+        - title
+        exact_mappings:
+        - gff3:Name
+        - gpi:DB_Object_Name
+        narrow_mappings:
+        - dct:title
+        - WIKIDATA_PROPERTY:P1476
+        domain: entity
+        slot_uri: rdfs:label
+        range: label type
+      category:
+        name: category
+        description: "Name of the high level ontology class in which this entity is\
+          \ categorized. Corresponds to the label for the biolink entity type class.\n\
+          \ * In a neo4j database this MAY correspond to the neo4j label tag.\n *\
+          \ In an RDF database it should be a biolink model class URI.\nThis field\
+          \ is multi-valued. It should include values for ancestors of the biolink\
+          \ class; for example, a protein such as Shh would have category values `biolink:Protein`,\
+          \ `biolink:GeneProduct`, `biolink:MolecularEntity`, ...\nIn an RDF database,\
+          \ nodes will typically have an rdf:type triples. This can be to the most\
+          \ specific biolink class, or potentially to a class more specific than something\
+          \ in biolink. For example, a sequence feature `f` may have a rdf:type assertion\
+          \ to a SO class such as TF_binding_site, which is more specific than anything\
+          \ in biolink. Here we would have categories {biolink:GenomicEntity, biolink:MolecularEntity,\
+          \ biolink:NamedThing}"
+        in_subset:
+        - translator_minimal
+        is_a: type
+        domain: entity
+        designates_type: true
+        is_class_field: true
+        range: category type
+        multivalued: true
+  Gene:
+    name: Gene
+    id_prefixes:
+    - NCBIGene
+    - ENSEMBL
+    - HGNC
+    - MGI
+    - ZFIN
+    - dictyBase
+    - WB
+    - WormBase
+    - FB
+    - RGD
+    - SGD
+    - PomBase
+    - OMIM
+    - KEGG.GENE
+    - UMLS
+    - Xenbase
+    - AspGD
+    description: A region (or regions) that includes all of the sequence elements
+      necessary to encode a functional transcript. A gene locus may include regulatory
+      regions, transcribed regions and/or other functional sequence regions.
+    in_subset:
+    - translator_minimal
+    - model_organism_database
+    exact_mappings:
+    - SO:0000704
+    - SIO:010035
+    - WIKIDATA:Q7187
+    - dcid:Gene
+    narrow_mappings:
+    - bioschemas:Gene
+    broad_mappings:
+    - NCIT:C45822
+    is_a: NamedThing
+    attributes:
+      symbol:
+        name: symbol
+        description: Symbol for a particular thing
+        exact_mappings:
+        - AGRKB:symbol
+        - gpi:DB_Object_Symbol
+        is_a: node property
+        domain: named thing
+  Disease:
+    name: Disease
+    id_prefixes:
+    - MONDO
+    description: A disorder of structure or function, especially one that produces
+      specific  signs, phenotypes or symptoms or that affects a specific location
+      and is not simply a  direct result of physical injury.  A disposition to undergo
+      pathological processes that exists in an  organism because of one or more disorders
+      in that organism.
+    in_subset:
+    - model_organism_database
+    aliases:
+    - condition
+    - disorder
+    - medical condition
+    exact_mappings:
+    - MONDO:0000001
+    - DOID:4
+    - NCIT:C2991
+    - WIKIDATA:Q12136
+    - SIO:010299
+    - UMLSSG:DISO
+    - STY:T047
+    - dcid:Disease
+    narrow_mappings:
+    - STY:T019
+    - STY:T020
+    - STY:T048
+    - STY:T049
+    - STY:T190
+    - STY:T191
+    - MONDO:0042489
+    is_a: NamedThing
+  PhenotypicFeature:
+    name: PhenotypicFeature
+    id_prefixes:
+    - HP
+    - EFO
+    - NCIT
+    - UMLS
+    - MEDDRA
+    - MP
+    - ZP
+    - UPHENO
+    - APO
+    - FBcv
+    - WBPhenotype
+    - SNOMEDCT
+    - MESH
+    - XPO
+    - FYPO
+    - TO
+    description: A combination of entity and quality that makes up a phenotyping statement.
+      An observable characteristic of an  individual resulting from the interaction
+      of its genotype with its molecular and physical environment.
+    examples:
+    - value: MP:0001262
+      description: decreased body weight
+    in_subset:
+    - model_organism_database
+    aliases:
+    - sign
+    - symptom
+    - phenotype
+    - trait
+    - endophenotype
+    exact_mappings:
+    - UPHENO:0001001
+    - SIO:010056
+    - WIKIDATA:Q104053
+    - UMLS:C4021819
+    - NCIT:C16977
+    - SNOMEDCT:8116006
+    - MESH:D010641
+    narrow_mappings:
+    - STY:T184
+    - WIKIDATA:Q169872
+    - WIKIDATA:Q25203551
+    - ZP:00000000
+    - FBcv:0001347
+    - HP:0000118
+    - MP:0000001
+    - WBPhenotype:0000886
+    - XPO:00000000
+    - FYPO:0000001
+    - APO:0000017
+    - TO:0000387
+    broad_mappings:
+    - BFO:0000019
+    - PATO:0000001
+    is_a: NamedThing
+  Association:
+    name: Association
+    description: A typed association between two entities, supported by evidence
+    comments:
+    - This is roughly the model used by biolink and ontobio at the moment
+    exact_mappings:
+    - OBAN:association
+    - rdf:Statement
+    - owl:Axiom
+    attributes:
+      subject:
+        name: subject
+        local_names:
+          ga4gh:
+            local_name_source: ga4gh
+            local_name_value: annotation subject
+          neo4j:
+            local_name_source: neo4j
+            local_name_value: node with outgoing relationship
+        description: connects an association to the subject of the association. For
+          example, in a gene-to-phenotype association, the gene is subject and phenotype
+          is object.
+        exact_mappings:
+        - owl:annotatedSource
+        - OBAN:association_has_subject
+        is_a: association slot
+        domain: association
+        slot_uri: rdf:subject
+        range: named thing
+        required: true
+      predicate:
+        name: predicate
+        local_names:
+          ga4gh:
+            local_name_source: ga4gh
+            local_name_value: annotation predicate
+          translator:
+            local_name_source: translator
+            local_name_value: predicate
+        description: A high-level grouping for the relationship type. AKA minimal
+          predicate. This is analogous to category for nodes.
+        notes:
+        - Has a value from the Biolink related_to hierarchy. In RDF,  this corresponds
+          to rdf:predicate and in Neo4j this corresponds to the relationship type.
+          The convention is for an edge label in snake_case form. For example, biolink:related_to,
+          biolink:causes, biolink:treats
+        exact_mappings:
+        - owl:annotatedProperty
+        - OBAN:association_has_predicate
+        is_a: association slot
+        domain: association
+        slot_uri: rdf:predicate
+        range: predicate type
+        required: true
+      object:
+        name: object
+        local_names:
+          ga4gh:
+            local_name_source: ga4gh
+            local_name_value: descriptor
+          neo4j:
+            local_name_source: neo4j
+            local_name_value: node with incoming relationship
+        description: connects an association to the object of the association. For
+          example, in a gene-to-phenotype association, the gene is subject and phenotype
+          is object.
+        exact_mappings:
+        - owl:annotatedTarget
+        - OBAN:association_has_object
+        is_a: association slot
+        domain: association
+        slot_uri: rdf:object
+        range: named thing
+        required: true
+  GeneToPhenotypicFeatureAssociation:
+    name: GeneToPhenotypicFeatureAssociation
+    exact_mappings:
+    - WBVocab:Gene-Phenotype-Association
+    is_a: Association
+    slot_usage:
+      predicate:
+        name: predicate
+        equals_string: RO:1234567
+    defining_slots:
+    - subject
+    - object

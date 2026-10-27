@@ -1,0 +1,5 @@
+id: https://example.org/spec/copy_only
+copy_directives:
+  all:
+    element_name: all
+    copy_all: true

@@ -1,0 +1,19 @@
+name: expr-derived
+id: https://example.org/expr-derived
+default_prefix: https://example.org/expr-derived/
+default_range: string
+classes:
+  C:
+    name: C
+    is_a: D
+    attributes:
+      s1:
+        name: s1
+        range: integer
+    tree_root: true
+  D:
+    name: D
+    attributes:
+      s2:
+        name: s2
+        range: integer

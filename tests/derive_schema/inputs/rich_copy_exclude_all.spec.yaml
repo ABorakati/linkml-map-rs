@@ -1,0 +1,11 @@
+id: https://example.org/spec/copy_exclude_all
+copy_directives:
+  a:
+    element_name: a
+    copy_all: true
+  b:
+    element_name: b
+    exclude_all: true
+  c:
+    element_name: c
+    include: [Container]

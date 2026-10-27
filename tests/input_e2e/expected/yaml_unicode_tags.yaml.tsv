@@ -1,0 +1,2 @@
+id	a	b	c	d	e	f	g	n	x	m	tags_json	tags_yaml
+r5	café é 😀	中文	None	None	None	None	None	None	None	None	["caf\u00e9", "\ud83d\ude00 emoji", "tab\there", "plain", null, 1.5]	["caf\xE9", "\U0001F600 emoji", "tab\there", plain, null, 1.5]

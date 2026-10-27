@@ -1,0 +1,20 @@
+a: "has\ttab"
+b: say "hi"
+id: q1
+---
+a: 'two
+
+  lines'
+b: mid"quote
+id: q2
+---
+a: closedtail
+b: spaced
+id: q3
+---
+a: 'crlf
+
+  inside'
+b: x
+id: q4
+---

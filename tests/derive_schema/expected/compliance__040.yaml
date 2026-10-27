@@ -1,0 +1,12 @@
+name: types-derived
+id: https://example.org/types-derived
+default_prefix: https://example.org/types-derived/
+default_range: string
+classes:
+  D:
+    name: D
+    attributes:
+      s1_verbatim:
+        name: s1_verbatim
+        range: string
+        multivalued: false

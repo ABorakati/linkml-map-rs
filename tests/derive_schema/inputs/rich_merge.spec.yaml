@@ -1,0 +1,22 @@
+id: https://example.org/spec/merge
+class_derivations:
+  - name: Combined
+    populated_from: Person
+    slot_derivations:
+      name:
+        populated_from: name
+  - name: Combined
+    populated_from: Employee
+    is_a: Container
+    mixins: [HasTags]
+    slot_derivations:
+      salary:
+        populated_from: salary
+      name:
+        populated_from: name
+        range: integer
+  - name: Combined
+    populated_from: Container
+    is_a: Employee
+  - name: Other
+    populated_from: Container

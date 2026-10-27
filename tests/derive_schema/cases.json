@@ -1,0 +1,447 @@
+[
+ {
+  "name": "examples__biolink__biolink-example-profile.transform__biolink-model",
+  "spec": "tests/examples/biolink/transform/biolink-example-profile.transform.yaml",
+  "schema": "tests/examples/biolink/source/biolink-model.yaml"
+ },
+ {
+  "name": "examples__flattening__denormalize.transform__cmdr_normalized",
+  "spec": "tests/examples/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/examples/flattening/source/cmdr_normalized.yaml"
+ },
+ {
+  "name": "examples__flattening__denormalize.transform__normalized",
+  "spec": "tests/examples/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/examples/flattening/source/normalized.yaml"
+ },
+ {
+  "name": "examples__measurements__qv-to-scalar.transform__quantity_value",
+  "spec": "tests/examples/measurements/transform/qv-to-scalar.transform.yaml",
+  "schema": "tests/examples/measurements/source/quantity_value.yaml"
+ },
+ {
+  "name": "examples__personinfo_basic__personinfo-to-agent.transform__personinfo",
+  "spec": "tests/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml",
+  "schema": "tests/examples/personinfo_basic/source/personinfo.yaml"
+ },
+ {
+  "name": "examples__single_value_for_multivalued__greetings-to-languages.transform__greetings",
+  "spec": "tests/examples/single_value_for_multivalued/transform/greetings-to-languages.transform.yaml",
+  "schema": "tests/examples/single_value_for_multivalued/source/greetings.yaml"
+ },
+ {
+  "name": "examples__tabular__person_to_agent.transform__person_flat",
+  "spec": "tests/examples/tabular/transform/person_to_agent.transform.yaml",
+  "schema": "tests/examples/tabular/source/person_flat.yaml"
+ },
+ {
+  "name": "examples__type_coercion__type_coercion.transform__type_coercion",
+  "spec": "tests/examples/type_coercion/transform/type_coercion.transform.yaml",
+  "schema": "tests/examples/type_coercion/source/type_coercion.yaml"
+ },
+ {
+  "name": "golden__flattening__denormalize.transform__cmdr_normalized",
+  "spec": "tests/golden/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/golden/flattening/source/cmdr_normalized.yaml"
+ },
+ {
+  "name": "golden__flattening__denormalize.transform__normalized",
+  "spec": "tests/golden/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/golden/flattening/source/normalized.yaml"
+ },
+ {
+  "name": "golden__measurements__qv-to-scalar.transform__quantity_value",
+  "spec": "tests/golden/measurements/transform/qv-to-scalar.transform.yaml",
+  "schema": "tests/golden/measurements/source/quantity_value.yaml"
+ },
+ {
+  "name": "golden__personinfo_basic__personinfo-to-agent.transform__personinfo",
+  "spec": "tests/golden/personinfo_basic/transform/personinfo-to-agent.transform.yaml",
+  "schema": "tests/golden/personinfo_basic/source/personinfo.yaml"
+ },
+ {
+  "name": "golden__type_coercion__type_coercion.transform__type_coercion",
+  "spec": "tests/golden/type_coercion/transform/type_coercion.transform.yaml",
+  "schema": "tests/golden/type_coercion/source/type_coercion.yaml"
+ },
+ {
+  "name": "inputs__quirky_a",
+  "spec": "tests/derive_schema/inputs/quirky_a.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml"
+ },
+ {
+  "name": "inputs__quirky_b",
+  "spec": "tests/derive_schema/inputs/quirky_b.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml"
+ },
+ {
+  "name": "inputs__quirky_c",
+  "spec": "tests/derive_schema/inputs/quirky_c.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml"
+ },
+ {
+  "name": "inputs__rich_class_copy",
+  "spec": "tests/derive_schema/inputs/rich_class_copy.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_copy_all",
+  "spec": "tests/derive_schema/inputs/rich_copy_all.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_copy_exclude",
+  "spec": "tests/derive_schema/inputs/rich_copy_exclude.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_copy_exclude_all",
+  "spec": "tests/derive_schema/inputs/rich_copy_exclude_all.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_copy_include",
+  "spec": "tests/derive_schema/inputs/rich_copy_include.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_copy_only",
+  "spec": "tests/derive_schema/inputs/rich_copy_only.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_dictkey_bad",
+  "spec": "tests/derive_schema/inputs/rich_dictkey_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "error": true
+ },
+ {
+  "name": "inputs__rich_empty",
+  "spec": "tests/derive_schema/inputs/rich_empty.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_enum_bad",
+  "spec": "tests/derive_schema/inputs/rich_enum_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "error": true
+ },
+ {
+  "name": "inputs__rich_enum_ghost",
+  "spec": "tests/derive_schema/inputs/rich_enum_ghost.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "error": true
+ },
+ {
+  "name": "inputs__rich_features",
+  "spec": "tests/derive_schema/inputs/rich_features.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_merge",
+  "spec": "tests/derive_schema/inputs/rich_merge.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_missing",
+  "spec": "tests/derive_schema/inputs/rich_missing.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_rewire",
+  "spec": "tests/derive_schema/inputs/rich_rewire.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml"
+ },
+ {
+  "name": "inputs__rich_rewire_bad",
+  "spec": "tests/derive_schema/inputs/rich_rewire_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "error": true
+ },
+ {
+  "name": "attic__transform-s1-to-s2__personinfo_s1",
+  "spec": "tests/compliance/attic/transform-s1-to-s2.yaml",
+  "schema": "tests/compliance/attic/personinfo_s1.yaml",
+  "error": true
+ },
+ {
+  "name": "attic__denormalize-mapping__personinfo_s1",
+  "spec": "tests/compliance/attic/denormalize-mapping.yaml",
+  "schema": "tests/compliance/attic/personinfo_s1.yaml"
+ },
+ {
+  "name": "compliance__000",
+  "spec": "tests/derive_schema/compliance/000.spec.yaml",
+  "schema": "tests/derive_schema/compliance/000.schema.yaml"
+ },
+ {
+  "name": "compliance__001",
+  "spec": "tests/derive_schema/compliance/001.spec.yaml",
+  "schema": "tests/derive_schema/compliance/001.schema.yaml"
+ },
+ {
+  "name": "compliance__002",
+  "spec": "tests/derive_schema/compliance/002.spec.yaml",
+  "schema": "tests/derive_schema/compliance/002.schema.yaml"
+ },
+ {
+  "name": "compliance__003",
+  "spec": "tests/derive_schema/compliance/003.spec.yaml",
+  "schema": "tests/derive_schema/compliance/003.schema.yaml"
+ },
+ {
+  "name": "compliance__004",
+  "spec": "tests/derive_schema/compliance/004.spec.yaml",
+  "schema": "tests/derive_schema/compliance/004.schema.yaml"
+ },
+ {
+  "name": "compliance__005",
+  "spec": "tests/derive_schema/compliance/005.spec.yaml",
+  "schema": "tests/derive_schema/compliance/005.schema.yaml"
+ },
+ {
+  "name": "compliance__006",
+  "spec": "tests/derive_schema/compliance/006.spec.yaml",
+  "schema": "tests/derive_schema/compliance/006.schema.yaml"
+ },
+ {
+  "name": "compliance__007",
+  "spec": "tests/derive_schema/compliance/007.spec.yaml",
+  "schema": "tests/derive_schema/compliance/007.schema.yaml"
+ },
+ {
+  "name": "compliance__008",
+  "spec": "tests/derive_schema/compliance/008.spec.yaml",
+  "schema": "tests/derive_schema/compliance/008.schema.yaml"
+ },
+ {
+  "name": "compliance__009",
+  "spec": "tests/derive_schema/compliance/009.spec.yaml",
+  "schema": "tests/derive_schema/compliance/009.schema.yaml"
+ },
+ {
+  "name": "compliance__010",
+  "spec": "tests/derive_schema/compliance/010.spec.yaml",
+  "schema": "tests/derive_schema/compliance/010.schema.yaml"
+ },
+ {
+  "name": "compliance__011",
+  "spec": "tests/derive_schema/compliance/011.spec.yaml",
+  "schema": "tests/derive_schema/compliance/011.schema.yaml"
+ },
+ {
+  "name": "compliance__012",
+  "spec": "tests/derive_schema/compliance/012.spec.yaml",
+  "schema": "tests/derive_schema/compliance/012.schema.yaml"
+ },
+ {
+  "name": "compliance__013",
+  "spec": "tests/derive_schema/compliance/013.spec.yaml",
+  "schema": "tests/derive_schema/compliance/013.schema.yaml"
+ },
+ {
+  "name": "compliance__014",
+  "spec": "tests/derive_schema/compliance/014.spec.yaml",
+  "schema": "tests/derive_schema/compliance/014.schema.yaml"
+ },
+ {
+  "name": "compliance__015",
+  "spec": "tests/derive_schema/compliance/015.spec.yaml",
+  "schema": "tests/derive_schema/compliance/015.schema.yaml"
+ },
+ {
+  "name": "compliance__016",
+  "spec": "tests/derive_schema/compliance/016.spec.yaml",
+  "schema": "tests/derive_schema/compliance/016.schema.yaml"
+ },
+ {
+  "name": "compliance__017",
+  "spec": "tests/derive_schema/compliance/017.spec.yaml",
+  "schema": "tests/derive_schema/compliance/017.schema.yaml"
+ },
+ {
+  "name": "compliance__018",
+  "spec": "tests/derive_schema/compliance/018.spec.yaml",
+  "schema": "tests/derive_schema/compliance/018.schema.yaml"
+ },
+ {
+  "name": "compliance__019",
+  "spec": "tests/derive_schema/compliance/019.spec.yaml",
+  "schema": "tests/derive_schema/compliance/019.schema.yaml"
+ },
+ {
+  "name": "compliance__020",
+  "spec": "tests/derive_schema/compliance/020.spec.yaml",
+  "schema": "tests/derive_schema/compliance/020.schema.yaml"
+ },
+ {
+  "name": "compliance__021",
+  "spec": "tests/derive_schema/compliance/021.spec.yaml",
+  "schema": "tests/derive_schema/compliance/021.schema.yaml"
+ },
+ {
+  "name": "compliance__022",
+  "spec": "tests/derive_schema/compliance/022.spec.yaml",
+  "schema": "tests/derive_schema/compliance/022.schema.yaml"
+ },
+ {
+  "name": "compliance__023",
+  "spec": "tests/derive_schema/compliance/023.spec.yaml",
+  "schema": "tests/derive_schema/compliance/023.schema.yaml"
+ },
+ {
+  "name": "compliance__024",
+  "spec": "tests/derive_schema/compliance/024.spec.yaml",
+  "schema": "tests/derive_schema/compliance/024.schema.yaml"
+ },
+ {
+  "name": "compliance__025",
+  "spec": "tests/derive_schema/compliance/025.spec.yaml",
+  "schema": "tests/derive_schema/compliance/025.schema.yaml"
+ },
+ {
+  "name": "compliance__026",
+  "spec": "tests/derive_schema/compliance/026.spec.yaml",
+  "schema": "tests/derive_schema/compliance/026.schema.yaml"
+ },
+ {
+  "name": "compliance__027",
+  "spec": "tests/derive_schema/compliance/027.spec.yaml",
+  "schema": "tests/derive_schema/compliance/027.schema.yaml"
+ },
+ {
+  "name": "compliance__028",
+  "spec": "tests/derive_schema/compliance/028.spec.yaml",
+  "schema": "tests/derive_schema/compliance/028.schema.yaml"
+ },
+ {
+  "name": "compliance__029",
+  "spec": "tests/derive_schema/compliance/029.spec.yaml",
+  "schema": "tests/derive_schema/compliance/029.schema.yaml"
+ },
+ {
+  "name": "compliance__030",
+  "spec": "tests/derive_schema/compliance/030.spec.yaml",
+  "schema": "tests/derive_schema/compliance/030.schema.yaml"
+ },
+ {
+  "name": "compliance__031",
+  "spec": "tests/derive_schema/compliance/031.spec.yaml",
+  "schema": "tests/derive_schema/compliance/031.schema.yaml"
+ },
+ {
+  "name": "compliance__032",
+  "spec": "tests/derive_schema/compliance/032.spec.yaml",
+  "schema": "tests/derive_schema/compliance/032.schema.yaml"
+ },
+ {
+  "name": "compliance__033",
+  "spec": "tests/derive_schema/compliance/033.spec.yaml",
+  "schema": "tests/derive_schema/compliance/033.schema.yaml"
+ },
+ {
+  "name": "compliance__034",
+  "spec": "tests/derive_schema/compliance/034.spec.yaml",
+  "schema": "tests/derive_schema/compliance/034.schema.yaml"
+ },
+ {
+  "name": "compliance__035",
+  "spec": "tests/derive_schema/compliance/035.spec.yaml",
+  "schema": "tests/derive_schema/compliance/035.schema.yaml"
+ },
+ {
+  "name": "compliance__036",
+  "spec": "tests/derive_schema/compliance/036.spec.yaml",
+  "schema": "tests/derive_schema/compliance/036.schema.yaml"
+ },
+ {
+  "name": "compliance__037",
+  "spec": "tests/derive_schema/compliance/037.spec.yaml",
+  "schema": "tests/derive_schema/compliance/037.schema.yaml"
+ },
+ {
+  "name": "compliance__038",
+  "spec": "tests/derive_schema/compliance/038.spec.yaml",
+  "schema": "tests/derive_schema/compliance/038.schema.yaml"
+ },
+ {
+  "name": "compliance__039",
+  "spec": "tests/derive_schema/compliance/039.spec.yaml",
+  "schema": "tests/derive_schema/compliance/039.schema.yaml"
+ },
+ {
+  "name": "compliance__040",
+  "spec": "tests/derive_schema/compliance/040.spec.yaml",
+  "schema": "tests/derive_schema/compliance/040.schema.yaml"
+ },
+ {
+  "name": "compliance__041",
+  "spec": "tests/derive_schema/compliance/041.spec.yaml",
+  "schema": "tests/derive_schema/compliance/041.schema.yaml"
+ },
+ {
+  "name": "compliance__042",
+  "spec": "tests/derive_schema/compliance/042.spec.yaml",
+  "schema": "tests/derive_schema/compliance/042.schema.yaml"
+ },
+ {
+  "name": "compliance__043",
+  "spec": "tests/derive_schema/compliance/043.spec.yaml",
+  "schema": "tests/derive_schema/compliance/043.schema.yaml"
+ },
+ {
+  "name": "compliance__044",
+  "spec": "tests/derive_schema/compliance/044.spec.yaml",
+  "schema": "tests/derive_schema/compliance/044.schema.yaml"
+ },
+ {
+  "name": "compliance__045",
+  "spec": "tests/derive_schema/compliance/045.spec.yaml",
+  "schema": "tests/derive_schema/compliance/045.schema.yaml"
+ },
+ {
+  "name": "compliance__046",
+  "spec": "tests/derive_schema/compliance/046.spec.yaml",
+  "schema": "tests/derive_schema/compliance/046.schema.yaml"
+ },
+ {
+  "name": "compliance__047",
+  "spec": "tests/derive_schema/compliance/047.spec.yaml",
+  "schema": "tests/derive_schema/compliance/047.schema.yaml"
+ },
+ {
+  "name": "compliance__048",
+  "spec": "tests/derive_schema/compliance/048.spec.yaml",
+  "schema": "tests/derive_schema/compliance/048.schema.yaml"
+ },
+ {
+  "name": "compliance__049",
+  "spec": "tests/derive_schema/compliance/049.spec.yaml",
+  "schema": "tests/derive_schema/compliance/049.schema.yaml"
+ },
+ {
+  "name": "compliance__050",
+  "spec": "tests/derive_schema/compliance/050.spec.yaml",
+  "schema": "tests/derive_schema/compliance/050.schema.yaml"
+ },
+ {
+  "name": "compliance__051",
+  "spec": "tests/derive_schema/compliance/051.spec.yaml",
+  "schema": "tests/derive_schema/compliance/051.schema.yaml"
+ },
+ {
+  "name": "compliance__052",
+  "spec": "tests/derive_schema/compliance/052.spec.yaml",
+  "schema": "tests/derive_schema/compliance/052.schema.yaml"
+ },
+ {
+  "name": "compliance__053",
+  "spec": "tests/derive_schema/compliance/053.spec.yaml",
+  "schema": "tests/derive_schema/compliance/053.schema.yaml"
+ },
+ {
+  "name": "compliance__054",
+  "spec": "tests/derive_schema/compliance/054.spec.yaml",
+  "schema": "tests/derive_schema/compliance/054.schema.yaml"
+ }
+]

@@ -1,0 +1,11 @@
+class_derivations:
+  D:
+    populated_from: C
+    slot_derivations:
+      q_in_pinknoodles:
+        populated_from: q
+        unit_conversion:
+          target_unit: pinknoodles
+          source_unit_slot: unit
+          source_magnitude_slot: magnitude
+id: https://example.org/spec

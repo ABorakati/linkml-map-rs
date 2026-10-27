@@ -1,0 +1,20 @@
+a: only-a
+id: s1
+---
+id: s2
+n: 7
+---
+a: a
+b: b
+id: s3
+n: 1
+---
+{}
+---
+a: lead
+b: 'trail  '
+id: s4
+n: 3
+---
+id: s5
+---

@@ -1,0 +1,8 @@
+id: https://example.org/quirky_base
+name: quirky_base
+classes:
+  BaseThing:
+    description: from a base file
+    attributes:
+      uid:
+        identifier: true

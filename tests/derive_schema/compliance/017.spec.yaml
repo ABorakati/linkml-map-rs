@@ -1,0 +1,7 @@
+class_derivations:
+  C:
+    populated_from: C
+    slot_derivations:
+      derived:
+        expr: len(s1)
+id: https://example.org/spec

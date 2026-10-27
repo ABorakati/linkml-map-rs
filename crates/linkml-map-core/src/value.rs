@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 pub use crate::decimal::Decimal;
+pub use crate::temporal::Temporal;
 
 /// A dynamically-typed value during transformation.
 ///
@@ -31,12 +32,21 @@ pub enum Value {
     /// a string (the writers emit exact numeric literals themselves).
     #[serde(skip_deserializing, serialize_with = "serialize_decimal")]
     Decimal(Decimal),
+    /// `datetime.date` / `datetime.datetime`, as PyYAML builds them from an
+    /// unquoted timestamp scalar. Never deserialised from JSON; serialises as its
+    /// `str()` text (see [`crate::temporal`]).
+    #[serde(skip_deserializing, serialize_with = "serialize_temporal")]
+    Temporal(Temporal),
     /// String.
     Str(String),
     /// Ordered list.
     List(Vec<Value>),
     /// Ordered map (object/dict).
     Map(IndexMap<String, Value>),
+}
+
+fn serialize_temporal<S: serde::Serializer>(t: &Temporal, s: S) -> Result<S::Ok, S::Error> {
+    s.collect_str(t)
 }
 
 fn serialize_decimal<S: serde::Serializer>(d: &Decimal, s: S) -> Result<S::Ok, S::Error> {
@@ -54,6 +64,8 @@ impl Value {
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
             Value::Decimal(d) => !d.is_zero(),
+            // A `datetime.date` is always truthy (a `datetime.time` is not a case here).
+            Value::Temporal(_) => true,
             Value::Str(s) => !s.is_empty(),
             Value::List(items) => !items.is_empty(),
             Value::Map(m) => !m.is_empty(),
@@ -178,6 +190,8 @@ impl From<&Value> for serde_json::Value {
             // Lossless generic form: the exact text as a string. Exact numeric
             // output is the writers' job (see linkml-map-io).
             Value::Decimal(d) => serde_json::Value::String(d.to_sci_string()),
+            // Generic form only; JSON *output* refuses these like upstream does.
+            Value::Temporal(t) => serde_json::Value::String(t.to_string()),
             Value::Str(s) => serde_json::Value::String(s.clone()),
             Value::List(items) => {
                 serde_json::Value::Array(items.iter().map(serde_json::Value::from).collect())
@@ -217,6 +231,7 @@ impl Value {
             (Decimal(a), Float(b)) | (Float(b), Decimal(a)) => {
                 a.cmp_f64(*b) == Some(std::cmp::Ordering::Equal)
             }
+            (Temporal(a), Temporal(b)) => a == b,
             (Str(a), Str(b)) => a == b,
             (List(a), List(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq(y)),
             (Map(a), Map(b)) => {
@@ -237,6 +252,7 @@ impl PartialEq for Value {
             (Int(a), Int(b)) => a == b,
             (Float(a), Float(b)) => a == b,
             (Decimal(a), Decimal(b)) => a == b,
+            (Temporal(a), Temporal(b)) => a == b,
             (Str(a), Str(b)) => a == b,
             (List(a), List(b)) => a == b,
             (Map(a), Map(b)) => a == b,

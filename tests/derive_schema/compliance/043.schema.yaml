@@ -1,0 +1,22 @@
+id: https://example.org/isomorphic
+name: isomorphic
+default_range: string
+classes:
+  Container:
+    tree_root: true
+    attributes:
+      c_list:
+        range: C
+        multivalued: true
+      d:
+        range: D
+  C:
+    attributes:
+      s1:
+        range: string
+      s2:
+        range: string
+  D:
+    attributes:
+      s3:
+        range: string

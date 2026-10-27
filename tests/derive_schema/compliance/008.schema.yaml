@@ -1,0 +1,18 @@
+id: https://example.org/types
+name: types
+default_range: string
+classes:
+  C:
+    tree_root: true
+    attributes:
+      ds:
+        range: D
+        inlined: true
+        inlined_as_list: true
+        multivalued: true
+  D:
+    attributes:
+      id:
+        identifier: true
+      s1:
+        range: string

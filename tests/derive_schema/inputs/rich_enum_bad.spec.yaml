@@ -1,0 +1,7 @@
+id: https://example.org/spec/enum_bad
+enum_derivations:
+  Ghost:
+    populated_from: Status
+    permissible_value_derivations:
+      A:
+        populated_from: []

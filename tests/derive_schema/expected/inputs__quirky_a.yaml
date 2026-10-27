@@ -1,0 +1,183 @@
+name: quirky-derived
+id: https://example.org/quirky-derived
+imports:
+- linkml:types
+- sub/deep
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/quirky/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/quirky-derived/
+default_range: string
+types:
+  Distance:
+    name: Distance
+    from_schema: https://example.org/quirky
+    typeof: float
+    base: float
+    uri: xsd:float
+    unit:
+      ucum_code: m
+    equals_number: 5
+    minimum_value: 0
+enums:
+  ListEnum:
+    name: ListEnum
+    permissible_values:
+      A:
+        text: A
+      B:
+        text: B
+      C:
+        text: C
+        description: see
+  DictEnum:
+    name: DictEnum
+    code_set: ex:codes
+    pv_formula: CODE
+    permissible_values:
+      X:
+        text: X
+      Y:
+        text: Y
+    include:
+    - permissible_values:
+        Z:
+          text: Z
+    minus:
+    - permissible_values:
+        Q:
+          text: Q
+slots:
+  shared:
+    name: shared
+    description: A top-level slot also used as attribute name elsewhere
+    from_schema: https://example.org/quirky
+    range: integer
+  multi:
+    name: multi
+    annotations:
+      a1:
+        tag: a1
+        value: v1
+      a2:
+        tag: a2
+        value: 2
+    from_schema: https://example.org/quirky
+    structured_aliases:
+    - literal_form: alias one
+      predicate: EXACT_SYNONYM
+    rank: 7
+    required: false
+    multivalued: true
+    inlined: true
+    minimum_value: 1.5
+    maximum_value: '10'
+    unit:
+      symbol: metre
+      ucum_code: m
+    equals_number: 3
+    exactly_one_of:
+    - range: string
+    any_of:
+    - range: string
+    - range: integer
+classes:
+  Alpha:
+    name: Alpha
+    annotations:
+      k1:
+        tag: k1
+        value: v1
+      k2:
+        tag: k2
+        value: 2
+      k3:
+        tag: k3
+        value: true
+    deprecated: yes it is
+    examples:
+    - value: a
+    - value: b
+      description: second
+    from_schema: https://example.org/quirky
+    see_also:
+    - https://example.org/see
+    slots:
+    - shared
+    - multi
+    slot_usage:
+      shared:
+        name: shared
+        required: true
+      multi:
+        name: multi
+        range: float
+    attributes:
+      own:
+        name: own
+        from_schema: https://example.org/quirky
+        range: string
+      other:
+        name: other
+        from_schema: https://example.org/quirky
+        range: integer
+    union_of:
+    - Alpha
+    unique_keys:
+      uk:
+        unique_key_name: uk
+        unique_key_slots:
+        - own
+    classification_rules:
+    - slot_conditions:
+        own:
+          name: own
+          required: true
+    extra_slots:
+      allowed: true
+  Beta:
+    name: Beta
+    from_schema: https://example.org/quirky
+    is_a: Alpha
+    slot_usage:
+      shared:
+        name: shared
+        description: usage description
+    attributes:
+      shared:
+        name: shared
+        description: A top-level slot also used as attribute name elsewhere
+        range: integer
+      own:
+        name: own
+        from_schema: https://example.org/quirky
+        range: integer
+      zeta:
+        name: zeta
+      deep:
+        name: deep
+        range: integer
+  Gamma:
+    name: Gamma
+    from_schema: https://example.org/quirky
+    attributes:
+      shared:
+        name: shared
+        from_schema: https://example.org/quirky
+        range: float
+      zeta:
+        name: zeta
+        from_schema: https://example.org/quirky
+  Delta:
+    name: Delta
+    attributes:
+      uid:
+        name: uid
+        identifier: true
+      depth:
+        name: depth
+        range: integer

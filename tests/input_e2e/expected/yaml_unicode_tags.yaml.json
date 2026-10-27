@@ -1,0 +1,7 @@
+{
+  "id": "r5",
+  "a": "café é 😀",
+  "b": "中文",
+  "tags_json": "[\"caf\\u00e9\", \"\\ud83d\\ude00 emoji\", \"tab\\there\", \"plain\", null, 1.5]",
+  "tags_yaml": "[\"caf\\xE9\", \"\\U0001F600 emoji\", \"tab\\there\", plain, null, 1.5]"
+}

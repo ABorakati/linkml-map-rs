@@ -1,0 +1,10 @@
+id: r5
+a: "café é \U0001F600"
+b: 中文
+tags:
+  - café
+  - "\U0001F600 emoji"
+  - "tab\there"
+  - plain
+  - ~
+  - 1.5

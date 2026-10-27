@@ -1,0 +1,15 @@
+id: https://example.org/types
+name: types
+default_range: string
+classes:
+  Q:
+    attributes:
+      magnitude:
+        range: float
+      unit:
+        range: string
+  C:
+    tree_root: true
+    attributes:
+      q:
+        range: Q
