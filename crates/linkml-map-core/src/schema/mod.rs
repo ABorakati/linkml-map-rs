@@ -223,6 +223,21 @@ pub trait SchemaProvider: Send + Sync {
     /// Return the names of all top-level types (scalars) in the schema.
     fn all_type_names(&self) -> Vec<String>;
 
+    /// The schema-level `default_range`, which an induced slot with no declared
+    /// range falls back to (Python `SchemaView.induced_slot` applies it).
+    ///
+    /// The default implementation returns `None`.
+    fn default_range(&self) -> Option<String> {
+        None
+    }
+
+    /// The `typeof` chain of a type, starting with the type itself (Python
+    /// `SchemaView.type_ancestors`). The default implementation returns just
+    /// the type itself, i.e. a type with no known parent.
+    fn type_ancestors(&self, type_name: &str) -> Vec<String> {
+        vec![type_name.to_owned()]
+    }
+
     /// Return the tree-root class name, if exactly one exists.
     ///
     /// Mirrors the pattern `[c.name for c in sv.all_classes().values() if c.tree_root]`.
@@ -272,6 +287,9 @@ pub struct InMemorySchema {
     classes: HashMap<String, ClassRecord>,
     enums: HashMap<String, EnumDef>,
     types: Vec<String>,
+    /// `typeof` parent of each custom type.
+    type_parents: HashMap<String, String>,
+    default_range: Option<String>,
 }
 
 /// Internal record for a class + its induced-slot table.
@@ -328,6 +346,28 @@ impl InMemorySchemaBuilder {
     /// Register a scalar type name.
     pub fn add_type(mut self, name: impl Into<String>) -> Self {
         self.schema.types.push(name.into());
+        self
+    }
+
+    /// Register a scalar type that is a `typeof` another type.
+    //
+    // gate:internal — test-builder helper, not binding-consumed.
+    pub fn add_type_with_parent(
+        mut self,
+        name: impl Into<String>,
+        parent: impl Into<String>,
+    ) -> Self {
+        let name = name.into();
+        self.schema.types.push(name.clone());
+        self.schema.type_parents.insert(name, parent.into());
+        self
+    }
+
+    /// Set the schema-level `default_range`.
+    //
+    // gate:internal — test-builder helper, not binding-consumed.
+    pub fn default_range(mut self, range: impl Into<String>) -> Self {
+        self.schema.default_range = Some(range.into());
         self
     }
 
@@ -393,6 +433,73 @@ impl SchemaProvider for InMemorySchema {
     fn all_type_names(&self) -> Vec<String> {
         self.types.clone()
     }
+
+    fn default_range(&self) -> Option<String> {
+        self.default_range.clone()
+    }
+
+    fn type_ancestors(&self, type_name: &str) -> Vec<String> {
+        let mut chain = vec![type_name.to_owned()];
+        while let Some(parent) = self
+            .type_parents
+            .get(chain.last().map_or("", String::as_str))
+        {
+            if chain.contains(parent) {
+                break;
+            }
+            chain.push(parent.clone());
+        }
+        chain
+    }
+}
+
+/// The types defined by `linkml:types`. Providers that do not load that import
+/// (the schemaview backend) do not list them in [`SchemaProvider::all_type_names`].
+pub(crate) const LINKML_BUILTIN_TYPES: [&str; 19] = [
+    "string",
+    "integer",
+    "boolean",
+    "float",
+    "double",
+    "decimal",
+    "time",
+    "date",
+    "datetime",
+    "date_or_datetime",
+    "uriorcurie",
+    "curie",
+    "uri",
+    "ncname",
+    "objectidentifier",
+    "nodeidentifier",
+    "jsonpointer",
+    "jsonpath",
+    "sparqlpath",
+];
+
+/// The built-in datatypes a range can be coerced to.
+const COERCIBLE_TYPES: [&str; 5] = ["integer", "float", "decimal", "string", "boolean"];
+
+/// The built-in datatype a range coerces values to: the first of
+/// `integer`/`float`/`decimal`/`string`/`boolean` on the range's `typeof`
+/// chain. Custom types resolve through their ancestry. `None` for a class, an
+/// enum, or a type with no coercible built-in ancestor.
+///
+/// Mirrors Python `transformer.coercible_datatype`.
+//
+// gate:internal — shared by the validator (and, later, the engine); not
+// binding-consumed.
+pub fn coercible_datatype(sv: &dyn SchemaProvider, range: Option<&str>) -> Option<&'static str> {
+    let range = range?;
+    // PARITY: Python tests `range_name in sv.all_types()`. Providers that do not
+    // load the `linkml:types` import (the schemaview backend) don't list the
+    // built-in types, so the coercible built-ins are accepted by name too.
+    if !COERCIBLE_TYPES.contains(&range) && !sv.all_type_names().iter().any(|t| t == range) {
+        return None;
+    }
+    sv.type_ancestors(range)
+        .iter()
+        .find_map(|t| COERCIBLE_TYPES.iter().find(|c| **c == t).copied())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

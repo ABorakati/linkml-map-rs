@@ -772,6 +772,38 @@ impl SchemaProvider for SchemaViewProvider {
         self.all_type_names_internal()
     }
 
+    fn default_range(&self) -> Option<String> {
+        self.sv.primary_schema().and_then(|s| s.default_range)
+    }
+
+    fn type_ancestors(&self, type_name: &str) -> Vec<String> {
+        // Walk the `typeof` chain ourselves: the backend's `type_ancestors`
+        // drops a parent that is not defined in a loaded schema (e.g. a custom
+        // `typeof: decimal` when `linkml:types` is not loaded), whereas Python's
+        // chain keeps the parent's name.
+        let mut parents: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        self.sv.with_schema_definitions(|schemas| {
+            for schema in schemas.values() {
+                for (name, t) in schema.types.iter().flatten() {
+                    if let Some(parent) = &t.typeof_ {
+                        parents
+                            .entry(name.clone())
+                            .or_insert_with(|| parent.clone());
+                    }
+                }
+            }
+        });
+        let mut chain = vec![type_name.to_owned()];
+        while let Some(parent) = parents.get(chain.last().map_or("", String::as_str)) {
+            if chain.contains(parent) {
+                break;
+            }
+            chain.push(parent.clone());
+        }
+        chain
+    }
+
     // ── CURIE / URI coercion ─────────────────────────────────────────────────
 
     fn expand_curie(&self, curie: &str) -> Option<String> {

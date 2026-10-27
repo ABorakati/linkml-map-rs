@@ -452,6 +452,564 @@ fn cross_table_join_on_typo_emits_warning_per_side() {
     assert_eq!(warns.len(), 2, "got {msgs:?}");
 }
 
+// ── dotted references through joined tables (upstream cbf2f97) ────────────────
+
+fn warnings(msgs: &[ValidationMessage]) -> Vec<&ValidationMessage> {
+    msgs.iter()
+        .filter(|m| m.severity == Severity::Warning)
+        .collect()
+}
+
+/// Upstream `_dotted_spec`: `Outer` populated from `Measurement` with one slot
+/// `value`, plus optional `joins:`.
+fn dotted_spec(
+    slot_derivation: serde_json::Value,
+    joins: Option<serde_json::Value>,
+) -> TransformationSpecification {
+    let mut cd = json!({
+        "populated_from": "Measurement",
+        "slot_derivations": {"value": slot_derivation},
+    });
+    if let Some(joins) = joins {
+        cd["joins"] = joins;
+    }
+    spec(json!({"class_derivations": {"Outer": cd}}))
+}
+
+/// Upstream `test_dotted_reference_to_joined_class_or_slot_passes`.
+#[test]
+fn dotted_reference_to_joined_class_or_slot_passes() {
+    let sv = joinable_schema();
+    let cases = [
+        (
+            "explicit-join",
+            json!({"populated_from": "Reading.score"}),
+            Some(json!({"Reading": {"join_on": "subject_id"}})),
+        ),
+        (
+            "implicit-join",
+            json!({"populated_from": "Reading.score"}),
+            None,
+        ),
+        (
+            "implicit-join-expr",
+            json!({"expr": "{Reading.score}"}),
+            None,
+        ),
+        (
+            "path-through-source-slot",
+            json!({"populated_from": "method.label"}),
+            None,
+        ),
+    ];
+    for (id, slot_derivation, joins) in cases {
+        let s = dotted_spec(slot_derivation, joins);
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let problems: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.severity != Severity::Info)
+            .collect();
+        assert!(problems.is_empty(), "{id}: got {problems:?}");
+    }
+}
+
+/// Upstream `test_dotted_populated_from_checks_joined_slot`.
+#[test]
+fn dotted_populated_from_checks_joined_slot() {
+    let sv = joinable_schema();
+    for joins in [Some(json!({"Reading": {"join_on": "subject_id"}})), None] {
+        let s = dotted_spec(json!({"populated_from": "Reading.bogus"}), joins);
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let errs: Vec<_> = errors(&msgs).iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(
+            errs,
+            [
+                "Source slot 'Reading.bogus' (populated_from): 'bogus' is not a slot on joined class 'Reading'"
+            ]
+        );
+    }
+}
+
+/// Upstream `test_dotted_populated_from_unknown_base_still_errors`.
+#[test]
+fn dotted_populated_from_unknown_base_still_errors() {
+    let sv = joinable_schema();
+    let s = dotted_spec(json!({"populated_from": "Nowhere.score"}), None);
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let errs: Vec<_> = errors(&msgs).iter().map(|m| m.message.as_str()).collect();
+    assert_eq!(
+        errs,
+        ["Source slot 'Nowhere.score' (populated_from) not found on source class"]
+    );
+}
+
+// ── join keys in a derivation's own `joins:` block (upstream e373d93) ──────────
+
+/// Upstream `test_top_level_join_keys_checked`: `(key, class)` pairs of the
+/// "is not a slot on source class" warnings.
+#[test]
+fn top_level_join_keys_checked() {
+    let sv = joinable_schema();
+    // (id, join spec, expected (key, class) misses)
+    type Case<'a> = (&'a str, serde_json::Value, Vec<(&'a str, &'a str)>);
+    let cases: [Case; 4] = [
+        (
+            "join_on-typo",
+            json!({"join_on": "subjet_id"}),
+            vec![
+                ("join_on=subjet_id", "Measurement"),
+                ("join_on=subjet_id", "Reading"),
+            ],
+        ),
+        (
+            "source_key-typo",
+            json!({"source_key": "subjet_id", "lookup_key": "subject_id"}),
+            vec![("source_key=subjet_id", "Measurement")],
+        ),
+        (
+            "lookup_key-typo",
+            json!({"source_key": "subject_id", "lookup_key": "subjet_id"}),
+            vec![("lookup_key=subjet_id", "Reading")],
+        ),
+        ("valid", json!({"join_on": "subject_id"}), vec![]),
+    ];
+    for (id, join, expected) in cases {
+        let s = dotted_spec(
+            json!({"populated_from": "Reading.score"}),
+            Some(json!({"Reading": join})),
+        );
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let found: Vec<(String, String)> = warnings(&msgs)
+            .iter()
+            .filter(|m| m.message.contains("is not a slot on source class"))
+            .map(|m| {
+                (
+                    m.message.split('\'').nth(3).unwrap().to_owned(),
+                    m.message
+                        .split("source class '")
+                        .nth(1)
+                        .unwrap()
+                        .split('\'')
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String)> = expected
+            .into_iter()
+            .map(|(k, c)| (k.to_owned(), c.to_owned()))
+            .collect();
+        assert_eq!(found, expected, "{id}");
+        assert!(
+            warnings(&msgs)
+                .iter()
+                .all(|m| m.path == "class_derivations[Outer].joins[Reading]"),
+            "{id}: {msgs:?}"
+        );
+    }
+}
+
+/// Upstream `test_top_level_join_keys_checked_against_class_named`.
+#[test]
+fn top_level_join_keys_checked_against_class_named() {
+    let sv = joinable_schema();
+    let s = dotted_spec(
+        json!({"expr": "{r.score}"}),
+        Some(
+            json!({"r": {"class_named": "Reading", "source_key": "subject_id", "lookup_key": "nope"}}),
+        ),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let warns: Vec<_> = warnings(&msgs).iter().map(|m| m.message.as_str()).collect();
+    assert_eq!(
+        warns,
+        [
+            "Join spec for 'r': 'lookup_key=nope' is not a slot on source class 'Reading'. \
+             Runtime will silently resolve cross-table values to null."
+        ]
+    );
+}
+
+/// Upstream `test_top_level_join_missing_keys_warns`.
+#[test]
+fn top_level_join_missing_keys_warns() {
+    let sv = joinable_schema();
+    let s = dotted_spec(
+        json!({"populated_from": "Reading.score"}),
+        Some(json!({"Reading": {"source_key": "subject_id"}})),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let missing: Vec<_> = warnings(&msgs)
+        .into_iter()
+        .filter(|m| m.message.contains("missing keys"))
+        .collect();
+    assert_eq!(missing.len(), 1, "{msgs:?}");
+    assert_eq!(missing[0].path, "class_derivations[Outer].joins[Reading]");
+    assert_eq!(
+        missing[0].message,
+        "Join spec for 'Reading' is missing keys: must specify 'join_on' or both \
+         'source_key' and 'lookup_key'. Runtime will raise ValueError."
+    );
+}
+
+/// Edge cases from the triage: an empty-string key counts as missing; a joined
+/// class absent from the schema gives no key warnings; an identity (no
+/// `populated_from`) derivation checks keys against its own name.
+#[test]
+fn top_level_join_key_edge_cases() {
+    let sv = joinable_schema();
+
+    let s = dotted_spec(
+        json!({"expr": "{Reading.score}"}),
+        Some(json!({"Reading": {"join_on": ""}})),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    assert_eq!(
+        warnings(&msgs)
+            .iter()
+            .filter(|m| m.message.contains("missing keys"))
+            .count(),
+        1
+    );
+
+    let s = dotted_spec(
+        json!({"expr": "{Ghost.score}"}),
+        Some(json!({"Ghost": {"join_on": "nope"}})),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    assert!(warnings(&msgs).is_empty(), "{msgs:?}");
+
+    let s = spec(json!({
+        "class_derivations": {
+            "Measurement": {"joins": {"Reading": {"join_on": "nope"}}}
+        }
+    }));
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let found: Vec<_> = warnings(&msgs).iter().map(|m| m.message.as_str()).collect();
+    assert_eq!(found.len(), 2, "{msgs:?}");
+    assert!(found[0].ends_with(
+        "source class 'Measurement'. Runtime will silently resolve cross-table values to null."
+    ));
+}
+
+// ── spec range overriding the target slot's range (upstream b332fc7) ─────────
+
+/// Upstream `_RANGE_TARGET_SCHEMA`: custom `Score typeof decimal`, enum
+/// `Relationship`, class `Site`, and `Participant` with a slot of each kind.
+fn range_target_schema() -> InMemorySchema {
+    let ranged = |name: &str, range: RangeKind| SlotDef {
+        range,
+        ..slot(name, false, false)
+    };
+    let ty = |t: &str| RangeKind::Type(t.into());
+    let mut b = InMemorySchemaBuilder::new()
+        .default_range("string")
+        .add_enum(EnumDef {
+            name: "Relationship".into(),
+            permissible_values: vec![],
+        })
+        .add_type_with_parent("Score", "decimal")
+        .add_class(class("Site"))
+        .add_slot("Site", slot("id", true, false))
+        .add_class(class("Participant"));
+    for t in [
+        "string",
+        "integer",
+        "float",
+        "decimal",
+        "boolean",
+        "date",
+        "uriorcurie",
+    ] {
+        b = b.add_type(t);
+    }
+    b.add_slot(
+        "Participant",
+        ranged("relationship", RangeKind::Enum("Relationship".into())),
+    )
+    .add_slot("Participant", ranged("amount", ty("decimal")))
+    .add_slot("Participant", ranged("score", ty("Score")))
+    .add_slot("Participant", ranged("ratio", ty("float")))
+    .add_slot("Participant", ranged("count", ty("integer")))
+    .add_slot("Participant", ranged("flag", ty("boolean")))
+    .add_slot("Participant", ranged("note", ty("string")))
+    .add_slot(
+        "Participant",
+        ranged("site", RangeKind::Class("Site".into())),
+    )
+    // No declared range: falls back to `default_range: string`.
+    .add_slot("Participant", ranged("untyped", RangeKind::None))
+    .build()
+}
+
+/// Upstream `_range_override_msgs`: only the `range-override` findings.
+fn range_override_msgs(slot_derivation: serde_json::Value, strict: bool) -> Vec<ValidationMessage> {
+    let s = spec(json!({
+        "class_derivations": {"Participant": {"slot_derivations": slot_derivation}}
+    }));
+    let sv = range_target_schema();
+    validate_spec_semantics(&s, None, Some(&sv), strict)
+        .into_iter()
+        .filter(|m| m.category.as_deref() == Some("range-override"))
+        .collect()
+}
+
+/// Upstream `test_semantics_conflicting_range_warns`.
+#[test]
+fn conflicting_range_warns() {
+    let cases = [
+        (
+            "enum",
+            json!({"relationship": {"value": "ONESELF", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'Relationship', so its values \
+             aren't resolved to the target enum's permissible values. Remove the range to use \
+             the target schema's.",
+        ),
+        (
+            "decimal",
+            json!({"amount": {"value": "1.5", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'decimal', so its values aren't \
+             coerced to decimal. Remove the range to use the target schema's.",
+        ),
+        (
+            "string",
+            json!({"note": {"value": "1", "range": "integer"}}),
+            "range 'integer' overrides the target slot's range 'string', so its values aren't \
+             coerced to string. Remove the range to use the target schema's.",
+        ),
+        (
+            "float-into-integer",
+            json!({"count": {"value": "1.5", "range": "float"}}),
+            "range 'float' overrides the target slot's range 'integer', so its values aren't \
+             coerced to integer. Remove the range to use the target schema's.",
+        ),
+        (
+            "boolean",
+            json!({"flag": {"value": "true", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'boolean', so its values aren't \
+             coerced to boolean. Remove the range to use the target schema's.",
+        ),
+        // Custom types resolve through `typeof`.
+        (
+            "custom-type-typeof-decimal",
+            json!({"score": {"value": "1", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'Score', so its values aren't \
+             coerced to decimal. Remove the range to use the target schema's.",
+        ),
+        // The target range falls back to the schema's `default_range`.
+        (
+            "default-range-fallback",
+            json!({"untyped": {"value": "1", "range": "integer"}}),
+            "range 'integer' overrides the target slot's range 'string', so its values aren't \
+             coerced to string. Remove the range to use the target schema's.",
+        ),
+    ];
+    for (id, slot_derivation, message) in cases {
+        let msgs = range_override_msgs(slot_derivation, false);
+        let got: Vec<_> = msgs
+            .iter()
+            .map(|m| (m.severity, m.message.as_str()))
+            .collect();
+        assert_eq!(got, [(Severity::Warning, message)], "{id}");
+    }
+}
+
+/// Upstream `test_semantics_compatible_range_not_reported`.
+#[test]
+fn compatible_range_not_reported() {
+    let cases = [
+        ("no-range", json!({"relationship": {"value": "ONESELF"}})),
+        (
+            "same-range",
+            json!({"relationship": {"value": "ONESELF", "range": "Relationship"}}),
+        ),
+        (
+            "same-datatype",
+            json!({"score": {"value": "0.1", "range": "decimal"}}),
+        ),
+        (
+            "enum-into-string",
+            json!({"note": {"value": "ONESELF", "range": "Relationship"}}),
+        ),
+        (
+            "class-range",
+            json!({"site": {"value": "S1", "range": "string"}}),
+        ),
+        (
+            "integer-into-decimal",
+            json!({"amount": {"value": "1", "range": "integer"}}),
+        ),
+        (
+            "float-into-decimal",
+            json!({"amount": {"value": "1.5", "range": "float"}}),
+        ),
+        (
+            "integer-into-float",
+            json!({"ratio": {"value": "1", "range": "integer"}}),
+        ),
+        (
+            "date-into-string",
+            json!({"note": {"value": "2020-01-01", "range": "date"}}),
+        ),
+        (
+            "uriorcurie-into-string",
+            json!({"note": {"value": "X:1", "range": "uriorcurie"}}),
+        ),
+    ];
+    for (id, slot_derivation) in cases {
+        let msgs = range_override_msgs(slot_derivation, false);
+        assert!(msgs.is_empty(), "{id}: {msgs:?}");
+    }
+}
+
+/// Upstream `test_semantics_conflicting_range_strict_error`.
+#[test]
+fn conflicting_range_strict_error() {
+    let msgs = range_override_msgs(json!({"amount": {"value": "1.5", "range": "string"}}), true);
+    let severities: Vec<_> = msgs.iter().map(|m| m.severity).collect();
+    assert_eq!(severities, [Severity::Error]);
+}
+
+/// The finding is attached to the slot derivation's path.
+#[test]
+fn conflicting_range_reports_slot_derivation_path() {
+    let msgs = range_override_msgs(
+        json!({"amount": {"value": "1.5", "range": "string"}}),
+        false,
+    );
+    assert_eq!(
+        msgs[0].path,
+        "class_derivations[Participant].slot_derivations[amount]"
+    );
+}
+
+/// Upstream `_datatype_fits` doctests.
+#[test]
+fn datatype_fits_doctests() {
+    assert!(datatype_fits(Some("integer"), "decimal"));
+    assert!(!datatype_fits(Some("float"), "integer"));
+    assert!(datatype_fits(None, "string"));
+    assert!(!datatype_fits(Some("integer"), "string"));
+    assert!(!datatype_fits(Some("string"), "decimal"));
+    assert!(!datatype_fits(None, "boolean"));
+}
+
+// ── unknown range (upstream f299f3a, `unknown-range`) ──────────────────────
+
+/// Upstream `test_slot_range_must_name_something`.
+#[test]
+fn slot_range_must_name_something() {
+    let sv = joinable_schema();
+    let cases = [
+        (
+            "typo",
+            "integr",
+            vec!["range 'integr' is not a type, class or enum in the source or target schema"],
+        ),
+        ("builtin-type", "integer", vec![]),
+        ("source-class", "Reading", vec![]),
+        ("spec-derivation", "Outer", vec![]),
+    ];
+    for (id, range_name, expected) in cases {
+        let s = dotted_spec(
+            json!({"populated_from": "method", "range": range_name}),
+            None,
+        );
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let got: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.category.as_deref() == Some("unknown-range"))
+            .map(|m| m.message.as_str())
+            .collect();
+        assert_eq!(got, expected, "{id}");
+    }
+}
+
+/// Upstream `test_slot_range_unknown_is_error_when_strict`.
+#[test]
+fn slot_range_unknown_is_error_when_strict() {
+    let sv = joinable_schema();
+    let s = dotted_spec(json!({"populated_from": "method", "range": "integr"}), None);
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, true);
+    let severities: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.category.as_deref() == Some("unknown-range"))
+        .map(|m| m.severity)
+        .collect();
+    assert_eq!(severities, [Severity::Error]);
+}
+
+/// Enum-derivation names and target-schema elements are known ranges too.
+#[test]
+fn slot_range_known_via_enum_derivation_and_target_schema() {
+    let target = range_target_schema();
+    let s = spec(json!({
+        "class_derivations": {"Participant": {"slot_derivations": {
+            "note": {"value": "x", "range": "MyEnum"},
+            "relationship": {"value": "x", "range": "Relationship"},
+            "site": {"value": "x", "range": "Site"},
+        }}},
+        "enum_derivations": {"MyEnum": {}},
+    }));
+    let msgs = validate_spec_semantics(&s, None, Some(&target), false);
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| m.category.as_deref() == Some("unknown-range")),
+        "{msgs:?}"
+    );
+}
+
+// ── constant `value:` needs no source slot (upstream d2297e5) ────────────────
+
+/// `Row { person_id, note }` (source) and `Out { person_id, note, tag }` (target).
+fn constant_value_schemas() -> (InMemorySchema, InMemorySchema) {
+    let source = InMemorySchemaBuilder::new()
+        .add_class(class("Row"))
+        .add_slot("Row", slot("person_id", false, false))
+        .add_slot("Row", slot("note", false, false))
+        .build();
+    let target = InMemorySchemaBuilder::new()
+        .add_class(class("Out"))
+        .add_slot("Out", slot("person_id", false, false))
+        .add_slot("Out", slot("note", false, false))
+        .add_slot("Out", slot("tag", false, false))
+        .build();
+    (source, target)
+}
+
+/// A constant `value:` has no `populated_from`, so it is never checked against
+/// the source class. Regression for upstream #338 / #326 (the induced
+/// `populated_from: tag` produced a spurious "not found on source class" error);
+/// Rust never synthesises `populated_from`, so this pins the contract.
+#[test]
+fn constant_value_needs_no_source_slot() {
+    let (source, target) = constant_value_schemas();
+    let s = spec(json!({
+        "class_derivations": {
+            "Out": {
+                "populated_from": "Row",
+                "slot_derivations": {
+                    "person_id": {"populated_from": "person_id"},
+                    "note": {"populated_from": "note"},
+                    "tag": {"value": 7},
+                },
+            }
+        }
+    }));
+    for (src, tgt) in [
+        (
+            Some(&source as &dyn SchemaProvider),
+            Some(&target as &dyn SchemaProvider),
+        ),
+        (Some(&source), None),
+    ] {
+        let msgs = validate_spec_semantics(&s, src, tgt, false);
+        assert!(errors(&msgs).is_empty(), "{msgs:?}");
+    }
+}
+
 // ── enum derivations ─────────────────────────────────────────────────────────
 
 fn enum_schema() -> InMemorySchema {
