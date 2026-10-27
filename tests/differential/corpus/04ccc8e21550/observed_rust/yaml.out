@@ -1,0 +1,8 @@
+age: 0
+id: p1
+out_a: p1
+---
+age: '1.0'
+id: p2
+out_a: p2
+---

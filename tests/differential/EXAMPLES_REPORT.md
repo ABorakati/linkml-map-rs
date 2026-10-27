@@ -15,9 +15,9 @@ RS-ERR = upstream ok, Rust failed; UP-ERR = upstream failed, Rust succeeded; PAN
 | measurements/qv-to-scalar.transform.yaml | data/PersonQuantityValue-001.yaml | unrestricted | ok | ok | ok | ok | ok |
 | measurements/qv-to-scalar.transform.yaml | data/PersonQuantityValue-002.yaml | restricted | ok | ok | ok | ok | ok |
 | measurements/qv-to-scalar.transform.yaml | data/PersonQuantityValue-002.yaml | unrestricted | ok | ok | ok | ok | ok |
-| personinfo_basic/personinfo-to-agent.transform.yaml | data/Container-001.yaml | restricted | UP-ERR | UP-ERR | UP-ERR | UP-ERR | UP-ERR |
+| personinfo_basic/personinfo-to-agent.transform.yaml | data/Container-001.yaml | restricted | E(d) | E(d) | E(d) | E(d) | E(d) |
 | personinfo_basic/personinfo-to-agent.transform.yaml | data/Container-001.yaml | unrestricted | DIFF | UP-ERR | UP-ERR | DIFF | DIFF |
-| personinfo_basic/personinfo-to-agent.transform.yaml | data/Person-001.yaml | restricted | UP-ERR | UP-ERR | UP-ERR | UP-ERR | UP-ERR |
+| personinfo_basic/personinfo-to-agent.transform.yaml | data/Person-001.yaml | restricted | E(d) | E(d) | E(d) | E(d) | E(d) |
 | personinfo_basic/personinfo-to-agent.transform.yaml | data/Person-001.yaml | unrestricted | DIFF | UP-ERR | UP-ERR | ok | ok |
 | single_value_for_multivalued/greetings-to-languages.transform.yaml | data/Container-001.yaml | restricted | ok | ok | ok | ok | ok |
 | single_value_for_multivalued/greetings-to-languages.transform.yaml | data/Container-001.yaml | unrestricted | ok | ok | ok | ok | ok |
@@ -74,49 +74,9 @@ RS-ERR = upstream ok, Rust failed; UP-ERR = upstream failed, Rust succeeded; PAN
 
 ## Totals
 
-both_error: 4, match: 124, output_diff: 22, rust_error: 15, upstream_error: 33
+both_error: 14, match: 124, output_diff: 22, rust_error: 15, upstream_error: 23
 
 ## Divergence detail
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml restricted yaml [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.027s throughput=37 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml restricted json [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.016s throughput=63 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml restricted jsonl [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.016s throughput=63 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml restricted tsv [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.017s throughput=59 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml restricted csv [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.029s throughput=34 rows/s
-
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml unrestricted yaml [output_diff]
 
@@ -137,7 +97,7 @@ rows_in=1 rows_out=1 elapsed=0.029s throughput=34 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.056s throughput=18 rows/s
+rows_in=1 rows_out=1 elapsed=0.027s throughput=37 rows/s
 
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml unrestricted jsonl [upstream_error]
@@ -145,7 +105,7 @@ rows_in=1 rows_out=1 elapsed=0.056s throughput=18 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.046s throughput=22 rows/s
+rows_in=1 rows_out=1 elapsed=0.068s throughput=15 rows/s
 
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml unrestricted tsv [output_diff]
@@ -170,46 +130,6 @@ rows_in=1 rows_out=1 elapsed=0.046s throughput=22 rows/s
 +[{'id': 'P:001', 'label': 'fred bloggs', 'age': '33 years', 'primary_email': 'fred.bloggs@example.com', 'secondary_email': None, 'gender': None, 'driving_since': '2014-03-31', 'first_known_event': '1990-01-01', 'death_date': None, 'current_address': {'address_of': 'foo', 'street': '1 oak street', 'city': 'oaktown'}, 'has_familial_relationships': [{'type': 'SIBLING_OF', 'related_to': 'P:002'}, {'type': 'CHILD_OF', 'related_to': 'P:003'}]}, {'id': 'P:002', 'label': 'Alison Wu', 'age': None, 'primary_email': None, 'secondary_email': None, 'gender': None, 'driving_since': None, 'first_known_event': None, 'death_date': None, 'current_address': None, 'has_familial_relationships': [{'type': 'SIBLING_OF', 'related_to': 'P:001'}, {'type': 'CHILD_OF', 'related_to': 'P:003'}]}, {'id': 'P:003', 'label': 'Mr. Blobby', 'age': None, 'primary_email': None, 'secondary_email': None, 'gender': None, 'driving_since': None, 'first_known_event': None, 'death_date': None, 'current_address': None, 'has_familial_relationships': [{'type': 'PARENT_OF', 'related_to': 'P:001'}, {'type': 'PARENT_OF', 'related_to': 'P:002'}]}]
 ```
 
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml restricted yaml [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.034s throughput=29 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml restricted json [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.010s throughput=104 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml restricted jsonl [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.013s throughput=74 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml restricted tsv [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.012s throughput=82 rows/s
-
-
-### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml restricted csv [upstream_error]
-
-upstream rc=1 TransformationError: 'NoneType' object is not iterable; class_derivation=Agent (from Person); slot_derivation=driving_since
-
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.029s throughput=34 rows/s
-
-
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml unrestricted yaml [output_diff]
 
 ```diff
@@ -229,7 +149,7 @@ rows_in=1 rows_out=1 elapsed=0.029s throughput=34 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.036s throughput=28 rows/s
+rows_in=1 rows_out=1 elapsed=0.057s throughput=17 rows/s
 
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml unrestricted jsonl [upstream_error]
@@ -237,7 +157,7 @@ rows_in=1 rows_out=1 elapsed=0.036s throughput=28 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.045s throughput=22 rows/s
+rows_in=1 rows_out=1 elapsed=0.043s throughput=23 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml restricted yaml [upstream_error]
@@ -245,7 +165,7 @@ rows_in=1 rows_out=1 elapsed=0.045s throughput=22 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.012s throughput=86 rows/s
+rows_in=1 rows_out=1 elapsed=0.008s throughput=121 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml restricted json [upstream_error]
@@ -253,7 +173,7 @@ rows_in=1 rows_out=1 elapsed=0.012s throughput=86 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.002s throughput=543 rows/s
+rows_in=1 rows_out=1 elapsed=0.005s throughput=210 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml restricted jsonl [upstream_error]
@@ -261,7 +181,7 @@ rows_in=1 rows_out=1 elapsed=0.002s throughput=543 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.011s throughput=95 rows/s
+rows_in=1 rows_out=1 elapsed=0.017s throughput=60 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml restricted tsv [upstream_error]
@@ -269,7 +189,7 @@ rows_in=1 rows_out=1 elapsed=0.011s throughput=95 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.002s throughput=421 rows/s
+rows_in=1 rows_out=1 elapsed=0.004s throughput=266 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml restricted csv [upstream_error]
@@ -277,7 +197,7 @@ rows_in=1 rows_out=1 elapsed=0.002s throughput=421 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.007s throughput=147 rows/s
+rows_in=1 rows_out=1 elapsed=0.017s throughput=61 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml unrestricted yaml [upstream_error]
@@ -285,7 +205,7 @@ rows_in=1 rows_out=1 elapsed=0.007s throughput=147 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.003s throughput=377 rows/s
+rows_in=1 rows_out=1 elapsed=0.002s throughput=475 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml unrestricted json [upstream_error]
@@ -293,7 +213,7 @@ rows_in=1 rows_out=1 elapsed=0.003s throughput=377 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.005s throughput=204 rows/s
+rows_in=1 rows_out=1 elapsed=0.002s throughput=489 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml unrestricted jsonl [upstream_error]
@@ -301,7 +221,7 @@ rows_in=1 rows_out=1 elapsed=0.005s throughput=204 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.002s throughput=442 rows/s
+rows_in=1 rows_out=1 elapsed=0.005s throughput=192 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml unrestricted tsv [upstream_error]
@@ -309,7 +229,7 @@ rows_in=1 rows_out=1 elapsed=0.002s throughput=442 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.002s throughput=486 rows/s
+rows_in=1 rows_out=1 elapsed=0.006s throughput=167 rows/s
 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml unrestricted csv [upstream_error]
@@ -317,7 +237,7 @@ rows_in=1 rows_out=1 elapsed=0.002s throughput=486 rows/s
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.003s throughput=371 rows/s
+rows_in=1 rows_out=1 elapsed=0.055s throughput=18 rows/s
 
 
 ### attic/transform-s1-to-s2.yaml personinfo-s1-example-data-01.yaml restricted yaml [rust_error]
@@ -761,15 +681,15 @@ rust rc=1: compiling plan: loading spec /home/user/upstream/linkml-map/tests/inp
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmp7cimngxl/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.025
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmpnzi1ct9i/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.095
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml -o jsonl [upstream_error]
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmpnl498xbs/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.03
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmpz8xgjagb/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.07
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml -o tsv [output_diff]
 
@@ -811,50 +731,50 @@ rows_in=1 rows_out=1 elapsed=0.03
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmpj2w2fzor/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.024s t
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmp51lkvke8/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.028s t
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml -o jsonl [upstream_error]
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmphd_3c78t/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.016s 
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmpbsj3gy07/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.021s 
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml -o yaml [upstream_error]
 
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmpat8b0oo2/rs.yaml (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.004s throughput=
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmpgsbetxep/rs.yaml (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.002s throughput=
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml -o json [upstream_error]
 
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmp0k8bahus/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.003s throughput=
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmp3o6s0462/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.004s throughput=
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml -o jsonl [upstream_error]
 
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmplt_qqtfg/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.005s throughput
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmp4ars6po_/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.003s throughput
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml -o tsv [upstream_error]
 
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmpcrh2m0um/rs.tsv (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.002s throughput=5
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmpcf185dkr/rs.tsv (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.004s throughput=2
 
 ### type_coercion/type_coercion.transform.yaml data/MyRecord-001.yaml -o csv [upstream_error]
 
 upstream rc=1 TransformationError: No such slot id_as_url as an attribute of MyRecord ancestors or as a slot definition in the schema; class_derivation=MyRecord (from MyRecord); slot_derivation=id_as_url (from id)
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmpxb78vybc/rs.csv (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.010s throughput=1
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/data/MyRecord-001.yaml -> /tmp/tmp0zfhrapz/rs.csv (spec: /home/user/upstream/linkml-map/tests/input/examples/type_coercion/transform/type_coercion.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.002s throughput=4
 
 ### attic/transform-s1-to-s2.yaml personinfo-s1-example-data-01.yaml -o yaml [rust_error]
 
@@ -885,3 +805,41 @@ rust rc=1: compiling plan: loading spec /home/user/upstream/linkml-map/tests/inp
 upstream rc=0 None: 
 
 rust rc=1: compiling plan: loading spec /home/user/upstream/linkml-map/tests/input/attic/transform-s1-to-s2.yaml: parsing spec /home/user/upstream/linkml-map/tests/input/attic/transform-s1-to-s2.yaml: missing field `element_name`
+
+## Cases captured from upstream's own test-suite
+
+224 distinct map_object invocations x 5 formats: both_error: 155, match: 810, output_diff: 45, rust_error: 110
+
+| case | origin test | divergent formats |
+|---|---|---|
+| 0759dc334566 | test_transformer/test_multi_enum.py::test_enum_expr_unrestricted_fallback | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| 1efbc4a901e2 | test_transformer/test_content_id.py::test_null_and_empty_count_as_absent[absent0] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 22b03ca460ec | test_transformer/test_content_id.py::test_equivalent_content_same_id[changes2] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 2a3e4922c2fd | test_transformer/test_range_override.py::test_parse_expr_null_input_yields_none | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 3cb7c04887b5 | test_transformer/test_pivot_operation.py::TestEdgeCases::test_unmelt_missing_variable | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| 42175371c7cd | test_transformer/test_expr_strict_mode.py::test_schema_slot_absent_from_row_resolves_to_none[True] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 42f8aeb349ad | test_transformer/test_content_id.py::test_null_and_empty_count_as_absent[absent0] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 4d8e0addb392 | test_transformer/test_object_transformer.py::test_offset_reverse_subtraction | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| 53323ba2d2c2 | test_transformer/test_pivot_operation.py::TestEdgeCases::test_unmelt_missing_value | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| 549c49e209bb | test_transformer/test_content_id.py::test_explicit_id_derivation_wins | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 5b02b0aceb8c | test_transformer/test_content_id.py::test_different_content_different_id[changes1] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 612b35fd2571 | test_transformer/test_pivot_operation.py::TestEdgeCases::test_melt_null_values_skipped | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| 624bf4746c9c | test_transformer/test_object_transformer.py::test_offset_applied_addition | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| 6912e082ae37 | test_transformer/test_content_id.py::test_same_content_same_id_across_transformers | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 74055f70a60c | test_transformer/test_flatten_inlined.py::test_flatten_two_level_dotpath_null_propagation[env_broad_scale1-middle | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| 8ba729cc95cd | test_transformer/test_multi_enum.py::test_enum_expr_restricted_evaluates | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| a24a07db0802 | test_transformer/test_slot_derivation_features.py::test_missing_values_applies_within_nested_class_derivation | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| a348eb4e07e6 | test_transformer/test_content_id.py::test_different_content_different_id[changes3] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| a4807fb6da0b | test_transformer/test_content_id.py::test_equivalent_content_same_id[changes1] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| a8c78e8ca56d | test_transformer/test_slot_derivation_features.py::test_slot_fn_with_unrestricted_eval | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| b18ac8678d14 | test_transformer/test_range_override.py::test_parse_string_into_object | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| bf88321f41a3 | test_transformer/test_content_id.py::test_null_and_empty_count_as_absent[absent1] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| c14a3ce239b7 | test_transformer/test_content_id.py::test_nested_derivation_follows_the_spec_not_its_parent | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| d5d814e375b4 | test_transformer/test_content_id.py::test_equivalent_content_same_id[changes0] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| df16cf8b3044 | test_transformer/test_content_id.py::test_different_content_different_id[changes0] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| e525872c0623 | test_transformer/test_content_id.py::test_different_content_different_id[changes2] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| e89e6495d1ef | test_transformer/test_content_id.py::test_synthesized_id_is_pinned | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| ed14d3b728ab | test_transformer/test_pivot_operation.py::TestMeltBasic::test_melt_with_id_slots | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| ed15ebb53262 | test_transformer/test_object_transformer.py::test_nested_class_derivations | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
+| f2ba6e0e0ae9 | test_transformer/test_pivot_operation.py::TestMeltBasic::test_melt_basic | yaml:DIFF json:DIFF jsonl:DIFF tsv:DIFF csv:DIFF |
+| fec9877c167d | test_transformer/test_flatten_inlined.py::test_flatten_partial_quantity_value | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |

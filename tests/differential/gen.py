@@ -114,6 +114,7 @@ _STR_WEIRD = ["", " ", "Zoë", "日本語", "0", "007", "1e3", "-1", "True", "nu
               '"d"', "#c", "~", "yes", "é", "a:b", "- x", "{k: v}", "[1]", "=", " x", "1.0", "NaN", "  pad  "]
 _INT_COMMON = [0, 1, 2, 5, 42, -3, 100]
 _INT_WEIRD = [2**31, 2**63, -(2**63) - 1, 10**30, "007", "1.0", "1e3", " 5", "abc", "-0", "+5", "١٢٣", "1_000", "", "0x10", 9999999999]
+_INT_NUMPARSE = ["1.0", "1e3", "١٢٣", "1_000", " 5", "+5", "-0", "007", "0x10", ""]  # numeric-string parsing gaps (reported)
 _FLT_COMMON = [0.5, 1.5, 2.0, 3.14, -2.5, 0.0, 10.0, 100.25]
 _FLT_WEIRD = [0.1, 1e20, 1e-7, -0.0, 123456789.123456789, 5e-324, 1.7976931348623157e308, "1e3", ".5", "1.", "abc", "", "nan", "inf",
               "1e400", 0.30000000000000004, 1e16, 1e15, 123456789012345680.0, 2.5e-5]
@@ -138,7 +139,8 @@ def scalar_values(rng: str, feats, enums: dict, ids: dict):
     if rng in ("string", "MyStr"):
         return _mix(_STR_COMMON, _STR_WEIRD, awk)
     if rng in ("integer", "MyInt"):
-        weird = [w for w in _INT_WEIRD if not (isinstance(w, int) and abs(w) > 2**62)] if "knownfree" in feats else _INT_WEIRD
+        weird = [w for w in _INT_WEIRD if not (isinstance(w, int) and abs(w) > 2**62) and w not in _INT_NUMPARSE] \
+            if "knownfree" in feats else _INT_WEIRD
         return _mix(_INT_COMMON, weird, awk)
     if rng == "float":
         return _mix(_FLT_COMMON, _FLT_WEIRD, awk)
@@ -475,6 +477,8 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
                 deriv["cast_collection_as"] = "SingleValued"
             return TSlot(name, "string" if has_target else None, multivalued=False, deriv=deriv)
         st_choice = draw(st.sampled_from([None, {"delimiter": "|"}, {"delimiter": ",", "reversed": True}, {"syntax": "JSON"}]))
+        if "knownfree" in feats:
+            st_choice = None  # single -> multivalued stringification: reported gap
         if st_choice:
             deriv["stringification"] = st_choice
         if draw(st.booleans()):

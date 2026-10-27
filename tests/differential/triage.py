@@ -141,6 +141,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", type=Path, default=HERE / "corpus")
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--prune", type=int, metavar="K", help="keep at most K fuzz-found cases (those with signature.txt) per category, smallest first")
     a = ap.parse_args()
     counts: dict[str, int] = {}
     for case in sorted(a.corpus.iterdir()):
@@ -157,6 +158,21 @@ def main() -> int:
         counts[f"category: {cat}"] = counts.get(f"category: {cat}", 0) + 1
     for k, v in sorted(counts.items(), key=lambda kv: -kv[1]):
         print(f"{v:4d}  {k}")
+    if a.prune:
+        import shutil
+
+        by_cat: dict[str, list[tuple[int, Path]]] = {}
+        for case in sorted(a.corpus.iterdir()):
+            marker = case / "expected_divergence.md"
+            if marker.exists() and (case / "signature.txt").exists():
+                size = sum(f.stat().st_size for f in case.rglob("*") if f.is_file() and "expected" not in f.parts and "observed_rust" not in f.parts)
+                by_cat.setdefault(marker.read_text().splitlines()[0], []).append((size, case))
+        for cat, items in by_cat.items():
+            if "untriaged" in cat:
+                continue
+            for _, case in sorted(items, key=lambda t: t[0])[a.prune:]:
+                print(f"prune {case.name} ({cat})")
+                shutil.rmtree(case)
     return 0
 
 

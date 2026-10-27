@@ -1,0 +1,18 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Person:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      out_a:
+        populated_from: id
+      out_a1:
+        populated_from: id
+      out_a2:
+        expr: '{id} + ''-'' + {id}'
+      hid:
+        expr: '{flag} or ''dflt'''
+        hide: true
+      out_a3:
+        expr: slot('hid')

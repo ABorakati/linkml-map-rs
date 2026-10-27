@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0: transformation error in 'Agent.out_a': coercion failed for value ''١٢٣'' to type 'integer': invalid literal for int() with base 10: '١٢٣'"
+}
