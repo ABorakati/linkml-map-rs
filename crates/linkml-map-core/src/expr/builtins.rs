@@ -622,10 +622,112 @@ fn sum(args: &[Value]) -> ExprResult<Value> {
     Ok(acc)
 }
 
-/// `sorted(iterable)`: a stable sort by Python `<`.
+/// `sorted(iterable)`: CPython's `list.sort` with Python `<`.
+///
+/// A list shorter than 64 items is sorted exactly as CPython 3.13 does (a
+/// `count_run` followed by binary insertion), so the same comparisons are made in
+/// the same order. That only shows when `<` is not a total order or raises:
+/// `sorted([True, -13, nan])` puts the NaN where CPython does, and a mixed list
+/// raises on the same pair.
+///
+/// PARITY: longer lists are sorted by a stable merge sort. It orders consistently
+/// ordered items identically to timsort, but with NaNs or incomparable items
+/// the result (or which pair raises) can differ; timsort's merging and galloping
+/// are not ported.
 fn sorted(args: &[Value]) -> ExprResult<Value> {
     check_arity("sorted", args, 1, 1)?;
-    Ok(Value::List(merge_sort(py_iter(&args[0])?.into_owned())?))
+    let mut items = py_iter(&args[0])?.into_owned();
+    if items.len() < MIN_MERGE {
+        list_sort_small(&mut items)?;
+        Ok(Value::List(items))
+    } else {
+        Ok(Value::List(merge_sort(items)?))
+    }
+}
+
+/// Timsort's `MIN_MERGE`: below it `minrun` is the whole list, which is sorted by
+/// one `count_run` and a binary insertion of the rest.
+const MIN_MERGE: usize = 64;
+
+/// CPython 3.13 `list.sort` for fewer than [`MIN_MERGE`] items.
+fn list_sort_small(a: &mut [Value]) -> ExprResult<()> {
+    if a.len() < 2 {
+        return Ok(());
+    }
+    let run = count_run(a)?;
+    // `binarysort`: insert each remaining item into the sorted prefix.
+    for start in run..a.len() {
+        let (mut lo, mut hi) = (0, start);
+        while lo < hi {
+            let mid = lo + ((hi - lo) >> 1);
+            if py_lt(&a[start], &a[mid])? {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        a[lo..=start].rotate_right(1);
+    }
+    Ok(())
+}
+
+/// Timsort's `count_run` (CPython 3.13): the length of the run at the start of
+/// `a`, which is reversed in place when it was descending. Equal items inside a
+/// descending run are kept in order. "Equal" is `not x < y and not y < x`, so a
+/// NaN counts as equal to anything.
+fn count_run(a: &mut [Value]) -> ExprResult<usize> {
+    let total = a.len();
+    // The ascending run first.
+    let mut n = 1;
+    while n < total {
+        if py_lt(&a[n], &a[n - 1])? {
+            break;
+        }
+        n += 1;
+    }
+    if n == total {
+        return Ok(n);
+    }
+    // `a[n]` is strictly less than `a[n - 1]`. A longer ascending run that rose
+    // somewhere is finished; one that never did is all-equal, which a descending
+    // run may continue.
+    if n > 1 {
+        if py_lt(&a[0], &a[n - 1])? {
+            return Ok(n);
+        }
+        a[..n].reverse();
+    }
+    n += 1;
+    // The rest of the descending run; each all-equal sub-run is reversed in place
+    // so the final whole-run reversal restores its original order.
+    let mut equal = 0;
+    let reverse_equal = |a: &mut [Value], n: usize, equal: &mut usize| {
+        if *equal > 0 {
+            *equal += 1;
+            a[n - *equal..n].reverse();
+            *equal = 0;
+        }
+    };
+    while n < total {
+        if py_lt(&a[n], &a[n - 1])? {
+            reverse_equal(a, n, &mut equal);
+        } else if py_lt(&a[n - 1], &a[n])? {
+            break;
+        } else {
+            equal += 1;
+        }
+        n += 1;
+    }
+    reverse_equal(a, n, &mut equal);
+    a[..n].reverse();
+    // The reversed run may continue with a naturally ascending suffix.
+    while n < total {
+        if py_lt(&a[n], &a[n - 1])? {
+            break;
+        }
+        n += 1;
+    }
+    Ok(n)
 }
 
 fn merge_sort(mut items: Vec<Value>) -> ExprResult<Vec<Value>> {

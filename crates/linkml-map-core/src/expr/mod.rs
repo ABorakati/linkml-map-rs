@@ -14,6 +14,8 @@ pub mod lexer;
 pub mod parser;
 pub(crate) mod pystr;
 #[cfg(test)]
+mod semantics_tests;
+#[cfg(test)]
 mod syntax_tests;
 #[rustfmt::skip]
 pub(crate) mod pytables;

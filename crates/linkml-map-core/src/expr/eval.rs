@@ -443,6 +443,15 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                 return distributed_getattr(bound, attr);
             }
             let obj = eval_ast(value, vars)?;
+            // PARITY: a dict built by the expression itself is a real `dict`, not a
+            // `DynObj`: `_distributed_getattr` distributes over its values.
+            if is_dict_construction(value)
+                && let Value::Map(m) = &obj
+                && !attr.starts_with('_')
+            {
+                let items = m.values().map(|v| distributed_getattr(v, attr));
+                return items.collect::<ExprResult<Vec<_>>>().map(Value::List);
+            }
             distributed_getattr(&obj, attr)
         }
 
@@ -621,15 +630,11 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
 // --- attribute distribution (mirrors _distributed_getattr) ---
 
 thread_local! {
-    /// When set, attribute access on a `Map` uses *object* semantics:
-    /// a missing key returns [`Value::Null`] (Python `DynObj.__getattr__`),
-    /// instead of distributing over the map's values.
+    /// True while a statement block (the `asteval`-style interpreter) runs: names
+    /// and `{x}` follow asteval rather than simpleeval (see [`with_object_attr_mode`]).
     ///
-    /// The multi-statement (`asteval`-style) program path binds `src` to a
-    /// single object whose attributes are read via native `getattr`, where a
-    /// missing attribute yields `None`. The single-expression path keeps the
-    /// historical dict-value distribution (off by default). See
-    /// [`with_object_attr_mode`].
+    /// Attribute access no longer depends on it: a `Map` is a `DynObj` in both
+    /// evaluators (see [`distributed_getattr`]).
     static OBJECT_ATTR_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -650,6 +655,17 @@ pub(super) fn object_attr_mode_enabled() -> bool {
     OBJECT_ATTR_MODE.with(|c| c.get())
 }
 
+/// Whether `node` builds a plain Python `dict` (a display, a comprehension or
+/// `dict(...)`), as opposed to reading a bound value.
+fn is_dict_construction(node: &Ast) -> bool {
+    match node {
+        Ast::Dict(_) => true,
+        Ast::Comp(c) => c.kind == super::parser::CompKind::Dict,
+        Ast::Call { func, .. } => func == "dict",
+        _ => false,
+    }
+}
+
 fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
         // PARITY: a `NameError` upstream (`_distributed_getattr`), which
@@ -666,25 +682,15 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
             }
             Ok(Value::List(out))
         }
-        Value::Map(m) => {
-            // A present key resolves directly in both modes (object.attr).
-            if let Some(v) = m.get(attr) {
-                return Ok(v.clone());
-            }
-            // Missing key:
-            //  * object mode (multi-statement `src.attr`): return None, exactly
-            //    like Python's `DynObj.__getattr__` (vars(self).get(p, None)).
-            //  * default (single-expr) mode: distribute over the map's values,
-            //    matching `_distributed_getattr` over a bare dict.
-            if object_attr_mode_enabled() {
-                return Ok(Value::Null);
-            }
-            let mut out = Vec::with_capacity(m.len());
-            for v in m.values() {
-                out.push(distributed_getattr(v, attr)?);
-            }
-            Ok(Value::List(out))
-        }
+        // PARITY: a bound map is a `DynObj` (`dynamic_object` builds one for every
+        // class-ranged value and `DynObj(**row)` for a joined row), and
+        // `DynObj.__getattr__` is `vars(self).get(p, None)`: a missing key is
+        // None, never a distribution over the values. Upstream's plain-`dict`
+        // flavour (a value whose slot range is not a class, e.g. `range: Any`)
+        // would distribute over its values and so raise `AttributeError` on a
+        // scalar value; `Value` cannot tell the two apart and models the far
+        // commoner `DynObj`.
+        Value::Map(m) => Ok(m.get(attr).cloned().unwrap_or(Value::Null)),
         Value::Null => Ok(Value::Null),
         // A scalar has no attributes; Python getattr would raise AttributeError.
         // `AttributeError` upstream: not caught by `_eval_expr`.
@@ -1333,6 +1339,10 @@ fn repeat_list(items: &[Value], n: &Value) -> ExprResult<Option<Value>> {
     // `usize` cannot overflow `i128`; compare there to stay exact.
     if (items.len() as i128) * (count as i128) > MAX_STRING_LENGTH as i128 {
         return Err(too_long());
+    }
+    // Nothing to repeat (and no point looping `count` times over nothing).
+    if items.is_empty() {
+        return Ok(Some(Value::List(Vec::new())));
     }
     let mut out = Vec::with_capacity(items.len() * count);
     for _ in 0..count {
