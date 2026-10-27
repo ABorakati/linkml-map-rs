@@ -1250,15 +1250,17 @@ pub(crate) fn call_type(
                 Some(Py::Float(f)) => Ok(Py::Float(*f)),
                 Some(Py::Int(i)) => Ok(Py::Float(*i as f64)),
                 Some(Py::Bool(b)) => Ok(Py::Float(*b as i64 as f64)),
-                Some(Py::Str(s)) => crate::expr::pystr::float_from_str(s).map(Py::Float).map_or_else(
-                    || {
-                        value_err(format!(
-                            "could not convert string to float: {}",
-                            crate::pyfmt::py_repr_str(s)
-                        ))
-                    },
-                    Ok,
-                ),
+                Some(Py::Str(s)) => crate::expr::pystr::float_from_str(s)
+                    .map(Py::Float)
+                    .map_or_else(
+                        || {
+                            value_err(format!(
+                                "could not convert string to float: {}",
+                                crate::pyfmt::py_repr_str(s)
+                            ))
+                        },
+                        Ok,
+                    ),
                 Some(other) => type_err(format!(
                     "float() argument must be a string or a real number, not '{}'",
                     other.type_name()
