@@ -205,7 +205,7 @@ jobs:
           --test proptest_expr --test proptest_spec --test proptest_value --test proptest_yaml
         PROPTEST_CASES=2000 cargo test -p linkml-map-io --test proptest_roundtrip
         PROPTEST_CASES=300 cargo test -p linkml-map-pipeline \
-          --test proptest_pipeline --test proptest_spec_mutation
+          --test proptest_pipeline --test proptest_spec_mutation --test proptest_multiblock
 
   # ───────────────────────────────────────────────────────────────────────────
   # Coverage-guided fuzzing (cargo-fuzz / libFuzzer, nightly). Targets live in

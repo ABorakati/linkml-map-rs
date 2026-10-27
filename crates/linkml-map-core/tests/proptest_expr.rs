@@ -14,11 +14,28 @@ use linkml_map_core::expr::lexer::lex;
 use linkml_map_core::expr::parser::parse;
 use linkml_map_core::expr::stmt::{is_statement_block, parse_program};
 use linkml_map_core::expr::{
-    Bindings, eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed,
-    eval_parsed_strict, expression_asts, parse_expr,
+    Bindings, EvalMode, eval_enum_parsed, eval_expr_with_mapping, eval_expr_with_mapping_strict,
+    eval_parsed, eval_parsed_gated, eval_parsed_strict, expression_asts, parse_expr,
 };
 use linkml_map_core::value::Value;
 use proptest::prelude::*;
+
+/// Every evaluation mode of the gate (restricted/unrestricted x lax/strict), for slot and
+/// enum expressions. Must not panic whatever the text.
+fn eval_gated_everywhere(src: &str, vars: &Bindings) {
+    let Ok(parsed) = parse_expr(src) else { return };
+    let enum_src = Value::Map(vars.clone());
+    for strict in [false, true] {
+        for unrestricted in [false, true] {
+            let mode = EvalMode {
+                strict,
+                unrestricted,
+            };
+            let _ = eval_parsed_gated(&parsed, vars, mode);
+            let _ = eval_enum_parsed(&parsed, vars, &enum_src, mode);
+        }
+    }
+}
 
 /// `Debug` text of a result: structural equality that treats `NaN == NaN`.
 fn shown<T: std::fmt::Debug>(r: &T) -> String {
@@ -52,6 +69,7 @@ proptest! {
     fn eval_never_panics(src in arb_expr_source(true), vars in arb_bindings(true)) {
         let _ = eval_expr_with_mapping(&src, &vars);
         let _ = eval_expr_with_mapping_strict(&src, &vars);
+        eval_gated_everywhere(&src, &vars);
     }
 
     /// The same with `*` allowed (so list/string repetition is exercised), over
@@ -63,6 +81,7 @@ proptest! {
     ) {
         let _ = eval_expr_with_mapping(&src, &vars);
         let _ = eval_expr_with_mapping_strict(&src, &vars);
+        eval_gated_everywhere(&src, &vars);
     }
 
     /// Grammar-built expressions reach the evaluator; `eval` is a pure function of
@@ -108,6 +127,28 @@ proptest! {
         let _ = eval_expr_with_mapping(&src, &vars);
         let _ = eval_expr_with_mapping_strict(&src, &vars);
         let _ = expression_asts(&src);
+        eval_gated_everywhere(&src, &vars);
+    }
+
+    /// The gate is deterministic in every mode (restricted/unrestricted x lax/strict).
+    #[test]
+    fn gate_is_deterministic(
+        (src, vars) in prop_oneof![
+            (arb_expr_tree(true), arb_bindings(true)),
+            (arb_program(true), arb_bindings(true)),
+        ]
+    ) {
+        if let Ok(parsed) = parse_expr(&src) {
+            for strict in [false, true] {
+                for unrestricted in [false, true] {
+                    let mode = EvalMode { strict, unrestricted };
+                    prop_assert_eq!(
+                        shown(&eval_parsed_gated(&parsed, &vars, mode)),
+                        shown(&eval_parsed_gated(&parsed, &vars, mode))
+                    );
+                }
+            }
+        }
     }
 
     /// With no bindings at all, every name is null in lax mode and an error in strict mode.

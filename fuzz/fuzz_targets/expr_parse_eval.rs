@@ -13,8 +13,10 @@ use linkml_map_core::expr::lexer::lex;
 use linkml_map_core::expr::parser::parse;
 use linkml_map_core::expr::stmt::parse_program;
 use linkml_map_core::expr::{
-    Bindings, eval_expr_with_mapping, eval_expr_with_mapping_strict, expression_asts,
+    Bindings, EvalMode, eval_enum_parsed, eval_expr_with_mapping, eval_expr_with_mapping_strict,
+    eval_parsed_gated, expression_asts, parse_expr,
 };
+use linkml_map_core::value::Value;
 
 fuzz_target!(|data: &[u8]| {
     let (text, rest) = match data.iter().position(|&b| b == 0) {
@@ -37,6 +39,18 @@ fuzz_target!(|data: &[u8]| {
     let _ = parse(src);
     let _ = parse_program(src);
     let _ = expression_asts(src);
+    // The restricted/unrestricted gate, slot and enum entry points, lax and strict.
+    if let Ok(parsed) = parse_expr(src) {
+        let enum_src = Value::Map(vars.clone());
+        for strict in [false, true] {
+            for unrestricted in [false, true] {
+                let mode = EvalMode { strict, unrestricted };
+                let a = eval_parsed_gated(&parsed, &vars, mode);
+                assert_eq!(format!("{a:?}"), format!("{:?}", eval_parsed_gated(&parsed, &vars, mode)));
+                let _ = eval_enum_parsed(&parsed, &vars, &enum_src, mode);
+            }
+        }
+    }
     let lax = eval_expr_with_mapping(src, &vars);
     let strict = eval_expr_with_mapping_strict(src, &vars);
     // Strict mode only ever turns a success into an error, never into another value.
