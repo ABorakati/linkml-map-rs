@@ -18,7 +18,6 @@ use linkml_map_cli::{
 use linkml_map_core::inference::SchemaMapper;
 use linkml_map_io::WriteOptions;
 use linkml_map_pipeline::load_transform_spec;
-use linkml_map_schemaview::SchemaViewProvider;
 
 // ── Top-level CLI ─────────────────────────────────────────────────────────────
 
@@ -287,14 +286,12 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
 
 fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> Result<()> {
     let spec = load_transform_spec(std::path::Path::new(&args.spec))?;
-    let source = SchemaViewProvider::load_from_path_with_patch(
-        std::path::Path::new(&args.source_schema),
-        spec.source_schema_patches.as_ref(),
-    )?;
-    let schema_doc = SchemaMapper::new(&source).derive_schema(&spec);
+    // PARITY: cli.py `derive_schema` builds `SchemaMapper` over a plain
+    // `SchemaView(schema)`; `source_schema_patches` are not applied to it.
+    let mut mapper = SchemaMapper::from_path(std::path::Path::new(&args.source_schema))?;
+    let schema_doc = mapper.derive_schema(&spec)?;
     // PARITY: cli.py `derive-schema` writes `yaml_dumper.dumps(schema)`, i.e.
     // `yaml.dump(..., Dumper=SafeDumper, sort_keys=False, allow_unicode=True)`.
-    let schema_doc: linkml_map_core::value::Value = serde_json::from_value(schema_doc)?;
     let yaml = linkml_map_io::pyyaml::dump_yaml(
         &schema_doc,
         linkml_map_io::pyyaml::DumpOptions {

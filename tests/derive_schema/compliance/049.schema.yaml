@@ -1,0 +1,14 @@
+id: https://example.org/enums
+name: enums
+default_range: string
+classes:
+  C:
+    attributes:
+      s1:
+        range: E
+enums:
+  E:
+    permissible_values:
+      A: {}
+      B: {}
+      C: {}

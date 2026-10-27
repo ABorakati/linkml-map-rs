@@ -1,0 +1,23 @@
+name: quantity_value-derived
+id: https://w3id.org/linkml/examples/quantity_value-derived
+imports:
+- linkml:types
+prefixes:
+  personinfo:
+    prefix_prefix: personinfo
+    prefix_reference: https://w3id.org/linkml/examples/personinfo/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://w3id.org/linkml/examples/quantity_value-derived/
+default_range: string
+classes:
+  Person:
+    name: Person
+    attributes:
+      id:
+        name: id
+        identifier: true
+      height_in_cm:
+        name: height_in_cm
+    tree_root: true

@@ -1,0 +1,18 @@
+class_derivations:
+  R:
+    populated_from: R
+    slot_derivations:
+      s1_id:
+        expr: s1.id
+      s1_name:
+        expr: s1.name
+      s2_id:
+        expr: s2.id
+      s2_name:
+        expr: s2.name
+  Container:
+    populated_from: Container
+    slot_derivations:
+      r_list:
+        populated_from: r_list
+id: https://example.org/spec

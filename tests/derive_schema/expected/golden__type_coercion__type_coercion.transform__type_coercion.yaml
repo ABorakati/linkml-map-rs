@@ -1,0 +1,57 @@
+name: quantity_value-derived
+id: https://w3id.org/linkml/examples/type_coercion-derived
+imports:
+- linkml:types
+prefixes:
+  tc:
+    prefix_prefix: tc
+    prefix_reference: https://w3id.org/linkml/examples/type_coercion/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  example:
+    prefix_prefix: example
+    prefix_reference: https://example.org/
+  P:
+    prefix_prefix: P
+    prefix_reference: https://example.org/person/
+default_prefix: https://w3id.org/linkml/examples/type_coercion-derived/
+default_range: string
+classes:
+  MyRecord:
+    name: MyRecord
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: uriorcurie
+      id_as_string:
+        name: id_as_string
+        identifier: true
+        range: string
+      id_as_url:
+        name: id_as_url
+        identifier: true
+        range: uri
+      url:
+        name: url
+        range: uri
+      url_as_string:
+        name: url_as_string
+        range: string
+      url_as_curie:
+        name: url_as_curie
+        range: curie
+      name:
+        name: name
+        range: string
+      age_as_integer:
+        name: age_as_integer
+        range: integer
+      age_as_float:
+        name: age_as_float
+        range: float
+      age_as_string:
+        name: age_as_string
+        range: string
+    tree_root: true

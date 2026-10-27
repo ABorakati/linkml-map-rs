@@ -1,0 +1,36 @@
+name: mappings_norm-derived
+id: https://w3id.org/linkml/examples/mappings-norm-derived
+imports:
+- linkml:types
+prefixes:
+  mappings:
+    prefix_prefix: mappings
+    prefix_reference: https://w3id.org/linkml/examples/mappings-norm/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://w3id.org/linkml/examples/mappings-norm-derived/
+default_range: string
+classes:
+  MappingSet:
+    name: MappingSet
+    attributes:
+      mappings:
+        name: mappings
+        range: Mapping
+        multivalued: true
+        inlined: true
+    tree_root: true
+  Mapping:
+    name: Mapping
+    attributes:
+      subject_id:
+        name: subject_id
+      subject_name:
+        name: subject_name
+      object_id:
+        name: object_id
+      object_name:
+        name: object_name
+      predicate_id:
+        name: predicate_id

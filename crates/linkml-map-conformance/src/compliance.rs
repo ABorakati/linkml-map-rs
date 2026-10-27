@@ -906,6 +906,32 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// Dev tool, not an assertion: with `COMPLIANCE_EXPORT_DIR=<dir>` set, writes every
+    /// combo's source schema and transformation spec as `<n>.schema.yaml` /
+    /// `<n>.spec.yaml`, e.g. to run both `derive-schema` CLIs over the compliance corpus
+    /// (see `tests/derive_schema/generate.py --compliance`).
+    #[test]
+    fn export_cases_for_derive_schema() {
+        let Ok(dir) = std::env::var("COMPLIANCE_EXPORT_DIR") else {
+            return;
+        };
+        let dir = Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        for (n, c) in all_cases().iter().enumerate() {
+            let mut spec = c.spec.clone();
+            if let Some(obj) = spec.as_object_mut() {
+                obj.entry("id")
+                    .or_insert_with(|| json!("https://example.org/spec"));
+            }
+            let write = |suffix: &str, v: &J| {
+                let text = serde_yaml::to_string(v).unwrap();
+                std::fs::write(dir.join(format!("{n:03}.{suffix}.yaml")), text).unwrap();
+            };
+            write("schema", &c.schema);
+            write("spec", &spec);
+        }
+    }
+
     /// Port of the upstream `test_compliance_suite.py`. Runs every ported combo,
     /// writes `tests/COMPLIANCE_REPORT.md`, and prints a summary. Like the
     /// fixture conformance runner, individual combo failures do NOT fail the test

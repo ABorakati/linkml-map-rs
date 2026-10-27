@@ -1,0 +1,8 @@
+class_derivations:
+  C:
+    slot_derivations:
+      s1:
+        populated_from: s1
+        unit_conversion:
+          target_unit: pinknoodles
+id: https://example.org/spec

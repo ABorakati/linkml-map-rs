@@ -1,0 +1,222 @@
+name: rich-derived
+id: https://example.org/rich-derived
+imports:
+- linkml:types
+- ./rich_common
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/rich/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+default_prefix: https://example.org/rich-derived/
+default_range: string
+enums:
+  Status:
+    name: Status
+    annotations:
+      kind:
+        tag: kind
+        value: lifecycle
+    description: Status values
+    permissible_values:
+      ACTIVE:
+        text: ACTIVE
+      INACTIVE:
+        text: INACTIVE
+        description: Inactive
+      ADULT:
+        text: ADULT
+      ENABLED:
+        text: ENABLED
+      NEW:
+        text: NEW
+  StatusMirror:
+    name: StatusMirror
+    annotations:
+      kind:
+        tag: kind
+        value: lifecycle
+    description: Status values
+    permissible_values:
+      ACTIVE:
+        text: ACTIVE
+      INACTIVE:
+        text: INACTIVE
+        description: Inactive
+      ADULT:
+        text: ADULT
+      ENABLED:
+        text: ENABLED
+      NEW:
+        text: NEW
+  Shade:
+    name: Shade
+    permissible_values:
+      RED:
+        text: RED
+        description: Red
+        meaning: ex:red
+      GREEN:
+        text: GREEN
+      BLUE:
+        text: BLUE
+        annotations:
+          hex:
+            tag: hex
+            value: '#0000ff'
+classes:
+  Agent:
+    name: Agent
+    annotations:
+      owner:
+        tag: owner
+        value: ex
+    description: A person
+    in_subset:
+    - basic
+    exact_mappings:
+    - schema:Person
+    is_a: Entity
+    mixins:
+    - Taggable
+    slots:
+    - custom
+    attributes:
+      full_name:
+        name: full_name
+        annotations:
+          note:
+            tag: note
+            value: free text
+        description: The name
+        aliases:
+        - label
+        - title
+        exact_mappings:
+        - schema:name
+        slot_uri: schema:name
+        identifier: true
+        range: string
+        required: true
+      age_years:
+        name: age_years
+        ifabsent: int(0)
+        range: float
+        minimum_value: 0
+        maximum_value: 150
+      mass:
+        name: mass
+        range: Mass
+        unit:
+          ucum_code: g
+      tag_string:
+        name: tag_string
+        todos:
+        - review
+        comments:
+        - a comment
+        - another
+        examples:
+        - value: abc
+          description: an example
+        multivalued: true
+        pattern: ^[a-z]+$
+      joined:
+        name: joined
+        todos:
+        - review
+        comments:
+        - a comment
+        - another
+        examples:
+        - value: abc
+          description: an example
+        multivalued: false
+        pattern: ^[a-z]+$
+      friends_by_name:
+        name: friends_by_name
+        range: Agent
+        multivalued: true
+        inlined: true
+        inlined_as_list: false
+      friend_list:
+        name: friend_list
+        range: Person
+        multivalued: true
+        inlined_as_list: true
+      friend_dict:
+        name: friend_dict
+        range: Person
+        multivalued: true
+        inlined: true
+        inlined_as_list: false
+      friend_multi:
+        name: friend_multi
+        range: Person
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      custom:
+        name: custom
+        annotations:
+          k:
+            tag: k
+            value: v
+        description: from the spec
+        range: integer
+        required: true
+      nickname:
+        name: nickname
+        description: nickname override
+        aliases:
+        - nick
+        range: string
+        multivalued: true
+    class_uri: schema:Person
+    tree_root: true
+    unique_keys:
+      nk:
+        unique_key_name: nk
+        unique_key_slots:
+        - name
+        - age
+    rules:
+    - preconditions:
+        slot_conditions:
+          age:
+            name: age
+            minimum_value: 18
+      postconditions:
+        slot_conditions:
+          status:
+            name: status
+            equals_string: ADULT
+  Entity:
+    name: Entity
+    description: A base class from an import
+    abstract: true
+  Taggable:
+    name: Taggable
+    description: tag mixin
+    mixin: true
+  Staff:
+    name: Staff
+    description: An employee
+    is_a: Agent
+    attributes:
+      department:
+        name: department
+        range: string
+      salary:
+        name: salary
+        range: integer
+    any_of:
+    - slot_conditions:
+        salary:
+          name: salary
+          minimum_value: 1

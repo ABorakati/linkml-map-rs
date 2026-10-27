@@ -1,0 +1,14 @@
+name: types-derived
+id: https://example.org/types-derived
+default_prefix: https://example.org/types-derived/
+default_range: string
+classes:
+  D:
+    name: D
+    attributes:
+      q_in_cm:
+        name: q_in_cm
+        range: Q
+        unit:
+          ucum_code: cm
+    tree_root: true

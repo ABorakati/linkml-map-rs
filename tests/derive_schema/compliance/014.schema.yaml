@@ -1,0 +1,16 @@
+id: https://example.org/expr
+name: expr
+default_range: string
+classes:
+  C:
+    attributes:
+      s1:
+        range: integer
+      s2:
+        range: D
+  D:
+    attributes:
+      s4:
+        range: integer
+      s3:
+        range: D
