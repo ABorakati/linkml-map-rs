@@ -172,6 +172,9 @@ impl Program {
                     self.undefined_name_detail(&name, span)
                 )));
             }
+            // A result Python builds but `Value` cannot hold (bytes, a lambda) is
+            // no error upstream: do not turn it into an unset `target`.
+            Err(Failure { err, .. }) if err.is_unrepresentable() => return Err(err),
             // asteval records the error and stops; `target` keeps its value.
             Err(_) => {}
         }
@@ -377,14 +380,10 @@ pub fn is_statement_block(expr: &str) -> bool {
 /// brackets (or after a trailing backslash) does not end the line and blank or
 /// comment-only lines are ignored.
 fn parse_single_expression(expr: &str) -> ExprResult<Ast> {
-    let lines = raw_lines(expr.trim());
-    match lines.as_slice() {
-        [line] => parse(&line.text),
-        [] => parse(""),
-        _ => Err(ExprError::Parse(
-            "an expression must be a single logical line".into(),
-        )),
-    }
+    // The lexer follows the tokenizer: a newline inside brackets, a string or
+    // after a backslash continues the line, blank and comment-only lines are
+    // skipped, and any other newline is a `Newline` token the parser refuses.
+    parse(expr.trim())
 }
 
 /// Parse `expr` as one expression when it is one, else as a statement block.

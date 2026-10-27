@@ -18,7 +18,7 @@
 //! becomes [`Ast::Brace`]; every other set display is [`Ast::Set`].
 
 use super::error::{ExprError, ExprResult};
-use super::lexer::{Token, lex};
+use super::lexer::{FStrField, FStrPart, Token, lex};
 
 /// The deepest expression tree the parser accepts, counted in nodes along the
 /// longest path (a leaf is 1, `1 + 1` is 2).
@@ -36,6 +36,14 @@ use super::lexer::{Token, lex};
 /// evaluator, `Clone`, `Drop` and the AST walkers use.
 pub const MAX_AST_DEPTH: usize = 496;
 
+/// How many lambdas may nest (`lambda: lambda: ...`), which recurses in the
+/// parser without any bracket for the lexer's limit to count.
+///
+/// PARITY: CPython's parser accepts far deeper chains (and upstream evaluates
+/// them, or raises `RecursionError`); a hundred nested lambdas is not a real
+/// expression, and each level costs several parser frames.
+const MAX_LAMBDA_NESTING: usize = 100;
+
 /// An error for a tree deeper than [`MAX_AST_DEPTH`].
 fn too_deep() -> ExprError {
     ExprError::recursion()
@@ -49,52 +57,7 @@ fn exceeds_max_depth(ast: &Ast) -> bool {
         if depth > MAX_AST_DEPTH {
             return true;
         }
-        let next = depth + 1;
-        match node {
-            Ast::Int(_) | Ast::Float(_) | Ast::Str(_) | Ast::Bool(_) | Ast::None | Ast::Name(_) => {
-            }
-            Ast::Brace(inner) => stack.push((inner, next)),
-            Ast::Attribute { value, .. } => stack.push((value, next)),
-            Ast::Set(items) | Ast::List(items) | Ast::Tuple(items) => {
-                stack.extend(items.iter().map(|item| (item, next)));
-            }
-            Ast::Dict(pairs) => {
-                for (key, value) in pairs {
-                    stack.push((key, next));
-                    stack.push((value, next));
-                }
-            }
-            Ast::Subscript { value, index } => {
-                stack.push((value, next));
-                stack.push((index, next));
-            }
-            Ast::Comp(comp) => {
-                stack.push((&comp.elt, next));
-                stack.extend(comp.value.iter().map(|value| (value, next)));
-                for generator in &comp.generators {
-                    stack.push((&generator.iter, next));
-                    stack.extend(generator.ifs.iter().map(|cond| (cond, next)));
-                }
-            }
-            Ast::IfExp { test, body, orelse } => {
-                stack.extend([(&**test, next), (&**body, next), (&**orelse, next)]);
-            }
-            Ast::Call { args, keywords, .. } => {
-                stack.extend(args.iter().map(|arg| (arg, next)));
-                stack.extend(keywords.iter().map(|(_, value)| (value, next)));
-            }
-            Ast::Unary { operand, .. } => stack.push((operand, next)),
-            Ast::Binary { left, right, .. } => {
-                stack.extend([(&**left, next), (&**right, next)]);
-            }
-            Ast::Compare {
-                left, comparators, ..
-            } => {
-                stack.push((left, next));
-                stack.extend(comparators.iter().map(|c| (c, next)));
-            }
-            Ast::BoolOp { values, .. } => stack.extend(values.iter().map(|v| (v, next))),
-        }
+        node.for_each_child(&mut |child| stack.push((child, depth + 1)));
     }
     false
 }
@@ -114,6 +77,8 @@ pub enum BinOp {
     BitAnd,
     BitOr,
     BitXor,
+    /// `@`: lexed and parsed, refused (`OperatorNotDefined`) when evaluated.
+    MatMul,
 }
 
 /// Comparison operators.
@@ -127,6 +92,8 @@ pub enum CmpOp {
     GtE,
     In,
     NotIn,
+    Is,
+    IsNot,
 }
 
 /// Unary operators.
@@ -150,9 +117,44 @@ pub enum BoolOp {
 pub enum Ast {
     Int(i64),
     Float(f64),
+    /// An imaginary literal (`1j`); evaluating it reports an unrepresentable
+    /// value, as [`Value`](crate::value::Value) has no complex numbers.
+    Imag(f64),
     Str(String),
+    /// A `b'..'` literal (unrepresentable when evaluated).
+    Bytes(Vec<u8>),
     Bool(bool),
     None,
+    /// `...`
+    Ellipsis,
+    /// An f-string (`ast.JoinedStr`).
+    FString(Vec<FPart>),
+    /// A slice `lower:upper:step`, only ever the index of a [`Ast::Subscript`]
+    /// (or an element of a tuple index).
+    Slice {
+        lower: Option<Box<Ast>>,
+        upper: Option<Box<Ast>>,
+        step: Option<Box<Ast>>,
+    },
+    /// `*value` in a call, list or tuple display, or subscript.
+    Starred(Box<Ast>),
+    /// The key of a `**mapping` entry of a dict display (Python's `None` key).
+    DictUnpack,
+    /// `lambda params: body`.
+    Lambda(Box<Lambda>),
+    /// A call whose callee is not a bare name: `x.method(..)`, `f(..)(..)`,
+    /// `(lambda: 1)()`.
+    CallValue {
+        func: Box<Ast>,
+        args: Vec<Ast>,
+        /// As [`Ast::Call::keywords`].
+        keywords: Vec<(String, Ast)>,
+    },
+    /// `name := value`.
+    NamedExpr {
+        target: String,
+        value: Box<Ast>,
+    },
     /// Bare name reference (`x`).
     Name(String),
     /// `{ ... }` brace reference: a set display of exactly one Name/Attribute
@@ -192,7 +194,8 @@ pub enum Ast {
     Call {
         func: String,
         args: Vec<Ast>,
-        /// Keyword arguments, in source order (`ast.Call.keywords`).
+        /// Keyword arguments, in source order (`ast.Call.keywords`); an empty
+        /// name is a `**mapping` unpacking.
         keywords: Vec<(String, Ast)>,
     },
     Unary {
@@ -214,6 +217,148 @@ pub enum Ast {
         op: BoolOp,
         values: Vec<Ast>,
     },
+}
+
+impl Ast {
+    /// Call `f` on each direct child expression, in source order: the nodes
+    /// `ast.iter_child_nodes` would give for this node (f-string fields, call
+    /// arguments, keyword values, comprehension parts, lambda defaults and
+    /// body).
+    pub fn for_each_child<'a>(&'a self, f: &mut impl FnMut(&'a Ast)) {
+        fn fstring<'a>(parts: &'a [FPart], f: &mut impl FnMut(&'a Ast)) {
+            for part in parts {
+                if let FPart::Field(field) = part {
+                    f(&field.value);
+                    if let Some(spec) = &field.spec {
+                        fstring(spec, f);
+                    }
+                }
+            }
+        }
+        match self {
+            Ast::Int(_)
+            | Ast::Float(_)
+            | Ast::Imag(_)
+            | Ast::Str(_)
+            | Ast::Bytes(_)
+            | Ast::Bool(_)
+            | Ast::None
+            | Ast::Ellipsis
+            | Ast::DictUnpack
+            | Ast::Name(_) => {}
+            Ast::Brace(inner) | Ast::Starred(inner) => f(inner),
+            Ast::NamedExpr { value, .. } => f(value),
+            Ast::FString(parts) => fstring(parts, f),
+            Ast::Slice { lower, upper, step } => {
+                for bound in [lower, upper, step].into_iter().flatten() {
+                    f(bound);
+                }
+            }
+            Ast::Lambda(lambda) => {
+                lambda.defaults().for_each(&mut *f);
+                f(&lambda.body);
+            }
+            Ast::CallValue {
+                func,
+                args,
+                keywords,
+            } => {
+                f(func);
+                args.iter().for_each(&mut *f);
+                keywords.iter().for_each(|(_, value)| f(value));
+            }
+            Ast::Attribute { value, .. } => f(value),
+            Ast::Set(items) | Ast::List(items) | Ast::Tuple(items) => {
+                items.iter().for_each(&mut *f);
+            }
+            Ast::Dict(pairs) => {
+                for (key, value) in pairs {
+                    f(key);
+                    f(value);
+                }
+            }
+            Ast::Subscript { value, index } => {
+                f(value);
+                f(index);
+            }
+            Ast::Comp(comp) => {
+                f(&comp.elt);
+                if let Some(value) = &comp.value {
+                    f(value);
+                }
+                for generator in &comp.generators {
+                    f(&generator.iter);
+                    generator.ifs.iter().for_each(&mut *f);
+                }
+            }
+            Ast::IfExp { test, body, orelse } => {
+                f(test);
+                f(body);
+                f(orelse);
+            }
+            Ast::Call { args, keywords, .. } => {
+                args.iter().for_each(&mut *f);
+                keywords.iter().for_each(|(_, value)| f(value));
+            }
+            Ast::Unary { operand, .. } => f(operand),
+            Ast::Binary { left, right, .. } => {
+                f(left);
+                f(right);
+            }
+            Ast::Compare {
+                left, comparators, ..
+            } => {
+                f(left);
+                comparators.iter().for_each(&mut *f);
+            }
+            Ast::BoolOp { values, .. } => values.iter().for_each(&mut *f),
+        }
+    }
+}
+
+/// A piece of an f-string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FPart {
+    /// Literal text.
+    Lit(String),
+    /// A replacement field.
+    Field(Box<FField>),
+}
+
+/// A replacement field of an f-string (`ast.FormattedValue`). The text of a
+/// self-documenting `{x=}` is a literal part before it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FField {
+    pub value: Ast,
+    /// `Some('s' | 'r' | 'a')` for `!s`, `!r`, `!a` (and the implicit `!r` of
+    /// `{x=}` without a format spec).
+    pub conversion: Option<char>,
+    /// The format spec, an f-string body (`ast.JoinedStr`).
+    pub spec: Option<Vec<FPart>>,
+}
+
+/// A lambda's parameters and body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lambda {
+    /// Positional parameters (positional-only ones included) with defaults.
+    pub params: Vec<(String, Option<Ast>)>,
+    /// `*args`.
+    pub vararg: Option<String>,
+    /// Keyword-only parameters (after `*` or `*args`) with defaults.
+    pub kwonly: Vec<(String, Option<Ast>)>,
+    /// `**kwargs`.
+    pub kwarg: Option<String>,
+    pub body: Ast,
+}
+
+impl Lambda {
+    /// The default-value expressions.
+    pub fn defaults(&self) -> impl Iterator<Item = &Ast> {
+        self.params
+            .iter()
+            .chain(&self.kwonly)
+            .filter_map(|(_, default)| default.as_ref())
+    }
 }
 
 /// Which display a [`Comprehension`] builds.
@@ -273,8 +418,16 @@ pub struct Comprehension {
 /// Parse an expression string into an [`Ast`].
 pub fn parse(src: &str) -> ExprResult<Ast> {
     let tokens = lex(src)?;
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        lambda_depth: 0,
+    };
     let ast = p.parse_expr()?;
+    // A trailing newline ends the expression, as in `ast.parse(.., mode="eval")`.
+    while *p.peek() == Token::Newline {
+        p.next();
+    }
     p.expect(Token::Eof)?;
     Ok(ast)
 }
@@ -285,6 +438,9 @@ type CallArgs = (Vec<Ast>, Vec<(String, Ast)>);
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Lambdas being parsed: `lambda: lambda: ...` recurses without a bracket,
+    /// which is all the lexer's bracket limit bounds.
+    lambda_depth: usize,
 }
 
 impl Parser {
@@ -292,12 +448,16 @@ impl Parser {
         &self.tokens[self.pos]
     }
 
+    /// Consume the next token (moving it out: nothing is cloned). The final
+    /// [`Token::Eof`] is never consumed.
     fn next(&mut self) -> Token {
-        let t = self.tokens[self.pos].clone();
         if self.pos + 1 < self.tokens.len() {
+            let token = std::mem::replace(&mut self.tokens[self.pos], Token::Eof);
             self.pos += 1;
+            token
+        } else {
+            Token::Eof
         }
-        t
     }
 
     /// Count one more link of a left-nested chain (`a + b + c`, `x.a.b`, `x[0][1]`),
@@ -341,6 +501,10 @@ impl Parser {
     fn parse_expr(&mut self) -> ExprResult<Ast> {
         let mut arms: Vec<(Ast, Ast)> = Vec::new();
         let mut result = loop {
+            // `lambdef` is an `expression` too, and swallows the rest.
+            if *self.peek() == Token::Lambda {
+                break self.parse_lambda()?;
+            }
             let body = self.parse_or()?;
             if !self.peek_keyword("if") {
                 break body;
@@ -439,6 +603,14 @@ impl Parser {
                 Token::Gt => Some(CmpOp::Gt),
                 Token::GtE => Some(CmpOp::GtE),
                 Token::In => Some(CmpOp::In),
+                Token::Is => {
+                    // 'is not'
+                    if self.tokens.get(self.pos + 1) == Some(&Token::Not) {
+                        Some(CmpOp::IsNot)
+                    } else {
+                        Some(CmpOp::Is)
+                    }
+                }
                 Token::Not => {
                     // 'not in'
                     if self.tokens.get(self.pos + 1) == Some(&Token::In) {
@@ -450,11 +622,11 @@ impl Parser {
                 _ => None,
             };
             match op {
-                Some(CmpOp::NotIn) => {
-                    self.next(); // not
-                    self.next(); // in
+                Some(CmpOp::NotIn | CmpOp::IsNot) => {
+                    self.next(); // not / is
+                    self.next(); // in / not
                     comparators.push(self.parse_bitor()?);
-                    ops.push(CmpOp::NotIn);
+                    ops.push(op.expect("matched Some"));
                 }
                 Some(o) => {
                     self.next();
@@ -580,6 +752,7 @@ impl Parser {
                 Token::Slash => BinOp::Div,
                 Token::DoubleSlash => BinOp::FloorDiv,
                 Token::Percent => BinOp::Mod,
+                Token::At => BinOp::MatMul,
                 _ => break,
             };
             self.next();
@@ -641,8 +814,7 @@ impl Parser {
         }
     }
 
-    // postfix := atom ('.' NAME | call_args)*
-    // (call args are only attached directly to a bare name -> function call)
+    // postfix := atom ('.' NAME | call_args | '[' subscript ']')*
     fn parse_postfix(&mut self) -> ExprResult<Ast> {
         let mut node = self.parse_atom()?;
         let mut links = 0;
@@ -652,7 +824,7 @@ impl Parser {
                     self.next();
                     Self::chain_link(&mut links)?;
                     let attr = match self.next() {
-                        Token::Name(n) => n,
+                        Token::Name(n) if !is_hard_keyword(&n) => n,
                         other => {
                             return Err(ExprError::Parse(format!(
                                 "expected attribute name after '.', found {other:?}"
@@ -665,14 +837,32 @@ impl Parser {
                     };
                 }
                 Token::LBracket => {
-                    // Subscript: value[index].
+                    // Subscript: value[index], value[lower:upper:step].
                     self.next();
                     Self::chain_link(&mut links)?;
-                    let index = self.parse_expr()?;
+                    let index = self.parse_subscript()?;
                     self.expect(Token::RBracket)?;
                     node = Ast::Subscript {
                         value: Box::new(node),
                         index: Box::new(index),
+                    };
+                }
+                Token::LParen => {
+                    self.next();
+                    Self::chain_link(&mut links)?;
+                    let (args, keywords) = self.parse_call_args()?;
+                    self.expect(Token::RParen)?;
+                    node = match node {
+                        Ast::Name(func) => Ast::Call {
+                            func,
+                            args,
+                            keywords,
+                        },
+                        func => Ast::CallValue {
+                            func: Box::new(func),
+                            args,
+                            keywords,
+                        },
                     };
                 }
                 _ => break,
@@ -681,31 +871,186 @@ impl Parser {
         Ok(node)
     }
 
+    // subscript := slice_item (',' slice_item)* [',']   (several items are a tuple)
+    fn parse_subscript(&mut self) -> ExprResult<Ast> {
+        let first = self.parse_slice_item()?;
+        if *self.peek() != Token::Comma {
+            return Ok(match first {
+                starred @ Ast::Starred(_) => Ast::Tuple(vec![starred]),
+                other => other,
+            });
+        }
+        let mut elts = vec![first];
+        while *self.peek() == Token::Comma {
+            self.next();
+            if *self.peek() == Token::RBracket {
+                break;
+            }
+            elts.push(self.parse_slice_item()?);
+        }
+        Ok(Ast::Tuple(elts))
+    }
+
+    // slice_item := slice | star_named_expression
+    // slice := [expression] ':' [expression] [':' [expression]]
+    fn parse_slice_item(&mut self) -> ExprResult<Ast> {
+        let lower = if *self.peek() == Token::Colon {
+            None
+        } else {
+            let first = self.parse_star_named()?;
+            if *self.peek() != Token::Colon {
+                return Ok(first);
+            }
+            Some(Box::new(first))
+        };
+        self.next(); // :
+        let bound = |p: &mut Self| -> ExprResult<Option<Box<Ast>>> {
+            if matches!(p.peek(), Token::Colon | Token::RBracket | Token::Comma) {
+                Ok(None)
+            } else {
+                Ok(Some(Box::new(p.parse_expr()?)))
+            }
+        };
+        let upper = bound(self)?;
+        let step = if *self.peek() == Token::Colon {
+            self.next();
+            bound(self)?
+        } else {
+            None
+        };
+        Ok(Ast::Slice { lower, upper, step })
+    }
+
+    // star_named_expression := '*' bitwise_or | named_expression
+    fn parse_star_named(&mut self) -> ExprResult<Ast> {
+        if *self.peek() == Token::Star {
+            self.next();
+            return Ok(Ast::Starred(Box::new(self.parse_bitor()?)));
+        }
+        self.parse_named_expr()
+    }
+
+    // named_expression := NAME ':=' expression | expression
+    fn parse_named_expr(&mut self) -> ExprResult<Ast> {
+        if let (Token::Name(name), Some(Token::ColonEq)) =
+            (self.peek(), self.tokens.get(self.pos + 1))
+        {
+            if is_hard_keyword(name) {
+                return Err(ExprError::Parse(format!("unexpected keyword: {name:?}")));
+            }
+            let target = name.clone();
+            self.next(); // name
+            self.next(); // :=
+            let value = Box::new(self.parse_expr()?);
+            return Ok(Ast::NamedExpr { target, value });
+        }
+        self.parse_expr()
+    }
+
+    // lambdef := 'lambda' [parameters] ':' expression
+    fn parse_lambda(&mut self) -> ExprResult<Ast> {
+        self.lambda_depth += 1;
+        if self.lambda_depth > MAX_LAMBDA_NESTING {
+            return Err(too_deep());
+        }
+        let lambda = self.parse_lambda_inner();
+        self.lambda_depth -= 1;
+        lambda
+    }
+
+    fn parse_lambda_inner(&mut self) -> ExprResult<Ast> {
+        self.next(); // lambda
+        let mut lambda = Lambda {
+            params: Vec::new(),
+            vararg: None,
+            kwonly: Vec::new(),
+            kwarg: None,
+            body: Ast::None,
+        };
+        let mut after_star = false;
+        let mut seen: Vec<String> = Vec::new();
+        while *self.peek() != Token::Colon {
+            match self.next() {
+                Token::Star => {
+                    if after_star {
+                        return Err(ExprError::Parse("* argument may appear only once".into()));
+                    }
+                    after_star = true;
+                    if let Token::Name(_) = self.peek() {
+                        let name = self.parse_param_name(&mut seen)?;
+                        lambda.vararg = Some(name);
+                    }
+                }
+                Token::DoubleStar => {
+                    lambda.kwarg = Some(self.parse_param_name(&mut seen)?);
+                    if *self.peek() == Token::Comma {
+                        self.next();
+                    }
+                    break;
+                }
+                Token::Slash => {}
+                Token::Name(name) => {
+                    if is_hard_keyword(&name) || seen.contains(&name) {
+                        return Err(ExprError::Parse(format!(
+                            "invalid lambda parameter {name:?}"
+                        )));
+                    }
+                    seen.push(name.clone());
+                    let default = if *self.peek() == Token::Assign {
+                        self.next();
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    if after_star {
+                        lambda.kwonly.push((name, default));
+                    } else {
+                        lambda.params.push((name, default));
+                    }
+                }
+                other => {
+                    return Err(ExprError::Parse(format!(
+                        "invalid lambda parameter, found {other:?}"
+                    )));
+                }
+            }
+            if *self.peek() != Token::Comma {
+                break;
+            }
+            self.next();
+        }
+        self.expect(Token::Colon)?;
+        lambda.body = self.parse_expr()?;
+        Ok(Ast::Lambda(Box::new(lambda)))
+    }
+
+    fn parse_param_name(&mut self, seen: &mut Vec<String>) -> ExprResult<String> {
+        match self.next() {
+            Token::Name(name) if !is_hard_keyword(&name) && !seen.contains(&name) => {
+                seen.push(name.clone());
+                Ok(name)
+            }
+            other => Err(ExprError::Parse(format!(
+                "invalid lambda parameter, found {other:?}"
+            ))),
+        }
+    }
+
     fn parse_atom(&mut self) -> ExprResult<Ast> {
         match self.next() {
             Token::Int(i) => Ok(Ast::Int(i)),
             Token::Float(f) => Ok(Ast::Float(f)),
-            Token::Str(s) => Ok(Ast::Str(s)),
+            Token::Imag(f) => Ok(Ast::Imag(f)),
+            first @ (Token::Str(_) | Token::Bytes(_) | Token::FStr(_)) => self.parse_strings(first),
             Token::True => Ok(Ast::Bool(true)),
             Token::False => Ok(Ast::Bool(false)),
             Token::None => Ok(Ast::None),
+            Token::Ellipsis => Ok(Ast::Ellipsis),
             Token::Name(name) => {
-                if matches!(name.as_str(), "if" | "else" | "for") {
+                if is_hard_keyword(&name) {
                     return Err(ExprError::Parse(format!("unexpected keyword: {name:?}")));
                 }
-                // Function call?
-                if *self.peek() == Token::LParen {
-                    self.next();
-                    let (args, keywords) = self.parse_call_args()?;
-                    self.expect(Token::RParen)?;
-                    Ok(Ast::Call {
-                        func: name,
-                        args,
-                        keywords,
-                    })
-                } else {
-                    Ok(Ast::Name(name))
-                }
+                Ok(Ast::Name(name))
             }
             Token::LParen => {
                 // Parenthesized expression, tuple or generator expression.
@@ -713,7 +1058,7 @@ impl Parser {
                     self.next();
                     return Ok(Ast::Tuple(vec![]));
                 }
-                let first = self.parse_expr()?;
+                let first = self.parse_star_named()?;
                 if self.peek_keyword("for") {
                     let generators = self.parse_for_clauses()?;
                     self.expect(Token::RParen)?;
@@ -726,12 +1071,17 @@ impl Parser {
                         if *self.peek() == Token::RParen {
                             break;
                         }
-                        elts.push(self.parse_expr()?);
+                        elts.push(self.parse_star_named()?);
                     }
                     self.expect(Token::RParen)?;
                     Ok(Ast::Tuple(elts))
                 } else {
                     self.expect(Token::RParen)?;
+                    if matches!(first, Ast::Starred(_)) {
+                        return Err(ExprError::Parse(
+                            "cannot use starred expression here".into(),
+                        ));
+                    }
                     Ok(first)
                 }
             }
@@ -741,7 +1091,7 @@ impl Parser {
                     self.next();
                     return Ok(Ast::List(vec![]));
                 }
-                let first = self.parse_expr()?;
+                let first = self.parse_star_named()?;
                 // List comprehension: `[elt for target in iter (if cond)*]`.
                 if self.peek_keyword("for") {
                     let generators = self.parse_for_clauses()?;
@@ -755,7 +1105,7 @@ impl Parser {
                     if *self.peek() == Token::RBracket {
                         break;
                     }
-                    elts.push(self.parse_expr()?);
+                    elts.push(self.parse_star_named()?);
                 }
                 self.expect(Token::RBracket)?;
                 Ok(Ast::List(elts))
@@ -763,6 +1113,66 @@ impl Parser {
             Token::LBrace => self.parse_brace(),
             other => Err(ExprError::Parse(format!("unexpected token: {other:?}"))),
         }
+    }
+
+    /// One literal or a run of adjacent literals (`'a' 'b'`, `'a' f'{x}'`),
+    /// starting with the already consumed `first`. Str and f-string parts merge;
+    /// bytes and non-bytes do not mix.
+    fn parse_strings(&mut self, first: Token) -> ExprResult<Ast> {
+        enum Acc {
+            Str(String),
+            F(Vec<FPart>),
+            Bytes(Vec<u8>),
+        }
+        let mixed = || ExprError::Parse("cannot mix bytes and nonbytes literals".into());
+        let mut acc: Option<Acc> = None;
+        let mut token = first;
+        loop {
+            acc = Some(match (acc, token) {
+                (None, Token::Str(s)) => Acc::Str(s),
+                (None, Token::Bytes(b)) => Acc::Bytes(b),
+                (None, Token::FStr(parts)) => Acc::F(fstring_parts(parts)?),
+                (Some(Acc::Str(mut text)), Token::Str(s)) => {
+                    text.push_str(&s);
+                    Acc::Str(text)
+                }
+                (Some(Acc::Str(text)), Token::FStr(parts)) => {
+                    let mut merged = Vec::new();
+                    push_lit(&mut merged, text);
+                    extend_parts(&mut merged, fstring_parts(parts)?);
+                    Acc::F(merged)
+                }
+                (Some(Acc::F(mut merged)), Token::Str(s)) => {
+                    push_lit(&mut merged, s);
+                    Acc::F(merged)
+                }
+                (Some(Acc::F(mut merged)), Token::FStr(parts)) => {
+                    extend_parts(&mut merged, fstring_parts(parts)?);
+                    Acc::F(merged)
+                }
+                (Some(Acc::Bytes(mut bytes)), Token::Bytes(b)) => {
+                    bytes.extend(b);
+                    Acc::Bytes(bytes)
+                }
+                _ => return Err(mixed()),
+            });
+            if matches!(
+                self.peek(),
+                Token::Str(_) | Token::Bytes(_) | Token::FStr(_)
+            ) {
+                token = self.next();
+            } else {
+                break;
+            }
+        }
+        Ok(match acc.expect("at least one literal") {
+            Acc::Str(text) => Ast::Str(text),
+            Acc::Bytes(bytes) => Ast::Bytes(bytes),
+            Acc::F(mut parts) => match parts.as_mut_slice() {
+                [FPart::Lit(text)] => Ast::Str(std::mem::take(text)),
+                _ => Ast::FString(parts),
+            },
+        })
     }
 
     /// The display after a `{`: Python reads it as a dict, a set or a
@@ -773,8 +1183,12 @@ impl Parser {
             self.next();
             return Ok(Ast::Dict(vec![]));
         }
-        let first = self.parse_expr()?;
-        if *self.peek() == Token::Colon {
+        if *self.peek() == Token::DoubleStar {
+            return self.parse_dict_tail(Vec::new());
+        }
+        let first = self.parse_star_named()?;
+        if *self.peek() == Token::Colon && !matches!(first, Ast::Starred(_) | Ast::NamedExpr { .. })
+        {
             self.next();
             let value = self.parse_expr()?;
             if self.peek_keyword("for") {
@@ -787,18 +1201,7 @@ impl Parser {
                     generators,
                 ));
             }
-            let mut pairs = vec![(first, value)];
-            while *self.peek() == Token::Comma {
-                self.next();
-                if *self.peek() == Token::RBrace {
-                    break;
-                }
-                let key = self.parse_expr()?;
-                self.expect(Token::Colon)?;
-                pairs.push((key, self.parse_expr()?));
-            }
-            self.expect(Token::RBrace)?;
-            return Ok(Ast::Dict(pairs));
+            return self.parse_dict_tail(vec![(first, value)]);
         }
         if self.peek_keyword("for") {
             let generators = self.parse_for_clauses()?;
@@ -811,7 +1214,7 @@ impl Parser {
             if *self.peek() == Token::RBrace {
                 break;
             }
-            elts.push(self.parse_expr()?);
+            elts.push(self.parse_star_named()?);
         }
         self.expect(Token::RBrace)?;
         // `{x}`, `{ x }`, `{x,}` and `{Table.col}`: the reference syntax
@@ -820,6 +1223,32 @@ impl Parser {
             return Ok(Ast::Brace(Box::new(elts.pop().expect("one element"))));
         }
         Ok(Ast::Set(elts))
+    }
+
+    /// The rest of a dict display after the entries in `pairs` (none, when it
+    /// opens with `**`): `, key: value` and `, **mapping` entries up to the `}`.
+    fn parse_dict_tail(&mut self, mut pairs: Vec<(Ast, Ast)>) -> ExprResult<Ast> {
+        loop {
+            if !pairs.is_empty() {
+                if *self.peek() != Token::Comma {
+                    break;
+                }
+                self.next();
+                if *self.peek() == Token::RBrace {
+                    break;
+                }
+            }
+            if *self.peek() == Token::DoubleStar {
+                self.next();
+                pairs.push((Ast::DictUnpack, self.parse_bitor()?));
+                continue;
+            }
+            let key = self.parse_expr()?;
+            self.expect(Token::Colon)?;
+            pairs.push((key, self.parse_expr()?));
+        }
+        self.expect(Token::RBrace)?;
+        Ok(Ast::Dict(pairs))
     }
 
     /// `for target in iter (if cond)*` clauses, one or more
@@ -870,7 +1299,7 @@ impl Parser {
 
     fn parse_target_name(&mut self) -> ExprResult<String> {
         match self.next() {
-            Token::Name(n) if !matches!(n.as_str(), "if" | "else" | "for") => Ok(n),
+            Token::Name(n) if !is_hard_keyword(&n) => Ok(n),
             other => Err(ExprError::Parse(format!(
                 "expected loop variable after 'for', found {other:?}"
             ))),
@@ -878,15 +1307,32 @@ impl Parser {
     }
 
     /// The arguments of a call, up to (not including) the closing `)`:
-    /// positional arguments, then `name=value` keywords. A lone positional
-    /// argument followed by `for` is a generator expression (`sum(x for x in xs)`).
+    /// positional arguments (`*iterable` ones included) and `name=value` /
+    /// `**mapping` keywords. A lone positional argument followed by `for` is a
+    /// generator expression (`sum(x for x in xs)`).
     fn parse_call_args(&mut self) -> ExprResult<CallArgs> {
         let mut args = Vec::new();
         let mut keywords: Vec<(String, Ast)> = Vec::new();
+        let mut double_star = false;
         while *self.peek() != Token::RParen {
-            if let (Token::Name(name), Some(Token::Assign)) =
+            if *self.peek() == Token::DoubleStar {
+                self.next();
+                keywords.push((String::new(), self.parse_expr()?));
+                double_star = true;
+            } else if *self.peek() == Token::Star {
+                if double_star {
+                    return Err(ExprError::Parse(
+                        "iterable argument unpacking follows keyword argument unpacking".into(),
+                    ));
+                }
+                self.next();
+                args.push(Ast::Starred(Box::new(self.parse_expr()?)));
+            } else if let (Token::Name(name), Some(Token::Assign)) =
                 (self.peek(), self.tokens.get(self.pos + 1))
             {
+                if is_hard_keyword(name) {
+                    return Err(ExprError::Parse(format!("unexpected keyword: {name:?}")));
+                }
                 let name = name.clone();
                 self.next(); // name
                 self.next(); // =
@@ -897,7 +1343,7 @@ impl Parser {
                         "positional argument follows keyword argument".into(),
                     ));
                 }
-                let arg = self.parse_expr()?;
+                let arg = self.parse_named_expr()?;
                 if args.is_empty() && self.peek_keyword("for") {
                     let generators = self.parse_for_clauses()?;
                     args.push(comprehension(CompKind::Generator, arg, None, generators));
@@ -912,6 +1358,124 @@ impl Parser {
         }
         Ok((args, keywords))
     }
+}
+
+/// Python's reserved words: none of them is an identifier. (`match`, `case`,
+/// `type` and `_` are soft keywords and stay usable as names.)
+fn is_hard_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "False"
+            | "None"
+            | "True"
+            | "and"
+            | "as"
+            | "assert"
+            | "async"
+            | "await"
+            | "break"
+            | "class"
+            | "continue"
+            | "def"
+            | "del"
+            | "elif"
+            | "else"
+            | "except"
+            | "finally"
+            | "for"
+            | "from"
+            | "global"
+            | "if"
+            | "import"
+            | "in"
+            | "is"
+            | "lambda"
+            | "nonlocal"
+            | "not"
+            | "or"
+            | "pass"
+            | "raise"
+            | "return"
+            | "try"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
+/// Append literal text to an f-string's parts, joining it to a literal before it.
+fn push_lit(parts: &mut Vec<FPart>, text: String) {
+    if text.is_empty() {
+        return;
+    }
+    match parts.last_mut() {
+        Some(FPart::Lit(last)) => last.push_str(&text),
+        _ => parts.push(FPart::Lit(text)),
+    }
+}
+
+fn extend_parts(parts: &mut Vec<FPart>, more: Vec<FPart>) {
+    for part in more {
+        match part {
+            FPart::Lit(text) => push_lit(parts, text),
+            field @ FPart::Field(_) => parts.push(field),
+        }
+    }
+}
+
+/// The f-string pieces the lexer found, with each replacement field's tokens
+/// parsed into an expression.
+fn fstring_parts(parts: Vec<FStrPart>) -> ExprResult<Vec<FPart>> {
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            FStrPart::Lit(text) => push_lit(&mut out, text),
+            FStrPart::Field(field) => {
+                let FStrField {
+                    tokens,
+                    conversion,
+                    spec,
+                    debug,
+                } = *field;
+                let mut parser = Parser {
+                    tokens,
+                    pos: 0,
+                    lambda_depth: 0,
+                };
+                // `star_expressions`: `f"{1, 2}"` is a tuple.
+                let first = parser.parse_star_named()?;
+                let value = if *parser.peek() == Token::Comma {
+                    let mut elts = vec![first];
+                    while *parser.peek() == Token::Comma {
+                        parser.next();
+                        if *parser.peek() == Token::Eof {
+                            break;
+                        }
+                        elts.push(parser.parse_star_named()?);
+                    }
+                    Ast::Tuple(elts)
+                } else {
+                    first
+                };
+                parser.expect(Token::Eof)?;
+                let spec = spec.map(fstring_parts).transpose()?;
+                let conversion = match (conversion, &debug, &spec) {
+                    // `{x=}` shows `repr(x)` unless a format spec is given.
+                    (None, Some(_), None) => Some('r'),
+                    (conversion, _, _) => conversion,
+                };
+                if let Some(text) = debug {
+                    push_lit(&mut out, text);
+                }
+                out.push(FPart::Field(Box::new(FField {
+                    value,
+                    conversion,
+                    spec,
+                })));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Wrap `operand` in `ops`, the innermost operator last (`-~x` is `[Neg, Invert]`).

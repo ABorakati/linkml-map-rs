@@ -122,6 +122,12 @@ def main() -> int:
         "//! `char`'s. Regenerate them (see the script) when the Python version to match\n"
         "//! changes.\n"
     )
+    parts.append(
+        "/// Titlecase letters (general category `Lt`): neither `Uppercase` nor `Lowercase`, but `Cased`.\n"
+        "pub(crate) const TITLECASE_LETTERS: &[u32] = &["
+        + ", ".join(hex_(c) for c in CPS if unicodedata.category(chr(c)) == "Lt")
+        + "];\n"
+    )
     cased = [c for c in CPS if chr(c).islower() or chr(c).isupper() or unicodedata.category(chr(c)) == "Lt"]
     parts.append(
         range_table(
@@ -141,6 +147,21 @@ def main() -> int:
     )
     parts.append(case_tables("UPPER", "upper", str.upper))
     parts.append(case_tables("LOWER", "lower", str.lower))
+    parts.append(case_tables("CASEFOLD", "casefold", str.casefold))
+    parts.append(
+        range_table(
+            "UPPERCASE",
+            "/// `str.isupper()` of the character alone (the `Uppercase` property), which `swapcase` tests.",
+            ranges([c for c in CPS if chr(c).isupper()]),
+        )
+    )
+    parts.append(
+        range_table(
+            "LOWERCASE",
+            "/// `str.islower()` of the character alone (the `Lowercase` property), which `swapcase` tests.",
+            ranges([c for c in CPS if chr(c).islower()]),
+        )
+    )
 
     def case_ignorable(c: int) -> bool:
         ch = chr(c)
@@ -175,6 +196,41 @@ def main() -> int:
             "/// Characters for which `str.isprintable()` is false (`Cc`, `Cf`, `Co`, `Cn`, `Zl`, `Zp`\n"
             "/// and `Zs` other than the ASCII space), which `repr()` escapes. Inclusive ranges, sorted.",
             ranges([c for c in CPS if not chr(c).isprintable()]),
+        )
+    )
+    parts.append(
+        range_table(
+            "ALPHA",
+            "/// `str.isalpha()` (categories Lm, Lt, Lu, Ll, Lo). Inclusive ranges, sorted.",
+            ranges([c for c in CPS if chr(c).isalpha()]),
+        )
+    )
+    parts.append(
+        range_table(
+            "DIGIT",
+            "/// `str.isdigit()` (Numeric_Type Digit or Decimal). Inclusive ranges, sorted.",
+            ranges([c for c in CPS if chr(c).isdigit()]),
+        )
+    )
+    parts.append(
+        range_table(
+            "NUMERIC",
+            "/// `str.isnumeric()`. Inclusive ranges, sorted.",
+            ranges([c for c in CPS if chr(c).isnumeric()]),
+        )
+    )
+    parts.append(
+        range_table(
+            "XID_START",
+            "/// `str.isidentifier()` of the character alone (XID_Start, plus `_`).",
+            ranges([c for c in CPS if chr(c).isidentifier()]),
+        )
+    )
+    parts.append(
+        range_table(
+            "XID_CONTINUE",
+            "/// `('a' + c).isidentifier()` (XID_Continue).",
+            ranges([c for c in CPS if ("a" + chr(c)).isidentifier()]),
         )
     )
     out = "\n".join(parts)

@@ -85,7 +85,7 @@ fn run_with_status(status: &str) -> Vec<String> {
 #[test]
 fn corpus_agreeing_entries_still_match_upstream() {
     let failures = run_with_status("pass");
-    // The quiet panic hook swallows the assertion message below; print it too.
+    // The quiet panic hook swallows the assertion message below, so print it.
     eprintln!("{}", failures.join("\n"));
     assert!(
         failures.is_empty(),

@@ -16,8 +16,8 @@
 use std::borrow::Cow;
 
 use super::pytables::{
-    CASE_IGNORABLE, CASED, DECIMAL_DIGITS, LOWER_RUNS, LOWER_SPECIAL, PY_SPACE, TITLE_EXCEPTIONS,
-    UPPER_RUNS, UPPER_SPECIAL,
+    CASE_IGNORABLE, CASED, CASEFOLD_RUNS, CASEFOLD_SPECIAL, DECIMAL_DIGITS, LOWER_RUNS,
+    LOWER_SPECIAL, PY_SPACE, TITLE_EXCEPTIONS, UPPER_RUNS, UPPER_SPECIAL,
 };
 
 /// Whether `cp` falls inside one of the sorted, inclusive `ranges`.
@@ -176,7 +176,7 @@ pub(crate) fn decimal_text(text: &str) -> Cow<'_, str> {
 }
 
 /// Unicode `Cased` (`Lowercase` + `Uppercase` + titlecase letters).
-fn is_cased(c: char) -> bool {
+pub(crate) fn is_cased(c: char) -> bool {
     in_ranges(CASED, c as u32)
 }
 
@@ -210,13 +210,24 @@ pub(crate) fn push_upper(out: &mut String, c: char) {
 
 /// Append `str.lower()` of the single character `c`, without the final-sigma
 /// context (see [`push_lower`]).
-fn push_lower_char(out: &mut String, c: char) {
+pub(crate) fn push_lower_char(out: &mut String, c: char) {
     if c.is_ascii() {
         out.push(c.to_ascii_lowercase());
     } else if let Ok(i) = LOWER_SPECIAL.binary_search_by_key(&(c as u32), |&(cp, _)| cp) {
         out.push_str(LOWER_SPECIAL[i].1);
     } else {
         out.push(map_run(LOWER_RUNS, c));
+    }
+}
+
+/// Append `str.casefold()` of the single character `c`.
+pub(crate) fn push_casefold(out: &mut String, c: char) {
+    if c.is_ascii() {
+        out.push(c.to_ascii_lowercase());
+    } else if let Ok(i) = CASEFOLD_SPECIAL.binary_search_by_key(&(c as u32), |&(cp, _)| cp) {
+        out.push_str(CASEFOLD_SPECIAL[i].1);
+    } else {
+        out.push(map_run(CASEFOLD_RUNS, c));
     }
 }
 

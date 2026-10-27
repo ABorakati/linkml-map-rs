@@ -69,19 +69,37 @@ pub(super) fn eval_set_display(elts: &[Ast], vars: &Bindings) -> ExprResult<Valu
             .into(),
         ));
     }
-    let mut items = Vec::with_capacity(elts.len());
-    for e in elts {
-        items.push(eval_ast(e, vars)?);
-    }
-    set_from_values(items)
+    set_from_values(super::syntax::eval_elements(elts, vars, true)?)
 }
 
 /// A dict display `{k: v, ...}` (`_eval_dict`).
 pub(super) fn eval_dict_display(pairs: &[(Ast, Ast)], vars: &Bindings) -> ExprResult<Value> {
     let mut map = IndexMap::with_capacity(pairs.len());
     for (k, v) in pairs {
+        if matches!(k, Ast::DictUnpack) {
+            // PARITY: asteval's `on_dict` is `dict(zip(keys, values))`, in which
+            // `**mapping` is the key `None`: `{None: mapping}`, which no
+            // string-keyed map can hold.
+            if object_attr_mode_enabled() {
+                eval_ast(v, vars)?;
+                return Err(ExprError::unrepresentable("dict with a None key"));
+            }
+            // `{**mapping}`: `result.update(self._eval(value))`.
+            match eval_ast(v, vars)? {
+                Value::Map(other) => map.extend(other),
+                other => {
+                    return Err(ExprError::Eval(format!(
+                        "'{}' object is not a mapping",
+                        type_name(&other)
+                    )));
+                }
+            }
+            continue;
+        }
+        // `result[self._eval(key)] = self._eval(value)`: the value first.
+        let value = eval_ast(v, vars)?;
         let key = dict_key(&eval_ast(k, vars)?)?;
-        map.insert(key, eval_ast(v, vars)?);
+        map.insert(key, value);
     }
     Ok(Value::Map(map))
 }
@@ -299,13 +317,15 @@ fn run_generators(
             run_generators(c, depth + 1, scope, sink)?;
             continue;
         }
-        let elt = eval_ast(&c.elt, scope)?;
         match (&mut *sink, &c.value) {
             (Sink::Pairs(map), Some(value)) => {
-                let key = dict_key(&elt)?;
-                map.insert(key, eval_ast(value, scope)?);
+                // `to_return[self._eval(node.key)] = self._eval(node.value)`: the
+                // value is evaluated first, then the key, then the key is hashed.
+                let value = eval_ast(value, scope)?;
+                let key = dict_key(&eval_ast(&c.elt, scope)?)?;
+                map.insert(key, value);
             }
-            (Sink::Items(items), _) => items.push(elt),
+            (Sink::Items(items), _) => items.push(eval_ast(&c.elt, scope)?),
             (Sink::Pairs(_), None) => unreachable!("a dict comprehension has a value"),
         }
     }
