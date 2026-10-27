@@ -1473,11 +1473,12 @@ impl<'s> ObjectTransformer<'s> {
         // statement block (`_unrestricted_eval`), where `eval_parsed_gated`
         // builds it from these bindings. A single expression reading `src.x`
         // sees an unbound name: null, or an error in strict mode.
-        match target_attrs {
-            Some(attrs) => {
+        match (target_attrs, bindings.get_mut("__slot_values")) {
+            (Some(attrs), Some(slot_values)) => *slot_values = Value::Map(attrs.clone()),
+            (Some(attrs), None) => {
                 bindings.insert("__slot_values".to_string(), Value::Map(attrs.clone()));
             }
-            None => {
+            (None, _) => {
                 bindings.shift_remove("__slot_values");
             }
         }
