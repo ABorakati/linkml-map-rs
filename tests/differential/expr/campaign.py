@@ -35,7 +35,7 @@ from shrink import shrink_bindings, shrink_tree  # noqa: E402
 
 resource.setrlimit(resource.RLIMIT_AS, (6 * 2**30, 6 * 2**30))
 
-PENDING_SYNTAX = {"ifexp", "dict", "set", "dictcomp", "setcomp", "fn:dict", "fn:set"}
+PENDING_SYNTAX: set[str] = set()  # exprsyntax port merged (d46df82); nothing pending there any more
 
 
 def enc_bindings(b: dict) -> dict:
@@ -161,10 +161,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--batch", type=int, default=2000)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--mask", default="", help="comma list of grammar features to disable (see grammar.MASK)")
     ap.add_argument("--mode", choices=["restricted", "unrestricted"], default=None)
     ap.add_argument("--reps", type=int, default=5, help="representatives shrunk per coarse signature")
     ap.add_argument("--agree-sample", type=int, default=0, help="keep N agreeing non-error cases")
     a = ap.parse_args()
+    grammar.MASK.update(filter(None, a.mask.split(",")))
     a.out.mkdir(parents=True, exist_ok=True)
     oracle = Oracle()
     t0 = time.time()
@@ -176,13 +178,23 @@ def main() -> None:
     gen_t = time.time()
     batches = collect(a.n, a.seed, a.batch, a.mode)
     print(f"generated {sum(map(len, batches))} cases in {time.time() - gen_t:.0f}s", flush=True)
+    seen: set[str] = set()
     for cs in batches:
         cases = []
+        kept = []
         for c in cs:
             try:
-                cases.append(make_case(c))
+                case = make_case(c)
             except RecursionError:
-                cases.append({"expr": "None", "bindings": {}, "mode": c["mode"], "strict": False})
+                continue
+            key = json.dumps(case, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                stats["duplicate"] += 1
+                continue
+            seen.add(key)
+            cases.append(case)
+            kept.append(c)
+        cs = kept
         res = evaluate(oracle, cases)
         for c, case, (py, rs, d) in zip(cs, cases, res):
             stats["total"] += 1

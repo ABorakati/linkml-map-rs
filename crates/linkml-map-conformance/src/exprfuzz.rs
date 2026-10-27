@@ -327,17 +327,62 @@ pub fn install_quiet_panic_hook() {
 /// Serve JSONL requests from `input` to `output`, flushing after every line so
 /// a crash leaves a precise record of how far the batch got.
 ///
+/// A watchdog thread answers a case that runs longer than `limit` with
+/// `{"err": "hang"}` and exits the process (the driver reruns the remainder),
+/// so one runaway expression cannot stall a campaign.
+///
 /// # Errors
 /// I/O errors on either stream.
-pub fn serve(input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+pub fn serve<W: Write + Send + 'static>(
+    input: impl BufRead,
+    output: W,
+    limit: std::time::Duration,
+) -> std::io::Result<()> {
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    let output = Arc::new(Mutex::new(output));
+    // (id of the running case, start time); None while idle.
+    let current: Arc<Mutex<Option<(J, Instant)>>> = Arc::new(Mutex::new(None));
+    {
+        let output = Arc::clone(&output);
+        let current = Arc::clone(&current);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let stuck = current
+                    .lock()
+                    .ok()
+                    .and_then(|c| c.as_ref().filter(|(_, t)| t.elapsed() > limit).map(|(id, _)| id.clone()));
+                if let Some(id) = stuck {
+                    if let Ok(mut out) = output.lock() {
+                        let _ = writeln!(out, "{}", json!({"id": id, "err": "hang", "message": "exceeded watchdog limit"}));
+                        let _ = out.flush();
+                    }
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
+        let id = serde_json::from_str::<J>(&line)
+            .ok()
+            .and_then(|r| r.get("id").cloned())
+            .unwrap_or(J::Null);
+        if let Ok(mut c) = current.lock() {
+            *c = Some((id, Instant::now()));
+        }
         let resp = handle_line(&line);
-        writeln!(output, "{resp}")?;
-        output.flush()?;
+        if let Ok(mut c) = current.lock() {
+            *c = None;
+        }
+        let mut out = output.lock().map_err(|_| std::io::Error::other("poisoned"))?;
+        writeln!(out, "{resp}")?;
+        out.flush()?;
     }
     Ok(())
 }

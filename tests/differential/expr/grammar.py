@@ -60,6 +60,16 @@ METHODS = ["upper", "lower", "strip", "title", "split", "join", "replace", "form
 BINOPS = ["+", "-", "*", "/", "//", "%", "**", "<<", ">>", "^", "|", "&", "@"]
 CMPOPS = ["==", "!=", "<", "<=", ">", ">=", "in", "not in", "is", "is not"]
 
+# Features switched off to expose divergences hidden behind an already-known one
+# (``campaign.py --mask rawint,bigint,...``). Known names: rawint bigint slice strstyle
+# fstr lambda method matmul setdisp stmt (for/aug/unpack/del/pass statements).
+MASK: set[str] = set()
+
+
+def on(feature: str) -> bool:
+    return feature not in MASK
+
+
 # ─── tiny weighted-choice helper ─────────────────────────────────────────────
 
 
@@ -130,13 +140,14 @@ def gen_bindings(draw):
 
 def literal(draw, ty: str):
     if ty in ("int", "num"):
-        if chance(draw, 5):
+        if on("rawint") and chance(draw, 5):
             return ("rawint", draw(st.sampled_from(["0x1f", "0b101", "0o17", "1_000", "00", "1e3", "0xFF", "1_0"])))
-        return ("int", draw(st.one_of(st.sampled_from(INT_EDGES), st.integers(-20, 20))))
+        edges = INT_EDGES if on("bigint") else [i for i in INT_EDGES if -(2**63) <= i < 2**63]
+        return ("int", draw(st.one_of(st.sampled_from(edges), st.integers(-20, 20))))
     if ty == "float":
         return ("float", draw(st.sampled_from(FLOAT_EDGE_TEXT)))
     if ty == "str":
-        return ("str", draw(st.sampled_from(STR_EDGES)), pick(draw, [(10, "repr"), (2, "dq"), (1, "triple"), (1, "raw"), (1, "u"), (1, "adj")]))
+        return ("str", draw(st.sampled_from(STR_EDGES)), pick(draw, [(10, "repr"), (2, "dq")] + ([(1, "triple"), (1, "raw"), (1, "u"), (1, "adj")] if on("strstyle") else [])))
     if ty == "bool":
         return ("const", draw(st.sampled_from(["True", "False"])))
     if ty == "list":
@@ -174,9 +185,7 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
     leaf_p = 25 + 25 * (3 - min(depth, 3))
     if depth <= 0 or chance(draw, max(5, 70 - leaf_p)):
         return leaf(draw, ty)
-    kind = pick(
-        draw,
-        [
+    kinds = [
             (6, "leaf"),
             (6, "binop"),
             (3, "cmp"),
@@ -191,21 +200,25 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
             (1, "list"),
             (1, "tuple"),
             (1, "dict"),
-            (1, "set"),
+            (1 if on("setdisp") else 0, "set"),
             (1, "paren"),
             (1, "fstr"),
             (1, "method"),
             (1, "lambda"),
             (1, "cmpchain"),
-        ],
-    )
+    ]
+    masked = {"slice": "sub", "fstr": "fstr", "lambda": "lambda", "method": "method"}
+    kinds = [(w, k) for w, k in kinds if not (k in masked.values() and any(f in MASK and masked[f] == k for f in masked))]
+    if "slice" in MASK:
+        kinds.append((3, "subidx"))
+    kind = pick(draw, kinds)
     d = depth - 1
     sub = lambda t: expr(draw, t, d, mode)  # noqa: E731
     if kind == "leaf":
         return leaf(draw, ty)
     if kind == "binop":
         opty = "str" if ty == "str" else ("list" if ty == "list" else pick(draw, [(6, "num"), (2, "int"), (1, "str"), (1, "any"), (1, "list")]))
-        op = pick(draw, [(6, "+"), (4, "-"), (5, "*"), (3, "/"), (2, "//"), (2, "%"), (2, "**"), (1, "<<"), (1, ">>"), (1, "^"), (1, "|"), (1, "&"), (1, "@")])
+        op = pick(draw, [(6, "+"), (4, "-"), (5, "*"), (3, "/"), (2, "//"), (2, "%"), (2, "**"), (1, "<<"), (1, ">>"), (1, "^"), (1, "|"), (1, "&")] + ([(1, "@")] if on("matmul") else []))
         if chance(draw, 20):
             return ("bin", op, sub("any"), sub("any"))
         return ("bin", op, sub(opty), sub(opty if chance(draw, 70) else "any"))
@@ -227,9 +240,9 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
         return call(draw, ty, d, mode)
     if kind == "ifexp":
         return ("ifexp", sub("bool" if chance(draw, 60) else "any"), sub(ty), sub(ty))
-    if kind == "sub":
+    if kind in ("sub", "subidx"):
         base = sub(pick(draw, [(3, "list"), (3, "str"), (1, "map"), (1, "any")]))
-        if chance(draw, 50):
+        if kind == "subidx" or chance(draw, 50):
             return ("sub", base, sub("int" if chance(draw, 80) else "any"))
         parts = [sub("int") if chance(draw, 55) else None for _ in range(draw(st.integers(2, 3)))]
         return ("sub", base, ("slice", parts))
@@ -239,7 +252,7 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
         return ("attr", sub("any"), draw(st.sampled_from(["a", "b", "name", "id", "x", "_p", "upper", "items"])))
     if kind == "comp":
         var = draw(st.sampled_from(["i", "v", "k", "it"]))
-        ck = pick(draw, [(6, "listcomp"), (1, "gen"), (1, "dictcomp"), (1, "setcomp")])
+        ck = pick(draw, [(6, "listcomp"), (1, "gen"), (1, "dictcomp")] + ([(1, "setcomp")] if on("setdisp") else []))
         iter_e = sub(pick(draw, [(4, "list"), (1, "str"), (1, "map"), (1, "any")])) if chance(draw, 70) else ("call", "range", [("int", draw(st.integers(0, 5)))])
         cond = sub("bool") if chance(draw, 30) else None
         elt_e = ("name", var) if chance(draw, 25) else comp_elt(draw, var, d, mode)
@@ -321,7 +334,7 @@ def call(draw, ty: str, d: int, mode: str):
 def stmts(draw, depth: int, budget: int):
     out = []
     for _ in range(draw(st.integers(1, budget))):
-        k = pick(draw, [(8, "assign_target"), (3, "assign_tmp"), (2, "aug"), (3, "if"), (1, "expr"), (1, "for"), (1, "pass"), (1, "ifelse"), (1, "unpack"), (1, "del")]) if depth > 0 else pick(draw, [(8, "assign_target"), (2, "assign_tmp"), (1, "expr")])
+        k = pick(draw, [(8, "assign_target"), (3, "assign_tmp"), (3, "if"), (1, "expr"), (1, "ifelse")] + ([(2, "aug"), (1, "for"), (1, "pass"), (1, "unpack"), (1, "del")] if on("stmt") else [])) if depth > 0 else pick(draw, [(8, "assign_target"), (2, "assign_tmp"), (1, "expr")])
         rhs = lambda: stmt_expr(draw)  # noqa: E731
         if k == "assign_target":
             out.append(("assign", "target", rhs()))

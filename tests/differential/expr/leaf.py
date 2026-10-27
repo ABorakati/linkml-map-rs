@@ -167,6 +167,9 @@ def fn_spec(name, kinds, p_wrong=0.12, extra=None):
                     continue
                 k = k[:-1]
             args.append(typed(rng, "any") if rng.random() < p_wrong else typed(rng, k))
+        if name == "round" and len(args) > 1 and isinstance(args[1], int) and abs(args[1]) > 10**5:
+            # CPython computes 10**-ndigits: a huge ndigits hangs upstream itself (reported separately).
+            args[1] = rng.randint(-5, 5)
         return args
 
     return {"rust": f"fn:{name}", "gen": gen, "ref": lambda *a: FN(name)(*a)}

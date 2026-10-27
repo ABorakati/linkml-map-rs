@@ -12,14 +12,15 @@ use linkml_map_conformance::exprfuzz;
 
 fn main() -> std::io::Result<()> {
     exprfuzz::install_quiet_panic_hook();
+    let limit = std::time::Duration::from_secs(5);
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::thread::Builder::new()
         .stack_size(2 * 1024 * 1024)
         .spawn(move || -> std::io::Result<()> {
             if let [inp, out] = args.as_slice() {
-                exprfuzz::serve(BufReader::new(File::open(inp)?), BufWriter::new(File::create(out)?))
+                exprfuzz::serve(BufReader::new(File::open(inp)?), BufWriter::new(File::create(out)?), limit)
             } else {
-                exprfuzz::serve(stdin().lock(), stdout().lock())
+                exprfuzz::serve(stdin().lock(), stdout(), limit)
             }
         })?
         .join()
