@@ -33,6 +33,15 @@ outs = t.transform_many([obj1, obj2])     # schema/spec parsed once
 - `Transformer.from_yaml(source_schema_yaml, spec_yaml, target_schema_yaml=None,
   source_class=None)` builds from in-memory YAML strings instead of paths.
 - `t.map_object(obj, source_type=None)` is an alias of `transform`.
+- **Decimals are exact.** A slot derivation with `range: decimal` (upstream
+  `72c0c28`) returns a real `decimal.Decimal` that keeps the source digits
+  (`"52.30"` -> `Decimal("52.30")`, `str()` is `"52.30"`), and a
+  `decimal.Decimal` in a source object stays exact through the engine. A
+  non-finite `Decimal` (`NaN`, `Infinity`) is carried as its `str()`. Other
+  values are converted directly rather than through JSON, so `None`, `bool`,
+  `int`, `float`, `str`, `list` and `dict` (in insertion order) keep their Python
+  types; any other scalar (`datetime.date`, `pathlib.Path`, ...) becomes its
+  `str()`.
 - `t.register_join_table(name, rows, key_column)` registers a joined table's
   rows (list of dicts) in-memory so a spec's `joins:` block (explicit, or
   synthesized from an implicit `{Table.col}` reference) resolves against real

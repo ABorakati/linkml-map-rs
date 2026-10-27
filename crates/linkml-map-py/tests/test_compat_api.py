@@ -37,6 +37,7 @@ not to upstream.
 
 from __future__ import annotations
 
+import decimal
 import pathlib
 from typing import Any
 
@@ -126,13 +127,13 @@ def _json_bridge_normalize(obj: Any) -> Any:
     never round-trips through JSON.
 
     The Rust-backed `Transformer`/`ObjectTransformer` shim, however, crosses
-    the Python<->Rust boundary via a JSON round trip (see the `# dict <->
+    the Python<->Rust boundary through the engine's `Value` (see the `# dict <->
     Value bridging` note in `crates/linkml-map-py/src/lib.rs`), and the core
     `Value` enum (`crates/linkml-map-core/src/value.rs`) has no dedicated
     date/datetime variant — a date is always carried as `Value::Str`, matching
     LinkML's own date stringification (`json.dumps(default=str)` on the way
-    in). JSON has no date type, so `value_to_py` always returns a plain `str`
-    on the way out. This is a real, permanent asymmetry of the JSON bridge —
+    in). `Value` has no date type, so `value_to_py` always returns a plain `str`
+    on the way out. This is a real, permanent asymmetry of the bridge —
     not a value-loss bug: the *engine* computes the byte-identical string
     (proved by the pure-Rust conformance suite's YAML-text comparison,
     tests/CONFORMANCE_REPORT.md, which re-parses both sides through YAML and
@@ -690,6 +691,159 @@ class TestDictValueBridge:
         assert isinstance(nested["count"], int)
         assert isinstance(nested["ratio"], float)
         assert isinstance(nested["label"], str)
+
+
+# ── Exact decimals across the bridge (upstream 72c0c28) ───────────────────────
+#
+# Ports upstream `tests/test_transformer/test_decimal_range.py`: `range: decimal`
+# coerces to an exact `decimal.Decimal`. The Rust engine carries it as
+# `Value::Decimal`, and the PyO3 bridge hands it back as a real `Decimal`
+# rather than a string (a `Decimal` *input* stays exact too).
+
+_DECIMAL_SOURCE_SCHEMA = """\
+id: https://example.org/decimal-source
+name: decimal_source
+prefixes: {linkml: 'https://w3id.org/linkml/'}
+default_prefix: decimal_source
+default_range: string
+imports: [linkml:types]
+classes:
+  Row:
+    attributes:
+      id: {identifier: true}
+      value: {}
+      values: {multivalued: true}
+"""
+
+_DECIMAL_SPEC = """\
+id: decimal-range
+class_derivations:
+  Measurement:
+    populated_from: Row
+    slot_derivations:
+      id:
+        populated_from: id
+      value_decimal:
+        populated_from: value
+        range: decimal
+      values_decimal:
+        populated_from: values
+        range: decimal
+      value_raw:
+        populated_from: value
+"""
+
+
+_RAW_SPEC = """\
+id: raw-copy
+class_derivations:
+  Measurement:
+    populated_from: Row
+    slot_derivations:
+      id:
+        populated_from: id
+      value_raw:
+        populated_from: value
+"""
+
+
+def _decimal_transformer() -> Transformer:
+    return Transformer.from_yaml(_DECIMAL_SOURCE_SCHEMA, _DECIMAL_SPEC, source_class="Row")
+
+
+def _raw_transformer() -> Transformer:
+    """Copies `value` through untouched: only the bridge is under test."""
+    return Transformer.from_yaml(_DECIMAL_SOURCE_SCHEMA, _RAW_SPEC, source_class="Row")
+
+
+class TestDecimalBridge:
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("52.3", "52.3"),
+            ("52.30", "52.30"),
+            ("52", "52"),
+            ("-0.05", "-0.05"),
+            ("0.123456789012345678901", "0.123456789012345678901"),
+            ("1E+2", "1E+2"),
+            (0.1, "0.1"),
+            (7, "7"),
+        ],
+    )
+    def test_decimal_range_returns_exact_decimal(self, source: Any, expected: str) -> None:
+        # upstream: test_decimal_range_coerces_exactly
+        out = _decimal_transformer().transform({"id": "r1", "value": source})
+        assert isinstance(out["value_decimal"], decimal.Decimal)
+        assert str(out["value_decimal"]) == expected
+
+    def test_decimal_range_coerces_each_item(self) -> None:
+        # upstream: test_decimal_range_coerces_each_item
+        out = _decimal_transformer().transform({"id": "r1", "values": ["1", "2.50"]})
+        assert out["values_decimal"] == [decimal.Decimal(1), decimal.Decimal("2.50")]
+        assert [str(v) for v in out["values_decimal"]] == ["1", "2.50"]
+        assert all(isinstance(v, decimal.Decimal) for v in out["values_decimal"])
+
+    def test_decimal_range_through_shim_and_free_function(self) -> None:
+        ot = ObjectTransformer(
+            source_schemaview=_DECIMAL_SOURCE_SCHEMA, specification=yaml.safe_load(_DECIMAL_SPEC)
+        )
+        out = ot.map_object({"id": "r1", "value": "52.30"}, "Row")
+        assert isinstance(out["value_decimal"], decimal.Decimal)
+        assert str(out["value_decimal"]) == "52.30"
+
+    @pytest.mark.parametrize("text", ["52.30", "-0.0", "1E+2", "0.1000000000000000055511151231257827"])
+    def test_decimal_input_round_trips_exactly(self, text: str) -> None:
+        # A `Decimal` source value is `Value::Decimal`, not a `str` (nor a float).
+        out = _decimal_transformer().transform({"id": "r1", "value": decimal.Decimal(text)})
+        assert isinstance(out["value_raw"], decimal.Decimal)
+        assert str(out["value_raw"]) == text
+        assert isinstance(out["value_decimal"], decimal.Decimal)
+        assert str(out["value_decimal"]) == text
+
+    def test_non_finite_decimal_input_stays_a_string(self) -> None:
+        # No exact finite form: carried as its `str()`, as the JSON bridge did.
+        out = _raw_transformer().transform({"id": "r1", "value": decimal.Decimal("NaN")})
+        assert out["value_raw"] == "NaN"
+
+    def test_scalar_types_keep_their_python_types(self) -> None:
+        # bool is tested before int; None/int/float/str/list/dict survive intact
+        # and dicts keep insertion order (not alphabetical).
+        obj = {
+            "id": "r1",
+            "value": {"z": True, "a": 1, "m": None, "f": 1.5, "s": "x", "l": [False, 2, 0.5]},
+        }
+        value = _raw_transformer().transform(obj)["value_raw"]
+        assert value == obj["value"]
+        assert list(value) == ["z", "a", "m", "f", "s", "l"]
+        assert type(value["z"]) is bool
+        assert type(value["a"]) is int
+        assert type(value["f"]) is float
+        assert [type(v) for v in value["l"]] == [bool, int, float]
+
+    def test_dict_keys_are_stringified_and_bad_keys_rejected(self) -> None:
+        t = _raw_transformer()
+        value = t.transform({"id": "r1", "value": {1: "a", 2.5: "b", None: "d", False: "e"}})
+        assert value["value_raw"] == {"1": "a", "2.5": "b", "null": "d", "false": "e"}
+        with pytest.raises(TypeError):
+            t.transform({"id": "r1", "value": {(1,): "a"}})
+
+    def test_non_json_scalars_still_stringify(self) -> None:
+        import datetime
+
+        out = _raw_transformer().transform(
+            {"id": "r1", "value": [datetime.date(2025, 8, 14), pathlib.PurePosixPath("/a/b")]}
+        )
+        assert out["value_raw"] == ["2025-08-14", "/a/b"]
+
+    def test_non_finite_float_input_raises_value_error(self) -> None:
+        with pytest.raises(ValueError):
+            _raw_transformer().transform({"id": "r1", "value": float("nan")})
+
+    def test_cyclic_input_raises_value_error(self) -> None:
+        cyclic: dict[str, Any] = {}
+        cyclic["self"] = cyclic
+        with pytest.raises(ValueError, match="Circular reference"):
+            _raw_transformer().transform({"id": "r1", "value": cyclic})
 
 
 class TestErrorPropagation:

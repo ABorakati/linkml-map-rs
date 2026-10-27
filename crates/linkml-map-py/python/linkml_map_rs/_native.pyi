@@ -82,7 +82,16 @@ class Transformer:
         """
         ...
     def transform(self, obj: dict[str, Any]) -> dict[str, Any]:
-        """Transform a single object."""
+        """Transform a single object.
+
+        Values cross the boundary by direct conversion (no JSON round trip):
+        ``None``/``bool``/``int``/``float``/``str``/``list``/``dict`` keep their
+        types and dict order. A slot with ``range: decimal`` comes back as an
+        exact ``decimal.Decimal`` (``"52.30"`` -> ``Decimal("52.30")``, digits
+        and exponent kept), and a ``decimal.Decimal`` in ``obj`` stays exact. Any
+        other non-JSON scalar (``datetime.date``, ``pathlib.Path``, ...) is
+        stringified with ``str()``.
+        """
         ...
     def map_object(
         self, obj: dict[str, Any], source_type: str | None = ...

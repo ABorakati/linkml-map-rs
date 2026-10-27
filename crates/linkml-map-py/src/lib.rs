@@ -56,79 +56,246 @@
 //!
 //! # dict <-> Value bridging
 //!
-//! Python dicts are converted via JSON round-trip:
-//!   Python object  ---(Python json.dumps)--->  JSON string
-//!   JSON string    ---(serde_json::from_str)-->  serde_json::Value
-//!   serde_json::Value  ---(serde_json::from_value)-->  linkml_map_core::value::Value
+//! Source objects and results cross the boundary by walking the Python object
+//! (`py_to_value`) or the engine `Value` (`value_to_py`) directly; neither
+//! direction goes through a JSON string:
 //!
-//! The reverse path uses serde_json serialisation + Python json.loads.
-//! This approach avoids `pythonize` (not a dep) and the fragile manual
-//! PyDict traversal, and is correct for all Value variants including nested
-//! maps and lists.
+//! | Python            | `Value`          | back to Python     |
+//! |-------------------|------------------|--------------------|
+//! | `None`            | `Null`           | `None`             |
+//! | `bool`            | `Bool`           | `bool`             |
+//! | `int`             | `Int` (`i64`)    | `int`              |
+//! | `float`           | `Float`          | `float`            |
+//! | `decimal.Decimal` | `Decimal`        | `decimal.Decimal`  |
+//! | `str`             | `Str`            | `str`              |
+//! | `list`, `tuple`   | `List`           | `list`             |
+//! | `dict`            | `Map` (ordered)  | `dict` (ordered)   |
 //!
-//! `json.dumps` is always called with `default=str`, both for a source
-//! *object* (`py_to_value`) and for a dict/`TransformationSpecification`
-//! passed as `specification=` (`spec_to_json_value`) — the `linkml_map`
+//! A `decimal.Decimal` is exact in both directions: `range: decimal` slot
+//! derivations (upstream 72c0c28) return a real `decimal.Decimal` whose
+//! `str()` keeps the source digits (`"52.30"` stays `Decimal("52.30")`), and a
+//! `Decimal` in a source object keeps its digits through the engine. A
+//! non-finite `Decimal` (`NaN`, `Infinity`) has no exact form and is carried as
+//! its `str()`.
+//!
+//! The rules are those of the former `json.dumps(obj, default=str)` bridge:
+//! an `int` beyond `i64` becomes a float; a non-finite `float` becomes `None`
+//! on the way out and raises `ValueError` on the way in, as does nesting
+//! beyond 128 levels (`serde_json`'s old parse limit); and dict keys
+//! may be `str`/`int`/`float`/`bool`/`None` (`TypeError` otherwise).
+//!
+//! Any other scalar is stringified with `str()` (`default=str`), both for a
+//! source *object* (`py_to_value`) and for a dict/`TransformationSpecification`
+//! passed as `specification=` (`spec_to_json_value`, which still uses
+//! `json.dumps(default=str)`) — the `linkml_map`
 //! shim's `create_transformer_specification(spec_dict)` path commonly carries
 //! a `yaml.safe_load`-parsed `datetime.date`/`datetime.datetime` (e.g. a bare
 //! `publication_date: 2025-08-14` spec metadata field), which `json.dumps`
-//! otherwise rejects with `TypeError`. Note the resulting `Value` is always a
-//! plain string on both bridge directions — the core `Value` enum
-//! (`linkml_map_core::value::Value`) has no dedicated date/datetime variant,
+//! otherwise rejects with `TypeError`. Note the resulting `Value` is a plain
+//! string for a date — the core `Value` enum
+//! (`linkml_map_core::value::Value`) has no dedicated date/datetime variant —
 //! so a value returned from `Transformer.transform`/`.map_object` that
 //! originated from a date is a Python `str`, not a `datetime.date` — a
 //! permanent (and correct, LinkML-stringification-matching) asymmetry with
-//! upstream Python's in-memory `ObjectTransformer`, which never round-trips
-//! through JSON and so preserves native `date`/`datetime` objects untouched.
+//! upstream Python's in-memory `ObjectTransformer`, which preserves native
+//! `date`/`datetime` objects untouched.
 
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use indexmap::IndexMap;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{PyDict, PyString, PyType};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType};
 
 use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::{CompiledExprs, LookupIndex, ObjectTransformer},
     validate::{ValidationMessage, validate_spec_semantics},
-    value::Value,
+    value::{Decimal, Value},
 };
 use linkml_map_schemaview::SchemaViewProvider;
 
-// ── Helpers: Python object <-> Value via JSON ─────────────────────────────────
+// ── Helpers: Python object <-> Value ──────────────────────────────────────────
 
-/// Convert a Python object (dict, list, scalar) to a Rust `Value` by going
-/// through JSON.  The caller must hold the GIL (`py`).
-fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
-    let json_mod = py.import("json")?;
-    // `default=str` so non-JSON scalars (datetime.date / Decimal / etc., as
-    // produced by linkml_runtime loaders) serialise to their string form rather
-    // than raising — matching how LinkML treats date/datetime ranges.
-    let kwargs = PyDict::new(py);
-    kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
-    let json_str: String = json_mod
-        .call_method("dumps", (obj,), Some(&kwargs))?
-        .extract()?;
+/// Deepest container nesting `py_to_value` accepts. This is `serde_json`'s own
+/// parse limit, which the former JSON bridge hit (as `ValueError`); it also
+/// keeps the engine's recursion over a `Value` shallow.
+const MAX_NESTING: usize = 128;
 
-    let serde_val: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
+static DECIMAL_TYPE: GILOnceCell<Py<PyType>> = GILOnceCell::new();
 
-    serde_json::from_value(serde_val)
-        .map_err(|e| PyValueError::new_err(format!("Value conversion error: {e}")))
+/// The `decimal.Decimal` class, imported once per process.
+fn decimal_type<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyType>> {
+    DECIMAL_TYPE
+        .get_or_try_init(py, || -> PyResult<Py<PyType>> {
+            Ok(py
+                .import("decimal")?
+                .getattr("Decimal")?
+                .downcast_into::<PyType>()?
+                .unbind())
+        })
+        .map(|t| t.bind(py))
 }
 
-/// Convert a Rust `Value` back to a Python object (dict/list/scalar) via JSON.
+/// Convert a Python object (dict, list, scalar) to a Rust `Value` by walking it
+/// directly. The caller must hold the GIL (`py`).
+///
+/// Accepts exactly what the former `json.dumps(obj, default=str)` bridge did:
+/// `bool` is tested before `int`; `tuple` is a list; dict keys may be `str`,
+/// `int`, `float`, `bool` or `None` (stringified as `json.dumps` does, else
+/// `TypeError`); an `int` beyond `i64` becomes a float; a non-finite float
+/// raises `ValueError`; a cyclic structure or nesting beyond 128 levels raises
+/// `ValueError`. Anything else is stringified with `str()` (`datetime.date`, `pathlib.Path`, ...), except
+/// `decimal.Decimal`, which stays exact as `Value::Decimal`.
+fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    py_to_value_at(py, obj, &mut Vec::new())
+}
+
+/// `py_to_value`, with `open` holding the addresses of the containers
+/// currently being walked (cycle and depth guard).
+fn py_to_value_at(
+    py: Python<'_>,
+    obj: &Bound<'_, PyAny>,
+    open: &mut Vec<usize>,
+) -> PyResult<Value> {
+    if obj.is_none() {
+        return Ok(Value::Null);
+    }
+    // `bool` is a subclass of `int`, so it must be tested first.
+    if let Ok(b) = obj.downcast::<PyBool>() {
+        return Ok(Value::Bool(b.is_true()));
+    }
+    if obj.is_instance_of::<PyInt>() {
+        return Ok(match obj.extract::<i64>() {
+            Ok(i) => Value::Int(i),
+            // Beyond `i64`: the JSON bridge parsed these as floats.
+            Err(_) => Value::Float(
+                obj.extract::<f64>()
+                    .map_err(|e| PyValueError::new_err(format!("Value conversion error: {e}")))?,
+            ),
+        });
+    }
+    if obj.is_instance_of::<PyFloat>() {
+        let f: f64 = obj.extract()?;
+        if !f.is_finite() {
+            return Err(PyValueError::new_err(format!(
+                "Value conversion error: cannot convert non-finite float {f} to a value"
+            )));
+        }
+        return Ok(Value::Float(f));
+    }
+    if obj.is_instance_of::<PyString>() {
+        return Ok(Value::Str(obj.extract()?));
+    }
+
+    let is_list = obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>();
+    let is_dict = obj.is_instance_of::<PyDict>();
+    if is_list || is_dict {
+        let id = obj.as_ptr() as usize;
+        if open.contains(&id) {
+            return Err(PyValueError::new_err("Circular reference detected"));
+        }
+        if open.len() >= MAX_NESTING {
+            return Err(PyValueError::new_err(format!(
+                "Value conversion error: nesting deeper than {MAX_NESTING} levels"
+            )));
+        }
+        open.push(id);
+        let value = if is_list {
+            obj.try_iter()?
+                .map(|item| py_to_value_at(py, &item?, open))
+                .collect::<PyResult<Vec<_>>>()
+                .map(Value::List)
+        } else {
+            let dict = obj.downcast::<PyDict>()?;
+            let mut map = IndexMap::with_capacity(dict.len());
+            dict.iter()
+                .try_for_each(|(k, v)| -> PyResult<()> {
+                    map.insert(py_key_to_string(&k)?, py_to_value_at(py, &v, open)?);
+                    Ok(())
+                })
+                .map(|()| Value::Map(map))
+        };
+        open.pop();
+        return value;
+    }
+
+    let text: String = obj.str()?.extract()?;
+    if obj.is_instance(decimal_type(py)?)? {
+        // A NaN/sNaN/Infinity `Decimal` has no finite exact form: it stays the
+        // string `str()` gave, as the JSON bridge did.
+        if let Ok(d) = Decimal::parse_python(&text) {
+            return Ok(Value::Decimal(d));
+        }
+    }
+    // `default=str`: dates, paths and other non-JSON scalars become their text.
+    Ok(Value::Str(text))
+}
+
+/// A dict key as `json.dumps` writes it (`TypeError` for any other type).
+fn py_key_to_string(key: &Bound<'_, PyAny>) -> PyResult<String> {
+    if key.is_instance_of::<PyString>() {
+        return key.extract();
+    }
+    if key.is_none() {
+        return Ok("null".to_owned());
+    }
+    if let Ok(b) = key.downcast::<PyBool>() {
+        return Ok(if b.is_true() { "true" } else { "false" }.to_owned());
+    }
+    if key.is_instance_of::<PyInt>() {
+        return key.str()?.extract();
+    }
+    if key.is_instance_of::<PyFloat>() {
+        let f: f64 = key.extract()?;
+        return Ok(if f.is_nan() {
+            "NaN".to_owned()
+        } else if f.is_infinite() {
+            if f > 0.0 { "Infinity" } else { "-Infinity" }.to_owned()
+        } else {
+            key.repr()?.extract()?
+        });
+    }
+    Err(PyTypeError::new_err(format!(
+        "keys must be str, int, float, bool or None, not {}",
+        key.get_type().name()?
+    )))
+}
+
+/// Convert a Rust `Value` back to a Python object (dict/list/scalar) by
+/// walking it directly. `Value::Decimal` becomes an exact `decimal.Decimal`; a
+/// non-finite float becomes `None`, as `serde_json` serialises it.
 fn value_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
-    let serde_val = serde_json::to_value(val)
-        .map_err(|e| PyValueError::new_err(format!("Value serialisation error: {e}")))?;
-    let json_str = serde_json::to_string(&serde_val)
-        .map_err(|e| PyValueError::new_err(format!("JSON serialisation error: {e}")))?;
+    Ok(value_to_bound(py, val)?.unbind())
+}
 
-    let json_mod = py.import("json")?;
-    let py_obj: PyObject = json_mod.call_method1("loads", (json_str,))?.extract()?;
-
-    Ok(py_obj)
+fn value_to_bound<'py>(py: Python<'py>, val: &Value) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match val {
+        Value::Null => py.None().into_bound(py),
+        Value::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
+        Value::Int(i) => i.into_pyobject(py)?.into_any(),
+        Value::Float(f) if f.is_finite() => PyFloat::new(py, *f).into_any(),
+        Value::Float(_) => py.None().into_bound(py),
+        // `to_sci_string` is Python's `str(Decimal)`, so this rebuilds the
+        // value with its exact digits and exponent (`52.30` stays `52.30`).
+        Value::Decimal(d) => decimal_type(py)?.call1((d.to_sci_string(),))?,
+        Value::Str(s) => PyString::new(py, s).into_any(),
+        Value::List(items) => {
+            let list = PyList::empty(py);
+            for item in items {
+                list.append(value_to_bound(py, item)?)?;
+            }
+            list.into_any()
+        }
+        Value::Map(map) => {
+            let dict = PyDict::new(py);
+            for (k, v) in map {
+                dict.set_item(k, value_to_bound(py, v)?)?;
+            }
+            dict.into_any()
+        }
+    })
 }
 
 // ── Helpers: path arguments ───────────────────────────────────────────────────

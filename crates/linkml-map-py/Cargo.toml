@@ -13,5 +13,6 @@ linkml-map-core = { path = "../linkml-map-core" }
 linkml-map-schemaview = { path = "../linkml-map-schemaview" }
 pyo3 = { workspace = true, features = ["extension-module"] }
 serde_json = { workspace = true }
+indexmap = { workspace = true }
 serde_yaml_ng = { workspace = true }
 anyhow = { workspace = true }

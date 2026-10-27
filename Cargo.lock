@@ -1097,6 +1097,7 @@ name = "linkml-map-py"
 version = "0.1.21"
 dependencies = [
  "anyhow",
+ "indexmap",
  "linkml-map-core",
  "linkml-map-schemaview",
  "pyo3",
