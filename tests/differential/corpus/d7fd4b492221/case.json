@@ -1,0 +1,15 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/my record-001.yaml",
+  "source_type": "my record",
+  "target_schema": "target.yaml",
+  "flags": [],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

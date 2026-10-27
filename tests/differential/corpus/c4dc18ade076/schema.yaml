@@ -1,0 +1,36 @@
+name: eml-source
+id: https://example.org/eml-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/eml-source/
+default_range: string
+classes:
+  EMLDocument:
+    name: EMLDocument
+    attributes:
+      dataset:
+        name: dataset
+        range: Dataset
+        inlined: true
+    tree_root: true
+  Dataset:
+    name: Dataset
+    attributes:
+      title:
+        name: title
+        range: string
+      dataTable:
+        name: dataTable
+        range: DataTable
+        multivalued: true
+        inlined_as_list: true
+  DataTable:
+    name: DataTable
+    attributes:
+      entityName:
+        name: entityName
+        range: string

@@ -1,0 +1,34 @@
+name: source
+id: https://example.org/source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: source
+default_range: string
+classes:
+  Row:
+    name: Row
+    attributes:
+      participant:
+        name: participant
+      visit:
+        name: visit
+      observation_type:
+        name: observation_type
+      method:
+        name: method
+      value:
+        name: value
+      unit:
+        name: unit
+      tags:
+        name: tags
+        multivalued: true
+      steps:
+        name: steps
+        multivalued: true
+      note:
+        name: note

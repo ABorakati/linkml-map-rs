@@ -1,0 +1,11 @@
+participant: P1
+visit: V1
+observation_type: OBA:VT0000184
+method: lipid assay
+value: '52.30'
+unit: mg/dL
+tags: null
+steps:
+- draw
+- spin
+note: first

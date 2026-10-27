@@ -1,0 +1,33 @@
+name: source
+id: https://example.org/source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/source/
+classes:
+  Person:
+    name: Person
+    from_schema: https://example.org/source
+    attributes:
+      name:
+        name: name
+        from_schema: https://example.org/source
+        domain_of:
+        - Person
+        range: string
+      given_name:
+        name: given_name
+        from_schema: https://example.org/source
+        domain_of:
+        - Person
+        range: string
+      family_name:
+        name: family_name
+        from_schema: https://example.org/source
+        domain_of:
+        - Person
+        range: string
+source_file: /tmp/pytest-of-root/pytest-13/test_pre_flight_does_not_gate_0/source.yaml

@@ -1,0 +1,21 @@
+name: src
+id: https://example.org/src
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: ex
+classes:
+  Person:
+    name: Person
+    from_schema: https://example.org/src
+    attributes:
+      full_name:
+        name: full_name
+        from_schema: https://example.org/src
+        domain_of:
+        - Person
+        range: string
+source_file: /tmp/pytest-of-root/pytest-13/test_cli_loads_extension_modul0/source.yaml

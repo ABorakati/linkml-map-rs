@@ -1,0 +1,40 @@
+name: derived_target
+id: https://example.org/derived-target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: derived_target
+default_range: string
+classes:
+  Out:
+    name: Out
+    attributes:
+      tags_pf:
+        name: tags_pf
+        multivalued: true
+      tags_expr:
+        name: tags_expr
+        multivalued: true
+      tags_value:
+        name: tags_value
+        multivalued: true
+      amt_pf:
+        name: amt_pf
+        range: decimal
+      amt_expr:
+        name: amt_expr
+        range: decimal
+      amt_value:
+        name: amt_value
+        range: decimal
+      count_value:
+        name: count_value
+        range: integer
+      label_expr:
+        name: label_expr
+      amt_text:
+        name: amt_text
+        range: decimal

@@ -1,0 +1,31 @@
+name: inheriting
+id: https://example.org/inheriting
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: inheriting
+default_range: string
+classes:
+  Record:
+    name: Record
+    from_schema: https://example.org/inheriting
+    abstract: true
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/inheriting
+        identifier: true
+        domain_of:
+        - Record
+        required: true
+  Measurement:
+    name: Measurement
+    from_schema: https://example.org/inheriting
+    is_a: Record
+    attributes:
+      observation_type:
+        name: observation_type
+        from_schema: https://example.org/inheriting

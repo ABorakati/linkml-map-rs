@@ -1,0 +1,21 @@
+name: source
+id: https://example.org/source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/source/
+default_range: string
+classes:
+  my record:
+    name: my record
+    attributes:
+      record_id:
+        name: record_id
+        identifier: true
+      label:
+        name: label
+      source_ref:
+        name: source_ref

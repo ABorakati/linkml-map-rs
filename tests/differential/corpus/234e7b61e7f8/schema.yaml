@@ -1,0 +1,28 @@
+name: typo_source
+id: https://example.org/typo-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/typo-source/
+default_range: string
+classes:
+  Person:
+    name: Person
+    from_schema: https://example.org/typo-source
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/typo-source
+        identifier: true
+        domain_of:
+        - Person
+      score:
+        name: score
+        from_schema: https://example.org/typo-source
+        domain_of:
+        - Person
+        range: integer
+source_file: /tmp/pytest-of-root/pytest-13/test_map_data_strict_flag_surf0/schema.yaml

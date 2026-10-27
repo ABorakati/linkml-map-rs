@@ -1,0 +1,10 @@
+associated_participant: P1
+associated_visit: V1
+observation_type: OBA:VT0000184
+method_type: lipid assay
+tags:
+- fasting
+- exam 1
+steps:
+- draw
+- spin

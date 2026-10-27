@@ -1,0 +1,11 @@
+class_derivations:
+- name: Base
+  slot_derivations:
+    id:
+      name: id
+- name: Child
+  is_a: Base
+  populated_from: Row
+  slot_derivations:
+    label:
+      name: label

@@ -7,7 +7,7 @@ exclude = ["fuzz"]
 # cargo build --lib -p linkml-map-py  also works (skips Python linking)
 
 [workspace.package]
-version = "0.1.27"
+version = "0.1.29"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -32,3 +32,4 @@ deunicode = "1"
 unicode-normalization = "0.1"
 # Property-based tests (dev-dependency only); see `tests/proptest_*.rs` in each crate.
 proptest = { version = "1", default-features = false, features = ["std"] }
+foldhash = "0.2"

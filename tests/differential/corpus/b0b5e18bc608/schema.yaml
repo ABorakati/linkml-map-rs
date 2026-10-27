@@ -1,0 +1,48 @@
+name: events_source
+id: https://example.org/events-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/events-source/
+classes:
+  Run:
+    name: Run
+    abstract: true
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string
+      started_at_time:
+        name: started_at_time
+        range: string
+      ended_at_time:
+        name: ended_at_time
+        range: string
+  Acquisition:
+    name: Acquisition
+    is_a: Run
+    attributes:
+      instrument_used:
+        name: instrument_used
+        range: string
+  QualityCheck:
+    name: QualityCheck
+    is_a: Run
+    attributes:
+      input_read_count:
+        name: input_read_count
+        range: integer
+  Assembly:
+    name: Assembly
+    is_a: Run
+    attributes:
+      contigs:
+        name: contigs
+        range: integer

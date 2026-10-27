@@ -1,0 +1,6 @@
+id: samp002
+name: Lake sediment
+depth: null
+elev:
+  has_numeric_value: 50.0
+  has_unit: m

@@ -1,0 +1,20 @@
+{
+  "lights": [
+    {
+      "id": "l1",
+      "color": "red",
+      "colors": [
+        "red",
+        "green",
+        "na"
+      ]
+    },
+    {
+      "id": "l2",
+      "color": "cyan",
+      "colors": [
+        "magenta"
+      ]
+    }
+  ]
+}

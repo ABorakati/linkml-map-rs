@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "could not convert string to float: 'A'; class_derivation=Agent (from Person); slot_derivation=coded_m (from coded_cm)"
+}

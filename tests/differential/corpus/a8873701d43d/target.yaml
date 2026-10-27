@@ -1,0 +1,43 @@
+name: test-schema
+id: http://example.org/test-schema
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  test_schema:
+    prefix_prefix: test_schema
+    prefix_reference: http://example.org/test-schema/
+default_prefix: test_schema
+default_range: string
+slots:
+  id:
+    name: id
+    range: integer
+  conditions:
+    name: conditions
+    range: Condition
+    multivalued: true
+    inlined: true
+  condition_concept:
+    name: condition_concept
+    range: string
+  condition_status:
+    name: condition_status
+    range: string
+  condition_providence:
+    name: condition_providence
+    range: string
+classes:
+  Participant:
+    name: Participant
+    slots:
+    - id
+    - conditions
+  Condition:
+    name: Condition
+    slots:
+    - condition_concept
+    - condition_status
+    - condition_providence

@@ -1,0 +1,31 @@
+name: eav-target
+id: https://example.org/eav-target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/eav-target/
+classes:
+  MeasurementResult:
+    name: MeasurementResult
+    attributes:
+      id:
+        name: id
+        range: string
+      measurements:
+        name: measurements
+        range: Measurement
+        multivalued: true
+        inlined: true
+    tree_root: true
+  Measurement:
+    name: Measurement
+    attributes:
+      variable:
+        name: variable
+        range: string
+      value:
+        name: value
+        range: float

@@ -1,0 +1,33 @@
+id: derived-value-coercion
+class_derivations:
+- name: Out
+  populated_from: Row
+  slot_derivations:
+    tags_pf:
+      name: tags_pf
+      populated_from: tag
+    tags_expr:
+      name: tags_expr
+      expr: '{tag}'
+    tags_value:
+      name: tags_value
+      value: a
+    amt_pf:
+      name: amt_pf
+      populated_from: amount
+    amt_expr:
+      name: amt_expr
+      expr: '{amount}'
+    amt_value:
+      name: amt_value
+      value: '5.0'
+    count_value:
+      name: count_value
+      value: 7
+    label_expr:
+      name: label_expr
+      expr: 1 + 1
+    amt_text:
+      name: amt_text
+      expr: '{amount}'
+      range: string

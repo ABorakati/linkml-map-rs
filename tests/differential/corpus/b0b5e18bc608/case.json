@@ -1,0 +1,15 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/QualityCheck-001.yaml",
+  "source_type": "QualityCheck",
+  "target_schema": "target.yaml",
+  "flags": [],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

@@ -1,0 +1,26 @@
+name: test-schema
+id: http://example.org/test-schema
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  test_schema:
+    prefix_prefix: test_schema
+    prefix_reference: http://example.org/test-schema/
+default_prefix: test_schema
+default_range: string
+slots:
+  days:
+    name: days
+    range: integer
+  age_at_measurement:
+    name: age_at_measurement
+    range: integer
+classes:
+  Person:
+    name: Person
+    slots:
+    - days
+    - age_at_measurement

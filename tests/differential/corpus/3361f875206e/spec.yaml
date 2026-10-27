@@ -1,0 +1,10 @@
+class_derivations:
+- name: Person
+  populated_from: Person
+  slot_derivations:
+    age:
+      name: age
+      populated_from: age_at_start
+      offset:
+        offset_value: 1.0
+        offset_field: days

@@ -1,0 +1,6 @@
+id: samp001
+name: Forest soil sample
+depth_value: 5.0
+depth_unit: m
+elev_value: 100.0
+elev_unit: m

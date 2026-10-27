@@ -429,6 +429,19 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                     message,
                 });
             }
+            // A bound root name (`x.attr`, or `{x}.attr` outside a statement
+            // block, where `{x}` is just `x`) is read in place: `resolve_name`
+            // would clone the whole bound value (a nested record, say) to read
+            // one attribute.
+            let root_ast = match value.as_ref() {
+                Ast::Brace(inner) if !object_attr_mode_enabled() => inner.as_ref(),
+                other => other,
+            };
+            if let Ast::Name(root) = root_ast
+                && let Some(bound) = vars.get(root.as_str())
+            {
+                return distributed_getattr(bound, attr);
+            }
             let obj = eval_ast(value, vars)?;
             distributed_getattr(&obj, attr)
         }

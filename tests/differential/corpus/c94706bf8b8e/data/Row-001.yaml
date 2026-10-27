@@ -1,0 +1,13 @@
+note: first
+steps:
+- draw
+- spin
+tags:
+- fasting
+- exam 1
+unit: mg/dL
+value: '52.30'
+method: lipid assay
+observation_type: OBA:VT0000184
+visit: V1
+participant: P1

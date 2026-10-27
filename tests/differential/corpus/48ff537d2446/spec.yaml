@@ -1,0 +1,16 @@
+class_derivations:
+- name: MeasurementResult
+  populated_from: WideRecord
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    measurements:
+      name: measurements
+      pivot_operation:
+        direction: MELT
+        source_slots:
+        - height
+        - weight
+        id_slots:
+        - id

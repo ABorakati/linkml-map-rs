@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0: transformation error in 'FlatSample.env_broad_scale_term_id': expr eval failed for slot 'env_broad_scale_term_id' in class 'Sample': eval error: value of type str has no attribute 'term'"
+}

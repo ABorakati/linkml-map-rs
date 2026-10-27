@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Inlined path 'dataset.dataTable' reaches a multivalued segment 'dataTable'; per-item fan-out to a matching class_derivation is not yet supported (see #265); slot_derivation=classes (from dataset.dataTable)"
+}

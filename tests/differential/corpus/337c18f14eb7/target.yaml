@@ -1,0 +1,64 @@
+name: mappings_norm
+description: Normalized Mappings
+id: https://w3id.org/linkml/examples/mappings-norm
+imports:
+- linkml:types
+license: https://creativecommons.org/publicdomain/zero/1.0/
+prefixes:
+  mappings:
+    prefix_prefix: mappings
+    prefix_reference: https://w3id.org/linkml/examples/mappings-norm/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+emit_prefixes:
+- rdf
+- rdfs
+- xsd
+- skos
+default_curi_maps:
+- semweb_context
+default_prefix: mappings
+default_range: string
+slots:
+  id:
+    name: id
+    slot_uri: schema:identifier
+    identifier: true
+  name:
+    name: name
+    slot_uri: rdfs:label
+  predicate:
+    name: predicate
+  subject_id:
+    name: subject_id
+  subject_name:
+    name: subject_name
+  object_id:
+    name: object_id
+  object_name:
+    name: object_name
+  predicate_id:
+    name: predicate_id
+  predicate_name:
+    name: predicate_name
+classes:
+  MappingSet:
+    name: MappingSet
+    attributes:
+      mappings:
+        name: mappings
+        range: Mapping
+        multivalued: true
+        inlined: true
+    tree_root: true
+  Mapping:
+    name: Mapping
+    slots:
+    - subject_id
+    - subject_name
+    - object_id
+    - object_name
+    - predicate_id
+    - predicate_name
+source_file: /home/user/upstream/linkml-map/tests/input/examples/flattening/target/denormalized.yaml

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ClickException",
+  "message": "Class derivation 'Quantity' does not derive identifier slot 'id' and mint_ids is not true; derive it explicitly or set mint_ids: true"
+}

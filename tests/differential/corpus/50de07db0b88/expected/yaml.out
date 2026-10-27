@@ -1,0 +1,18 @@
+id: p1
+out_b: '9999999999'
+---
+code: Alice
+id: o1
+out_a: Alice
+out_c: k
+---
+code: '='
+id: o2
+out_a: '='
+out_c: k
+---
+code: a:b
+id: o3
+out_a: a:b
+out_c: k
+---

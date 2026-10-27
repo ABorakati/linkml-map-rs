@@ -1,0 +1,32 @@
+id: scaffold-mapping
+title: Minimal scaffold mapping
+prefixes:
+  src:
+    key: src
+    value: https://example.org/test-source-scaffold/
+  tgt:
+    key: tgt
+    value: https://example.org/test-target-scaffold/
+source_schema:
+  name: https://example.org/test-source-scaffold
+target_schema:
+  name: https://example.org/test-target-scaffold
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    label:
+      name: label
+      populated_from: name
+    visit_id:
+      name: visit_id
+      expression_mappings:
+        '1':
+          key: '1'
+          value: uuid5('https://example.org/visit', {id} + '_SCREENING')
+        '7':
+          key: '7'
+          value: uuid5('https://example.org/visit', {id} + '_BASELINE')
+      populated_from: visit_code

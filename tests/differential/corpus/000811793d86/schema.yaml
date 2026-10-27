@@ -1,0 +1,27 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+enums:
+  Kind:
+    permissible_values:
+      C: {}
+      x_1: {}
+      B: {}
+      Ünï: {}
+classes:
+  Person:
+    attributes:
+      id:
+        range: integer
+        identifier: true
+      name:
+        range: string
+      flag:
+        range: boolean
+      amount:
+        range: decimal

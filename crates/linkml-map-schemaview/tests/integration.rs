@@ -316,3 +316,101 @@ fn inline_trait_object_dispatch() {
     assert!(provider.get_class("Container").is_ok());
     assert_eq!(provider.tree_root_class(), Some("Container".to_owned()));
 }
+
+// ── Build-once caches ─────────────────────────────────────────────────────────
+
+/// The borrowing `induced_slot_ref` agrees with `induced_slot` for every slot
+/// of every class, and with `induced_slots`; repeated queries (answered from
+/// the caches) never change.
+#[test]
+fn cached_slot_queries_agree_with_each_other() {
+    let provider = SchemaViewProvider::from_yaml_str(INLINE_SCHEMA).unwrap();
+    for class in provider.all_class_names() {
+        let slots = provider.induced_slots(&class).unwrap();
+        assert!(!slots.is_empty());
+        for slot in &slots {
+            let owned = provider.induced_slot(&slot.name, &class).unwrap();
+            let lent = provider
+                .induced_slot_ref(&slot.name, &class)
+                .expect("a cached provider lends its slots");
+            assert_eq!(format!("{owned:?}"), format!("{lent:?}"));
+            assert_eq!(format!("{owned:?}"), format!("{slot:?}"));
+        }
+        // Second round: same answers.
+        assert_eq!(
+            format!("{slots:?}"),
+            format!("{:?}", provider.induced_slots(&class).unwrap())
+        );
+    }
+    assert!(provider.induced_slot_ref("nope", "Container").is_none());
+    assert!(provider.induced_slot_ref("id", "NoSuchClass").is_none());
+    assert!(matches!(
+        provider.induced_slot("nope", "Container"),
+        Err(SchemaError::SlotNotFound { .. })
+    ));
+    assert!(matches!(
+        provider.induced_slot("id", "NoSuchClass"),
+        Err(SchemaError::ClassNotFound(_))
+    ));
+}
+
+/// `has_enum` / `has_type` are `all_enum_names` / `all_type_names` membership.
+#[test]
+fn has_enum_and_has_type_match_the_name_lists() {
+    let provider = load_simple_enum();
+    for name in provider.all_enum_names() {
+        assert!(provider.has_enum(&name));
+    }
+    for name in provider.all_type_names() {
+        assert!(provider.has_type(&name));
+    }
+    assert!(provider.has_enum("SignalTypes"));
+    assert!(!provider.has_enum("Asset"));
+    assert!(!provider.has_type("SignalTypes"));
+    assert!(!provider.has_enum("NoSuchEnum"));
+    // An unlisted enum or class is reported as before, not as cached "absent".
+    assert!(matches!(
+        provider.get_enum("NoSuchEnum"),
+        Err(SchemaError::EnumNotFound(_))
+    ));
+    assert!(matches!(
+        provider.get_class("NoSuchClass"),
+        Err(SchemaError::ClassNotFound(_))
+    ));
+    assert_eq!(
+        provider
+            .get_enum("SignalTypes")
+            .unwrap()
+            .permissible_values
+            .len(),
+        provider
+            .get_enum("SignalTypes")
+            .unwrap()
+            .permissible_values
+            .len()
+    );
+}
+
+/// The provider is shared across worker threads: concurrent first use of the
+/// lazily filled caches must give every thread the same answer. (Slot order may
+/// differ between two provider instances of one schema, so compare within one.)
+#[test]
+fn caches_are_safe_to_fill_from_many_threads() {
+    let provider = SchemaViewProvider::from_yaml_str(INLINE_SCHEMA).unwrap();
+    let seen: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    assert_eq!(provider.tree_root_class().as_deref(), Some("Container"));
+                    format!("{:?}", provider.induced_slots("Container").unwrap())
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert!(seen.iter().all(|s| *s == seen[0]));
+    assert_eq!(
+        format!("{:?}", provider.induced_slots("Container").unwrap()),
+        seen[0]
+    );
+}

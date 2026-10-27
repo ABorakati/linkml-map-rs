@@ -1,0 +1,14 @@
+id: P:001
+name: alice adams
+status_code: A
+visit_code: '1'
+role_code: A
+gender: f
+genders:
+- F
+- OMOP:8507
+- FEMALE
+height_cm: 120
+depth_cm: 250
+width_cm: '120'
+coded_cm: A

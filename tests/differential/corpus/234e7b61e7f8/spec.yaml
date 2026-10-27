@@ -1,0 +1,9 @@
+source_schema:
+  name: typo_source
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    name:
+      name: name
+      expr: '{scroe}'

@@ -1,0 +1,29 @@
+name: schema-target
+id: https://example.org/schema-target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/schema-target/
+default_range: string
+classes:
+  SchemaDefinition:
+    name: SchemaDefinition
+    attributes:
+      title:
+        name: title
+        range: string
+      classes:
+        name: classes
+        range: ClassDefinition
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true
+  ClassDefinition:
+    name: ClassDefinition
+    attributes:
+      name:
+        name: name
+        range: string

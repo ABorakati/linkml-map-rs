@@ -1,0 +1,45 @@
+name: events_flat
+id: https://example.org/events-flat
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/events-flat/
+classes:
+  FlatEvent:
+    name: FlatEvent
+    from_schema: https://example.org/events-flat
+    attributes:
+      event_id:
+        name: event_id
+        from_schema: https://example.org/events-flat
+        identifier: true
+        domain_of:
+        - FlatEvent
+        range: string
+      event_type:
+        name: event_type
+        from_schema: https://example.org/events-flat
+        domain_of:
+        - FlatEvent
+        range: string
+      name:
+        name: name
+        from_schema: https://example.org/events-flat
+        domain_of:
+        - FlatEvent
+        range: string
+      started_at:
+        name: started_at
+        from_schema: https://example.org/events-flat
+        domain_of:
+        - FlatEvent
+        range: string
+      ended_at:
+        name: ended_at
+        from_schema: https://example.org/events-flat
+        domain_of:
+        - FlatEvent
+        range: string

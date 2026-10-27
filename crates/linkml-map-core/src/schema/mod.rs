@@ -253,6 +253,15 @@ pub trait SchemaProvider: Send + Sync {
     /// Mirrors `sv.induced_slot(slot_name, class_name)`.
     fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef>;
 
+    /// [`SchemaProvider::induced_slot`] without the clone: a provider that
+    /// holds its induced slots lends the slot. `None` means the provider cannot
+    /// lend one (the default) or the slot is absent; callers then ask
+    /// [`SchemaProvider::induced_slot`], which is authoritative.
+    fn induced_slot_ref(&self, slot_name: &str, class_name: &str) -> Option<&SlotDef> {
+        let _ = (slot_name, class_name);
+        None
+    }
+
     // ── Enum-level queries ───────────────────────────────────────────────────
 
     /// Look up an enum definition by name.
@@ -261,10 +270,24 @@ pub trait SchemaProvider: Send + Sync {
     /// Return all enum names defined in the schema (unordered).
     fn all_enum_names(&self) -> Vec<String>;
 
+    /// Whether `enum_name` is in [`SchemaProvider::all_enum_names`] (Python
+    /// `enum_name in sv.all_enums()`). Providers override this with a direct
+    /// lookup; the engine asks per row.
+    fn has_enum(&self, enum_name: &str) -> bool {
+        self.all_enum_names().iter().any(|e| e == enum_name)
+    }
+
     // ── Schema-level queries ─────────────────────────────────────────────────
 
     /// Return the names of all top-level types (scalars) in the schema.
     fn all_type_names(&self) -> Vec<String>;
+
+    /// Whether `type_name` is in [`SchemaProvider::all_type_names`] (Python
+    /// `type_name in sv.all_types()`). Providers override this with a direct
+    /// lookup; the engine asks per row.
+    fn has_type(&self, type_name: &str) -> bool {
+        self.all_type_names().iter().any(|t| t == type_name)
+    }
 
     /// The schema-level `default_range`, which an induced slot with no declared
     /// range falls back to (Python `SchemaView.induced_slot` applies it).
@@ -489,6 +512,14 @@ impl SchemaProvider for InMemorySchema {
             })
     }
 
+    fn induced_slot_ref(&self, slot_name: &str, class_name: &str) -> Option<&SlotDef> {
+        self.classes
+            .get(class_name)?
+            .slots
+            .iter()
+            .find(|s| s.name == slot_name)
+    }
+
     fn get_enum(&self, enum_name: &str) -> SchemaResult<EnumDef> {
         self.enums
             .get(enum_name)
@@ -500,8 +531,16 @@ impl SchemaProvider for InMemorySchema {
         self.enums.keys().cloned().collect()
     }
 
+    fn has_enum(&self, enum_name: &str) -> bool {
+        self.enums.contains_key(enum_name)
+    }
+
     fn all_type_names(&self) -> Vec<String> {
         self.types.clone()
+    }
+
+    fn has_type(&self, type_name: &str) -> bool {
+        self.types.iter().any(|t| t == type_name)
     }
 
     fn schema_id(&self) -> Option<String> {
@@ -580,7 +619,7 @@ pub fn coercible_datatype(sv: &dyn SchemaProvider, range: Option<&str>) -> Optio
     // PARITY: Python tests `range_name in sv.all_types()`. Providers that do not
     // load the `linkml:types` import (the schemaview backend) don't list the
     // built-in types, so the coercible built-ins are accepted by name too.
-    if !COERCIBLE_TYPES.contains(&range) && !sv.all_type_names().iter().any(|t| t == range) {
+    if !COERCIBLE_TYPES.contains(&range) && !sv.has_type(range) {
         return None;
     }
     sv.type_ancestors(range)

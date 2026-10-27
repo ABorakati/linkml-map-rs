@@ -1,0 +1,38 @@
+name: sample-source
+id: https://example.org/sample-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/sample-source/
+classes:
+  Sample:
+    name: Sample
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string
+      depth:
+        name: depth
+        range: QuantityValue
+        inlined: true
+      elev:
+        name: elev
+        range: QuantityValue
+        inlined: true
+    tree_root: true
+  QuantityValue:
+    name: QuantityValue
+    attributes:
+      has_numeric_value:
+        name: has_numeric_value
+        range: float
+      has_unit:
+        name: has_unit
+        range: string

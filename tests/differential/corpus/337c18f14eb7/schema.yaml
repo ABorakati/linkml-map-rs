@@ -1,0 +1,89 @@
+name: mappings_norm
+description: Normalized Mappings
+id: https://w3id.org/linkml/examples/mappings-norm
+imports:
+- linkml:types
+license: https://creativecommons.org/publicdomain/zero/1.0/
+prefixes:
+  mappings:
+    prefix_prefix: mappings
+    prefix_reference: https://w3id.org/linkml/examples/mappings-norm/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+emit_prefixes:
+- rdf
+- rdfs
+- xsd
+- skos
+default_curi_maps:
+- semweb_context
+default_prefix: mappings
+default_range: string
+slots:
+  id:
+    name: id
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    slot_uri: schema:identifier
+    identifier: true
+    domain_of:
+    - Entity
+  name:
+    name: name
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    slot_uri: rdfs:label
+    domain_of:
+    - Entity
+  predicate:
+    name: predicate
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    domain_of:
+    - Mapping
+  subject:
+    name: subject
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    domain_of:
+    - Mapping
+    range: Entity
+  object:
+    name: object
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    domain_of:
+    - Mapping
+    range: Entity
+classes:
+  MappingSet:
+    name: MappingSet
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    attributes:
+      mappings:
+        name: mappings
+        from_schema: https://w3id.org/linkml/examples/mappings-norm
+        domain_of:
+        - MappingSet
+        range: Mapping
+        multivalued: true
+        inlined: true
+      entities:
+        name: entities
+        from_schema: https://w3id.org/linkml/examples/mappings-norm
+        domain_of:
+        - MappingSet
+        range: Entity
+        multivalued: true
+        inlined: true
+    tree_root: true
+  Mapping:
+    name: Mapping
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    slots:
+    - subject
+    - object
+    - predicate
+  Entity:
+    name: Entity
+    from_schema: https://w3id.org/linkml/examples/mappings-norm
+    slots:
+    - id
+    - name
+source_file: /home/user/upstream/linkml-map/tests/input/examples/flattening/source/normalized.yaml

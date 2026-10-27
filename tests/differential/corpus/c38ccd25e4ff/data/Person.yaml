@@ -1,0 +1,10 @@
+- id: p1
+  born: '2020-01-31T10:00:00'
+- id: p2
+  born: not a date
+  amount: '1.50'
+- id: p3
+  amount: '3'
+- id: p4
+  born: '2000-02-29'
+  amount: '1234567890.123456789012'

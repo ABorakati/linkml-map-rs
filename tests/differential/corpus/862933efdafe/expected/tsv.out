@@ -1,0 +1,2 @@
+id	associated_participant	associated_visit	observation_type	method_type	tags	steps	value_quantity__id	value_quantity__value_decimal	value_quantity__unit
+0353103d-3912-55e2-abd5-3a6cba1d9849	P1	V1	OBA:VT0000184	lipid assay	None	['draw', 'spin']	199f65b6-2954-565e-912a-b814c2568cd9	52.3	mg/dL

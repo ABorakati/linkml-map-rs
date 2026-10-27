@@ -1,0 +1,29 @@
+name: flat_person
+description: Minimal target schema for container-based testing.
+id: https://example.org/linkml/scaffold/flat_person
+imports:
+- linkml:types
+prefixes:
+  flat_person:
+    prefix_prefix: flat_person
+    prefix_reference: https://example.org/linkml/scaffold/flat_person/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: flat_person
+default_range: string
+classes:
+  FlatPerson:
+    name: FlatPerson
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string
+      org_city:
+        name: org_city
+        range: string
+source_file: /home/user/upstream/linkml-map/tests/scaffold_container/target/flat_person.yaml

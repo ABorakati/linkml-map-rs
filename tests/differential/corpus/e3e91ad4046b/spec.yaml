@@ -1,0 +1,9 @@
+class_derivations:
+- name: StructuredSample
+  populated_from: FlatSample
+  slot_derivations:
+    id:
+      name: id
+    depth:
+      name: depth
+      expr: '{"has_numeric_value": float(depth_value), "has_unit": depth_unit}'

@@ -1,0 +1,32 @@
+name: sample-flat
+id: https://example.org/sample-flat
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/sample-flat/
+classes:
+  FlatSample:
+    name: FlatSample
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string
+      depth_value:
+        name: depth_value
+        range: float
+      depth_unit:
+        name: depth_unit
+        range: string
+      elev_value:
+        name: elev_value
+        range: float
+      elev_unit:
+        name: elev_unit
+        range: string

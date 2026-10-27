@@ -1,0 +1,14 @@
+id: 1
+inner:
+- label: '[1]'
+  label1: '[1]'
+  out_b: 1
+  out_d: '[1]'
+---
+id: 2
+inner:
+- label: Alice
+  label1: Alice
+  out_b: 2
+  out_d: Alice
+---

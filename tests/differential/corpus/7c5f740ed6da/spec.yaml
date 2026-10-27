@@ -1,0 +1,13 @@
+class_derivations:
+- name: Person
+  populated_from: Person
+  slot_derivations:
+    name:
+      name: name
+      populated_from: name
+    full_name:
+      name: full_name
+      derived_from:
+      - given_name
+      - family_name
+      expr: '"{given_name} {family_name}"'

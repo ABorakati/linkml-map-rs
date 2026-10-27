@@ -1,0 +1,17 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/Person.tsv",
+  "source_type": "Person",
+  "target_schema": "target.yaml",
+  "flags": [
+    "--unrestricted-eval"
+  ],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

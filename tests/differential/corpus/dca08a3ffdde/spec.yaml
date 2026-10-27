@@ -1,0 +1,14 @@
+id: constant-value
+class_derivations:
+- name: Out
+  populated_from: Row
+  slot_derivations:
+    person_id:
+      name: person_id
+      populated_from: person_id
+    note:
+      name: note
+      populated_from: note
+    tag:
+      name: tag
+      value: 7
