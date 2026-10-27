@@ -1,0 +1,19 @@
+name: constant_source
+id: https://example.org/constant-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: constant_source
+default_range: string
+classes:
+  Row:
+    name: Row
+    attributes:
+      person_id:
+        name: person_id
+        identifier: true
+      note:
+        name: note

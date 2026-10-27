@@ -1,0 +1,21 @@
+name: tgt
+id: https://example.org/tgt
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: ex
+classes:
+  Agent:
+    name: Agent
+    from_schema: https://example.org/tgt
+    attributes:
+      identifier:
+        name: identifier
+        from_schema: https://example.org/tgt
+        domain_of:
+        - Agent
+        range: string
+source_file: /tmp/pytest-of-root/pytest-13/test_cli_loads_extension_modul0/target.yaml

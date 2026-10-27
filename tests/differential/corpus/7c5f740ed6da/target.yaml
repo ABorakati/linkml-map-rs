@@ -1,0 +1,19 @@
+name: target
+id: https://example.org/target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/target/
+classes:
+  Person:
+    name: Person
+    attributes:
+      name:
+        name: name
+        range: string
+      full_name:
+        name: full_name
+        range: string

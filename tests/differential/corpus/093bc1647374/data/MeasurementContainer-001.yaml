@@ -1,0 +1,7 @@
+measurements:
+- att: height
+  val: 1.8
+  unit: m
+- att: weight
+  val: 75.0
+  unit: kg

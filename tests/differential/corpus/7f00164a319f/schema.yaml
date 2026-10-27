@@ -1,0 +1,33 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+default_range: string
+types:
+  MyStr:
+    typeof: string
+    description: a string type
+  MyInt:
+    typeof: integer
+enums:
+  Status:
+    permissible_values:
+      C: {}
+      A: {}
+      B: {}
+classes:
+  Person:
+    attributes:
+      id:
+        range: string
+        identifier: true
+      ratio:
+        range: float
+      status:
+        range: Status
+      score:
+        range: float

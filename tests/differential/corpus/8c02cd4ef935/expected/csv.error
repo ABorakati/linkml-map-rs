@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TypeError",
+  "message": "'str' object does not support item assignment"
+}

@@ -1,0 +1,18 @@
+name: derived_source
+id: https://example.org/derived-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: derived_source
+default_range: string
+classes:
+  Row:
+    name: Row
+    attributes:
+      tag:
+        name: tag
+      amount:
+        name: amount

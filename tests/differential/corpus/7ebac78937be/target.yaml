@@ -1,0 +1,129 @@
+name: agent
+description: Minimal agent target schema for LinkML-Map testing, based on Person from
+  [schema.org](http://schema.org)
+id: https://example.org/linkml/scaffold/agent
+imports:
+- linkml:types
+license: https://creativecommons.org/publicdomain/zero/1.0/
+prefixes:
+  agent:
+    prefix_prefix: agent
+    prefix_reference: https://example.org/linkml/scaffold/agent/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  OMOP:
+    prefix_prefix: OMOP
+    prefix_reference: https://athena.ohdsi.org/search-terms/terms/
+default_prefix: agent
+default_range: string
+enums:
+  SexEnum:
+    name: SexEnum
+    permissible_values:
+      OMOP:8532:
+        text: OMOP:8532
+        meaning: OMOP:8532
+        title: FEMALE
+        aliases:
+        - F
+        - female
+      OMOP:8507:
+        text: OMOP:8507
+        meaning: OMOP:8507
+        title: MALE
+        aliases:
+        - M
+        - male
+slots:
+  id:
+    name: id
+    range: string
+  label:
+    name: label
+    range: string
+  study_name:
+    name: study_name
+    range: string
+  uuid_id:
+    name: uuid_id
+    range: string
+  name_length:
+    name: name_length
+    range: integer
+  name_length_copy:
+    name: name_length_copy
+    range: integer
+  greeting:
+    name: greeting
+    range: string
+  status_label:
+    name: status_label
+    range: string
+  visit_id:
+    name: visit_id
+    range: string
+  role_label:
+    name: role_label
+    range: string
+  height_m:
+    name: height_m
+    range: float
+  depth_struct:
+    name: depth_struct
+    range: string
+  width_m:
+    name: width_m
+    range: float
+  coded_m:
+    name: coded_m
+    range: float
+  missing_m:
+    name: missing_m
+    range: float
+classes:
+  Element:
+    name: Element
+    description: A generic grouping for any identifiable entity
+    slots:
+    - id
+    - label
+  Agent:
+    name: Agent
+    description: An agent (person, animal, digital, or fictional).
+    is_a: Element
+    slots:
+    - study_name
+    - uuid_id
+    - name_length
+    - name_length_copy
+    - greeting
+    - status_label
+    - visit_id
+    - role_label
+    - height_m
+    - depth_struct
+    - width_m
+    - coded_m
+    - missing_m
+    attributes:
+      location:
+        name: location
+        range: string
+      sex:
+        name: sex
+        range: SexEnum
+        multivalued: false
+      sex_literal:
+        name: sex_literal
+        range: SexEnum
+        multivalued: false
+      sex_expr:
+        name: sex_expr
+        range: SexEnum
+        multivalued: false
+      sexes:
+        name: sexes
+        range: SexEnum
+        multivalued: true
+source_file: /home/user/upstream/linkml-map/tests/scaffold/target/agent.yaml

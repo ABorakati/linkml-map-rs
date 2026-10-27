@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "'str' object has no attribute 'name'; class_derivation=FlatPerson (from Person); slot_derivation=org_name_expr"
+}

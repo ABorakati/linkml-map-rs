@@ -1,0 +1,15 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/Container-001.yaml",
+  "source_type": "Container",
+  "target_schema": "target.yaml",
+  "flags": [],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

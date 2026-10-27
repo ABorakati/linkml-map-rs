@@ -1,0 +1,20 @@
+class_derivations:
+- name: FlatSample
+  populated_from: Sample
+  slot_derivations:
+    id:
+      name: id
+    name:
+      name: name
+    depth_value:
+      name: depth_value
+      expr: depth.has_numeric_value
+    depth_unit:
+      name: depth_unit
+      expr: depth.has_unit
+    elev_value:
+      name: elev_value
+      expr: elev.has_numeric_value
+    elev_unit:
+      name: elev_unit
+      expr: elev.has_unit

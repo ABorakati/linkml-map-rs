@@ -1,0 +1,65 @@
+name: autogen
+id: https://example.org/autogen
+default_prefix: https://example.org/autogen/
+classes:
+  Container:
+    name: Container
+    from_schema: https://example.org/autogen
+    attributes:
+      persons:
+        name: persons
+        from_schema: https://example.org/autogen
+        domain_of:
+        - Container
+        range: Person
+        multivalued: true
+        inlined_as_list: true
+      organizations:
+        name: organizations
+        from_schema: https://example.org/autogen
+        domain_of:
+        - Container
+        range: Organization
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true
+  Person:
+    name: Person
+    from_schema: https://example.org/autogen
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/autogen
+        identifier: true
+        domain_of:
+        - Person
+        - Organization
+      name:
+        name: name
+        from_schema: https://example.org/autogen
+        domain_of:
+        - Person
+        - Organization
+      org_id:
+        name: org_id
+        from_schema: https://example.org/autogen
+        domain_of:
+        - Person
+        range: string
+  Organization:
+    name: Organization
+    from_schema: https://example.org/autogen
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/autogen
+        identifier: true
+        domain_of:
+        - Person
+        - Organization
+      name:
+        name: name
+        from_schema: https://example.org/autogen
+        domain_of:
+        - Person
+        - Organization

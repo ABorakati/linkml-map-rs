@@ -1,0 +1,5 @@
+id: acq-1
+name: Acquisition run
+started_at_time: '2021-06-15T08:00:00'
+ended_at_time: '2021-06-15T16:00:00'
+instrument_used: sequencer-a

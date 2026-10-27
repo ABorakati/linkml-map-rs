@@ -1,0 +1,7 @@
+class_derivations:
+- name: SchemaDefinition
+  populated_from: EMLDocument
+  slot_derivations:
+    classes:
+      name: classes
+      populated_from: dataset.dataTable

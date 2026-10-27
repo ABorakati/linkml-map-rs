@@ -1,0 +1,7 @@
+class_derivations:
+- name: P
+  populated_from: Person
+  slot_derivations:
+    v:
+      name: v
+      expr: target = [e for e in src.events][0]

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "'NoneType' object has no attribute 'induced_slot'; class_derivation=Agent (from Person); slot_derivation=inner"
+}

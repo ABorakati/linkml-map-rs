@@ -1,0 +1,53 @@
+name: greetings
+description: Greetings from different languages
+id: greetings
+imports:
+- linkml:types
+default_prefix: greetings/
+default_range: string
+enums:
+  greetings:
+    name: greetings
+    from_schema: greetings
+    permissible_values:
+      bonjour:
+        text: bonjour
+      ciao:
+        text: ciao
+      hello:
+        text: hello
+      hola:
+        text: hola
+      konnichiwa:
+        text: konnichiwa
+      namaste:
+        text: namaste
+slots:
+  greeting:
+    name: greeting
+    from_schema: greetings
+    domain_of:
+    - my_greetings
+    range: greetings
+    multivalued: true
+    inlined_as_list: true
+classes:
+  my_greetings:
+    name: my_greetings
+    from_schema: greetings
+    slots:
+    - greeting
+  Container:
+    name: Container
+    from_schema: greetings
+    attributes:
+      my_greetings:
+        name: my_greetings
+        from_schema: greetings
+        domain_of:
+        - Container
+        range: my_greetings
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true
+source_file: /home/user/upstream/linkml-map/tests/input/examples/single_value_for_multivalued/source/greetings.yaml

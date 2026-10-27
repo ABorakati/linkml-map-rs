@@ -1,0 +1,23 @@
+id: P:001
+label: alice adams
+study_name: Framingham Heart Study
+location: Framingham
+uuid_id: abbe798e-d61b-5371-86f2-ea8e54129a50
+name_length: 11
+name_length_copy: 11
+greeting: Hello, alice adams!
+status_label: 'Status: Active'
+visit_id: 5bceffd0-3ea8-5689-b27b-64134d8d5322
+role_label: Admin
+sex: OMOP:8532
+sex_literal: OMOP:8507
+sex_expr: OMOP:8532
+sexes:
+- OMOP:8532
+- OMOP:8507
+- OMOP:8532
+height_m: 1.2
+depth_struct:
+  value_converted: 2.5
+  unit_converted: m
+width_m: 1.2

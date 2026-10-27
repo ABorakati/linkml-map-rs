@@ -1,0 +1,25 @@
+id: container-transform
+title: Minimal container transform
+class_derivations:
+- name: FlatPerson
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    name:
+      name: name
+    org_name:
+      name: org_name
+      populated_from: org_id.name
+    org_city:
+      name: org_city
+      populated_from: org_id.city
+    org_name_expr:
+      name: org_name_expr
+      expr: org_id.name
+    org_name_missing:
+      name: org_name_missing
+      populated_from: missing_org_id.name
+    org_name_null:
+      name: org_name_null
+      populated_from: null_org_id.name

@@ -1,0 +1,34 @@
+class_derivations:
+- name: Participant
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+      populated_from: phv00159568
+    conditions:
+      name: conditions
+      class_derivations:
+      - name: Condition
+        populated_from: Person
+        slot_derivations:
+          condition_concept:
+            name: condition_concept
+            expr: '''HP:0001681'''
+          condition_status:
+            name: condition_status
+            populated_from: phv00159563
+          condition_providence:
+            name: condition_providence
+            populated_from: phv00159569
+      - name: Condition
+        populated_from: Person
+        slot_derivations:
+          condition_concept:
+            name: condition_concept
+            expr: '''HP:0001683'''
+          condition_status:
+            name: condition_status
+            populated_from: phv00159573
+          condition_providence:
+            name: condition_providence
+            populated_from: phv00159579

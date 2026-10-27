@@ -1,0 +1,29 @@
+name: scalar-source
+id: https://example.org/scalar-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/scalar-source/
+enums:
+  Color:
+    name: Color
+    permissible_values:
+      red:
+        text: red
+      green:
+        text: green
+classes:
+  Rec:
+    name: Rec
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      color:
+        name: color
+        range: Color
+    tree_root: true

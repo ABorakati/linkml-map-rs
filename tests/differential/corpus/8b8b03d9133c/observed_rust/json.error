@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "compiling plan: synthesizing implicit joins for spec /home/user/wt/difffuzz/tests/differential/corpus/8b8b03d9133c/spec.yaml: could not parse expression during join synthesis: parse error: expected RParen, found LParen"
+}

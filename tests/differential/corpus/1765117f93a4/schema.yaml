@@ -1,0 +1,36 @@
+name: range_source
+id: https://example.org/range-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: range_source
+default_range: string
+classes:
+  Row:
+    name: Row
+    attributes:
+      id:
+        name: id
+        identifier: true
+      count:
+        name: count
+      ratio:
+        name: ratio
+      amount:
+        name: amount
+      flag:
+        name: flag
+      score:
+        name: score
+      color:
+        name: color
+      site:
+        name: site
+      note:
+        name: note
+      counts:
+        name: counts
+        multivalued: true

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0; class_derivation=Person: transformation error in 'Person.out_a': expr eval failed for slot 'out_a' in class 'Person': eval error: name 'amount' is not defined"
+}

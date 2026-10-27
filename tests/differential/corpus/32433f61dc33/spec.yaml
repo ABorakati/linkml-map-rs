@@ -1,0 +1,19 @@
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    friend:
+      name: friend
+    address:
+      name: address
+    first_year:
+      name: first_year
+      expr: "years = [e.year for e in src.events if e.kind == \"start\"]\nif years:\n\
+        \    target = years[0]\n"
+- name: Location
+  populated_from: Address
+  slot_derivations:
+    city:
+      name: city

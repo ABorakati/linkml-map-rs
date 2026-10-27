@@ -1,0 +1,6 @@
+id: S1
+env_broad_scale:
+  term:
+    id: ENVO:00002030
+    name: aquatic biome
+  has_raw_value: aquatic biome [ENVO:00002030]

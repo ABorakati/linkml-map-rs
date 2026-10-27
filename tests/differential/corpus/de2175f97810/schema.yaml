@@ -1,0 +1,60 @@
+name: person_flat
+description: Simple flat person schema for tabular data testing
+id: https://example.org/person_flat
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  P:
+    prefix_prefix: P
+    prefix_reference: http://example.org/P/
+default_prefix: https://example.org/person_flat/
+default_range: string
+enums:
+  GenderType:
+    name: GenderType
+    from_schema: https://example.org/person_flat
+    permissible_values:
+      nonbinary man:
+        text: nonbinary man
+      nonbinary woman:
+        text: nonbinary woman
+      cisgender man:
+        text: cisgender man
+      cisgender woman:
+        text: cisgender woman
+classes:
+  Person:
+    name: Person
+    from_schema: https://example.org/person_flat
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/person_flat
+        identifier: true
+        domain_of:
+        - Person
+      name:
+        name: name
+        from_schema: https://example.org/person_flat
+        domain_of:
+        - Person
+      primary_email:
+        name: primary_email
+        from_schema: https://example.org/person_flat
+        domain_of:
+        - Person
+      age_in_years:
+        name: age_in_years
+        from_schema: https://example.org/person_flat
+        domain_of:
+        - Person
+        range: integer
+      gender:
+        name: gender
+        from_schema: https://example.org/person_flat
+        domain_of:
+        - Person
+source_file: /home/user/upstream/linkml-map/tests/input/examples/tabular/source/person_flat.yaml

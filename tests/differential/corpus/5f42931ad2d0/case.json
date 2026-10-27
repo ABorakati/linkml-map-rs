@@ -1,0 +1,17 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data",
+  "source_type": null,
+  "target_schema": null,
+  "flags": [
+    "--unrestricted-eval"
+  ],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

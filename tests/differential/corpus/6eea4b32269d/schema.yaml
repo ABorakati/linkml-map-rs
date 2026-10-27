@@ -1,0 +1,69 @@
+name: events_source
+id: https://example.org/events-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/events-source/
+classes:
+  Run:
+    name: Run
+    from_schema: https://example.org/events-source
+    abstract: true
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/events-source
+        identifier: true
+        domain_of:
+        - Run
+        range: string
+      name:
+        name: name
+        from_schema: https://example.org/events-source
+        domain_of:
+        - Run
+        range: string
+      started_at_time:
+        name: started_at_time
+        from_schema: https://example.org/events-source
+        domain_of:
+        - Run
+        range: string
+      ended_at_time:
+        name: ended_at_time
+        from_schema: https://example.org/events-source
+        domain_of:
+        - Run
+        range: string
+  Acquisition:
+    name: Acquisition
+    from_schema: https://example.org/events-source
+    is_a: Run
+    attributes:
+      instrument_used:
+        name: instrument_used
+        from_schema: https://example.org/events-source
+        domain_of:
+        - Acquisition
+        range: string
+  QualityCheck:
+    name: QualityCheck
+    from_schema: https://example.org/events-source
+    is_a: Run
+    attributes:
+      input_read_count:
+        name: input_read_count
+        from_schema: https://example.org/events-source
+        range: integer
+  Assembly:
+    name: Assembly
+    from_schema: https://example.org/events-source
+    is_a: Run
+    attributes:
+      contigs:
+        name: contigs
+        from_schema: https://example.org/events-source
+        range: integer

@@ -1,0 +1,15 @@
+age: '-3'
+id: p1
+inner:
+- out_a: true
+  out_c: p1
+  out_d: '0.1'
+out_f: '-2.9'
+---
+age: '2147483648'
+id: p2
+inner:
+- out_c: p2
+---
+k0: '1000000000000000'
+---

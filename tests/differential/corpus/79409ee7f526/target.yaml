@@ -1,0 +1,11 @@
+name: test
+id: test
+default_prefix: test/
+default_range: string
+classes:
+  MyClass:
+    name: MyClass
+    attributes:
+      my_att:
+        name: my_att
+        multivalued: false

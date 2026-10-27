@@ -1,0 +1,7 @@
+id: samp003
+name: Stream water
+depth:
+  has_numeric_value: 2.5
+elev:
+  has_numeric_value: 300.0
+  has_unit: ft

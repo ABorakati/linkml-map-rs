@@ -1,0 +1,24 @@
+{
+  "id": "P:001",
+  "label": "fred bloggs",
+  "age": "33 years",
+  "primary_email": "fred.bloggs@example.com",
+  "driving_since": "2014-03-31",
+  "first_known_event": "1990-01-01",
+  "current_address": {
+    "address_of": "foo",
+    "street": "1 oak street",
+    "city": "oaktown"
+  },
+  "has_familial_relationships": [
+    {
+      "type": "SIBLING_OF",
+      "related_to": "P:002"
+    },
+    {
+      "type": "CHILD_OF",
+      "related_to": "P:003"
+    }
+  ],
+  "work_value": "Home"
+}

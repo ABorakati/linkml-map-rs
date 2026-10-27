@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0: transformation error in 'FlatSample.depth_unit': expr eval failed for slot 'depth_unit' in class 'Sample': eval error: value of type float has no attribute 'has_unit'"
+}

@@ -1,0 +1,9 @@
+class_derivations:
+- name: StructuredSample
+  populated_from: StringSample
+  slot_derivations:
+    id:
+      name: id
+    depth:
+      name: depth
+      populated_from: depth

@@ -1,0 +1,4 @@
+id	inner	age	out_f
+p1	"[{""out_a"": true, ""out_d"": ""0.1"", ""out_c"": ""p1""}]"	-3	-2.9
+p2	"[{""out_a"": null, ""out_d"": null, ""out_c"": ""p2""}]"	2147483648	
+				1000000000000000

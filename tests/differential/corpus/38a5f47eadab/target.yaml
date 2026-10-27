@@ -1,0 +1,29 @@
+name: scalar-target
+id: https://example.org/scalar-target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/scalar-target/
+enums:
+  TColor:
+    name: TColor
+    permissible_values:
+      red:
+        text: red
+      green:
+        text: green
+classes:
+  Rec:
+    name: Rec
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      color:
+        name: color
+        range: TColor
+    tree_root: true

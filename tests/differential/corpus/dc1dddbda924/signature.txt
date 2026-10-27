@@ -1,0 +1,1 @@
+rust_error//errorcompiling plan: loading spec P: parsing transform YAML: class_derivations.Agent.slot_deriv/

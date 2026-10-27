@@ -1,0 +1,32 @@
+name: wide-target
+id: https://example.org/wide
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/wide/
+classes:
+  WideRecord:
+    name: WideRecord
+    attributes:
+      id:
+        name: id
+        range: string
+      height:
+        name: height
+        range: float
+      weight:
+        name: weight
+        range: float
+      height_m:
+        name: height_m
+        range: float
+      weight_kg:
+        name: weight_kg
+        range: float
+      len_m:
+        name: len_m
+        range: float
+    tree_root: true

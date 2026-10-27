@@ -92,6 +92,15 @@ cargo test -p linkml-map-cli --features columnar   # Parquet/DuckDB output tests
 - `linkml-map-py` requires Python 3 + `linkml-runtime` on PATH to test; exclude it
   otherwise (this is an environment constraint, not a failure).
 
+### Differential testing vs upstream (`tests/differential/`)
+
+`tests/differential/run.sh [--examples] [--fuzz N] [--seed S] [--time-budget T]` drives upstream Python `linkml-map`
+(own venv, pinned tag) and `linkml-tr-rs` over the upstream examples and Hypothesis-generated cases, comparing bytes
+per output format and error parity. Shrunk counterexamples land in `tests/differential/corpus/<hash>/` with upstream's
+expected output; `cargo test -p linkml-map-cli --test differential_corpus` replays them without Python (cases with
+`expected_divergence.md` are listed as skipped with their reason; `-- --ignored` asserts they now match). When you fix a
+divergence, delete its `expected_divergence.md`. CI job: `differential` (separate venv from `test` and `python-compat`).
+
 ### PyO3 drop-in compat leg (`python-compat` CI job)
 
 The `python-compat` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the

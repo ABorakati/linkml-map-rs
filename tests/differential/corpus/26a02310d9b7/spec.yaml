@@ -1,0 +1,10 @@
+class_derivations:
+- name: StructuredSample
+  populated_from: StringSample
+  slot_derivations:
+    id:
+      name: id
+    depth:
+      name: depth
+      expr: '{"has_numeric_value": float(depth.split(" ")[0]), "has_unit": depth.split("
+        ")[1]}'

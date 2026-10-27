@@ -1,0 +1,4 @@
+id: samp1
+depth:
+  has_numeric_value: 5.0
+  has_unit: m

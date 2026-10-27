@@ -1,0 +1,17 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/FlatSample-001.yaml",
+  "source_type": "FlatSample",
+  "target_schema": "target.yaml",
+  "flags": [
+    "--unrestricted-eval"
+  ],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

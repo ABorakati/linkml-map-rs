@@ -1,0 +1,9 @@
+id: P1
+friend: P2
+address:
+  city: Oaktown
+events:
+- kind: start
+  year: 2001
+- kind: stop
+  year: 2009

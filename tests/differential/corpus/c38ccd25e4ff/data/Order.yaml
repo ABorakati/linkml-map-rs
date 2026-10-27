@@ -1,0 +1,19 @@
+- id: o1
+  ratio: -2.5
+  count: 1
+  note: '''q'''
+- id: o2
+  ratio: 0.5
+  born: ' 2020-01-31'
+  count: 2147483648
+  note: a
+- id: o3
+  ratio: 1.0e+20
+  born: '2020-01-31'
+  count: 2
+  note: '- x'
+- id: o4
+  ratio: '.5'
+  born: not a date
+  count: 9999999999
+  note: a:b

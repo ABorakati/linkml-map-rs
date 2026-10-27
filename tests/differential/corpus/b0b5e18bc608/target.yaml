@@ -1,0 +1,29 @@
+name: events_flat
+id: https://example.org/events-flat
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/events-flat/
+classes:
+  FlatEvent:
+    name: FlatEvent
+    attributes:
+      event_id:
+        name: event_id
+        identifier: true
+        range: string
+      event_type:
+        name: event_type
+        range: string
+      name:
+        name: name
+        range: string
+      started_at:
+        name: started_at
+        range: string
+      ended_at:
+        name: ended_at
+        range: string
