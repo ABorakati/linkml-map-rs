@@ -1,5 +1,0 @@
-{
-  "exit_code": 1,
-  "class": "error",
-  "message": "compiling plan: loading spec /home/user/wt/difffuzz/tests/differential/corpus/1ddd4049b2aa/spec.yaml: parsing spec /home/user/wt/difffuzz/tests/differential/corpus/1ddd4049b2aa/spec.yaml: invalid type: string \"b\", expected a sequence"
-}

@@ -148,7 +148,7 @@ fn walk_and_synthesize_joins(
             }
 
             // A nested class_derivation that references a different table.
-            for nested_cd in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+            for nested_cd in sd.class_derivations.iter().flatten() {
                 let nested_source = nested_cd
                     .populated_from
                     .clone()
@@ -178,7 +178,7 @@ fn walk_and_synthesize_joins(
     // ── Phase 3: recurse into nested class_derivations. ──────────────────────
     if let Some(sds) = class_deriv.slot_derivations.as_mut() {
         for sd in sds.values_mut() {
-            for nested_cd in sd.class_derivations.iter_mut().flatten().map(|(_, v)| v) {
+            for nested_cd in sd.class_derivations.iter_mut().flatten() {
                 let nested_source = nested_cd
                     .populated_from
                     .clone()
