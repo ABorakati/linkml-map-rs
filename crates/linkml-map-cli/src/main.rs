@@ -121,7 +121,11 @@ struct MapDataArgs {
     output: Option<String>,
 
     /// Source type/class name for the input data.
-    /// When omitted, the engine resolves it from the first class_derivation.
+    /// For a single tabular file: the table the file holds (default: its file stem);
+    /// only class derivations reading that table stream it. For a directory: the
+    /// source type used for every class derivation (default: each one's own table).
+    /// For YAML/JSON input, when omitted the engine resolves it from the first
+    /// class_derivation.
     /// `--source-class` is the earlier Rust name for this flag.
     #[arg(
         long = "source-type",
@@ -204,11 +208,11 @@ struct MapDataArgs {
     /// Input data file, or a directory of tables for multi-table joins.
     ///
     /// A single file (default) is transformed row-by-row. A *directory* enables
-    /// multi-table mode: each file is a named table matched by filename stem to a
-    /// source class, the primary table (the source class) is streamed, and every
-    /// table referenced by a spec `joins:` block is loaded into a lookup index so
-    /// `{Table.col}` join references resolve. Joined tables absent from the
-    /// directory resolve to null.
+    /// multi-table mode: each file is a named table matched by filename stem, every
+    /// class derivation streams its own table in spec order (one with no file is
+    /// skipped), and every table referenced by a spec `joins:` block is loaded into
+    /// a lookup index so `{Table.col}` join references resolve. Joined tables absent
+    /// from the directory resolve to null.
     #[arg(value_name = "INPUT")]
     input: String,
 }

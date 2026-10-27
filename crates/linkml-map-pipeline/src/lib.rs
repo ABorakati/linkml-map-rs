@@ -24,8 +24,11 @@
 //! re-parsing the expr string on every row.  This removes the per-row parse
 //! cost that previously dominated CPU and capped thread scaling.
 
+mod data_loader;
+mod driver;
+
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -34,7 +37,7 @@ use std::{
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
-    datamodel::{ClassDerivation, TransformationSpecification},
+    datamodel::TransformationSpecification,
     engine::{
         CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer, TargetCoercions,
     },
@@ -43,12 +46,14 @@ use linkml_map_core::{
     value::Value,
 };
 use linkml_map_io::{
-    Format, NumericColumnHints, NumericColumnKind, WriteOptions, jsonl_line,
-    load_all_with_numeric_hints, load_stream_with_numeric_hints, validate_additional_outputs,
+    Format, NumericColumnHints, NumericColumnKind, WriteOptions, validate_additional_outputs,
     write_all_with, write_all_writer_with,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
+
+pub use data_loader::DataLoader;
+use driver::{ConstantBlocks, DriveInput, DriveStats, RowSegment, Sink, Step};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -60,16 +65,25 @@ pub struct PipelineConfig {
     /// **Single-file mode (default):** a path to one data file — the historical
     /// behavior; every row is a source object of the resolved source class.
     ///
-    /// **Directory mode (multi-table joins):** a path to a *directory* switches
-    /// on the [`DataLoader`](https://github.com/linkml/linkml-map)-style
-    /// convention mirrored from upstream Python. Each file in the directory is a
-    /// named table matched by its **filename stem** to a source class/table name.
-    /// The primary table (the resolved source class) is streamed as usual, and
-    /// every table referenced by a synthesized/explicit `joins:` block in the
-    /// spec is loaded into an in-memory [`LookupIndex`] so that `{Table.col}`
-    /// join references actually resolve at runtime instead of collapsing to null.
-    /// A join whose table has no file in the directory is skipped (its reference
-    /// resolves to null), matching upstream `transform_spec`.
+    /// **Tabular file (`.tsv`/`.csv`):** the file holds one table, named by
+    /// [`PipelineConfig::source_class`] or, failing that, its file stem. Every
+    /// class derivation (block) reading that table streams the file's rows; a
+    /// block reading another table is skipped. The run fails if no block reads it.
+    ///
+    /// **Directory mode (multi-table):** a path to a *directory* switches on the
+    /// [`DataLoader`] convention mirrored from upstream Python. Each file is a
+    /// named table matched by its **filename stem** to a block's table
+    /// (`populated_from`, else the block's name). Every block streams its own
+    /// table, in spec order; a block whose table has no file is skipped. Every
+    /// table referenced by a synthesized/explicit `joins:` block is loaded into an
+    /// in-memory [`LookupIndex`] for that block, so `{Table.col}` join references
+    /// resolve at runtime instead of collapsing to null; a join whose table has no
+    /// file is skipped (its reference resolves to null), matching upstream
+    /// `transform_spec`.
+    ///
+    /// **Any other file** (YAML, JSON, JSONL): one source object class
+    /// (`source_class`, else the first row block's table), as upstream's
+    /// single-object `map_data` route.
     pub source_path: String,
     /// Format of the source file; if `None`, auto-detected from extension.
     pub source_format: Option<Format>,
@@ -85,7 +99,10 @@ pub struct PipelineConfig {
     pub out_path: String,
     /// Format for the output file; if `None`, auto-detected from extension.
     pub out_format: Option<Format>,
-    /// Source class name hint.  `None` → engine resolves from tree-root / first derivation.
+    /// Upstream's `--source-type`. A tabular file: the table the file holds
+    /// (default: its stem). A directory: the `source_type` handed to every block
+    /// (default: each block's own table). Any other file: the source class.
+    /// `None` → resolved from tree-root / first derivation for the latter.
     pub source_class: Option<String>,
     /// Number of rayon worker threads.  `0` → rayon global pool default (≈ num CPUs).
     pub workers: usize,
@@ -203,32 +220,6 @@ pub struct CompiledPlan {
     emit_without_identifiers: bool,
 }
 
-/// The objects built by the constants-only blocks of a spec, split by where they
-/// sit relative to the streamed (primary) block in spec order.
-///
-/// See [`CompiledPlan::constant_block_outputs`].
-#[derive(Debug, Default)]
-struct ConstantOutputs {
-    /// Constant blocks declared before the primary block: emitted first.
-    prologue: Vec<Value>,
-    /// Constant blocks declared after the primary block: emitted last.
-    epilogue: Vec<Value>,
-    /// Blocks whose transform failed under `continue_on_error`.
-    failed: usize,
-}
-
-impl ConstantOutputs {
-    /// Objects emitted (constant blocks that did not fail).
-    fn emitted(&self) -> usize {
-        self.prologue.len() + self.epilogue.len()
-    }
-
-    /// Constant blocks attempted, failed or not.
-    fn attempted(&self) -> usize {
-        self.emitted() + self.failed
-    }
-}
-
 impl CompiledPlan {
     /// Number of `expr:` derivations in the spec (slots with an `expr:`).
     /// Benchmarks use this to confirm the fixture actually exercises the cache.
@@ -272,10 +263,6 @@ impl CompiledPlan {
             // A class hint can be absent for a generic object mapping. Preserve
             // historical all-string tabular behaviour in that case.
             .unwrap_or_default()
-    }
-
-    fn source_numeric_column_hints(&self) -> NumericColumnHints {
-        self.numeric_column_hints_for_class(self.source_class.as_deref())
     }
 
     /// Load spec + schemas from disk; resolve source class.
@@ -352,10 +339,11 @@ impl CompiledPlan {
         let blocks = classify_blocks(&spec, &source_classes)
             .with_context(|| format!("resolving is_a/mixins in spec {}", spec_path.display()))?;
 
-        // Resolve the source class once: the explicit hint, else the first row
-        // block (a block that reads a table, and is not merely a parent template
-        // for another block). Upstream's `transform_spec` walks every block and
-        // skips those with no data; Rust streams one block, so this picks it.
+        // Resolve the source class once, for single-object input (YAML / JSON /
+        // JSONL), which has one class and so one derivation: the explicit hint,
+        // else the first row block (a block that reads a table, and is not merely
+        // a parent template for another block). Tabular and directory input never
+        // use it: every block streams its own table (see `plan_steps`).
         let source_class = source_class_hint
             .map(str::to_owned)
             .or_else(|| {
@@ -407,53 +395,39 @@ impl CompiledPlan {
             .collect()
     }
 
-    /// Index of the streamed (primary) block in `blocks`: the first row block
-    /// reading the resolved source class.
-    fn primary_block_index(&self) -> Option<usize> {
-        let source_class = self.source_class.as_deref()?;
-        self.blocks
-            .iter()
-            .position(|b| !b.constant && b.table() == source_class)
-    }
-
-    /// Run every constants-only block once, each on one empty row.
+    /// Build every constants-only block's object once, each from one empty row.
     ///
     /// Mirrors upstream `transform_spec`:
     /// `yield from _map_rows(transformer, [{}], source_type or cd.name, cd, on_error)`.
     /// The engine stays a pure per-object function; "exactly once" is a property
-    /// of this driver-side call, made before any worker is spawned, so it holds
-    /// whatever the worker count, chunking or ordering.
-    ///
-    /// Upstream emits blocks in spec order. Rust streams a single primary block,
-    /// so a constant block declared before it goes to the prologue and one
-    /// declared after it to the epilogue (all of them to the prologue when there
-    /// is no primary block).
+    /// of this driver-side call, made before any worker is spawned. The driver
+    /// then emits each object at its block's position.
     ///
     /// With `continue_on_error` a failing block is reported on stderr and
-    /// counted in [`ConstantOutputs::failed`]; otherwise it fails the run before
+    /// counted in [`ConstantBlocks::failed`]; otherwise it fails the run before
     /// any row streams.
-    fn constant_block_outputs(&self, continue_on_error: bool) -> Result<ConstantOutputs> {
-        let mut out = ConstantOutputs::default();
+    fn constant_block_values(&self, continue_on_error: bool) -> Result<ConstantBlocks> {
+        let mut out = ConstantBlocks {
+            values: vec![None; self.blocks.len()],
+            failed: 0,
+        };
         if !self.blocks.iter().any(|b| b.constant) {
             return Ok(out);
         }
-        let engine = self.configure(ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        ));
-        let primary = self.primary_block_index();
+        let engine = self.row_engine(None);
         let empty_row = Value::Map(indexmap::IndexMap::new());
         for (i, block) in self.blocks.iter().enumerate().filter(|(_, b)| b.constant) {
             let cd = &block.class_derivation;
             let source_type = self.source_class_hint.as_deref().unwrap_or(&cd.name);
             match engine.map_object_with_derivation(&empty_row, Some(source_type), cd) {
-                Ok(v) if primary.is_some_and(|p| i > p) => out.epilogue.push(v),
-                Ok(v) => out.prologue.push(v),
+                Ok(v) => out.values[i] = Some(v),
                 Err(e) if continue_on_error => {
                     // PARITY: transform_spec routes the error to `on_error` with
-                    // `row_index = 0`.
-                    eprintln!("transform error at row 0: {e:#}");
+                    // `row_index = 0` and the class derivation's name.
+                    eprintln!(
+                        "transform error at row 0; class_derivation={}: {e:#}",
+                        cd.name
+                    );
                     out.failed += 1;
                 }
                 Err(e) => {
@@ -465,6 +439,116 @@ impl CompiledPlan {
             }
         }
         Ok(out)
+    }
+
+    /// Match every block to its data, in spec order, as `transform_spec` does.
+    ///
+    /// - A constants-only block is a [`Step::Constant`].
+    /// - Any other block reads the table `populated_from or name`; when the
+    ///   loader has no data for it the block is skipped ("Skipping
+    ///   class_derivation …: no data found"), otherwise it is a [`Step::Rows`]
+    ///   over the file the loader resolves, with source type
+    ///   `source_type or table`.
+    ///
+    /// # Errors
+    /// Upstream's `FileNotFoundError` when there are row blocks and none of their
+    /// tables has data: `No input data for any class derivation: expected one of
+    /// [...], found [...]`. Also an undetectable file format.
+    fn plan_steps(
+        &self,
+        loader: &DataLoader,
+        source_type: Option<&str>,
+        format_override: Option<Format>,
+    ) -> Result<Vec<Step>> {
+        let tables = self.row_tables();
+        if !tables.is_empty() && !tables.iter().any(|table| loader.contains(table)) {
+            anyhow::bail!(
+                "No input data for any class derivation: expected one of {}, found {}",
+                py_str_list(tables.iter()),
+                py_str_list(loader.describe_available()?.iter()),
+            );
+        }
+        let mut steps = Vec::with_capacity(self.blocks.len());
+        for (i, block) in self.blocks.iter().enumerate() {
+            if block.constant {
+                steps.push(Step::Constant(i));
+                continue;
+            }
+            let table = block.table();
+            let Some(file) = loader.find(table) else {
+                continue;
+            };
+            let format = format_override
+                .map(Ok)
+                .unwrap_or_else(|| Format::from_path(&file))
+                .with_context(|| format!("detecting source format for {}", file.display()))?;
+            steps.push(Step::Rows(Arc::new(RowSegment {
+                block: Some(i),
+                table: Some(table.to_owned()),
+                source_type: Some(source_type.unwrap_or(table).to_owned()),
+                file,
+                format,
+            })));
+        }
+        Ok(steps)
+    }
+
+    /// A per-row engine over the shared plan: borrowed spec, cached `expr:` ASTs,
+    /// plan-wide settings and the join index (the block's own, else the plan's).
+    fn row_engine<'a>(&'a self, lookup: Option<&Arc<LookupIndex>>) -> ObjectTransformer<'a> {
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        )
+        .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.configure(engine);
+        if let Some(li) = lookup.or(self.lookup_index.as_ref()) {
+            engine = engine.with_lookup_index(Arc::clone(li));
+        }
+        engine
+    }
+
+    /// Transform one row of a block through that block's class derivation
+    /// (`map_object(row, source_type, class_derivation=cd)`), or — for
+    /// single-object input — through the derivation found by source class.
+    fn transform_segment(
+        &self,
+        seg: &RowSegment,
+        row: Value,
+        lookup: Option<&Arc<LookupIndex>>,
+    ) -> Result<Value> {
+        let engine = self.row_engine(lookup);
+        match seg.block {
+            Some(b) => engine.map_object_with_derivation(
+                &row,
+                seg.source_type.as_deref(),
+                &self.blocks[b].class_derivation,
+            ),
+            None => engine.map_object(&row, self.source_class.as_deref()),
+        }
+        .map_err(anyhow::Error::from)
+    }
+
+    /// [`CompiledPlan::transform_segment`] with a pre-built [`ObjectIndex`] (FK).
+    fn transform_segment_with_index(
+        &self,
+        seg: &RowSegment,
+        row: &Value,
+        index: &ObjectIndex,
+        lookup: Option<&Arc<LookupIndex>>,
+    ) -> Result<Value> {
+        let engine = self.row_engine(lookup);
+        match seg.block {
+            Some(b) => engine.map_object_with_derivation_and_index(
+                row,
+                seg.source_type.as_deref(),
+                &self.blocks[b].class_derivation,
+                index,
+            ),
+            None => engine.map_object_with_index(row, self.source_class.as_deref(), index),
+        }
+        .map_err(anyhow::Error::from)
     }
 
     /// Apply the plan-wide engine settings (shared content-id synthesiser,
@@ -522,60 +606,6 @@ impl CompiledPlan {
     /// across worker threads.
     pub fn attach_lookup_index(&mut self, index: Arc<LookupIndex>) {
         self.lookup_index = Some(index);
-    }
-
-    /// Enumerate the secondary tables this spec joins to, mapping each to the
-    /// column its rows must be indexed on. Mirrors upstream
-    /// `engine._collect_all_joins`: walks every `class_derivation` and its nested
-    /// descendants, and for each declared/synthesized `joins:` entry resolves the
-    /// lookup key (`lookup_key` or `join_on`).
-    ///
-    /// The map key is the name the engine looks the table up under at runtime
-    /// (`class_named` if set, else the join alias — matching the engine's
-    /// `ac.class_named.unwrap_or(alias)` resolution), which is also the file stem
-    /// used to find its data in directory mode.
-    ///
-    /// # Errors
-    /// Fails loud (mirroring upstream's `ValueError`) when a join specifies
-    /// neither `join_on` nor both of `source_key`/`lookup_key`, or when two joins
-    /// resolve to the same table with conflicting lookup keys.
-    fn collect_join_tables(&self) -> Result<BTreeMap<String, String>> {
-        fn walk(cd: &ClassDerivation, out: &mut BTreeMap<String, String>) -> Result<()> {
-            if let Some(joins) = cd.joins.as_ref() {
-                for (join_name, ac) in joins {
-                    let lookup_key = ac.lookup_key.as_deref().or(ac.join_on.as_deref());
-                    let source_key = ac.source_key.as_deref().or(ac.join_on.as_deref());
-                    let (Some(lookup_key), Some(_source_key)) = (lookup_key, source_key) else {
-                        anyhow::bail!(
-                            "join {join_name:?} must specify 'join_on' or both \
-                             'source_key' and 'lookup_key'"
-                        );
-                    };
-                    let table = ac.class_named.as_deref().unwrap_or(join_name).to_string();
-                    if let Some(existing) = out.get(&table)
-                        && existing != lookup_key
-                    {
-                        anyhow::bail!(
-                            "conflicting join specs for {table:?}: \
-                             lookup key {existing:?} vs {lookup_key:?}"
-                        );
-                    }
-                    out.insert(table, lookup_key.to_string());
-                }
-            }
-            for (_, sd) in cd.slot_derivations.iter().flatten() {
-                for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
-                    walk(nested, out)?;
-                }
-            }
-            Ok(())
-        }
-
-        let mut out = BTreeMap::new();
-        for cd in self.spec.class_derivations.iter().flatten() {
-            walk(cd, &mut out)?;
-        }
-        Ok(out)
     }
 
     /// Returns `true` when the spec has any `expr:` that contains a `.`
@@ -637,17 +667,7 @@ impl CompiledPlan {
     /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
     /// a reference to each parallel worker — zero per-row index rebuild.
     pub fn transform_with_index(&self, row: Value, index: &ObjectIndex) -> Result<Value> {
-        let engine = ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        )
-        .with_compiled_exprs(&self.compiled_exprs);
-        let mut engine = self.configure(engine);
-        if let Some(li) = &self.lookup_index {
-            engine = engine.with_lookup_index(Arc::clone(li));
-        }
-        engine
+        self.row_engine(None)
             .map_object_with_index(&row, self.source_class.as_deref(), index)
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
     }
@@ -657,18 +677,8 @@ impl CompiledPlan {
     /// Public so benchmarks can isolate per-row transform throughput from the
     /// reader/writer I/O path.
     pub fn transform(&self, row: Value) -> Result<Value> {
-        // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
-        let engine = ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        )
-        .with_compiled_exprs(&self.compiled_exprs);
-        let mut engine = self.configure(engine);
-        if let Some(li) = &self.lookup_index {
-            engine = engine.with_lookup_index(Arc::clone(li));
-        }
-        engine
+        // Borrows the spec (no per-row deep clone) and the pre-parsed expr cache.
+        self.row_engine(None)
             .map_object(&row, self.source_class.as_deref())
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
     }
@@ -698,23 +708,10 @@ fn is_tabular_path(path: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("tsv") || e.eq_ignore_ascii_case("csv"))
 }
 
-/// Serialise values as JSONL (one object per line, trailing newline), for the
-/// raw-buffer output paths.
-fn jsonl_lines(values: &[Value]) -> String {
-    let mut buf = String::new();
-    for v in values {
-        buf.push_str(&jsonl_line(v));
-        buf.push('\n');
-    }
-    buf
-}
-
-/// Row blocks eligible to be the streamed block, in spec order: blocks that read
-/// a table and that no other block inherits from, then the inherited-from ones.
-///
-/// Upstream's driver streams every block that has data and skips the rest, so a
-/// parent template without a table is harmless there; picking the first block
-/// blindly would stream such a template (or a constants-only block) as the table.
+/// Row blocks that can stand for the source class of single-object input, in spec
+/// order: blocks that read a table and that no other block inherits from, then the
+/// inherited-from ones. Picking the first block blindly would take a parent
+/// template (or a constants-only block) for the source class.
 fn row_block_candidates(blocks: &[Block]) -> impl Iterator<Item = &Block> {
     let rows = || blocks.iter().filter(|b| !b.constant);
     rows()
@@ -738,24 +735,36 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
 /// Run the pipeline, optionally keeping processing after row-level transform
 /// failures.
 ///
-/// # Constants-only blocks (upstream `1323cc8`)
+/// # Blocks (upstream `transform_spec`)
 ///
-/// For tabular (`.tsv`/`.csv`) or directory input, a class derivation built only
-/// from constants is emitted exactly once, on this driver before the row stream
-/// (or after it, when declared after the streamed block), and reads no input.
-/// A spec with no row block at all runs without opening any source file.
+/// For tabular (`.tsv`/`.csv`) or directory input every class derivation is a
+/// *block*, visited in spec order, exactly as upstream's `transform_spec` does
+/// (see the `driver` module):
 ///
-/// PARITY: upstream `engine.py::transform_spec` iterates **every** class
-/// derivation, streaming each block that has data. This pipeline streams ONE
-/// primary block (`--source-class`, else the first row block with data, parents
-/// of `is_a`/`mixins` last) plus the constants-only blocks. Remaining divergence:
-/// a spec with two or more row blocks emits only the primary block's rows, where
-/// upstream emits every block's, in spec order. Constant blocks keep their spec
-/// position relative to the primary block only (before = prologue, after =
-/// epilogue); relative to the other row blocks' output they cannot interleave.
+/// - a block built only from constants is emitted **once**, at its position, and
+///   reads no input; a spec made only of such blocks needs no data;
+/// - every other block streams the rows of its own table (`populated_from`, else
+///   its name), matched like upstream's `DataLoader`: for a directory the file
+///   whose stem is the table name (`.tsv`, `.csv`, `.yaml`, `.yml`, `.json`, then
+///   Rust's `.jsonl`); for a single file only the table named by `--source-type`
+///   (`source_class`) or, failing that, the file stem. A block with no table is
+///   skipped; if no block has one the run fails with upstream's "No input data
+///   for any class derivation" error.
 ///
-/// Also unlike upstream, a single-file input takes the first row block rather
-/// than the block whose table equals the file stem (`DataLoader.identifier`).
+/// Blocks run one after another, so output is in spec order, each block's rows in
+/// input order when `ordered`; within a block the rows are transformed by the
+/// rayon workers. Row errors under `continue_on_error` are reported with the
+/// block's row index and class derivation, and `rows_in`/`rows_out` count rows
+/// across blocks (constant objects count towards `rows_out` only).
+///
+/// PARITY: engine.py::transform_spec passes `source_type or table_name` to every
+/// block, so `--source-type` overrides the source type of every block, not just
+/// the one reading the file it names. Rust follows.
+///
+/// PARITY: cli.py::map_data — any other input (a YAML / JSON / JSONL file) is
+/// single-object input, upstream's `_map_data_single`: one source class, one
+/// derivation looked up by it, no constant-block handling. JSONL input is a Rust
+/// extension on that route.
 ///
 /// When `continue_on_error` is enabled, every failed row is reported to stderr
 /// as soon as the collector observes it.  A clean run that saw any such errors
@@ -764,7 +773,7 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
 /// visible rather than being deferred until a point a writer failure may never
 /// reach.
 pub async fn run_pipeline_with_options(
-    mut config: PipelineConfig,
+    config: PipelineConfig,
     continue_on_error: bool,
 ) -> Result<PipelineStats> {
     let start = Instant::now();
@@ -811,14 +820,14 @@ pub async fn run_pipeline_with_options(
     // Upstream applies the "emit once, read no input" rule only in
     // `transform_spec`, which `map_data` uses for tabular (`.tsv`/`.csv`) input
     // or a directory; single-object input goes through `_map_data_single`.
-    // Gate on the same condition, judged on the path as given (a directory is
-    // rewritten to its primary file below).
+    // They are built here, on this thread, before any worker starts, so each
+    // appears exactly once whatever the worker count, chunking or ordering.
     let source_is_dir = Path::new(&config.source_path).is_dir();
     let streaming_input = source_is_dir || is_tabular_path(&config.source_path);
     let constants = if streaming_input {
-        plan.constant_block_outputs(continue_on_error)?
+        plan.constant_block_values(continue_on_error)?
     } else {
-        ConstantOutputs::default()
+        ConstantBlocks::default()
     };
     let (constants_ok, constants_failed, constants_attempted) =
         (constants.emitted(), constants.failed, constants.attempted());
@@ -859,9 +868,9 @@ pub async fn run_pipeline_with_options(
         let n_out = constants_ok;
         let stream = futures::stream::iter(
             constants
-                .prologue
+                .values
                 .into_iter()
-                .chain(constants.epilogue)
+                .flatten()
                 .map(Ok::<_, anyhow::Error>),
         );
         write_stream_to_output(&config.out_path, out_format, &write_options, stream)
@@ -886,43 +895,42 @@ pub async fn run_pipeline_with_options(
         });
     }
 
-    // ── 1c. Directory-source mode: resolve the primary table's file and build
-    // the cross-table LookupIndex from sibling files (multi-table joins). In
-    // single-file mode this whole block is skipped and behavior is unchanged.
-    if source_is_dir {
-        let dir = PathBuf::from(&config.source_path);
-        let (primary_file, index) = load_directory_source(&dir, &mut plan)
-            .await
-            .with_context(|| format!("loading directory source {}", dir.display()))?;
-        if let Some(index) = index {
-            plan.attach_lookup_index(Arc::new(index));
-        }
-        // Redirect the streaming/buffering path at the resolved primary file so
-        // format detection and the reader use the concrete data file.
-        config.source_path = primary_file;
-    }
-
-    let plan = Arc::new(plan);
-
-    // ── 2. Detect FK mode and dispatch ───────────────────────────────────────
+    // ── 2. Plan the steps: which block reads which file ──────────────────────
     //
-    // FK specs need the full dataset to build the ObjectIndex (referenced
-    // objects may appear after the referencing rows). When FK is required:
-    //   a. Buffer ALL source rows into memory.
-    //   b. Build ONE ObjectIndex over the full set (wraps the container Value).
-    //   c. Fan out per-row transforms in parallel, each sharing Arc<ObjectIndex>.
-    // Non-FK specs keep the original streaming path unchanged.
-    let src_format = config
-        .source_format
-        .map(Ok)
-        .unwrap_or_else(|| Format::from_path(&config.source_path))
-        .with_context(|| format!("detecting source format for {}", config.source_path))?;
-
-    // PARITY: cli.py::map_data — only tabular (.tsv/.csv) or directory input streams
-    // (`streaming_input`); any other input is "single object" input and is written
-    // by `dump_output` (`_map_data_single`), which also ignores `-O`.  JSONL input
-    // is a Rust extension and keeps the streaming writers.
-    let single_object = !streaming_input && matches!(src_format, Format::Yaml | Format::Json);
+    // Tabular / directory input: every block, matched to its table the way
+    // upstream's `DataLoader` does. Any other input is one source class read
+    // from the one file, as before.
+    let (steps, loader, single_object) = if streaming_input {
+        let loader = DataLoader::new(&config.source_path, config.source_class.as_deref())?;
+        let steps = plan
+            .plan_steps(
+                &loader,
+                config.source_class.as_deref(),
+                config.source_format,
+            )
+            .with_context(|| format!("loading source {}", config.source_path))?;
+        // Join tables are looked up in a directory only.
+        (steps, source_is_dir.then_some(loader), false)
+    } else {
+        let format = config
+            .source_format
+            .map(Ok)
+            .unwrap_or_else(|| Format::from_path(&config.source_path))
+            .with_context(|| format!("detecting source format for {}", config.source_path))?;
+        let segment = RowSegment {
+            block: None,
+            table: plan.source_class.clone(),
+            source_type: plan.source_class.clone(),
+            file: PathBuf::from(&config.source_path),
+            format,
+        };
+        // PARITY: cli.py::map_data — only tabular (.tsv/.csv) or directory input
+        // streams; any other input is "single object" input and is written by
+        // `dump_output` (`_map_data_single`), which also ignores `-O`.  JSONL
+        // input is a Rust extension and keeps the streaming writers.
+        let single_object = matches!(format, Format::Yaml | Format::Json);
+        (vec![Step::Rows(Arc::new(segment))], None, single_object)
+    };
     let write_options = WriteOptions {
         single_object,
         ..config.write_options.clone()
@@ -934,328 +942,56 @@ pub async fn run_pipeline_with_options(
     // The JSONL fast paths bypass the stream writers, so they cannot fan out to `-O`.
     let fast_paths_ok = single_object || write_options.additional_outputs.is_empty();
 
-    let rows_in;
-    let rows_out;
+    // ── 3. Run ───────────────────────────────────────────────────────────────
+    //
+    // FK specs need the whole block in memory to build one `ObjectIndex`
+    // (referenced objects may appear after the referencing rows); the others
+    // stream. JSONL output from JSONL input (or from an FK block) skips the
+    // serial reader/writer for raw-line byte appends — only possible when every
+    // block can take it, as the output is then one buffer. See `driver`.
+    let bytes_mode = out_format == Format::Jsonl
+        && fast_paths_ok
+        && steps.iter().all(|step| match step {
+            Step::Constant(_) => true,
+            Step::Rows(seg) => plan.requires_object_index() || seg.format == Format::Jsonl,
+        });
 
-    if plan.requires_object_index() {
-        // ── FK mode: buffer → build index → parallel transform ────────────────
-        //
-        // IMPORTANT: FK resolution is NOT row-streamable. The referenced
-        // collection (e.g. `entities`) may appear AFTER the referencing rows
-        // (e.g. `mappings`) in the source file. We must buffer all rows first.
-        //
-        // Memory cost: O(N) in the number of source rows. For very large datasets
-        // consider breaking the source into pre-joined chunks before using this
-        // pipeline.
-        let all_rows = load_all_with_numeric_hints(
-            &config.source_path,
-            src_format,
-            plan.source_numeric_column_hints(),
-        )
-        .await
-        .with_context(|| format!("loading source file for FK mode: {}", config.source_path))?;
+    let input = DriveInput {
+        pool: build_rayon_pool(config.workers)?,
+        plan: Arc::new(plan),
+        steps,
+        constants,
+        loader,
+        workers: config.workers,
+        ordered: config.ordered,
+        channel_depth: config.channel_depth,
+        continue_on_error,
+    };
 
-        rows_in = all_rows.len();
-
-        // Build a container Value (Map) so ObjectIndex can scan all collections.
-        // The source data is a sequence of top-level objects (container rows).
-        // We wrap them into a synthetic container map keyed by their position,
-        // so the index can discover the entity/reference collections.
-        //
-        // For the canonical flattening case the source is a SINGLE container
-        // object (MappingSet) that already IS the container. When the source
-        // is a list of containers (jsonl), we build the index from the first
-        // row (the container that holds the entity sub-collections) and treat
-        // ALL rows as the items to transform — this matches map_container
-        // semantics.
-        let source_class = plan.source_class.clone();
-        let container_val = if all_rows.len() == 1 {
-            all_rows[0].clone()
-        } else {
-            // Multiple rows: build index from a synthetic container that holds
-            // all rows as a list under a generic key. This enables the index
-            // to find referenced objects inlined within individual rows.
-            // Use serde_json round-trip to build the Map (avoids a direct
-            // indexmap dependency in this crate).
-            let json_list: serde_json::Value =
-                serde_json::to_value(&all_rows).unwrap_or(serde_json::Value::Array(vec![]));
-            let json_container = serde_json::json!({ "items": json_list });
-            serde_json::from_value::<Value>(json_container).unwrap_or(Value::Null)
-        };
-
-        // Build the index ONCE, wrap in Arc for sharing across workers.
-        let index = Arc::new(ObjectIndex::build(
-            &container_val,
-            source_class.as_deref(),
-            Some(plan.source_provider.as_ref()),
-        ));
-
-        // Fan out with a sized rayon pool: par_iter over rows sharing
-        // Arc<ObjectIndex> + Arc<CompiledPlan> (both Send+Sync, lock-free reads).
-        // Replaces per-row tokio spawn_blocking, which was overhead-bound on
-        // tiny rows. `collect()` preserves input order, so output is ordered.
-        let pool = build_rayon_pool(config.workers)?;
-
-        if matches!(out_format, Format::Jsonl) && fast_paths_ok {
-            // JSONL: transform AND serialise in parallel into one buffer, then a
-            // single bulk write (serial per-row serialise was the writer wall).
-            use rayon::prelude::*;
-            let plan2 = Arc::clone(&plan);
-            let idx2 = Arc::clone(&index);
-            let (pro, epi) = (
-                jsonl_lines(&constants.prologue),
-                jsonl_lines(&constants.epilogue),
-            );
-            let (buf, n): (String, usize) = tokio::task::spawn_blocking(move || {
-                let work = || -> (String, usize) {
-                    let outs: Vec<Option<String>> = all_rows
-                        .par_iter()
-                        .map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
-                            Ok(v) => Some(jsonl_line(&v)),
-                            Err(e) => {
-                                eprintln!("FK transform error: {e:#}");
-                                None
-                            }
-                        })
-                        .collect();
-                    let mut buf = String::with_capacity(pro.len() + epi.len() + outs.len() * 64);
-                    buf.push_str(&pro);
-                    let mut n = 0usize;
-                    for o in outs.into_iter().flatten() {
-                        buf.push_str(&o);
-                        buf.push('\n');
-                        n += 1;
-                    }
-                    buf.push_str(&epi);
-                    (buf, n)
-                };
-                match pool.as_ref() {
-                    Some(p) => p.install(work),
-                    None => work(),
-                }
-            })
+    let stats = if bytes_mode {
+        let (stats, text) = driver::drive(input, Sink::Jsonl(String::new())).await?;
+        let text = text.unwrap_or_default();
+        write_bytes_to_output(&config.out_path, text.as_bytes(), "JSONL output")
             .await
-            .context("FK transform task")?;
-
-            rows_out = n;
-            write_bytes_to_output(&config.out_path, buf.as_bytes(), "FK output")
-                .await
-                .with_context(|| format!("writing FK output to {}", config.out_path))?;
-        } else {
-            // Other formats: parallel transform → Vec<Value>, then the generic
-            // (serial) writer for that format.
-            use rayon::prelude::*;
-            let plan2 = Arc::clone(&plan);
-            let idx2 = Arc::clone(&index);
-            let values: Vec<Value> = tokio::task::spawn_blocking(move || {
-                let work = || {
-                    all_rows
-                        .par_iter()
-                        .filter_map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
-                            Ok(v) => Some(v),
-                            Err(e) => {
-                                eprintln!("FK transform error: {e:#}");
-                                None
-                            }
-                        })
-                        .collect::<Vec<Value>>()
-                };
-                match pool.as_ref() {
-                    Some(p) => p.install(work),
-                    None => work(),
-                }
-            })
-            .await
-            .context("FK transform task")?;
-
-            rows_out = values.len();
-            let stream = futures::stream::iter(
-                constants
-                    .prologue
-                    .into_iter()
-                    .chain(values)
-                    .chain(constants.epilogue)
-                    .map(Ok::<_, anyhow::Error>),
-            );
-            write_stream_to_output(&config.out_path, out_format, &write_options, stream)
-                .await
-                .with_context(|| format!("writing FK output to {}", config.out_path))?;
-        }
-    } else if src_format == Format::Jsonl && out_format == Format::Jsonl && fast_paths_ok {
-        // ── Fully-parallel JSONL fast path ────────────────────────────────────
-        //
-        // The generic streaming path parses every record in the serial reader
-        // (`load_stream`) and serialises every record in the serial writer —
-        // making tiny-per-row JSONL jobs I/O/serde-bound, not parallel. Here the
-        // reader emits *raw lines* (cheap byte scan), workers parse+transform+
-        // serialise in parallel, and the writer does raw byte appends. This moves
-        // JSON parse + serialise off the serial path onto the worker pool.
-        let (ri, ro) = transform_jsonl_parallel(
-            &config,
-            Arc::clone(&plan),
-            jsonl_lines(&constants.prologue),
-            jsonl_lines(&constants.epilogue),
-        )
-        .await?;
-        rows_in = ri;
-        rows_out = ro;
+            .with_context(|| format!("writing JSONL output to {}", config.out_path))?;
+        stats
     } else {
-        // ── Non-FK streaming mode (original path, unchanged) ──────────────────
-        let mut source_stream = load_stream_with_numeric_hints(
-            &config.source_path,
-            src_format,
-            plan.source_numeric_column_hints(),
-        )
-        .await
-        .with_context(|| format!("opening source stream {}", config.source_path))?;
-
-        // ── 3. Concurrent transform ───────────────────────────────────────────────
-        // Reader → bounded channel → tokio spawn_blocking (rayon thread) → results channel → writer
-        let (work_tx, mut work_rx) = mpsc::channel::<(usize, Value)>(config.channel_depth);
-        let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(config.channel_depth);
-
-        // Spawn reader task: feeds (seq_id, row) into work_tx
-        let reader_handle = tokio::spawn(async move {
-            let mut seq = 0usize;
-            while let Some(item) = source_stream.next().await {
-                match item {
-                    Ok(val) => {
-                        if work_tx.send((seq, val)).await.is_err() {
-                            break; // downstream dropped
-                        }
-                        seq += 1;
-                    }
-                    Err(e) => {
-                        // Propagate error through the channel as a special sentinel
-                        // by dropping: writer will see channel close after seq rows.
-                        eprintln!("reader error at row {seq}: {e:#}");
-                        break;
-                    }
-                }
-            }
-            seq // total rows read
-        });
-
-        // Spawn worker dispatcher: for each (seq, row) pulls from work_rx and
-        // hands off to spawn_blocking (runs on the tokio blocking pool).
-        //
-        // In-flight workers are capped by a semaphore so a slow transform can't
-        // let the dispatcher spawn an unbounded number of tasks (memory spike).
-        // The cap also bounds how far out-of-order the results can get, which in
-        // turn bounds the reorder buffer below.  We keep no JoinHandle list:
-        // each worker owns a `res_tx` clone, so the results channel closes
-        // naturally once the last in-flight worker finishes.
-        let res_tx2 = res_tx.clone();
-        let plan2 = Arc::clone(&plan);
-        let max_inflight = if config.workers > 0 {
-            config.workers
-        } else {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(8)
-        };
-        let sem = Arc::new(tokio::sync::Semaphore::new(max_inflight));
-        let dispatcher_handle = tokio::spawn(async move {
-            while let Some((seq, row)) = work_rx.recv().await {
-                let plan3 = Arc::clone(&plan2);
-                let res_tx3 = res_tx2.clone();
-                // Back-pressure the dispatcher when all worker slots are busy.
-                let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
-                tokio::task::spawn_blocking(move || {
-                    let result = plan3.transform(row);
-                    // Best-effort send; if receiver dropped, ignore.
-                    let _ = res_tx3.blocking_send((seq, result));
-                    drop(permit); // free the slot when this row is done
-                });
-            }
-            drop(res_tx2); // in-flight workers still hold their own clones
-        });
-        drop(res_tx); // main task no longer holds a sender
-
-        // ── 4. Collect + write (streamed, no whole-dataset buffering) ─────────────
-        // A collector task feeds finished rows into an output channel; write_all
-        // streams from it, so memory stays bounded to the channel depth (+ the
-        // reorder window in ordered mode, itself bounded by `max_inflight`).
+        // The driver feeds a bounded channel that the writer drains, so memory
+        // stays bounded to the channel depth (+ the reorder window in ordered
+        // mode, itself bounded by the worker count).
         let (out_tx, out_rx) = mpsc::channel::<Result<Value>>(config.channel_depth);
-        let ordered = config.ordered;
-        let collector = tokio::spawn(async move {
-            let mut count = 0usize;
-            if ordered {
-                use std::collections::BTreeMap;
-                // Bounded: at most `max_inflight` entries can be out of order,
-                // since only that many rows are ever in flight concurrently.
-                let mut pending: BTreeMap<usize, Result<Value>> = BTreeMap::new();
-                let mut next_seq = 0usize;
-                while let Some((seq, result)) = res_rx.recv().await {
-                    pending.insert(seq, result);
-                    // Drain consecutive completed rows (errors advance past gaps).
-                    while let Some(result) = pending.remove(&next_seq) {
-                        next_seq += 1;
-                        match result {
-                            Ok(v) => {
-                                if out_tx.send(Ok(v)).await.is_err() {
-                                    return count;
-                                }
-                                count += 1;
-                            }
-                            Err(e) if continue_on_error => {
-                                eprintln!("transform error at row {}: {e:#}", next_seq - 1);
-                            }
-                            Err(e) => {
-                                let _ = out_tx
-                                    .send(Err(e.context(format!(
-                                        "transform error at row {}",
-                                        next_seq - 1
-                                    ))))
-                                    .await;
-                                return count;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Unordered: forward as they arrive (maximum throughput).
-                while let Some((_seq, result)) = res_rx.recv().await {
-                    match result {
-                        Ok(v) => {
-                            if out_tx.send(Ok(v)).await.is_err() {
-                                return count;
-                            }
-                            count += 1;
-                        }
-                        Err(e) if continue_on_error => eprintln!("transform error: {e:#}"),
-                        Err(e) => {
-                            let _ = out_tx.send(Err(e.context("transform error"))).await;
-                            return count;
-                        }
-                    }
-                }
-            }
-            count
-        });
-
-        // Lazily turn the output channel into a stream for write_all.
+        let driver = tokio::spawn(driver::drive(input, Sink::Values(out_tx)));
         let out_stream = futures::stream::unfold(out_rx, |mut rx| async move {
             rx.recv().await.map(|result| (result, rx))
         })
         .boxed();
-        // Constant blocks were built on this thread before any worker started;
-        // they bracket the row stream so they appear exactly once whatever the
-        // worker count or `ordered` setting.
-        let out_stream = futures::stream::iter(constants.prologue.into_iter().map(Ok))
-            .chain(out_stream)
-            .chain(futures::stream::iter(
-                constants.epilogue.into_iter().map(Ok),
-            ))
-            .boxed();
         write_stream_to_output(&config.out_path, out_format, &write_options, out_stream)
             .await
             .with_context(|| format!("writing output to {}", config.out_path))?;
-
-        rows_out = collector.await.unwrap_or(0);
-        rows_in = reader_handle.await.unwrap_or(0);
-        let _ = dispatcher_handle.await;
-    }
+        let (stats, _) = driver.await.context("driver task")??;
+        stats
+    };
+    let DriveStats { rows_in, rows_out } = stats;
 
     // Constant objects are not input rows, so they must not mask failed rows.
     let rows_failed = rows_in.saturating_sub(rows_out) + constants_failed;
@@ -1287,11 +1023,6 @@ pub async fn run_pipeline_with_options(
     })
 }
 
-/// Fully-parallel JSONL transform: raw-line reader → parallel
-/// parse+transform+serialise workers → raw-byte writer.
-///
-/// Returns `(rows_in, rows_out)`. Used by [`run_pipeline`] when source and
-/// output are both JSONL and the spec is not FK (no shared `ObjectIndex`).
 /// Build a rayon pool sized to `workers` (0 → use the global pool ≈ num CPUs).
 fn build_rayon_pool(workers: usize) -> Result<Arc<Option<rayon::ThreadPool>>> {
     let pool = if workers > 0 {
@@ -1371,197 +1102,7 @@ where
     }
 }
 
-async fn transform_jsonl_parallel(
-    config: &PipelineConfig,
-    plan: Arc<CompiledPlan>,
-    prologue: String,
-    epilogue: String,
-) -> Result<(usize, usize)> {
-    use rayon::prelude::*;
-
-    let pool = build_rayon_pool(config.workers)?;
-
-    // Bulk read: one big async read, not per-line `next_line().await` (100k+
-    // awaits were the real bottleneck — read dominated, not transform). Line
-    // splitting + JSON parse + transform + serialise then run fully in parallel
-    // on the rayon pool, off the async reactor.
-    //
-    // ponytail: reads the whole file into memory (O(file_size)). For inputs
-    // larger than RAM, switch to a block-streaming reader (read fixed-size byte
-    // blocks, split lines across block boundaries) — not needed for typical ETL.
-    let dbg = std::env::var("PIPELINE_PHASE_TIMING").is_ok();
-    let t0 = Instant::now();
-    let data = tokio::fs::read_to_string(&config.source_path)
-        .await
-        .with_context(|| format!("reading JSONL source {}", config.source_path))?;
-    let t_read = t0.elapsed();
-
-    let t1 = Instant::now();
-    let plan2 = Arc::clone(&plan);
-    let (out_buf, rows_in, rows_out): (String, usize, usize) =
-        tokio::task::spawn_blocking(move || {
-            let work = || -> (String, usize, usize) {
-                let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
-                let n_in = lines.len();
-                let outs: Vec<Option<String>> = lines
-                    .par_iter()
-                    .map(|l| parse_transform_serialize(&plan2, l))
-                    .collect();
-                // Constant blocks bracket the rows in the same single buffer, so
-                // the file is opened and written once.
-                let mut buf =
-                    String::with_capacity(prologue.len() + epilogue.len() + outs.len() * 64);
-                buf.push_str(&prologue);
-                let mut n_out = 0usize;
-                for o in outs.into_iter().flatten() {
-                    buf.push_str(&o);
-                    buf.push('\n');
-                    n_out += 1;
-                }
-                buf.push_str(&epilogue);
-                (buf, n_in, n_out)
-            };
-            match pool.as_ref() {
-                Some(p) => p.install(work),
-                None => work(),
-            }
-        })
-        .await
-        .context("transform task")?;
-    let t_xform = t1.elapsed();
-
-    let t2 = Instant::now();
-    write_bytes_to_output(&config.out_path, out_buf.as_bytes(), "JSONL output")
-        .await
-        .with_context(|| format!("writing JSONL output to {}", config.out_path))?;
-    let t_write = t2.elapsed();
-
-    if dbg {
-        eprintln!(
-            "[phase] read={:.3}s transform={:.3}s write={:.3}s (workers={})",
-            t_read.as_secs_f64(),
-            t_xform.as_secs_f64(),
-            t_write.as_secs_f64(),
-            config.workers
-        );
-    }
-    Ok((rows_in, rows_out))
-}
-
-/// Parse one JSONL line → transform → serialise back to a JSON string.
-/// Returns `None` (dropping the row, with a logged error) on any failure.
-fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> {
-    let v: Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("JSONL parse error: {e}");
-            return None;
-        }
-    };
-    let out = match plan.transform(v) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("transform error: {e:#}");
-            return None;
-        }
-    };
-    Some(jsonl_line(&out))
-}
-
-// ── Directory-source (multi-table) mode ──────────────────────────────────────
-//
-// Mirrors upstream Python's `DataLoader` convention (transformer/engine.py
-// `transform_spec`): a directory of files maps table names → files by filename
-// stem. We resolve the primary table's file (the resolved source class) and load
-// every joined table referenced by the (post-synthesis) spec into one
-// `LookupIndex`, so `{Table.col}` join references resolve at runtime instead of
-// collapsing to null.
-
-/// Resolve the primary data file and build the cross-table [`LookupIndex`] for a
-/// directory source.
-///
-/// Returns `(primary_file_path, Some(index))` when the spec declares any joins
-/// whose tables have data files in `dir`; `(primary_file_path, None)` when there
-/// are no resolvable joins (an empty index would only add overhead, so the plain
-/// single-file path is kept). Fails loud when the primary table's file cannot be
-/// located — a directory source with no matching primary file is a user error,
-/// not a silent empty run.
-async fn load_directory_source(
-    dir: &Path,
-    plan: &mut CompiledPlan,
-) -> Result<(String, Option<LookupIndex>)> {
-    // Primary table = the table of the block to stream. An explicit
-    // `--source-class` names it. Otherwise it is the first row block, in spec
-    // order, whose table has a file in the directory — upstream's driver skips
-    // blocks with no data ("Skipping class_derivation ...: no data found"), and
-    // fails only when none of them has any.
-    let primary_table = match plan.source_class_hint.clone() {
-        Some(hint) => hint,
-        None => {
-            let tables = plan.row_tables();
-            let mut found = None;
-            for block in row_block_candidates(&plan.blocks) {
-                if find_table_file(dir, block.table())?.is_some() {
-                    found = Some(block.table().to_owned());
-                    break;
-                }
-            }
-            match found {
-                Some(table) => table,
-                None if tables.is_empty() => plan.source_class.clone().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "directory source {} requires a resolvable source class, but the spec \
-                         declares no class_derivations to derive one from",
-                        dir.display()
-                    )
-                })?,
-                // Upstream `transform_spec`: FileNotFoundError, same text.
-                None => anyhow::bail!(
-                    "No input data for any class derivation: expected one of {}, found {}",
-                    py_str_list(tables.iter()),
-                    py_str_list(available_table_names(dir)?.iter()),
-                ),
-            }
-        }
-    };
-    plan.source_class = Some(primary_table.clone());
-    let primary_table = primary_table.as_str();
-    let primary_file = find_table_file(dir, primary_table)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "directory source {} has no data file for the primary table {primary_table:?} \
-             (expected a file whose name stem is {primary_table:?})",
-            dir.display()
-        )
-    })?;
-
-    // Load every joined table that has a file in the directory. A join whose
-    // table has no file is skipped (its reference resolves to null), mirroring
-    // upstream `if join_name in data_loader`.
-    let joins = plan.collect_join_tables()?;
-    let mut index = LookupIndex::new();
-    let mut any_registered = false;
-    for (table, lookup_key) in joins {
-        let Some(file) = find_table_file(dir, &table)? else {
-            continue;
-        };
-        let fmt = Format::from_path(&file)
-            .with_context(|| format!("detecting format of joined table file {}", file.display()))?;
-        let rows = load_all_with_numeric_hints(
-            &file,
-            fmt,
-            plan.numeric_column_hints_for_class(Some(&table)),
-        )
-        .await
-        .with_context(|| format!("loading joined table {table:?} from {}", file.display()))?;
-        index.register_table(&table, &rows, &lookup_key);
-        any_registered = true;
-    }
-
-    let primary = primary_file
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("non-UTF-8 primary file path {}", primary_file.display()))?;
-    Ok((primary.to_owned(), any_registered.then_some(index)))
-}
+// ── Helpers shared with the driver ───────────────────────────────────────────
 
 /// Format names as a Python list repr (`['a', 'b']`), as upstream's f-string of
 /// a `list[str]` renders them.
@@ -1571,48 +1112,6 @@ fn py_str_list<'a>(items: impl Iterator<Item = &'a String>) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{inner}]")
-}
-
-/// Sorted, de-duplicated filename stems of the data files in `dir`. Mirrors
-/// `DataLoader.get_available_identifiers` (plus `.jsonl`, which Rust also reads).
-fn available_table_names(dir: &Path) -> Result<Vec<String>> {
-    let mut names = BTreeSet::new();
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("reading source directory {}", dir.display()))?
-    {
-        let path = entry
-            .with_context(|| format!("reading entry in {}", dir.display()))?
-            .path();
-        let supported = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-            ["tsv", "csv", "yaml", "yml", "json", "jsonl"]
-                .contains(&e.to_ascii_lowercase().as_str())
-        });
-        if supported && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            names.insert(stem.to_owned());
-        }
-    }
-    Ok(names.into_iter().collect())
-}
-
-/// Find the file in `dir` whose filename stem equals `table_name`.
-///
-/// Sub-directories are ignored; the first matching regular file is returned.
-/// `Ok(None)` when no file matches (a missing joined table is a skip, not an
-/// error — only a missing *primary* table is fatal, enforced by the caller).
-fn find_table_file(dir: &Path, table_name: &str) -> Result<Option<PathBuf>> {
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("reading source directory {}", dir.display()))?
-    {
-        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            continue;
-        }
-        if path.file_stem().and_then(|s| s.to_str()) == Some(table_name) {
-            return Ok(Some(path));
-        }
-    }
-    Ok(None)
 }
 
 // ── Schema loader ────────────────────────────────────────────────────────────

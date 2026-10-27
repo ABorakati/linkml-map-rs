@@ -50,7 +50,9 @@ pub struct MapDataConfig {
     /// Output file path (-o).  Pass `"-"` to write to stdout (requires explicit
     /// output_format).
     pub output: String,
-    /// Source class name hint. `None` → engine resolves from spec.
+    /// Upstream's `--source-type`: the table a single tabular file holds (default:
+    /// its stem), or the source type of every block for a directory; see
+    /// [`linkml_map_pipeline::PipelineConfig::source_class`]. `None` → resolved from the spec.
     pub source_class: Option<String>,
     /// Input format override string ("auto" | "csv" | "tsv" | "json" | "jsonl" | "yaml").
     pub input_format: String,
@@ -72,8 +74,8 @@ pub struct MapDataConfig {
     /// [`linkml_map_pipeline::PipelineConfig::unrestricted_eval`].
     pub unrestricted_eval: bool,
     /// Input data path — a single data file (default), or a *directory* of tables
-    /// for multi-table joins (each file is a named table matched by filename stem;
-    /// the primary table is streamed and joined tables feed a lookup index). See
+    /// (each file is a named table matched by filename stem; every class
+    /// derivation streams its own table and joined tables feed a lookup index). See
     /// [`linkml_map_pipeline::PipelineConfig::source_path`].
     pub input: String,
     /// Output-writer options: `--table-name`, `--chunk-size`, `-O/--additional-output`.
