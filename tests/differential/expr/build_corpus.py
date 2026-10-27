@@ -82,6 +82,15 @@ def main() -> None:
                 shrunk[key] = {**c, "upstream": up, "status": "divergence", "class": name, "reason": reason}
                 if r["rs"].get("err") in ("hang", "crash"):
                     shrunk[key]["hazard"] = r["rs"]["err"]
+        # a recorded hang/crash must reproduce when the case is run alone, else it is dropped
+        from oracle import Oracle
+
+        for row in shrunk.values():
+            if "hazard" in row:
+                r1 = Oracle().run([{k: row[k] for k in ("expr", "bindings", "mode", "strict")}])[0]
+                if r1.get("err") not in ("hang", "crash"):
+                    del row["hazard"]
+                    row["class"], row["reason"] = classify(row["expr"], row["mode"], row["upstream"], r1, {"kind": "py_ok_rs_err" if "ok" in row["upstream"] else "value"})
         rows = sorted(shrunk.values(), key=lambda x: (x["class"], len(x["expr"])))
         dump(CORPUS / "shrunk.jsonl", rows)
         cnt = collections.Counter(r["class"] for r in rows)

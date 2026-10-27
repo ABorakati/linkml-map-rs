@@ -71,6 +71,10 @@ class Oracle:
             rest = [i for i in pending if i not in done]
             if not rest:
                 break
+            if failure is None and resp and resp[-1].get("err") == "hang":
+                # the oracle's watchdog answered the stuck case and exited cleanly: rerun the rest
+                pending = rest
+                continue
             if failure is None:
                 failure = "missing response"
             culprit = rest[0]

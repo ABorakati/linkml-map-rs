@@ -24,6 +24,12 @@ from codec import encode
 
 logging.disable(logging.CRITICAL)
 
+# asteval binds sys.stdout/stderr at import and prints interpreter errors there
+import asteval.asteval as _asteval_mod  # noqa: E402
+import os  # noqa: E402
+
+_asteval_mod.stdout = _asteval_mod.stderr = open(os.devnull, "w")  # noqa: SIM115
+
 
 class Timeout(BaseException):
     pass

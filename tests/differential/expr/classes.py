@@ -74,6 +74,7 @@ R: list[tuple[str, str, Callable[[Ctx], bool]]] = [
     ("list-ordering", "ordering comparison of lists/tuples (`[1] < [2]`) returns null in Rust", lambda c: c.diff.get("kind") == "value" and c.diff.get("rs") == "None" and has(r"[<>]", c.expr) or has(r"\[.*\]\s*(<|>|<=|>=)", c.expr) or has(r"(<|>|<=|>=)\s*\[", c.expr)),
     ("dict-keys-stringified", "dict displays/comprehensions stringify non-string keys (documented)", lambda c: c.diff.get("kind") == "value" and c.diff.get("py", "").startswith("{") and c.diff.get("rs", "").startswith("{")),
     ("map-attr-hybrid", "attribute access on a nested map: Rust resolves a present key directly and distributes over values otherwise; upstream is DynObj getattr (null when missing) or dict distribution, never both", lambda c: c.diff.get("kind") == "value" and "." in c.expr and c.diff.get("py") == "None" and c.diff.get("rs", "").startswith("[")),
+    ("repr-non-printable", "str()/repr() of a container escapes every non-printable code point (\\xNN, \\uNNNN, \\UNNNNNNNN); Rust escapes only ASCII control characters", lambda c: c.diff.get("kind") == "value" and has(r"\\\\[xuU][0-9a-f]", c.diff.get("py", "")) and not has(r"\\\\[xuU][0-9a-f]", c.diff.get("rs", ""))),
     ("decimal-or-unicode-numstr", "numeric strings with unicode digits / underscores / \\x1c-\\x1f whitespace coerce differently", lambda c: has(r"[^\x00-\x7f]|_", c.expr + str(c.diff))),
 ]
 

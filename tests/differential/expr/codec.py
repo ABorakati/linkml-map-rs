@@ -77,6 +77,8 @@ def canon(j: Any) -> Any:
             return ("i", int(j["$i"]))
         if "$dec" in j:
             return ("dec", j["$dec"])
+        if "$temporal" in j:
+            return ("temporal", j["$temporal"])
         if "$tuple" in j:
             return ("l", [canon(x) for x in j["$tuple"]])
         if "$set" in j:
@@ -115,6 +117,8 @@ def show(j: Any) -> str:
         return j["$i"]
     if "$dec" in j:
         return f"Decimal({j['$dec']!r})"
+    if "$temporal" in j:
+        return f"Temporal({j['$temporal']!r})"
     if "$tuple" in j:
         return "(" + ", ".join(show(x) for x in j["$tuple"]) + ",)"
     if "$set" in j:

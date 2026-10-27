@@ -104,6 +104,7 @@ pub fn encode(v: &Value) -> J {
         Value::Int(i) => J::from(*i),
         Value::Float(f) => json!({"$f": format!("{:016x}", f.to_bits())}),
         Value::Decimal(d) => json!({"$dec": d.to_sci_string()}),
+        Value::Temporal(t) => json!({"$temporal": t.to_string()}),
         Value::Str(s) => J::String(s.clone()),
         Value::List(l) => J::Array(l.iter().map(encode).collect()),
         Value::Map(m) => J::Object(m.iter().map(|(k, v)| (k.clone(), encode(v))).collect()),
