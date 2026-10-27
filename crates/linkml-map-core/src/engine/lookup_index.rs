@@ -31,6 +31,7 @@ fn value_to_key(v: &Value) -> String {
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Decimal(d) => d.to_sci_string(),
+        Value::Temporal(t) => t.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => String::new(),
         Value::List(_) | Value::Map(_) => format!("{v:?}"),

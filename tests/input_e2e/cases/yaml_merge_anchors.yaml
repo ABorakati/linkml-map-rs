@@ -1,0 +1,7 @@
+id: r4
+<<: {a: from-merge, b: also-merge}
+b: own
+c: &shared shared value
+d: *shared
+tags: &tags [x, y]
+e: Y

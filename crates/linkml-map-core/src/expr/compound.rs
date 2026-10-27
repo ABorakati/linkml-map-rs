@@ -148,6 +148,10 @@ fn set_key(v: &Value) -> ExprResult<SetKey<'_>> {
         Value::Int(i) => Ok(SetKey::Int(*i)),
         Value::Float(f) => Ok(float(*f)),
         Value::Decimal(d) => Ok(float(d.to_f64())),
+        Value::Temporal(_) => Err(ExprError::Eval(format!(
+            "unsupported set element of type '{}'",
+            type_name(v)
+        ))),
         Value::Str(s) => Ok(SetKey::Str(s)),
         Value::List(_) | Value::Map(_) => Err(ExprError::Eval(format!(
             "unhashable type: '{}'",

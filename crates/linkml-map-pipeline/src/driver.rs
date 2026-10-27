@@ -33,7 +33,8 @@ use linkml_map_core::{
     value::Value,
 };
 use linkml_map_io::{
-    Format, jsonl_line, load_all_with_numeric_hints, load_stream_with_numeric_hints,
+    Format, jsonl_line, load_all_single_object, load_all_with_numeric_hints,
+    load_stream_single_object, load_stream_with_numeric_hints,
 };
 use tokio::sync::mpsc;
 
@@ -55,6 +56,40 @@ pub(crate) struct RowSegment {
     /// The file holding the table.
     pub file: PathBuf,
     pub format: Format,
+}
+
+/// Open a segment's rows. Single-object input (`block: None`, a `.yaml` / `.json`
+/// file) is read as `cli.py::_map_data_single` does (`yaml.safe_load`, then
+/// `json.loads`); a table is read as `DataLoader` does (per-format loaders,
+/// schema-aware numeric CSV/TSV columns).
+async fn open_stream(
+    plan: &CompiledPlan,
+    seg: &RowSegment,
+) -> Result<futures::stream::BoxStream<'static, Result<Value>>> {
+    if seg.block.is_none() {
+        load_stream_single_object(&seg.file, seg.format).await
+    } else {
+        load_stream_with_numeric_hints(
+            &seg.file,
+            seg.format,
+            plan.numeric_column_hints_for_class(seg.table.as_deref()),
+        )
+        .await
+    }
+}
+
+/// [`open_stream`], collected.
+async fn open_all(plan: &CompiledPlan, seg: &RowSegment) -> Result<Vec<Value>> {
+    if seg.block.is_none() {
+        load_all_single_object(&seg.file, seg.format).await
+    } else {
+        load_all_with_numeric_hints(
+            &seg.file,
+            seg.format,
+            plan.numeric_column_hints_for_class(seg.table.as_deref()),
+        )
+        .await
+    }
 }
 
 impl RowSegment {
@@ -357,13 +392,9 @@ async fn stream_segment(
     out_tx: &mpsc::Sender<Result<Value>>,
 ) -> Result<SegmentStats> {
     let plan = &input.plan;
-    let mut source_stream = load_stream_with_numeric_hints(
-        &seg.file,
-        seg.format,
-        plan.numeric_column_hints_for_class(seg.table.as_deref()),
-    )
-    .await
-    .with_context(|| format!("opening source stream {}", seg.file.display()))?;
+    let mut source_stream = open_stream(plan, seg)
+        .await
+        .with_context(|| format!("opening source stream {}", seg.file.display()))?;
 
     let (work_tx, mut work_rx) = mpsc::channel::<(usize, Value)>(input.channel_depth);
     let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(input.channel_depth);
@@ -519,13 +550,9 @@ struct FkBlock {
 /// index find referenced objects inlined within individual rows.
 async fn load_fk_block(input: &DriveInput, seg: &RowSegment) -> Result<FkBlock> {
     let plan = &input.plan;
-    let rows = load_all_with_numeric_hints(
-        &seg.file,
-        seg.format,
-        plan.numeric_column_hints_for_class(seg.table.as_deref()),
-    )
-    .await
-    .with_context(|| format!("loading source file for FK mode: {}", seg.file.display()))?;
+    let rows = open_all(plan, seg)
+        .await
+        .with_context(|| format!("loading source file for FK mode: {}", seg.file.display()))?;
 
     let container_val = if rows.len() == 1 {
         rows[0].clone()

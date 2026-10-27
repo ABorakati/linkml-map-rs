@@ -1,0 +1,7 @@
+id	a	b
+q1	"has	tab"	"say ""hi"""
+q2	"two
+lines"	mid"quote
+q3	"closed"tail	  "spaced"
+q4	"crlf
+inside"	x

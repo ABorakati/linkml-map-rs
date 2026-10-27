@@ -37,6 +37,10 @@
 //! slots) as `a: &id001 1.50` then `b: *id001`. [`Value`] has no object
 //! identity, so this port always writes the value out twice.
 
+mod constructor;
+
+pub use constructor::{KeyRole, LoadError, construct_scalar, key_role};
+
 use std::borrow::Cow;
 
 use crate::pyfmt::py_float_repr;
@@ -420,6 +424,9 @@ fn represent_scalar(value: &Value) -> (Cow<'_, str>, Tag) {
             };
             (Cow::Owned(text), tag)
         }
+        // `represent_date` / `represent_datetime`: `isoformat(' ')`, tagged
+        // `!!timestamp`; the text matches the timestamp resolver, so it is plain.
+        Value::Temporal(t) => (Cow::Owned(t.to_string()), Tag::Timestamp),
         Value::Str(s) => (Cow::Borrowed(s.as_str()), Tag::Str),
         Value::List(_) | Value::Map(_) => unreachable!("collections are not scalars"),
     }
