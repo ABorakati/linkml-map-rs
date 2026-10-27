@@ -9,6 +9,7 @@ mod builtins_tests;
 mod compound;
 pub mod error;
 pub mod eval;
+pub mod gate;
 pub mod lexer;
 pub mod parser;
 mod pystr;
@@ -19,12 +20,12 @@ mod pytables;
 mod slugify;
 pub mod stmt;
 
-pub use compound::with_restricted_syntax;
 pub use error::{ExprError, ExprResult};
 pub use eval::{
     Bindings, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr, eval_expr_with_mapping,
     eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict, expression_asts, parse_expr,
 };
+pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
 
 #[cfg(test)]
@@ -34,7 +35,6 @@ mod tests {
     // value and silence approx_constant rather than diverge from the reference.
     #![allow(clippy::approx_constant)]
     use super::eval::{Bindings, eval_expr, eval_expr_with_mapping, eval_parsed, parse_expr};
-    use super::with_restricted_syntax;
     use crate::value::Value;
     use indexmap::IndexMap;
 
@@ -453,9 +453,7 @@ mod tests {
         // Restricted syntax (upstream `LinkMLEvaluator._eval_set`): a set display
         // is only the `{x}` reference form.
         let vars: Bindings = IndexMap::new();
-        let restricted = |expr: &str| {
-            with_restricted_syntax(true, || eval_expr_with_mapping(expr, &vars)).unwrap_err()
-        };
+        let restricted = |expr: &str| eval_expr_with_mapping(expr, &vars).unwrap_err();
         // {1 + 2} is not a Name/Attribute -> TypeError upstream
         assert!(
             restricted("{1 + 2}")
@@ -474,7 +472,7 @@ mod tests {
         m.insert("y".to_string(), Value::Int(7));
         binds.insert("x".to_string(), Value::Map(m));
         assert_eq!(
-            with_restricted_syntax(true, || eval_expr_with_mapping("{x.y}", &binds)).unwrap(),
+            eval_expr_with_mapping("{x.y}", &binds).unwrap(),
             Value::Int(7)
         );
     }
@@ -521,25 +519,62 @@ mod tests {
     }
 
     #[test]
-    fn comprehension_attribute_is_per_element() {
-        // events with event_name + date; pull dates where name matches.
+    fn comprehension_attribute_is_refused_in_restricted_mode() {
+        // Upstream `0db653b539`: `LinkMLEvaluator._eval_attribute` resolves the
+        // root of `x.attr` outside the comprehension scope, so a loop variable
+        // is reported as a comprehension-bound name rather than a typo.
         let mk = |name: &str, date: &str| {
             let mut m = IndexMap::new();
             m.insert("event_name".to_string(), s(name));
             m.insert("important_event_date".to_string(), s(date));
             Value::Map(m)
         };
-        let events = Value::List(vec![
-            mk("BIRTH", "1990-01-01"),
-            mk("PASSED_DRIVING_TEST", "2014-03-31"),
-        ]);
-        assert_eq!(
-            ev(
-                "[x.important_event_date for x in events if str(x.event_name) == \"PASSED_DRIVING_TEST\"]",
-                &[("events", events)]
-            ),
-            Value::List(vec![s("2014-03-31")])
+        let mut vars: Bindings = IndexMap::new();
+        vars.insert(
+            "events".to_string(),
+            Value::List(vec![mk("BIRTH", "1990-01-01")]),
         );
+        let expr = "[x.important_event_date for x in events if str(x.event_name) == \"BIRTH\"]";
+        let msg = eval_expr_with_mapping(expr, &vars)
+            .expect_err("restricted mode refuses attribute access on a loop variable")
+            .to_string();
+        assert!(
+            msg.contains(
+                "Attribute access on comprehension-bound 'x' in 'x.event_name' \
+                 is not supported."
+            ),
+            "got: {msg}"
+        );
+        // A NameError upstream, which `_eval_expr` never turns into the
+        // unrestricted fallback: a single expression fails in both modes.
+        let parsed = parse_expr(expr).unwrap();
+        assert!(parsed.eval_unrestricted(&vars).is_err());
+    }
+
+    #[test]
+    fn comprehension_root_resolves_outside_the_comprehension_scope() {
+        // PARITY: the root is looked up in the expression's own bindings, so a
+        // slot that happens to share the loop variable's name wins over the
+        // loop variable (upstream `super()._eval_name` bypasses the swapped-in
+        // comprehension scope).
+        let mut inner = IndexMap::new();
+        inner.insert("n".to_string(), Value::Int(7));
+        let mut vars: Bindings = IndexMap::new();
+        vars.insert("x".to_string(), Value::Map(inner));
+        vars.insert(
+            "xs".to_string(),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+        assert_eq!(
+            eval_expr_with_mapping("[x.n for x in xs]", &vars).unwrap(),
+            Value::List(vec![Value::Int(7), Value::Int(7)])
+        );
+        // Outside any comprehension the scope is gone: `x` is the slot again,
+        // and a name that was only ever a loop variable is an unknown root.
+        let msg = eval_expr_with_mapping("[1 for y in xs] + [y.n]", &vars)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("unknown 'y' in 'y.n'"), "got: {msg}");
     }
 
     #[test]
@@ -549,16 +584,24 @@ mod tests {
             ev("[x for x in xs if x > 99]", &[("xs", xs)]),
             Value::List(vec![])
         );
-        // comprehension over Null iterable → empty list
+        // comprehension over Null iterable: a `TypeError` in the restricted
+        // evaluator (it is only an empty iteration inside a statement block).
+        let mut vars: Bindings = IndexMap::new();
+        vars.insert("xs".to_string(), Value::Null);
+        let err = eval_expr_with_mapping("[x for x in xs if x]", &vars).unwrap_err();
         assert_eq!(
-            ev("[x for x in xs if x]", &[("xs", Value::Null)]),
-            Value::List(vec![])
+            err.to_string(),
+            "eval error: 'NoneType' object is not iterable"
         );
+        assert!(err.is_restricted_rejection());
     }
 
     // === multi-statement programs (asteval-style `target` contract) =======
+    //
+    // Statement blocks run only with `unrestricted_eval`; the bindings passed to
+    // `eval_unrestricted` are the source slots, which the block reads as `src.<slot>`.
 
-    /// Build the personinfo-style `src` object with a list of life events.
+    /// Source-slot bindings for the personinfo-style object with a list of life events.
     fn src_with_events(events: Vec<(&str, &str)>) -> Bindings {
         let mut binds: Bindings = IndexMap::new();
         let evs: Vec<Value> = events
@@ -570,9 +613,7 @@ mod tests {
                 Value::Map(m)
             })
             .collect();
-        let mut src = IndexMap::new();
-        src.insert("has_important_life_events".to_string(), Value::List(evs));
-        binds.insert("src".to_string(), Value::Map(src));
+        binds.insert("has_important_life_events".to_string(), Value::List(evs));
         binds
     }
 
@@ -582,7 +623,31 @@ mod tests {
         let vars: Bindings = IndexMap::new();
         let parsed = parse_expr("d = 5\ntarget = d + 1").unwrap();
         assert!(parsed.is_program(), "should route to the program path");
-        assert_eq!(parsed.eval(&vars).unwrap(), Value::Int(6));
+        assert_eq!(parsed.eval_unrestricted(&vars).unwrap(), Value::Int(6));
+    }
+
+    #[test]
+    fn program_in_restricted_mode_runs_only_the_first_statement() {
+        // PARITY: simpleeval's `parse` keeps `body[0]`; an assignment evaluates
+        // its right-hand side and returns it (`_eval_assign`), so the
+        // `target = d + 1` line never runs. Upstream
+        // `test_statement_block_runs_every_statement` notes "the restricted
+        // evaluator used to run only the first and return 20".
+        let vars: Bindings = IndexMap::new();
+        let parsed = parse_expr("d = 5\ntarget = d + 1").unwrap();
+        assert_eq!(parsed.eval(&vars).unwrap(), Value::Int(5));
+    }
+
+    #[test]
+    fn program_if_is_not_available_in_restricted_mode() {
+        let vars: Bindings = IndexMap::new();
+        let parsed = parse_expr("if 1:\n  target = 2").unwrap();
+        let err = parsed.eval(&vars).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "eval error: Sorry, If is not available in this evaluator"
+        );
+        assert!(err.is_restricted_rejection());
     }
 
     #[test]
@@ -592,13 +657,14 @@ mod tests {
         let expr = "d_test = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == \"DEATH\"]\nif len(d_test):\n    target = d_test[0]";
         let parsed = parse_expr(expr).unwrap();
         assert!(parsed.is_program());
-        assert_eq!(parsed.eval(&vars).unwrap(), Value::Null);
+        assert_eq!(parsed.eval_unrestricted(&vars).unwrap(), Value::Null);
     }
 
     #[test]
     fn program_driving_since_block() {
         // The full personinfo `driving_since` block: comprehension + len guard
-        // + subscript [0].
+        // + subscript [0]. Attribute access on the loop variable is fine in
+        // the unrestricted interpreter.
         let vars = src_with_events(vec![
             ("BIRTH", "1990-01-01"),
             ("PASSED_DRIVING_TEST", "2014-03-31"),
@@ -606,7 +672,23 @@ mod tests {
         ]);
         let expr = "d_test = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == \"PASSED_DRIVING_TEST\"]\nif len(d_test):\n    target = d_test[0]";
         let parsed = parse_expr(expr).unwrap();
-        assert_eq!(parsed.eval(&vars).unwrap(), s("2014-03-31"));
+        assert_eq!(parsed.eval_unrestricted(&vars).unwrap(), s("2014-03-31"));
+    }
+
+    #[test]
+    fn program_driving_since_block_fails_in_restricted_mode() {
+        // Upstream `test_map_data_without_unrestricted_eval_fails`: `src` is
+        // unbound, so the comprehension iterates None (a `TypeError`).
+        let vars = src_with_events(vec![("PASSED_DRIVING_TEST", "2014-03-31")]);
+        let expr = "d_test = [x.important_event_date for x in src.has_important_life_events]\nif len(d_test):\n    target = d_test[0]";
+        let parsed = parse_expr(expr).unwrap();
+        // `src` is unbound, so the comprehension iterates None: a `TypeError`.
+        let err = parsed.eval(&vars).unwrap_err();
+        assert!(err.is_restricted_rejection(), "{err}");
+        assert!(
+            err.to_string()
+                .contains("'NoneType' object is not iterable")
+        );
     }
 
     #[test]
@@ -616,7 +698,7 @@ mod tests {
         let vars = src_with_events(vec![("BIRTH", "1990-01-01")]);
         let expr = "if src.has_important_life_events:\n  target = src.has_important_life_events[0].important_event_date";
         let parsed = parse_expr(expr).unwrap();
-        assert_eq!(parsed.eval(&vars).unwrap(), s("1990-01-01"));
+        assert_eq!(parsed.eval_unrestricted(&vars).unwrap(), s("1990-01-01"));
     }
 
     #[test]
@@ -624,14 +706,12 @@ mod tests {
         // In object mode, `src.<missing>` returns Null (DynObj semantics),
         // never distributing over the map's values into a list.
         let mut binds: Bindings = IndexMap::new();
-        let mut src = IndexMap::new();
-        src.insert("id".to_string(), s("P:002"));
-        src.insert("name".to_string(), s("Alison"));
-        binds.insert("src".to_string(), Value::Map(src));
+        binds.insert("id".to_string(), s("P:002"));
+        binds.insert("name".to_string(), s("Alison"));
         let expr = "death_dates = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == \"DEATH\"]\nif len(death_dates):\n  target = death_dates[0]";
         let parsed = parse_expr(expr).unwrap();
         // No life-events key → comprehension over Null → [] → target unset → Null.
-        assert_eq!(parsed.eval(&binds).unwrap(), Value::Null);
+        assert_eq!(parsed.eval_unrestricted(&binds).unwrap(), Value::Null);
     }
 
     #[test]

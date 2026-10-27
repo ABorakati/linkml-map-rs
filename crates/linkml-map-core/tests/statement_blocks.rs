@@ -2,14 +2,29 @@
 //!
 //! Ports upstream `tests/test_transformer/test_quiet_mapping.py` (f299f3a) and
 //! the dispatch rule `_is_statement_block` (`transformer/object_transformer.py`).
+//!
+//! Statement blocks run only with `unrestricted_eval`, as upstream's tests do
+//! (`ObjectTransformer(..., unrestricted_eval=True)`); the restricted-mode
+//! counterparts at the end pin what the default evaluator does with them. The
+//! expected values were checked against upstream v0.6.0-rc1 run both ways.
 
 use linkml_map_core::datamodel::TransformationSpecification;
 use linkml_map_core::engine::ObjectTransformer;
 use linkml_map_core::error::Error;
 use linkml_map_core::value::Value;
 
-/// Map `person` through a one-slot spec whose slot `v` is derived from `expr`.
+/// Map `person` through a one-slot spec whose slot `v` is derived from `expr`,
+/// with `unrestricted_eval` on.
 fn derive(expr: &str, person: serde_json::Value) -> Result<Value, Error> {
+    derive_in_mode(expr, person, true)
+}
+
+/// As [`derive`], with `unrestricted_eval` set to `unrestricted`.
+fn derive_in_mode(
+    expr: &str,
+    person: serde_json::Value,
+    unrestricted: bool,
+) -> Result<Value, Error> {
     let spec: TransformationSpecification = serde_json::from_value(serde_json::json!({
         "class_derivations": [{
             "name": "P",
@@ -18,7 +33,7 @@ fn derive(expr: &str, person: serde_json::Value) -> Result<Value, Error> {
         }],
     }))
     .expect("spec");
-    let engine = ObjectTransformer::new(spec, None, None);
+    let engine = ObjectTransformer::new(spec, None, None).with_unrestricted_eval(unrestricted);
     let out = engine.map_object(&Value::from(&person), Some("Person"))?;
     match out {
         Value::Map(m) => Ok(m.get("v").cloned().unwrap_or(Value::Null)),
@@ -188,4 +203,128 @@ fn comments_and_continuations_in_a_block() {
         serde_json::json!({"events": [{"year": 1}, {"year": 2}]}),
     );
     assert_eq!(v.unwrap(), Value::Int(2));
+}
+
+// === restricted mode (the default) ========================================
+//
+// Upstream's `Bindings` hold the source slots only: `src` is not bound, and
+// `simpleeval` evaluates the first statement of a block.
+
+fn restricted(expr: &str) -> Result<Value, Error> {
+    derive_in_mode(
+        expr,
+        serde_json::json!({"id": "1", "age": 10, "name": "Al", "events": ["a", "b"]}),
+        false,
+    )
+}
+
+fn unrestricted(expr: &str) -> Result<Value, Error> {
+    derive_in_mode(
+        expr,
+        serde_json::json!({"id": "1", "age": 10, "name": "Al", "events": ["a", "b"]}),
+        true,
+    )
+}
+
+// PARITY: upstream test_statement_block_runs_every_statement's docstring: "the
+// restricted evaluator used to run only the first and return 20".
+#[test]
+fn restricted_runs_only_the_first_statement() {
+    assert_eq!(
+        restricted("x = {age}*2\ntarget = x+1").unwrap(),
+        Value::Int(20)
+    );
+    // `src` is unbound there, so `src.age * 2` is null.
+    assert_eq!(
+        restricted("x = src.age*2\ntarget = x+1").unwrap(),
+        Value::Null
+    );
+    assert_eq!(restricted("target = 1").unwrap(), Value::Int(1));
+}
+
+#[test]
+fn restricted_has_no_src_even_in_a_single_expression() {
+    for mode in [restricted, unrestricted] {
+        assert_eq!(mode("src.name").unwrap(), Value::Null);
+        assert_eq!(mode("src.age + 1").unwrap(), Value::Null);
+    }
+}
+
+#[test]
+fn restricted_if_block_is_not_available() {
+    let msg = err_text(restricted("if {age}:\n    target = 1"));
+    assert!(
+        msg.contains("Sorry, If is not available in this evaluator"),
+        "{msg}"
+    );
+}
+
+// Upstream test_derive_from_expr_restricted_raises / `_unrestricted_fallback`:
+// a rejection (TypeError, ValueError, InvalidExpression) is re-raised in
+// restricted mode and falls back to asteval, which yields null, with the opt-in.
+#[test]
+fn rejections_raise_when_restricted_and_become_null_when_unrestricted() {
+    for expr in ["int(name)", "len(5)", "unknownfn(1)"] {
+        assert!(restricted(expr).is_err(), "{expr}");
+        assert_eq!(unrestricted(expr).unwrap(), Value::Null, "{expr}");
+    }
+}
+
+// IndexError, AttributeError and NameError are not in `_eval_expr`'s catch
+// tuple, so they propagate in both modes.
+#[test]
+fn other_errors_propagate_in_both_modes() {
+    for expr in ["events[5]", "name.foo", "[e.x for e in events]"] {
+        assert!(restricted(expr).is_err(), "{expr}");
+        assert!(unrestricted(expr).is_err(), "{expr}");
+    }
+}
+
+#[test]
+fn comprehension_attribute_message_in_restricted_mode() {
+    let msg = err_text(restricted("[e.x for e in events]"));
+    assert!(
+        msg.contains("Attribute access on comprehension-bound 'e' in 'e.x' is not supported."),
+        "{msg}"
+    );
+}
+
+#[test]
+fn single_expressions_are_unaffected_by_the_mode() {
+    for mode in [restricted, unrestricted] {
+        assert_eq!(mode("{age} * 2").unwrap(), Value::Int(20));
+    }
+}
+
+// Upstream tests/test_transformer/test_range_override.py
+// `test_parse_expr_malformed_input_raises` (restricted) and its unrestricted
+// counterpart, whose docstring "malformed parse inputs yield None" is the
+// asteval fallback at work. Upstream's expression calls the `str.split` method,
+// which this evaluator has no syntax for, so the `split()` function stands in.
+const PARSE_DEPTH: &str =
+    r#"{"has_numeric_value": float(split(depth, " ")[0]), "has_unit": split(depth, " ")[1]}"#;
+
+#[test]
+fn malformed_parse_input_raises_when_restricted_and_is_null_when_unrestricted() {
+    for depth in ["", "five m"] {
+        let person = serde_json::json!({ "depth": depth });
+        assert!(
+            derive_in_mode(PARSE_DEPTH, person.clone(), false).is_err(),
+            "{depth:?}"
+        );
+        assert_eq!(
+            derive_in_mode(PARSE_DEPTH, person, true).unwrap(),
+            Value::Null,
+            "{depth:?}"
+        );
+    }
+    // `"5".split(" ")[1]` is an IndexError, which `_eval_expr` never catches.
+    let person = serde_json::json!({ "depth": "5" });
+    assert!(derive_in_mode(PARSE_DEPTH, person.clone(), false).is_err());
+    assert!(derive_in_mode(PARSE_DEPTH, person, true).is_err());
+    let ok = derive_in_mode(PARSE_DEPTH, serde_json::json!({"depth": "5 m"}), false).unwrap();
+    assert_eq!(
+        ok,
+        Value::from(&serde_json::json!({"has_numeric_value": 5.0, "has_unit": "m"}))
+    );
 }

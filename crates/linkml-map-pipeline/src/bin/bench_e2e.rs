@@ -52,6 +52,7 @@ async fn run_once(src: &str, out: &str, workers: usize, label: &str) -> Result<(
         channel_depth: 512,
         write_options: Default::default(),
         strict: false,
+        unrestricted_eval: false,
     };
     // Wall-clock the whole call: plan load + stream read + transform + write.
     let start = Instant::now();
