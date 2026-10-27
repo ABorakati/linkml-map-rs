@@ -28,6 +28,7 @@ sys.setrecursionlimit(20000)
 
 import grammar  # noqa: E402
 from codec import encode  # noqa: E402
+from classes import classify  # noqa: E402
 from compare import compare  # noqa: E402
 from oracle import Oracle  # noqa: E402
 from pyside import run_py  # noqa: E402
@@ -35,6 +36,10 @@ from shrink import shrink_bindings, shrink_tree  # noqa: E402
 
 resource.setrlimit(resource.RLIMIT_AS, (6 * 2**30, 6 * 2**30))
 
+# Every grammar feature that currently produces a known divergence; shrink this as they are fixed.
+CLEAN_MASK = set(
+    "rawint bigint slice strstyle fstr lambda method matmul setdisp is tuple numattr methodattr in div pow bitwise strescape numstr-unicode stmt block unknownfn".split()
+)
 PENDING_SYNTAX: set[str] = set()  # exprsyntax port merged (d46df82); nothing pending there any more
 
 
@@ -93,7 +98,7 @@ def shrink_case(oracle: Oracle, c: dict, sig: tuple) -> dict:
             try:
                 cs.append(make_case(x))
                 idx.append(i)
-            except (AssertionError, RecursionError, IndexError, TypeError):
+            except Exception:  # noqa: BLE001
                 pass  # replacement produced an unrenderable tree
         flags = [False] * len(cands)
         for i, (py, _r, d) in zip(idx, evaluate(oracle, cs)):
@@ -130,10 +135,8 @@ def tags_for(c: dict, py: dict, d: dict) -> list[str]:
     tags = []
     if kinds & PENDING_SYNTAX:
         tags.append("pending:exprsyntax")
-    if c["mode"] == "restricted" and c["tree"][0] == "block":
-        tags.append("pending:restricted-gate")
     if c["mode"] == "unrestricted" and py.get("via") in ("fallback", "asteval-block"):
-        tags.append("pending:restricted-gate")
+        tags.append("via:" + py["via"])
     return tags
 
 
@@ -162,10 +165,15 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=2000)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--mask", default="", help="comma list of grammar features to disable (see grammar.MASK)")
+    ap.add_argument("--profile", choices=["clean"], default=None, help="mask every feature currently known to diverge (CI profile)")
+    ap.add_argument("--fail-on-unclassified", action="store_true", help="exit 1 if a shrunk divergence matches no known class in classes.py")
+    ap.add_argument("--fail-on-divergence", action="store_true", help="exit 1 if any divergence is found (after shrinking)")
     ap.add_argument("--mode", choices=["restricted", "unrestricted"], default=None)
     ap.add_argument("--reps", type=int, default=5, help="representatives shrunk per coarse signature")
     ap.add_argument("--agree-sample", type=int, default=0, help="keep N agreeing non-error cases")
     a = ap.parse_args()
+    if a.profile == "clean":
+        grammar.MASK.update(CLEAN_MASK)
     grammar.MASK.update(filter(None, a.mask.split(",")))
     a.out.mkdir(parents=True, exist_ok=True)
     oracle = Oracle()
@@ -229,7 +237,7 @@ def main() -> None:
             (mpy, mrs, md) = evaluate(oracle, [mc])[0]
             if md is None:
                 m, mc, mpy, mrs, md = c, case, py, rs, d
-            final.append({"sig": list(sig), "count": len(items), "case": mc, "py": mpy, "rs": mrs, "diff": md, "tags": tags_for(m, mpy, md), "template": template(mc["expr"]), "orig_expr": case["expr"][:300]})
+            final.append({"sig": list(sig), "count": len(items), "case": mc, "py": mpy, "rs": mrs, "diff": md, "tags": tags_for(m, mpy, md), "template": template(mc["expr"]), "orig_expr": case["expr"][:300], "class": classify(mc["expr"], mc["mode"], mpy, mrs, md)[0]})
     (a.out / "divergences.jsonl").write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in final), encoding="utf-8")
     (a.out / "stats.json").write_text(json.dumps({**stats, "seed": a.seed, "n": a.n}), encoding="utf-8")
     if agree:
@@ -244,6 +252,17 @@ def main() -> None:
         lines.append(f"- sig={sig} (x{x['count']}) tags={x['tags']} mode={x['case']['mode']}\n  expr=`{x['case']['expr']!r}` bindings={json.dumps(x['case']['bindings'], ensure_ascii=False)[:200]}\n  diff={json.dumps(x['diff'], ensure_ascii=False)[:400]}")
     (a.out / "clusters.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"done in {time.time() - t0:.0f}s; clusters={len(cl)}")
+    if a.fail_on_unclassified:
+        bad = [x for x in final if x["class"] == "unclassified"]
+        for x in bad[:10]:
+            print("UNCLASSIFIED", json.dumps(x["case"], ensure_ascii=False)[:300], "upstream:", str(x["py"])[:100], "rust:", str(x["rs"])[:100])
+        print(f"{len(final)} divergence(s) shrunk, {len(bad)} unclassified; classes: {dict(collections.Counter(x['class'] for x in final))}")
+        if bad:
+            sys.exit(1)
+    if a.fail_on_divergence and final:
+        for x in final[:10]:
+            print("DIVERGENCE", json.dumps(x["case"], ensure_ascii=False)[:300], "upstream:", str(x["py"])[:100], "rust:", str(x["rs"])[:100])
+        sys.exit(1)
 
 
 if __name__ == "__main__":

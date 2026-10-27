@@ -25,8 +25,8 @@
 //! `{"$dec": "<text>"}` for a decimal.
 //!
 //! The expression modes are the entry points the engine uses for a slot
-//! `expr:`: `restricted` is `eval_expr_with_mapping`, `unrestricted` is the
-//! same call with the engine's `src` binding (the whole source object) added.
+//! `expr:`: `restricted` and `unrestricted` are `eval_parsed_gated` with
+//! `EvalMode { unrestricted: false / true }` (upstream `ObjectTransformer._eval_expr`).
 
 use std::cell::RefCell;
 use std::io::{BufRead, Write};
@@ -35,7 +35,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use indexmap::IndexMap;
 use linkml_map_core::decimal::Decimal;
 use linkml_map_core::expr::{
-    Bindings, ExprError, eval_expr_with_mapping, eval_expr_with_mapping_strict,
+    Bindings, EvalMode, ExprError, eval_expr_with_mapping, eval_parsed_gated, parse_expr,
 };
 use linkml_map_core::pyfmt;
 use linkml_map_core::value::{Value, parse_python_float};
@@ -135,21 +135,20 @@ pub fn eval_case(expr: &str, bindings: &J, mode: &str, strict: bool) -> Outcome 
     for (k, v) in &given {
         vars.insert(k.clone(), v.clone());
     }
-    if mode == "unrestricted" {
-        // The engine binds the whole source object as `src` (asteval's
-        // `usersyms={"src": ctxt_obj}`).
-        vars.insert("src".to_owned(), Value::Map(given));
-    }
-    let run = || {
-        if strict {
-            eval_expr_with_mapping_strict(expr, &vars)
-        } else {
-            eval_expr_with_mapping(expr, &vars)
-        }
+    // The engine's slot-expression path: bindings are `NULL` plus the source
+    // slots (no `src`; the unrestricted gate builds it), evaluated through the
+    // gate with upstream's `strict` / `unrestricted_eval` settings.
+    let eval_mode = EvalMode {
+        strict,
+        unrestricted: mode == "unrestricted",
     };
-    guarded(|| match run() {
-        Ok(v) => Outcome::Ok(v),
-        Err(e) => fail(err_kind(&e), e.to_string()),
+    guarded(|| {
+        let outcome =
+            parse_expr(expr).and_then(|parsed| eval_parsed_gated(&parsed, &vars, eval_mode));
+        match outcome {
+            Ok(v) => Outcome::Ok(v),
+            Err(e) => fail(err_kind(&e), e.to_string()),
+        }
     })
 }
 

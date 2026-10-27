@@ -55,7 +55,9 @@ FUNCS: dict[str, tuple[list[str], str]] = {
 }
 # Constructs another agent is porting right now: generated, but their failures are classified "pending in-flight port".
 PENDING_FUNCS = {"dict": (["any?"], "map"), "set": (["any?"], "list")}
-UNKNOWN_FUNCS = ["foo", "length", "Upper", "__import__", "_private", "eval", "exec", "open", "getattr", "type", "isinstance", "print", "range", "enumerate", "zip", "map", "filter", "ord", "chr", "pow", "divmod", "repr", "format", "hash", "id", "dir", "vars", "locals", "sum_", "slot", "uuid"]
+# `open`, `eval`, `exec`, `__import__`, `print`, `input` are deliberately absent: asteval (unrestricted mode)
+# really runs them -- open(1) closes the fuzzer's own stdout and open(name, "w") creates files.
+UNKNOWN_FUNCS = ["foo", "length", "Upper", "_private", "getattr_", "type", "isinstance", "range", "enumerate", "zip", "map", "filter", "ord", "chr", "pow", "divmod", "repr", "format", "hash", "id", "dir", "vars", "sum_", "uuid", "pi", "sqrt"]
 METHODS = ["upper", "lower", "strip", "title", "split", "join", "replace", "format", "startswith", "items", "keys", "values", "get", "append", "count", "index", "isdigit", "encode", "capitalize", "zfill", "__class__", "mro"]
 BINOPS = ["+", "-", "*", "/", "//", "%", "**", "<<", ">>", "^", "|", "&", "@"]
 CMPOPS = ["==", "!=", "<", "<=", ">", ">=", "in", "not in", "is", "is not"]
@@ -68,6 +70,26 @@ MASK: set[str] = set()
 
 def on(feature: str) -> bool:
     return feature not in MASK
+
+
+def str_edges() -> list[str]:
+    out = STR_EDGES
+    if "strescape" in MASK:  # keep only strings Python's repr leaves as plain printable ASCII
+        out = [s for s in out if all(0x20 <= ord(c) < 0x7F for c in s)]
+    if "numstr-unicode" in MASK:  # unicode digits / \x1c..\x1f whitespace around numbers
+        out = [s for s in out if all(ord(c) < 0x80 and not 0x1C <= ord(c) <= 0x1F for c in s) and s not in ("²", "½", "Ⅷ")]
+    return out
+
+
+def float_edges() -> list[str]:
+    if "bigint" in MASK:  # floats whose floor/int/round would not fit an i64
+        return [s for s in FLOAT_EDGE_TEXT if abs(float(s.replace("_", ""))) < 1e15]
+    return FLOAT_EDGE_TEXT
+
+
+def int_edges() -> list[int]:
+    lim = 2**31 if "bigint" in MASK else 2**63
+    return [i for i in INT_EDGES if -lim <= i <= lim]
 
 
 # ─── tiny weighted-choice helper ─────────────────────────────────────────────
@@ -99,12 +121,13 @@ def gen_scalar(draw, ty: str = "any"):
     if ty == "bool":
         return draw(st.booleans())
     if ty in ("int", "num"):
-        return draw(st.one_of(st.sampled_from([i for i in INT_EDGES if -(2**63) <= i < 2**63]), st.integers(-1000, 1000)))
+        return draw(st.one_of(st.sampled_from([i for i in int_edges() if -(2**63) <= i < 2**63]), st.integers(-1000, 1000)))
     if ty == "float":
-        t = draw(st.sampled_from(FLOAT_EDGE_TEXT))
+        t = draw(st.sampled_from(float_edges()))
         return float(t.replace("_", ""))
     if ty == "str":
-        return pick(draw, [(8, draw(st.sampled_from(STR_EDGES))), (3, draw(st.text(st.characters(blacklist_categories=("Cs",)), max_size=8))), (1, draw(st.text(alphabet="abc ABC_-", max_size=6)))])
+        rnd = st.text(st.characters(min_codepoint=0x20, max_codepoint=0x7E), max_size=8) if "strescape" in MASK else st.text(st.characters(blacklist_categories=("Cs",)), max_size=8)
+        return pick(draw, [(8, draw(st.sampled_from(str_edges()))), (3, draw(rnd)), (1, draw(st.text(alphabet="abc ABC_-", max_size=6)))])
     raise ValueError(ty)
 
 
@@ -142,12 +165,11 @@ def literal(draw, ty: str):
     if ty in ("int", "num"):
         if on("rawint") and chance(draw, 5):
             return ("rawint", draw(st.sampled_from(["0x1f", "0b101", "0o17", "1_000", "00", "1e3", "0xFF", "1_0"])))
-        edges = INT_EDGES if on("bigint") else [i for i in INT_EDGES if -(2**63) <= i < 2**63]
-        return ("int", draw(st.one_of(st.sampled_from(edges), st.integers(-20, 20))))
+        return ("int", draw(st.one_of(st.sampled_from(int_edges()), st.integers(-20, 20))))
     if ty == "float":
-        return ("float", draw(st.sampled_from(FLOAT_EDGE_TEXT)))
+        return ("float", draw(st.sampled_from(float_edges())))
     if ty == "str":
-        return ("str", draw(st.sampled_from(STR_EDGES)), pick(draw, [(10, "repr"), (2, "dq")] + ([(1, "triple"), (1, "raw"), (1, "u"), (1, "adj")] if on("strstyle") else [])))
+        return ("str", draw(st.sampled_from(str_edges())), pick(draw, [(10, "repr"), (2, "dq")] + ([(1, "triple"), (1, "raw"), (1, "u"), (1, "adj")] if on("strstyle") else [])))
     if ty == "bool":
         return ("const", draw(st.sampled_from(["True", "False"])))
     if ty == "list":
@@ -174,8 +196,9 @@ def path_ref(draw):
     """``m.a``-style attribute chains over the nested bindings."""
     base = draw(st.sampled_from(["m", "l", "x", "y", "src"]))
     r = ("name", base)
+    attrs = ["a", "b", "c", "name", "id", "x", "_p", "NULL", "e"] + ([] if "methodattr" in MASK else ["items", "keys", "upper"])
     for _ in range(draw(st.integers(1, 3))):
-        r = ("attr", r, draw(st.sampled_from(["a", "b", "c", "name", "id", "x", "items", "keys", "upper", "_p", "NULL", "e"])))
+        r = ("attr", r, draw(st.sampled_from(attrs)))
     if chance(draw, 30):
         r = ("brace", r)
     return r
@@ -198,7 +221,7 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
             (3, "attr"),
             (2, "comp"),
             (1, "list"),
-            (1, "tuple"),
+            (1 if on("tuple") else 0, "tuple"),
             (1, "dict"),
             (1 if on("setdisp") else 0, "set"),
             (1, "paren"),
@@ -218,24 +241,27 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
         return leaf(draw, ty)
     if kind == "binop":
         opty = "str" if ty == "str" else ("list" if ty == "list" else pick(draw, [(6, "num"), (2, "int"), (1, "str"), (1, "any"), (1, "list")]))
-        op = pick(draw, [(6, "+"), (4, "-"), (5, "*"), (3, "/"), (2, "//"), (2, "%"), (2, "**"), (1, "<<"), (1, ">>"), (1, "^"), (1, "|"), (1, "&")] + ([(1, "@")] if on("matmul") else []))
+        ops = [(6, "+"), (4, "-"), (5, "*"), (3, "/"), (2, "//"), (2, "%"), (2, "**"), (1, "<<"), (1, ">>"), (1, "^"), (1, "|"), (1, "&")] + ([(1, "@")] if on("matmul") else [])
+        ops = [(w, o) for w, o in ops if not (o in ("/", "//", "%") and "div" in MASK) and not (o == "**" and "pow" in MASK) and not (o in ("<<", ">>", "^", "|", "&") and "bitwise" in MASK)]
+        op = pick(draw, ops)
         if chance(draw, 20):
             return ("bin", op, sub("any"), sub("any"))
         return ("bin", op, sub(opty), sub(opty if chance(draw, 70) else "any"))
     if kind == "cmp":
         opty = pick(draw, [(3, "num"), (3, "str"), (2, "any"), (1, "list")])
-        op = pick(draw, [(3, "=="), (2, "!="), (3, "<"), (2, "<="), (3, ">"), (2, ">="), (2, "in"), (2, "not in"), (1, "is"), (1, "is not")])
-        if op in ("in", "not in"):
+        cmps = [(3, "=="), (2, "!="), (3, "<"), (2, "<="), (3, ">"), (2, ">=")] + ([(2, "in"), (2, "not in")] if on("in") else []) + ([(1, "is"), (1, "is not")] if on("is") else [])
+        op = pick(draw, cmps)
+        if op in ("in", "not in") and on("in"):
             return ("cmp", sub("any"), [(op, sub(pick(draw, [(2, "list"), (2, "str"), (1, "map"), (1, "any")])))])
         return ("cmp", sub(opty), [(op, sub(opty if chance(draw, 75) else "any"))])
     if kind == "cmpchain":
-        return ("cmp", sub("num"), [(draw(st.sampled_from(["<", "<=", "==", ">", "!=", "in"])), sub("num")) for _ in range(draw(st.integers(2, 3)))])
+        return ("cmp", sub("num"), [(draw(st.sampled_from(["<", "<=", "==", ">", "!="] + (["in"] if on("in") else []))), sub("num")) for _ in range(draw(st.integers(2, 3)))])
     if kind == "bool":
         return ("boolop", draw(st.sampled_from(["and", "or"])), [sub("any" if chance(draw, 50) else "bool") for _ in range(draw(st.integers(2, 3)))])
     if kind == "not":
         return ("not", sub("any"))
     if kind == "unary":
-        return ("unary", draw(st.sampled_from(["-", "+", "~"])), sub("num" if chance(draw, 80) else "any"))
+        return ("unary", draw(st.sampled_from(["-", "+"] + ([] if "bitwise" in MASK else ["~"]))), sub("num" if chance(draw, 80) else "any"))
     if kind == "call":
         return call(draw, ty, d, mode)
     if kind == "ifexp":
@@ -249,7 +275,10 @@ def expr(draw, ty: str, depth: int, mode: str = "restricted"):
     if kind == "attr":
         if chance(draw, 50):
             return path_ref(draw)
-        return ("attr", sub("any"), draw(st.sampled_from(["a", "b", "name", "id", "x", "_p", "upper", "items"])))
+        base = sub("any")
+        if "numattr" in MASK and base[0] in ("int", "float", "rawint"):
+            base = ("paren", base)
+        return ("attr", base, draw(st.sampled_from(["a", "b", "name", "id", "x", "_p"] + ([] if "methodattr" in MASK else ["upper", "items"]))))
     if kind == "comp":
         var = draw(st.sampled_from(["i", "v", "k", "it"]))
         ck = pick(draw, [(6, "listcomp"), (1, "gen"), (1, "dictcomp")] + ([(1, "setcomp")] if on("setdisp") else []))
@@ -302,8 +331,8 @@ def leaf(draw, ty: str):
 
 def call(draw, ty: str, d: int, mode: str):
     sub = lambda t: expr(draw, t, d, mode)  # noqa: E731
-    table = {**FUNCS, **PENDING_FUNCS}
-    if chance(draw, 6):
+    table = {**FUNCS, **{k: v for k, v in PENDING_FUNCS.items() if not (k == "set" and not on("setdisp"))}}
+    if on("unknownfn") and chance(draw, 6):
         return ("call", draw(st.sampled_from(UNKNOWN_FUNCS)), [sub("any") for _ in range(draw(st.integers(0, 2)))])
     cands = [n for n, (_, r) in table.items() if r == ty or ty == "any" or r == "any"] if chance(draw, 70) else list(table)
     name = draw(st.sampled_from(sorted(cands or table)))
@@ -371,7 +400,7 @@ def stmt_expr(draw, ty="any"):
 def cases(draw, mode: str | None = None):
     mode = mode or pick(draw, [(55, "restricted"), (45, "unrestricted")])
     strict = chance(draw, 15)
-    if mode == "unrestricted" and chance(draw, 65):
+    if mode == "unrestricted" and on("block") and chance(draw, 65):
         tree = ("block", stmts(draw, 2, 3), draw(st.sampled_from(["  ", "    ", "\t"])))
         tree = ("block", tree[1], tree[2])
     else:

@@ -8,6 +8,8 @@ real upstream code runs, not a re-implementation.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import signal
 import types
@@ -93,11 +95,13 @@ def run_py(expr: str, bindings_json: dict, mode: str, strict: bool, flavour: str
 
     stub._unrestricted_eval = unres
     signal.setitimer(signal.ITIMER_REAL, timeout)
+    sink = io.StringIO()  # asteval prints interpreter errors to stderr
     try:
-        if mode == "restricted":
-            v = eval_expr_with_mapping(expr, fb, strict=strict)
-        else:
-            v = ObjectTransformer._eval_expr(stub, expr, fb)
+        with contextlib.redirect_stderr(sink), contextlib.redirect_stdout(sink):
+            if mode == "restricted":
+                v = eval_expr_with_mapping(expr, fb, strict=strict)
+            else:
+                v = ObjectTransformer._eval_expr(stub, expr, fb)
         out = {"ok": encode(v)}
     except Timeout:
         out = {"err": "Timeout", "message": "timeout"}

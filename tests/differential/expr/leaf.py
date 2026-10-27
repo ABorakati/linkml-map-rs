@@ -64,8 +64,11 @@ def rfloat(rng: random.Random) -> float:
         return rng.randint(-10**6, 10**6) / rng.choice([1, 2, 4, 8, 10, 100, 1000])  # exact halves and friends
     if r < 0.8:
         return rng.randint(-10**3, 10**3) + rng.choice([0.5, 0.25, 0.125, 0.05, 0.005, 0.0005, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85])
-    if r < 0.9:
+    if r < 0.85:
         return float(f"{rng.randint(1, 10**rng.randint(1, 17))}e{rng.randint(-330, 310)}")
+    if r < 0.93:
+        # 2^46..2^53 binades: spacing 1/64..1, where shortest-repr ties (x.25, x.125) appear
+        return (2**52 + rng.getrandbits(52)) * 2.0 ** rng.randint(-6, 0) * rng.choice([1, 1, 0.5, 0.25])
     return rng.uniform(-1e6, 1e6)
 
 
@@ -175,6 +178,38 @@ def fn_spec(name, kinds, p_wrong=0.12, extra=None):
     return {"rust": f"fn:{name}", "gen": gen, "ref": lambda *a: FN(name)(*a)}
 
 
+LEAF_REASONS = {
+    "py_eq": "int vs float equality: CPython compares exactly, Rust casts the int to f64 (2**53+1 == 2.0**53)",
+    "try_numeric": "float() accepts unicode decimal digits; Rust's parse does not (and Rust accepts \\x1c-\\x1f padding that CPython rejects)",
+    "parse_float": "float() accepts unicode decimal digits; Rust's parse does not (and Rust accepts \\x1c-\\x1f padding that CPython rejects)",
+    "float_repr": "shortest-repr ties: Python rounds half to even (x.2), Rust's `{:e}` rounds half up (x.3)",
+    "float_repr_io": "shortest-repr ties: Python rounds half to even (x.2), Rust's `{:e}` rounds half up (x.3)",
+    "repr_str": "repr() escapes every non-printable code point (Cc, Cf, Zs except space, Zl, Zp, Co, Cn); Rust escapes only ASCII control characters",
+    "py_repr": "repr() escapes every non-printable code point; Rust escapes only ASCII control characters",
+    "py_str": "str(list/dict) uses repr() of elements: non-printable escapes missing",
+    "str": "str(list/dict) uses repr() of elements: non-printable escapes missing; float tie digits",
+    "str_float": "shortest-repr ties: Python rounds half to even, Rust half up",
+    "decimal": "Decimal() accepts unicode digits, leading/trailing underscores, \\x1c-\\x1f padding; Rust accepts ASCII digits and single inner underscores only",
+    "int": "int() and float(): Rust accepts \\x1c-\\x1f padding (CPython rejects); floats beyond i64 raise 'big integers' in Rust",
+    "int_any": "int(float) beyond i64 raises in Rust (Python big int); \\x1c-\\x1f padding accepted by Rust",
+    "float": "Rust float() accepts \\x1c-\\x1f padding that CPython rejects",
+    "float_any": "Rust float() accepts \\x1c-\\x1f padding that CPython rejects",
+    "abs": "i64 overflow (abs(i64::MIN)) -> 'big integers' error instead of a Python big int",
+    "sum": "i64 overflow in sum -> 'big integers' error instead of a Python big int",
+    "round1": "round(float) beyond i64 -> 'big integers' error instead of a Python big int",
+    "round2": "round(int, -n) beyond i64 -> 'big integers' error instead of a Python big int",
+    "floor": "floor(float) beyond i64 -> 'big integers' error instead of a Python big int",
+    "ceil": "ceil(float) beyond i64 -> 'big integers' error instead of a Python big int",
+    "title": "Unicode data skew: Rust's tables are newer than CPython 3.13's (Unicode 16 vs 15.1)",
+    "capitalize": "Unicode data skew: Rust's tables are newer than CPython 3.13's (Unicode 16 vs 15.1)",
+    "upper": "Unicode data skew: Rust's tables are newer than CPython 3.13's (Unicode 16 vs 15.1)",
+    "startswith": "a list prefix raises TypeError upstream; Rust answers false",
+    "endswith": "a list suffix raises TypeError upstream; Rust answers false",
+    "contains": "an unhashable needle raises TypeError upstream; Rust answers false",
+    "slugify": "transliteration tables differ: deunicode (Rust) vs text-unidecode (python-slugify)",
+    "is_numeric": "Rust accepts \\x1c-\\x1f padding that CPython float() rejects",
+}
+
 SPECS: dict[str, dict] = {
     "py_eq": {"rust": "py_eq", "gen": lambda r: [rvalue(r, 1), rvalue(r, 1)] if r.random() < 0.5 else [rfloat(r), rint(r)] if r.random() < 0.5 else [rscalar(r)] * 2, "ref": lambda a, b: a == b},
     "truthy": {"rust": "truthy", "gen": lambda r: [rvalue(r)], "ref": _bool},
@@ -251,11 +286,18 @@ def main() -> None:
     ap.add_argument("--only", default="")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--show", type=int, default=6)
+    ap.add_argument("--write-corpus", type=Path, default=None, help="write replay entries (agreeing samples + shrunk-by-size divergences)")
+    ap.add_argument("--agree-per-leaf", type=int, default=25)
+    ap.add_argument("--div-per-class", type=int, default=4)
+    ap.add_argument("--expect-clean", default="", help="comma list of leaves that must show no divergence (exit 1 otherwise)")
     a = ap.parse_args()
     oracle = Oracle()
     only = set(filter(None, a.only.split(",")))
     summary = {}
     allrows = []
+    corpus: list[dict] = []
+    failed_clean: list[str] = []
+    clean = set(filter(None, a.expect_clean.split(",")))
     for name, spec in SPECS.items():
         if only and name not in only:
             continue
@@ -276,6 +318,7 @@ def main() -> None:
         cases = [{"leaf": spec["rust"], "args": [encode(x) for x in args]} for args in inputs]
         rs = oracle.run(cases)
         bad = collections.defaultdict(list)
+        agree_rows = []
         for args, e, r in zip(inputs, exp, rs):
             if r.get("err") == "unrepresentable":
                 continue
@@ -287,8 +330,20 @@ def main() -> None:
             elif canon(e["ok"]) != canon(r["ok"]):
                 cls = "value"
             else:
+                agree_rows.append((args, e))
                 continue
             bad[cls].append((args, e, r))
+        if name in clean and bad:
+            failed_clean.append(name)
+        if a.write_corpus:
+            pick = random.Random(f"corp:{name}")
+            for args, e in pick.sample(agree_rows, min(a.agree_per_leaf, len(agree_rows))):
+                corpus.append({"leaf": spec["rust"], "ref": name, "args": [encode(x) for x in args], "upstream": {k: v for k, v in e.items() if k in ("ok", "err")}, "status": "pass", "class": "leaf-agree", "reason": ""})
+            for cls, rows in bad.items():
+                rows.sort(key=lambda t: len(repr(t[0])))
+                chosen = rows[: a.div_per_class // 2] + pick.sample(rows[a.div_per_class // 2 :], min(a.div_per_class - a.div_per_class // 2, max(0, len(rows) - a.div_per_class // 2)))
+                for args, e, r in chosen:
+                    corpus.append({"leaf": spec["rust"], "ref": name, "args": [encode(x) for x in args], "upstream": {k: v for k, v in e.items() if k in ("ok", "err")}, "status": "divergence", "class": f"leaf:{name}:{cls}", "reason": LEAF_REASONS.get(name, "see tests/differential/expr/leaf.py output")})
         total_bad = sum(len(v) for v in bad.values())
         summary[name] = {"n": len(inputs), "diverge": total_bad, **{k: len(v) for k, v in bad.items()}}
         print(f"{name:22s} n={len(inputs)} diverge={total_bad} " + " ".join(f"{k}={len(v)}" for k, v in bad.items()), flush=True)
@@ -300,6 +355,11 @@ def main() -> None:
                 print(f"    [{cls}] {name}({', '.join(show(encode(x)) for x in args)})\n        py={pr}\n        rs={rr}")
             for args, e, r in rows:
                 allrows.append({"leaf": name, "cls": cls, "args": [encode(x) for x in args], "py": e, "rs": r})
+    if a.write_corpus:
+        a.write_corpus.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in corpus) + "\n", encoding="utf-8")
+    if failed_clean:
+        print("EXPECTED CLEAN BUT DIVERGED:", failed_clean)
+        sys.exit(1)
     if a.out:
         a.out.mkdir(parents=True, exist_ok=True)
         (a.out / "leaf_summary.json").write_text(json.dumps(summary, indent=1))

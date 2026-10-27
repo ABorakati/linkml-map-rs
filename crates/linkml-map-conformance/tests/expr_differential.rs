@@ -8,6 +8,8 @@
 //! `cargo test -p linkml-map-conformance --test expr_differential -- --ignored`.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use linkml_map_conformance::exprfuzz::{check_entry, install_quiet_panic_hook};
 use serde_json::Value as J;
@@ -39,6 +41,21 @@ fn entries() -> Vec<(String, J)> {
     out
 }
 
+/// `check_entry` on a worker thread with a deadline: a few known divergences are
+/// hangs (unbounded allocation), which must not stall the suite.
+fn check_with_timeout(entry: &J) -> Result<(), String> {
+    let (tx, rx) = mpsc::channel();
+    let entry = entry.clone();
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let _ = tx.send(check_entry(&entry));
+        })
+        .expect("spawn");
+    rx.recv_timeout(Duration::from_secs(20))
+        .unwrap_or_else(|_| Err("timed out (hang)".to_owned()))
+}
+
 fn run_with_status(status: &str) -> Vec<String> {
     install_quiet_panic_hook();
     let mut failures = Vec::new();
@@ -47,8 +64,11 @@ fn run_with_status(status: &str) -> Vec<String> {
         if e["status"].as_str() != Some(status) {
             continue;
         }
+        if e.get("hazard").is_some() {
+            continue; // known to hang or exhaust memory: documented, never replayed
+        }
         n += 1;
-        if let Err(msg) = check_entry(&e) {
+        if let Err(msg) = check_with_timeout(&e) {
             let what = e
                 .get("expr")
                 .or_else(|| e.get("leaf"))
@@ -74,7 +94,7 @@ fn corpus_agreeing_entries_still_match_upstream() {
 }
 
 #[test]
-#[ignore = "divergence: known gaps vs upstream, see tests/differential/expr/corpus/divergences*.jsonl"]
+#[ignore = "divergence: known gaps vs upstream, see tests/differential/expr/corpus (status: divergence)"]
 fn corpus_known_divergences_match_upstream() {
     let failures = run_with_status("divergence");
     assert!(
@@ -92,7 +112,7 @@ fn corpus_reports_divergences_that_have_been_fixed() {
     install_quiet_panic_hook();
     let fixed: Vec<String> = entries()
         .into_iter()
-        .filter(|(_, e)| e["status"].as_str() == Some("divergence") && check_entry(e).is_ok())
+        .filter(|(_, e)| e["status"].as_str() == Some("divergence") && e.get("hazard").is_none() && check_with_timeout(e).is_ok())
         .map(|(id, e)| format!("{id} [{}]", e["class"].as_str().unwrap_or("")))
         .collect();
     if !fixed.is_empty() {
