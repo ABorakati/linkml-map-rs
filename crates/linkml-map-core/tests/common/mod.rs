@@ -327,6 +327,29 @@ pub fn arb_expr_tree(wild: bool) -> BoxedStrategy<String> {
                         Some(c) => format!("[{e} for {v} in {it} if {c}]"),
                         None => format!("[{e} for {v} in {it}]"),
                     }),
+                1 => prop::collection::vec(inner.clone(), 0..4)
+                    .prop_map(|items| format!("{{{}}}", items.join(", "))),
+                1 => (inner.clone(), inner.clone(), inner.clone(), inner.clone()).prop_map(
+                    |(k, v, it, c)| format!("{{{k}: {v} for q in {it} if {c}}}")
+                ),
+                1 => (inner.clone(), inner.clone())
+                    .prop_map(|(e, it)| format!("{{{e} for q in {it}}}")),
+                1 => (inner.clone(), inner.clone(), inner.clone(), inner.clone()).prop_map(
+                    |(e, a, b, c)| format!("({e} for q in {a} for r in {b} if {c})")
+                ),
+                2 => (
+                    prop::sample::select(FUNCS.to_vec()),
+                    prop::collection::vec(inner.clone(), 0..3),
+                    prop::collection::vec(
+                        (prop::sample::select(EXPR_NAMES.to_vec()), inner.clone()),
+                        0..3,
+                    ),
+                )
+                    .prop_map(|(f, args, kw)| {
+                        let mut all = args;
+                        all.extend(kw.into_iter().map(|(k, v)| format!("{k}={v}")));
+                        format!("{f}({})", all.join(", "))
+                    }),
                 1 => inner.prop_map(|a| format!("(lambda q: {a})(1)")),
             ]
         })
@@ -885,4 +908,49 @@ pub fn arb_structured_spec() -> BoxedStrategy<Json> {
 /// Structured specs and pure junk, 3:1.
 pub fn arb_spec_json() -> BoxedStrategy<Json> {
     prop_oneof![3 => arb_structured_spec(), 1 => arb_spec_junk()].boxed()
+}
+
+// ── YAML-safe strings ─────────────────────────────────────────────────────────
+
+/// Strings and keys of every awkward kind: YAML-1.1 booleans/nulls/numbers/timestamps,
+/// indicators, whitespace edge cases, long lines that fold, non-ASCII, control characters.
+pub fn arb_tricky_string() -> impl Strategy<Value = String> {
+    arb_any_tricky_string().prop_filter("1.1/1.2 ambiguity", |s| !ambiguous_between_1_1_and_1_2(s))
+}
+
+pub fn arb_any_tricky_string() -> impl Strategy<Value = String> {
+    prop_oneof![
+        3 => any::<String>(),
+        2 => "\\PC{0,200}",
+        2 => "[ -~]{0,40}",
+        2 => prop::sample::select(vec![
+            "", " ", "  ", "yes", "No", "ON", "off", "y", "N", "true", "False", "null", "Null", "~",
+            "NULL", "0", "-1", "+1", "1_000", "0o17", "017", "0x1f", "1:30", "1:30:45", "1e3", "1.5e+3",
+            ".5", "5.", ".inf", "-.INF", ".NaN", "2001-12-14", "2001-12-14t21:59:43.10-05:00",
+            "2001-12-14 21:59:43.10 -5", "=", "<<", "-", "- a", "? a", ": a", "a: b", "a #b", "#a",
+            "&a", "*a", "!a", "|", ">", "%a", "@a", "`a", "{a}", "[a]", "a,b", "'", "\"", "a'b\"c",
+            "tab\there", "line1\nline2", "trailing\n", "\nleading", "a\n\nb", "  lead", "trail  ",
+            "a  b", "\u{0}", "\u{7}", "\u{85}", "\u{2028}", "\u{2029}", "\u{feff}", "\u{a0}",
+            "é", "日本語", "🦀", "\u{10ffff}", "\r", "\r\n", "a\rb",
+        ]).prop_map(str::to_string),
+        1 => "[a-z ]{60,260}",
+    ]
+}
+
+/// Whether a YAML 1.2 core-schema parser would read the plain scalar `s` as something
+/// other than a string although a YAML 1.1 resolver (PyYAML) reads it as a string.
+/// PyYAML writes such strings plain, e.g. `1e3` (a 1.1 float needs a `.`), so a round trip
+/// through `serde_yaml_ng` is only lossless for the rest.
+pub fn ambiguous_between_1_1_and_1_2(s: &str) -> bool {
+    // U+0085 (NEL) is a YAML 1.1 line break; PyYAML itself writes it inside a quoted scalar
+    // and reads it back as a space, so no parser can round-trip it (the port is faithful).
+    if s.contains('\u{85}') {
+        return true;
+    }
+    let t = s.trim();
+    let unsigned = t.trim_start_matches(['+', '-']);
+    t.parse::<f64>().is_ok()
+        || unsigned.starts_with("0o")
+        || unsigned.starts_with("0x")
+        || unsigned.starts_with("0b")
 }

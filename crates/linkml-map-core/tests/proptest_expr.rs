@@ -233,6 +233,31 @@ deep_case!(
     vec!["1"; DEPTH].join(" ** ")
 );
 deep_case!(
+    #[ignore = "bug: stack overflow (SIGABRT) on ~10k chained `a if x else b` (new IfExp)"]
+    deep_ternary_chain,
+    format!("{}1", "1 if x else ".repeat(DEPTH))
+);
+deep_case!(
+    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested dict displays (new Dict)"]
+    deep_dict_nesting,
+    nest("{1: ", "1", "}", DEPTH)
+);
+deep_case!(
+    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested set/brace displays (new Set)"]
+    deep_set_nesting,
+    nest("{", "1", "}", DEPTH)
+);
+deep_case!(
+    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested keyword-argument calls (new Call.keywords)"]
+    deep_keyword_calls,
+    nest("dict(a=", "1", ")", DEPTH)
+);
+deep_case!(
+    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested generator expressions (new Comp)"]
+    deep_generators,
+    nest("(1 for q in ", "x", ")", DEPTH)
+);
+deep_case!(
     #[ignore = "bug: statement parser stack overflow on deeply nested `if` blocks"]
     deep_if_blocks,
     {
