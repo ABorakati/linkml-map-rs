@@ -144,8 +144,9 @@ fn construct_yaml_bool(text: &str) -> Result<Value, LoadError> {
 fn int_value(n: i128) -> Value {
     match i64::try_from(n) {
         Ok(i) => Value::Int(i),
-        Err(_) => Decimal::parse_python(&n.to_string())
-            .map_or(Value::Str(n.to_string()), |d| Value::Decimal(d)),
+        Err(_) => {
+            Decimal::parse_python(&n.to_string()).map_or(Value::Str(n.to_string()), Value::Decimal)
+        }
     }
 }
 

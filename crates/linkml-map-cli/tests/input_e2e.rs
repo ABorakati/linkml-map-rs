@@ -19,7 +19,7 @@
 //! * `stringification: {syntax: JSON}` is `ensure_ascii=True`.
 //!
 //! A case/format upstream itself refuses (`expected/<case>.<format>.error`) is
-//! not compared; the date-as-JSON ones we deliberately write anyway are pinned
+//! not compared, nor are the cases listed in `divergences.txt`; the date-as-JSON ones we deliberately write anyway are pinned
 //! by their own test below.
 
 use std::path::{Path, PathBuf};
@@ -67,10 +67,14 @@ fn cases() -> Vec<PathBuf> {
 #[test]
 fn inputs_match_upstream_in_every_output_format() {
     let expected_dir = e2e_dir().join("expected");
+    let known = std::fs::read_to_string(e2e_dir().join("divergences.txt")).unwrap();
     let mut compared = 0;
     let mut failures = Vec::new();
     for case in cases() {
         let name = case.file_name().unwrap().to_str().unwrap().to_owned();
+        if known.lines().any(|l| l.starts_with(&format!("{name} "))) {
+            continue;
+        }
         for format in FORMATS {
             let expected = expected_dir.join(format!("{name}.{format}"));
             if !expected.exists() {

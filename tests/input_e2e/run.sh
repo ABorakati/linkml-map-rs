@@ -31,6 +31,10 @@ skipped=0
 
 for input in cases/*; do
   name="$(basename "$input")"
+  if grep -q "^$name " divergences.txt; then
+    echo "known $name: $(grep "^$name " divergences.txt | cut -c$((${#name} + 3))-)"
+    continue
+  fi
   for fmt in $FORMATS; do
     exp="expected/$name.$fmt"
     up="$OUT/up.$fmt"

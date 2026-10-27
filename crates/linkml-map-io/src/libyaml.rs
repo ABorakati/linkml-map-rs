@@ -19,6 +19,7 @@ use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
+#[allow(clippy::unsafe_removed_from_name)] // `sys` is the libyaml C API; every use is below
 use unsafe_libyaml as sys;
 
 /// A parser event (libyaml's `yaml_event_t`, copied out).
