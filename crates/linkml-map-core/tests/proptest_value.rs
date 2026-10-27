@@ -157,21 +157,6 @@ fn decimal_non_finite_literals_are_reported_as_such() {
 
 // ── Value serde ──────────────────────────────────────────────────────────────
 
-/// Replace every float by a multiple of 0.001 within +-1e9: at most 13 significant
-/// digits and a small exponent, which every JSON float parser reads back exactly.
-fn short_floats(v: &Value) -> Value {
-    match v {
-        Value::Float(f) => Value::Float((f.clamp(-1e9, 1e9) * 1000.0).round() / 1000.0),
-        Value::List(items) => Value::List(items.iter().map(short_floats).collect()),
-        Value::Map(m) => Value::Map(
-            m.iter()
-                .map(|(k, v)| (k.clone(), short_floats(v)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
-}
-
 /// `serde_json` without its `float_roundtrip` feature parses a float with more than
 /// 15 significant digits to a neighbouring `f64` about one time in ten; CPython's
 /// `json.loads` (and Rust's own `str::parse`) always round correctly. Every JSON/JSONL

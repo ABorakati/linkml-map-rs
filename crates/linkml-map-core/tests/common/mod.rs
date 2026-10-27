@@ -954,3 +954,25 @@ pub fn ambiguous_between_1_1_and_1_2(s: &str) -> bool {
         || unsigned.starts_with("0x")
         || unsigned.starts_with("0b")
 }
+
+/// Replace every float by a multiple of 0.001 within +-1e9: at most 13 significant
+/// digits and a small exponent, which every JSON float parser reads back exactly
+/// (serde_json without `float_roundtrip` does not for longer ones).
+pub fn short_floats(v: &Value) -> Value {
+    match v {
+        Value::Float(f) => Value::Float((f.clamp(-1e9, 1e9) * 1000.0).round() / 1000.0),
+        Value::List(items) => Value::List(items.iter().map(short_floats).collect()),
+        Value::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), short_floats(v))).collect()),
+        other => other.clone(),
+    }
+}
+
+/// A list of 0..6 records with 1..5 safe keys (`[a-z_]{1,6}`) each and the given value strategy.
+pub fn arb_records(value: BoxedStrategy<Value>) -> BoxedStrategy<Vec<Value>> {
+    prop::collection::vec(
+        prop::collection::vec(("[a-z_]{1,6}", value), 1..5)
+            .prop_map(|pairs| Value::Map(pairs.into_iter().collect::<IndexMap<_, _>>())),
+        0..6,
+    )
+    .boxed()
+}
