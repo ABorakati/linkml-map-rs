@@ -51,14 +51,19 @@ the same basis on which `tests/compliance/` already vendors upstream fixture fil
 | `writers/output_streams.py`                      | `writers/output_streams.py`                 |
 | `utils/loaders.py`                               | `utils/loaders.py`                          |
 
-### Newly vendored (2026-07-07 pin bump)
+### Newly vendored (2026-10-27 pin bump to `v0.6.0-rc1`)
 
-`transformer/transformer.py`, `utils/join_utils.py`, and `utils/expression_locations.py`
-were added as part of the 2026-07-07 pin bump to `66cbcc31b5169f8f95a70f164161a4cee1c6a2bb`
-— they weren't previously relevant to a mirrored port, but the engine port landing
-alongside this pin bump (implicit-join synthesis from expression references, and the
-dotted-`populated_from` join fix) mirrors logic from them. See
-[`docs/upstream-sync-2026-07-07.md`](../../docs/upstream-sync-2026-07-07.md) for context.
+Eight files were added when the pin moved to `1323cc8`, because the Rust port now
+mirrors them: `transformer/content_id.py` (content-hash ids, #342),
+`transformer/pivot.py` and `functions/unit_conversion.py` (blocks extracted from
+`object_transformer.py`), `spec_normalizer.py` (extracted from `Transformer`),
+`utils/enum_index.py` (target-enum resolution), `utils/serialization.py`
+(exact decimals), `utils/loaders.py` (`load_specification`) and
+`writers/output_streams.py` (the stream writers, including Parquet/DuckDB). The
+other twelve files were re-fetched and now match `1323cc8` byte for byte.
+`transformer/transformer.py`, `utils/join_utils.py` and
+`utils/expression_locations.py` were first vendored in the 2026-07-07 bump; see
+[`docs/upstream-sync-2026-07-07.md`](../../docs/upstream-sync-2026-07-07.md).
 
 ### Discovery note — inverter path
 
@@ -69,9 +74,13 @@ not `transformer/`). The Rust port is in
 
 ### Files not present at pinned commit
 
-None of the requested files were absent at commit `66cbcc31b5169f8f95a70f164161a4cee1c6a2bb`.
-All twelve modules were fetched successfully (the original nine were not re-diffed against
-the new pin during this bump; only the three new files were freshly fetched).
+All twenty files in the table above exist at `1323cc8`. The only deliberate gaps
+are upstream modules that are **not vendored**, although some are mirrored by the
+Rust port: `validator.py`, `cli/cli.py`, `inference/inference.py`,
+`loaders/data_loaders.py`, `spec_scan.py`, `utils/spec_merge.py`,
+`utils/multi_file_transformer.py`, `session.py`, `transformer/join_engine.py`,
+`transformer/duckdb_transformer.py` and the `compiler/` package. Read them from an
+upstream checkout at `1323cc8` when porting.
 
 ## Do NOT
 
