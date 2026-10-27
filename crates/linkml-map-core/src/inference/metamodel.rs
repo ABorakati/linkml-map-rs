@@ -100,6 +100,9 @@ impl Node {
             Value::Float(f) => Node::Float(*f),
             // A decimal only arises from engine coercion, never from a schema or spec.
             Value::Decimal(d) => Node::Str(d.to_sci_string()),
+            // Schemas and specs are loaded as YAML 1.2, so a date never arrives
+            // as a `Temporal`; if one does, keep its `str()` text.
+            Value::Temporal(t) => Node::Str(t.to_string()),
             Value::Str(s) => Node::Str(s.clone()),
             Value::List(items) => Node::list(items.iter().map(Node::from_value).collect()),
             Value::Map(m) => Node::dict(
