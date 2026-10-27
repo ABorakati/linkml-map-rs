@@ -61,7 +61,52 @@ pub(crate) fn float_digits(f: f64) -> (bool, String, i32) {
     let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
     let digits = digits.trim_end_matches('0');
     let digits = if digits.is_empty() { "0" } else { digits };
-    (f.is_sign_negative(), digits.to_owned(), exp10 + 1)
+    let digits = even_on_tie(f.abs(), digits, exp10 + 1);
+    (f.is_sign_negative(), digits, exp10 + 1)
+}
+
+/// Resolve a shortest-digits tie the way CPython does.
+///
+/// When the exact value lies halfway between two candidates of the shortest
+/// length (`900719925474099.25` between `...099.2` and `...099.3`), CPython's
+/// `dtoa` takes the one with an even last digit, where Rust's formatter may
+/// take the odd one. A tie needs a shortest form of at least 15 digits and an
+/// exact expansion one digit longer, which only doubles in `[2**12, 1e18)` can
+/// have (their fractions need at most 40 digits), so nothing else is examined.
+/// `decpt` is the decimal point position of `digits` (`0.<digits> x 10^decpt`).
+fn even_on_tie(f: f64, digits: &str, decpt: i32) -> String {
+    let last = digits.as_bytes()[digits.len() - 1];
+    let odd = (last - b'0') % 2 == 1;
+    if !odd || last == b'9' || digits.len() < 15 || !(4096.0..1e18).contains(&f) {
+        return digits.to_owned();
+    }
+    let exact: String = format!("{f:.40}").chars().filter(|c| *c != '.').collect();
+    let exact = exact.trim_end_matches('0');
+    if exact.len() != digits.len() + 1 || !exact.ends_with('5') {
+        return digits.to_owned();
+    }
+    // The even candidate is the neighbour of the odd one: above it when
+    // `digits` is the truncation of the exact value, below it otherwise.
+    let neighbour_digit = if exact.starts_with(digits) {
+        last + 1
+    } else {
+        last - 1
+    };
+    let neighbour = format!(
+        "{}{}",
+        &digits[..digits.len() - 1],
+        char::from(neighbour_digit)
+    );
+    // Both candidates are equidistant from `f`; use the neighbour only if it
+    // also reads back as `f` (the rounding interval can be lopsided).
+    let reads_back = format!("{neighbour}e{}", decpt - neighbour.len() as i32)
+        .parse::<f64>()
+        .is_ok_and(|value| value == f);
+    if reads_back {
+        neighbour
+    } else {
+        digits.to_owned()
+    }
 }
 
 /// Python `repr(str)`: single quotes, switching to double quotes when the

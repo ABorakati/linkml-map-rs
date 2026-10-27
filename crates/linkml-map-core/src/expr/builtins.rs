@@ -38,7 +38,7 @@ use super::eval::{eval_subscript, membership, py_str};
 use super::{compound, pystr, slugify};
 use crate::decimal::Decimal;
 use crate::pyfmt::py_repr_str;
-use crate::value::Value;
+use crate::value::{Value, cmp_int_float};
 
 /// A built-in's body: called with the (already wrapper-processed) positional
 /// arguments, it checks its own arity as the Python callable would.
@@ -258,7 +258,7 @@ fn check_arity(name: &str, args: &[Value], min: usize, max: usize) -> ExprResult
 }
 
 fn overflow<T>() -> ExprResult<T> {
-    err("integer result out of range (big integers are not supported)")
+    Err(ExprError::big_int())
 }
 
 /// The `str` a `str.<method>` descriptor is applied to.
@@ -434,28 +434,6 @@ fn as_num(v: &Value) -> Option<Num<'_>> {
         Value::Decimal(d) => Some(Num::Dec(d)),
         _ => None,
     }
-}
-
-/// Exact comparison of an integer with a float; `None` for NaN.
-fn cmp_int_float(i: i64, f: f64) -> Option<Ordering> {
-    if f.is_nan() {
-        return None;
-    }
-    // 2^63 is exactly representable; every i64 is below it.
-    if f >= 9_223_372_036_854_775_808.0 {
-        return Some(Ordering::Less);
-    }
-    if f < -9_223_372_036_854_775_808.0 {
-        return Some(Ordering::Greater);
-    }
-    let floor = f.floor();
-    // `floor` is within i64 here.
-    let fi = floor as i64;
-    Some(i.cmp(&fi).then(if f > floor {
-        Ordering::Less
-    } else {
-        Ordering::Equal
-    }))
 }
 
 fn cmp_num(a: &Num<'_>, b: &Num<'_>) -> Option<Ordering> {
@@ -732,7 +710,7 @@ fn bool_(args: &[Value]) -> ExprResult<Value> {
 
 /// A float as an `int`: `ValueError`/`OverflowError` for NaN and infinities
 /// (`int(float("nan"))`), and for anything outside `i64`.
-fn float_to_int(f: f64) -> ExprResult<Value> {
+pub(super) fn float_to_int(f: f64) -> ExprResult<Value> {
     if f.is_nan() {
         return err("cannot convert float NaN to integer");
     }

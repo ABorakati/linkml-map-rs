@@ -64,12 +64,18 @@ pub enum Token {
     Eof,
 }
 
+/// How many brackets (`(`, `[`, `{`) may be open at once. CPython's tokenizer
+/// (`MAXLEVEL` in `tokenizer.c`) raises `SyntaxError: too many nested
+/// parentheses` for a 201st; stopping here also bounds the parser's recursion.
+pub const MAX_BRACKET_LEVEL: usize = 200;
+
 /// Tokenize `src` into a token stream terminated by [`Token::Eof`].
 pub fn lex(src: &str) -> ExprResult<Vec<Token>> {
     let chars: Vec<char> = src.chars().collect();
     let mut tokens = Vec::new();
     let mut i = 0usize;
     let n = chars.len();
+    let mut level = 0usize;
 
     while i < n {
         let c = chars[i];
@@ -220,12 +226,25 @@ pub fn lex(src: &str) -> ExprResult<Vec<Token>> {
             '~' => Token::Tilde,
             '<' => Token::Lt,
             '>' => Token::Gt,
-            '(' => Token::LParen,
-            ')' => Token::RParen,
-            '[' => Token::LBracket,
-            ']' => Token::RBracket,
-            '{' => Token::LBrace,
-            '}' => Token::RBrace,
+            '(' | '[' | '{' => {
+                if level >= MAX_BRACKET_LEVEL {
+                    return Err(ExprError::Lex("too many nested parentheses".into()));
+                }
+                level += 1;
+                match c {
+                    '(' => Token::LParen,
+                    '[' => Token::LBracket,
+                    _ => Token::LBrace,
+                }
+            }
+            ')' | ']' | '}' => {
+                level = level.saturating_sub(1);
+                match c {
+                    ')' => Token::RParen,
+                    ']' => Token::RBracket,
+                    _ => Token::RBrace,
+                }
+            }
             ',' => Token::Comma,
             ':' => Token::Colon,
             '=' => Token::Assign,
