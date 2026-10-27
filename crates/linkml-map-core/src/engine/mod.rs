@@ -281,6 +281,26 @@ impl<'s> ObjectTransformer<'s> {
         )
     }
 
+    /// [`ObjectTransformer::map_object_with_derivation`] with a pre-built
+    /// [`ObjectIndex`]: the FK-pipeline entry point for a streaming block that
+    /// names its own class derivation (see [`ObjectTransformer::map_object_with_index`]).
+    pub fn map_object_with_derivation_and_index(
+        &self,
+        source_obj: &Value,
+        source_type: Option<&str>,
+        class_derivation: &ClassDerivation,
+        index: &ObjectIndex,
+    ) -> Result<Value> {
+        let source_type = self.resolve_source_type(source_type)?;
+        let idx_ref = if index.is_empty() { None } else { Some(index) };
+        self.map_object_with_type_and_derivation(
+            source_obj,
+            &source_type,
+            idx_ref,
+            Some(class_derivation),
+        )
+    }
+
     /// Transform a single source object with a pre-built [`ObjectIndex`].
     ///
     /// This is the FK-pipeline entry point: the caller builds the index ONCE
