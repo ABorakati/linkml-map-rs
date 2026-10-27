@@ -1,6 +1,6 @@
 """`linkml_map`-compatible ObjectTransformer backed by the Rust engine.
 
-Drop-in for the common ``ObjectTransformer(source_schemaview=..., specification=...)``
+Drop-in for the common ``ObjectTransformer(specification=..., source_schemaview=...)``
 + ``.map_object(obj)`` path. Install this package **instead of** upstream
 ``linkml-map`` so existing imports resolve here:
 
@@ -8,60 +8,102 @@ Drop-in for the common ``ObjectTransformer(source_schemaview=..., specification=
 
 Backed by the compiled ``linkml_map_rs`` extension (build with maturin).
 
-Covered: ``map_object``, ``create_transformer_specification``, ``index`` (no-op —
-the Rust engine builds any FK index internally). NOT covered: SchemaMapper,
-the inverter, Python/SQL compilers, JSON-schema validation.
+Covered: ``map_object``, ``create_transformer_specification``,
+``load_transformer_specification``, ``load_source_schema``, ``index`` (no-op —
+the Rust engine builds any FK index internally), ``strict``. NOT covered:
+SchemaMapper, the inverter, Python/SQL compilers, JSON-schema validation,
+``derived_specification``.
+
+Constructor (upstream ``173121b``): ``specification`` may be a loaded
+specification, a dict (deep-copied, so the caller's dict is untouched) or a YAML
+file path (``str`` / ``Path``); ``source_schemaview`` / ``target_schemaview`` may
+be a ``SchemaView``, a ``SchemaDefinition`` or a schema file path. After
+construction ``specification`` is a loaded specification and the schema views are
+``SchemaView`` objects (or ``None``).
+
+Divergences from upstream, all deliberate:
+
+* the loaded specification is the dict-backed stand-in described in
+  ``linkml_map._specification``, not a pydantic model;
+* a ``str`` that is not an existing file but contains a newline is read as YAML
+  text (a superset kept from earlier releases of this shim; upstream raises
+  ``FileNotFoundError``);
+* ``unrestricted_eval`` is accepted and stored but has no effect: the Rust
+  engine merges the restricted and unrestricted evaluators, so it evaluates the
+  statement blocks that upstream only runs when the flag is set;
+* ``spec_messages`` is always an empty list (the deprecation scan that fills it
+  upstream is not ported);
+* source-schema patches are applied inside the engine, not to the
+  ``source_schemaview`` object.
 """
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any, Optional
 
 import linkml_map_rs
 
+from linkml_map._specification import TransformationSpecification
+from linkml_map.utils.loaders import load_specification
 
-def _schema_to_yaml(sv: Any) -> str:
-    """Coerce a source/target schema argument to a YAML string.
+# Assigning one of these discards the engine built for the previous values.
+_ENGINE_INPUTS = frozenset(
+    {"specification", "source_schemaview", "target_schemaview", "strict"}
+)
 
-    Accepts a linkml_runtime SchemaView, a file path, or a YAML string.
+
+def _is_yaml_text(value: str) -> bool:
+    """A ``str`` that names no existing file but spans lines is YAML text, not a path."""
+    return not os.path.exists(value) and "\n" in value
+
+
+def _missing_file(path: str) -> FileNotFoundError:
+    # A FileNotFoundError, as upstream raises; also a ValueError, as this shim
+    # raised (at map_object time) before it loaded schemas in the constructor.
+    return linkml_map_rs.PathNotFoundError(2, "No such file or directory", path)
+
+
+def _load_schemaview(schema: Any) -> Any:
+    """Coerce a schema argument to a ``SchemaView`` (mirrors upstream ``__post_init__``)."""
+    if schema is None:
+        return None
+    from linkml_runtime import SchemaView
+    from linkml_runtime.linkml_model import SchemaDefinition
+
+    if isinstance(schema, os.PathLike):
+        path = os.fspath(schema)
+        if not os.path.exists(path):
+            raise _missing_file(path)
+        return SchemaView(path)
+    if isinstance(schema, str):
+        if not os.path.exists(schema) and not _is_yaml_text(schema):
+            raise _missing_file(schema)
+        return SchemaView(schema)  # a file path, or YAML text
+    if isinstance(schema, SchemaDefinition):
+        return SchemaView(schema)
+    return schema
+
+
+def _load_specification(spec: Any) -> Any:
+    """Coerce a specification argument to a loaded specification.
+
+    A dict is deep-copied first (upstream ``__post_init__``), so the caller's dict
+    is not normalised. Anything else (e.g. a ``linkml_runtime`` dataclass) is kept
+    as is and handed to the engine, as earlier releases of this shim did.
     """
-    schema = getattr(sv, "schema", None)
-    if schema is not None:  # linkml_runtime SchemaView
-        from linkml_runtime.dumpers import yaml_dumper
-
-        return yaml_dumper.dumps(schema)
-    if isinstance(sv, str):
-        if os.path.exists(sv):
-            with open(sv) as f:
-                return f.read()
-        return sv  # assume it is already YAML text
-    raise TypeError(f"Cannot derive schema YAML from {type(sv)!r}")
-
-
-def _spec_to_yaml(spec: Any) -> str:
-    """Coerce a specification argument to a YAML string.
-
-    Accepts a dict, a file path, a YAML string, or a linkml_map
-    TransformationSpecification object.
-    """
-    if spec is None:
-        raise ValueError("specification is required")
-    if isinstance(spec, str):
-        if os.path.exists(spec):
-            with open(spec) as f:
-                return f.read()
-        return spec  # YAML text
+    if isinstance(spec, TransformationSpecification) or spec is None:
+        return spec
     if isinstance(spec, dict):
+        return load_specification(copy.deepcopy(spec))
+    if isinstance(spec, str) and _is_yaml_text(spec):
         import yaml
 
-        return yaml.safe_dump(spec)
-    try:  # linkml_map datamodel object
-        from linkml_runtime.dumpers import yaml_dumper
-
-        return yaml_dumper.dumps(spec)
-    except Exception as e:  # noqa: BLE001
-        raise TypeError(f"Cannot derive spec YAML from {type(spec)!r}: {e}") from e
+        return load_specification(yaml.safe_load(spec))
+    if isinstance(spec, (str, os.PathLike)):
+        return load_specification(spec)
+    return spec
 
 
 class ObjectTransformer:
@@ -69,30 +111,62 @@ class ObjectTransformer:
 
     Parameters
     ----------
-    source_schemaview :
-        A linkml_runtime ``SchemaView``, a path, or YAML text.
     specification :
-        A dict, a ``TransformationSpecification``, a path, or YAML text. May also
-        be supplied later via :meth:`create_transformer_specification`.
+        A loaded specification, a dict, or a path to a YAML specification file.
+        May also be supplied later via :meth:`create_transformer_specification`
+        or :meth:`load_transformer_specification`.
+    source_schemaview :
+        A linkml_runtime ``SchemaView``, ``SchemaDefinition`` or schema file path.
     target_schemaview :
-        Optional target schema (same accepted forms as ``source_schemaview``).
+        Optional target schema (same accepted forms; keyword-only — upstream's
+        third positional dataclass field is the private ``_derived_specification``).
+    strict :
+        Raise on expression references that do not resolve to a schema slot,
+        instead of warning and yielding null.
+    unrestricted_eval :
+        Accepted for compatibility; has no effect (see the module docstring).
     """
 
     def __init__(
         self,
-        source_schemaview: Any = None,
         specification: Any = None,
+        source_schemaview: Any = None,
+        *,
         target_schemaview: Any = None,
+        strict: bool = False,
+        unrestricted_eval: bool = False,
     ) -> None:
-        self.source_schemaview = source_schemaview
-        self.target_schemaview = target_schemaview
-        self.specification = specification
         self._rust: Optional[Any] = None
+        self.spec_messages: list[Any] = []
+        self.unrestricted_eval = unrestricted_eval
+        self.strict = strict
+        self.specification = _load_specification(specification)
+        self.source_schemaview = _load_schemaview(source_schemaview)
+        self.target_schemaview = _load_schemaview(target_schemaview)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name in _ENGINE_INPUTS:
+            object.__setattr__(self, "_rust", None)  # rebuild on next call
 
     def create_transformer_specification(self, obj: Any) -> None:
-        """Set the specification (dict or object). Mirrors the upstream method."""
+        """Set the specification from a dict (or object). Mirrors the upstream method.
+
+        PARITY: upstream normalises the dict IN PLACE (``normalize_spec``).
+        """
+        if isinstance(obj, dict):
+            obj = load_specification(obj)
         self.specification = obj
-        self._rust = None  # rebuild on next call
+
+    def load_transformer_specification(self, path: "str | os.PathLike[str]") -> None:
+        """Set the specification from a YAML file path. Mirrors the upstream method."""
+        self.specification = load_specification(path)
+
+    def load_source_schema(self, path: "str | os.PathLike[str]") -> None:
+        """Set ``source_schemaview`` from a schema file path. Mirrors the upstream method."""
+        from linkml_runtime import SchemaView
+
+        self.source_schemaview = SchemaView(os.fspath(path))
 
     def index(self, source_obj: Any, target: Optional[str] = None) -> None:
         """No-op: the Rust engine builds any foreign-key index internally."""
@@ -103,11 +177,17 @@ class ObjectTransformer:
             return
         if self.source_schemaview is None:
             raise ValueError("source_schemaview is required before map_object")
+        if self.specification is None:
+            raise ValueError("specification is required before map_object")
+        spec = self.specification
+        if isinstance(spec, TransformationSpecification):
+            spec = spec.model_dump()
         self._rust = linkml_map_rs.Transformer.from_python(
             self.source_schemaview,
-            self.specification,
+            spec,
             self.target_schemaview,
             None,
+            strict=self.strict,
         )
 
     def map_object(self, source_obj: Any, source_type: Optional[str] = None) -> Any:

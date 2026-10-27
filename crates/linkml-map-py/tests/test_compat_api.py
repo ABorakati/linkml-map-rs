@@ -720,13 +720,14 @@ class TestErrorPropagation:
             )
 
     def test_shim_bad_schema_path_raises_value_error(self) -> None:
+        # Upstream (173121b) loads schema paths in the constructor, so a missing
+        # file now fails there with FileNotFoundError (also a ValueError here).
         case = _measurements_case()
-        ot = ObjectTransformer(
-            source_schemaview="/nonexistent/schema.yaml",
-            specification=str(case.transform_path),
-        )
         with pytest.raises(ValueError):
-            ot.map_object({"id": "P:1"})
+            ObjectTransformer(
+                source_schemaview="/nonexistent/schema.yaml",
+                specification=str(case.transform_path),
+            )
 
     def test_free_function_bad_schema_path_raises_value_error(self) -> None:
         case = _measurements_case()
@@ -736,3 +737,308 @@ class TestErrorPropagation:
                 source_schema="/nonexistent/schema.yaml",
                 spec=str(case.transform_path),
             )
+
+
+# ── 3. Construction from paths, `load_specification` (upstream 173121b) ───────
+#
+# Ports upstream `tests/test_loaders/test_load_specification.py` and
+# `tests/test_transformer/test_transformer_construction.py`, run over the
+# personinfo golden fixture, plus the Rust-specific path/`strict` behaviour.
+
+PERSONINFO_DIR = GOLDEN_ROOT / "personinfo_basic"
+PERSONINFO_SRC_SCHEMA = PERSONINFO_DIR / "source" / "personinfo.yaml"
+PERSONINFO_TGT_SCHEMA = PERSONINFO_DIR / "target" / "agent.yaml"
+PERSONINFO_TR = PERSONINFO_DIR / "transform" / "personinfo-to-agent.transform.yaml"
+PERSONINFO_DATA = PERSONINFO_DIR / "data" / "Person-001.yaml"
+PERSONINFO_EXPECTED = PERSONINFO_DIR / "output" / "Person-001.transformed.yaml"
+
+needs_personinfo = pytest.mark.skipif(
+    not PERSONINFO_TR.exists(), reason="golden/personinfo_basic fixture not found"
+)
+
+
+def _read_yaml(path: pathlib.Path) -> Any:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _expected_person() -> Any:
+    """The golden output, with dates stringified as the engine's JSON bridge returns them."""
+    return _json_bridge_normalize(_read_yaml(PERSONINFO_EXPECTED))
+
+
+def _mapped_person(tr: Any) -> Any:
+    return tr.map_object(_read_yaml(PERSONINFO_DATA), source_type="Person")
+
+
+@needs_personinfo
+class TestLoadSpecification:
+    """`linkml_map.load_specification` (upstream `tests/test_loaders/test_load_specification.py`)."""
+
+    @pytest.mark.parametrize(
+        "spec",
+        [lambda: str(PERSONINFO_TR), lambda: PERSONINFO_TR, lambda: _read_yaml(PERSONINFO_TR)],
+        ids=["str", "path", "dict"],
+    )
+    def test_load_specification_input_forms(self, spec) -> None:
+        """A str path, a Path and the file's parsed contents load to the same specification."""
+        assert linkml_map.load_specification(spec()) == linkml_map.load_specification(str(PERSONINFO_TR))
+
+    def test_load_specification_normalizes_dict(self) -> None:
+        """Dict-keyed class derivations become a named list (attribute access, as upstream)."""
+        spec = linkml_map.load_specification({"class_derivations": {"Agent": {"populated_from": "Person"}}})
+        assert [cd.name for cd in spec.class_derivations] == ["Agent"]
+        assert spec.class_derivations[0].populated_from == "Person"
+
+    def test_load_specification_exports(self) -> None:
+        from linkml_map.utils.loaders import load_specification
+
+        assert linkml_map.load_specification is load_specification
+
+    def test_existing_specification_is_returned_as_is(self) -> None:
+        spec = linkml_map.load_specification({"class_derivations": {"Agent": {"populated_from": "Person"}}})
+        assert linkml_map.load_specification(spec) is spec
+
+    def test_dict_is_normalised_in_place(self) -> None:
+        # PARITY: upstream load_specification runs normalize_spec on the caller's dict.
+        raw = {"class_derivations": {"Agent": {"populated_from": "Person"}}}
+        spec = linkml_map.load_specification(raw)
+        assert isinstance(raw["class_derivations"], list)
+        assert raw["class_derivations"][0]["name"] == "Agent"
+        # ... but the returned specification owns a copy.
+        raw["class_derivations"][0]["name"] = "Changed"
+        assert spec.class_derivations[0].name == "Agent"
+
+    def test_model_dump_round_trips_to_a_plain_dict(self) -> None:
+        spec = linkml_map.load_specification(PERSONINFO_TR)
+        dumped = spec.model_dump()
+        assert isinstance(dumped, dict)
+        assert linkml_map.load_specification(dumped) == spec
+
+    def test_missing_attribute_reads_none_and_dunders_raise(self) -> None:
+        spec = linkml_map.load_specification({"class_derivations": {"Agent": {"populated_from": "Person"}}})
+        assert spec.enum_derivations is None
+        with pytest.raises(AttributeError):
+            spec.__no_such_dunder__
+
+    @pytest.mark.parametrize("missing", ["/nonexistent/spec.yaml", pathlib.Path("/nonexistent/spec.yaml")])
+    def test_missing_file_raises_file_not_found(self, missing) -> None:
+        with pytest.raises(FileNotFoundError):
+            linkml_map.load_specification(missing)
+
+    def test_invalid_specification_is_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            linkml_map.load_specification({"class_derivations": 3})
+
+    def test_native_load_specification_returns_new_normalised_dict(self) -> None:
+        raw = {"class_derivations": {"Agent": {"populated_from": "Person"}}}
+        out = linkml_map_rs.load_specification(raw)
+        assert out["class_derivations"][0]["name"] == "Agent"
+        assert raw == {"class_derivations": {"Agent": {"populated_from": "Person"}}}  # untouched
+        assert linkml_map_rs.load_specification(PERSONINFO_TR) == linkml_map_rs.load_specification(
+            str(PERSONINFO_TR)
+        )
+
+    def test_native_load_specification_treats_str_as_a_path_not_yaml(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            linkml_map_rs.load_specification("class_derivations: {}")
+
+
+@needs_personinfo
+class TestConstructorInputForms:
+    """`ObjectTransformer(...)` takes paths or loaded objects (upstream `test_transformer_construction.py`)."""
+
+    @pytest.fixture(scope="module")
+    def expected_person(self) -> Any:
+        """The mapped person from a transformer set up field by field."""
+        from linkml_runtime import SchemaView
+
+        tr = ObjectTransformer(unrestricted_eval=True)
+        tr.source_schemaview = SchemaView(str(PERSONINFO_SRC_SCHEMA))
+        tr.load_transformer_specification(PERSONINFO_TR)
+        person = _mapped_person(tr)
+        assert person == _expected_person()  # and it is the golden output
+        return person
+
+    @pytest.mark.parametrize(
+        ("spec", "schema"),
+        [
+            (lambda: str(PERSONINFO_TR), lambda: str(PERSONINFO_SRC_SCHEMA)),
+            (lambda: PERSONINFO_TR, lambda: PERSONINFO_SRC_SCHEMA),
+            (lambda: _read_yaml(PERSONINFO_TR), lambda: _schemaview(PERSONINFO_SRC_SCHEMA)),
+            (lambda: linkml_map.load_specification(PERSONINFO_TR), lambda: _schemaview(PERSONINFO_SRC_SCHEMA)),
+            (lambda: PERSONINFO_TR, lambda: _schemaview(PERSONINFO_SRC_SCHEMA).schema),
+        ],
+        ids=["str", "path", "dict-schemaview", "spec-schemaview", "path-schemadefinition"],
+    )
+    def test_constructor_input_forms_map_alike(self, spec, schema, expected_person) -> None:
+        """Every input form maps a person the same as a transformer set up field by field."""
+        tr = ObjectTransformer(specification=spec(), source_schemaview=schema(), unrestricted_eval=True)
+        assert _mapped_person(tr) == expected_person
+
+    def test_constructor_loads_paths(self) -> None:
+        """The specification and both schemas load from paths and are stored loaded."""
+        from linkml_runtime import SchemaView
+
+        tr = ObjectTransformer(
+            specification=PERSONINFO_TR,
+            source_schemaview=PERSONINFO_SRC_SCHEMA,
+            target_schemaview=str(PERSONINFO_TGT_SCHEMA),
+        )
+        assert tr.specification == linkml_map.load_specification(PERSONINFO_TR)
+        assert isinstance(tr.source_schemaview, SchemaView)
+        assert tr.source_schemaview.schema.name == SchemaView(str(PERSONINFO_SRC_SCHEMA)).schema.name
+        assert tr.target_schemaview.schema.name == SchemaView(str(PERSONINFO_TGT_SCHEMA)).schema.name
+        assert _mapped_person(tr) == _expected_person()
+
+    def test_constructor_leaves_caller_dict_unchanged(self) -> None:
+        """Normalisation works on a copy, so the caller's dict can be reused."""
+        spec = _read_yaml(PERSONINFO_TR)
+        original = _read_yaml(PERSONINFO_TR)
+        ObjectTransformer(specification=spec)
+        assert spec == original
+
+    def test_positional_order_is_specification_then_source_schemaview(self) -> None:
+        """Upstream's first two dataclass fields; the shim used to take them the other way round."""
+        tr = ObjectTransformer(str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA))
+        assert _mapped_person(tr) == _expected_person()
+        with pytest.raises(TypeError):  # target_schemaview is keyword-only
+            ObjectTransformer(str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA), str(PERSONINFO_TGT_SCHEMA))
+
+    def test_spec_messages_is_an_empty_list(self) -> None:
+        assert ObjectTransformer(specification=PERSONINFO_TR).spec_messages == []
+
+    @pytest.mark.parametrize("make", [str, pathlib.Path], ids=["str", "path"])
+    def test_missing_files_raise_file_not_found_in_the_constructor(self, make) -> None:
+        with pytest.raises(FileNotFoundError):
+            ObjectTransformer(specification=make("/nonexistent/spec.yaml"))
+        with pytest.raises(FileNotFoundError):
+            ObjectTransformer(source_schemaview=make("/nonexistent/schema.yaml"))
+        with pytest.raises(FileNotFoundError):
+            ObjectTransformer(target_schemaview=make("/nonexistent/schema.yaml"))
+
+    def test_yaml_text_is_still_accepted_for_str(self) -> None:
+        """Superset kept from earlier shim releases: a multi-line str that is no file is YAML text."""
+        tr = ObjectTransformer(
+            specification=PERSONINFO_TR.read_text(encoding="utf-8"),
+            source_schemaview=PERSONINFO_SRC_SCHEMA.read_text(encoding="utf-8"),
+        )
+        assert _mapped_person(tr) == _expected_person()
+
+    def test_load_methods_replace_the_loaded_objects(self) -> None:
+        tr = ObjectTransformer()
+        tr.load_source_schema(PERSONINFO_SRC_SCHEMA)
+        tr.load_transformer_specification(str(PERSONINFO_TR))
+        assert tr.source_schemaview.schema.name == "personinfo"
+        assert _mapped_person(tr) == _expected_person()
+
+    def test_unrestricted_eval_is_accepted_and_stored(self) -> None:
+        tr = ObjectTransformer(specification=PERSONINFO_TR, unrestricted_eval=True)
+        assert tr.unrestricted_eval is True
+        assert ObjectTransformer().unrestricted_eval is False
+
+
+def _schemaview(path: pathlib.Path) -> Any:
+    from linkml_runtime import SchemaView
+
+    return SchemaView(str(path))
+
+
+_UNBOUND_SPEC = {
+    "class_derivations": {
+        "Agent": {
+            "populated_from": "Person",
+            "slot_derivations": {
+                "id": {"populated_from": "id"},
+                "label": {"expr": "{no_such_slot}"},
+            },
+        }
+    }
+}
+
+
+@needs_personinfo
+class TestStrict:
+    """`strict` (upstream `ObjectTransformer.strict`) reaches the engine's `with_strict_exprs`."""
+
+    def _person(self) -> Any:
+        return _read_yaml(PERSONINFO_DATA)
+
+    def test_lax_yields_null_for_an_unbound_name(self) -> None:
+        tr = ObjectTransformer(_UNBOUND_SPEC, PERSONINFO_SRC_SCHEMA)
+        assert tr.map_object(self._person(), "Person").get("label") is None
+
+    def test_strict_raises_for_an_unbound_name(self) -> None:
+        tr = ObjectTransformer(_UNBOUND_SPEC, PERSONINFO_SRC_SCHEMA, strict=True)
+        with pytest.raises(ValueError):
+            tr.map_object(self._person(), "Person")
+
+    def test_assigning_strict_rebuilds_the_engine(self) -> None:
+        tr = ObjectTransformer(_UNBOUND_SPEC, PERSONINFO_SRC_SCHEMA)
+        tr.map_object(self._person(), "Person")
+        tr.strict = True
+        with pytest.raises(ValueError):
+            tr.map_object(self._person(), "Person")
+
+    def test_native_constructors_take_strict(self) -> None:
+        spec_yaml = yaml.safe_dump(_UNBOUND_SPEC)
+        schema_yaml = PERSONINFO_SRC_SCHEMA.read_text(encoding="utf-8")
+        lax = Transformer.from_yaml(schema_yaml, spec_yaml)
+        strict = Transformer.from_yaml(schema_yaml, spec_yaml, strict=True)
+        assert lax.map_object(self._person(), "Person").get("label") is None
+        with pytest.raises(ValueError):
+            strict.map_object(self._person(), "Person")
+
+
+@needs_personinfo
+class TestNativePathArguments:
+    """Native entry points accept `pathlib.Path` wherever they accept a path `str`."""
+
+    def test_transformer_accepts_paths(self) -> None:
+        t = Transformer(
+            PERSONINFO_SRC_SCHEMA, PERSONINFO_TR, target_schema=PERSONINFO_TGT_SCHEMA, source_class="Person"
+        )
+        assert t.transform(_read_yaml(PERSONINFO_DATA)) == _expected_person()
+
+    def test_free_functions_accept_paths(self) -> None:
+        obj = _read_yaml(PERSONINFO_DATA)
+        expected = _expected_person()
+        kwargs = {"source_schema": PERSONINFO_SRC_SCHEMA, "spec": PERSONINFO_TR, "source_class": "Person"}
+        assert transform_object(obj, **kwargs) == expected
+        assert transform_objects([obj], **kwargs) == [expected]
+
+    def test_validate_spec_accepts_paths(self) -> None:
+        by_str = linkml_map_rs.validate_spec(
+            str(PERSONINFO_TR),
+            source_schema=str(PERSONINFO_SRC_SCHEMA),
+            target_schema=str(PERSONINFO_TGT_SCHEMA),
+        )
+        by_path = linkml_map_rs.validate_spec(
+            PERSONINFO_TR, source_schema=PERSONINFO_SRC_SCHEMA, target_schema=PERSONINFO_TGT_SCHEMA
+        )
+        assert [str(m) for m in by_path] == [str(m) for m in by_str]
+
+    def test_from_python_accepts_paths(self) -> None:
+        t = Transformer.from_python(PERSONINFO_SRC_SCHEMA, PERSONINFO_TR, PERSONINFO_TGT_SCHEMA)
+        assert t.map_object(_read_yaml(PERSONINFO_DATA), "Person") == _expected_person()
+
+    def test_missing_path_raises_path_not_found(self) -> None:
+        """A FileNotFoundError (as upstream) that is also a ValueError (as before this binding took Paths)."""
+        missing = pathlib.Path("/nonexistent/file.yaml")
+        assert issubclass(linkml_map_rs.PathNotFoundError, (FileNotFoundError, ValueError))
+        with pytest.raises(FileNotFoundError):
+            Transformer(missing, PERSONINFO_TR)
+        with pytest.raises(FileNotFoundError):
+            Transformer(PERSONINFO_SRC_SCHEMA, missing)
+        with pytest.raises(FileNotFoundError):
+            Transformer(PERSONINFO_SRC_SCHEMA, PERSONINFO_TR, target_schema=missing)
+        with pytest.raises(FileNotFoundError):
+            linkml_map_rs.validate_spec(missing)
+        with pytest.raises(ValueError):
+            Transformer(str(missing), PERSONINFO_TR)
+
+    def test_from_python_never_reads_a_path_as_yaml_text(self) -> None:
+        """A `str` that names no file falls back to YAML text; a `Path` must exist."""
+        with pytest.raises(FileNotFoundError):
+            Transformer.from_python(PERSONINFO_SRC_SCHEMA, pathlib.Path("/nonexistent/spec.yaml"))
+        with pytest.raises(FileNotFoundError):
+            Transformer.from_python(pathlib.Path("/nonexistent/schema.yaml"), PERSONINFO_TR)

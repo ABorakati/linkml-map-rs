@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import cache
 from typing import Any
 
 import yaml
@@ -21,17 +23,19 @@ from simpleeval import InvalidExpression
 from linkml_map.datamodel.transformer_model import (
     ClassDerivation,
     CollectionType,
-    PivotDirectionType,
-    PivotOperation,
     SerializationSyntaxType,
     SlotDerivation,
 )
-from linkml_map.functions.unit_conversion import UnitSystem, convert_units
+from linkml_map.functions.unit_conversion import perform_unit_conversion
+from linkml_map.transformer.content_id import ContentIdSynthesizer, mints_ids, missing_identifier_message
 from linkml_map.transformer.errors import TransformationError
+from linkml_map.transformer.pivot import perform_melt, perform_pivot_operation
 from linkml_map.transformer.transformer import OBJECT_TYPE, Transformer
 from linkml_map.utils.dynamic_object import DynObj, dynamic_object
-from linkml_map.utils.eval_utils import _uuid5, eval_expr, eval_expr_with_mapping
+from linkml_map.utils.eval_utils import _uuid5, eval_expr_with_mapping
 from linkml_map.utils.fk_utils import FKResolution, resolve_fk_path
+from linkml_map.utils.join_utils import join_keys
+from linkml_map.utils.serialization import dump_yaml, dumps_json
 
 DICT_OBJ = dict[str, Any]
 
@@ -249,6 +253,22 @@ class Bindings(Mapping):
         raise RuntimeError(msg)
 
 
+@cache
+def _is_statement_block(expr: str) -> bool:
+    """Whether an expression is Python statements, which only the unrestricted evaluator runs.
+
+    >>> _is_statement_block("{age} * 12")
+    False
+    >>> _is_statement_block("if {age}:\\n    target = 1")
+    True
+    """
+    try:
+        ast.parse(expr.strip(), mode="eval")
+    except SyntaxError:
+        return True
+    return False
+
+
 @dataclass(frozen=True)
 class DerivationContext:
     """Immutable context for slot derivation within a single map_object call."""
@@ -280,6 +300,17 @@ class ObjectTransformer(Transformer):
     precedence; built-in functions are precedence-checked at load time via
     :func:`~linkml_map.utils.extensions.load_extensions`.
     """
+
+    emit_without_identifiers: bool = False
+    """Emit records whose identifier is neither derived nor minted, instead of raising.
+
+    For ``--continue-on-error`` runs, whose purpose is to surface every problem even at
+    the cost of bad output; the caller reports the missing identifiers once, up front
+    (see :meth:`missing_identifiers`).
+    """
+
+    _content_ids: ContentIdSynthesizer | None = field(default=None, repr=False)
+    """Synthesizer for identifiers the spec doesn't derive, rebuilt if the target schema changes."""
 
     _warned_unbound_names: set[str] = field(default_factory=set, repr=False)
     """Names already warned about in non-strict mode.
@@ -389,13 +420,15 @@ class ObjectTransformer(Transformer):
             source_obj_typed = source_obj
             source_obj = vars(source_obj)
         if not isinstance(source_obj, dict):
-            logger.warning(f"Unexpected: {source_obj} for type {source_type}")
+            # A scalar for a class with an identifier is a reference to an object, kept as is.
+            if source_type in sv.all_classes() and sv.get_identifier_slot(source_type) is None:
+                logger.warning(f"Expected an object for {source_type}, which has no identifier, got: {source_obj!r}")
             return source_obj
         class_deriv = class_derivation or self._get_class_derivation(source_type)
 
         # Handle class-level pivot operations (UNMELT from EAV to wide format)
         if class_deriv.pivot_operation:
-            return self._perform_pivot_operation(class_deriv.pivot_operation, source_obj, class_deriv, sv, source_type)
+            return perform_pivot_operation(class_deriv.pivot_operation, source_obj, self.target_schemaview)
 
         context = DerivationContext(
             source_obj=source_obj,
@@ -416,7 +449,73 @@ class ObjectTransformer(Transformer):
         for slot_deriv in class_deriv.slot_derivations.values():
             if slot_deriv.hide:
                 tgt_attrs.pop(str(slot_deriv.name), None)
-        return tgt_attrs
+        return self._with_synthesized_id(tgt_attrs, class_deriv)
+
+    def _with_synthesized_id(self, record: dict[str, Any], class_deriv: ClassDerivation) -> dict[str, Any]:
+        """Prepend a content-hash id when the target identifier is minted rather than derived.
+
+        See :mod:`linkml_map.transformer.content_id`.
+
+        :raises TransformationError: If the identifier is neither derived nor minted.
+        """
+        id_slot = self._underived_identifier(class_deriv)
+        if id_slot is None:
+            return record
+        if not self._mints_ids(class_deriv):
+            if self.emit_without_identifiers:
+                return record
+            raise TransformationError(
+                message=missing_identifier_message(class_deriv.name, id_slot),
+                class_derivation_name=class_deriv.name,
+                class_populated_from=class_deriv.populated_from,
+            )
+        return {id_slot: self._content_ids.content_id(record, class_deriv.name), **record}
+
+    def _mints_ids(self, class_deriv: ClassDerivation) -> bool:
+        """Whether *class_deriv* mints ids, per :func:`~linkml_map.transformer.content_id.mints_ids`."""
+        spec = self.specification
+        default = spec.class_defaults.get(class_deriv.name) if spec.class_defaults else None
+        # A spec built directly in Python keeps the compact ``Class: true`` form as a bare bool.
+        default_mint_ids = default if isinstance(default, bool) or default is None else default.mint_ids
+        return mints_ids(spec.mint_ids, default_mint_ids, class_deriv.mint_ids)
+
+    def _underived_identifier(self, class_deriv: ClassDerivation) -> str | None:
+        """The target class's identifier slot when *class_deriv* doesn't derive it, else ``None``.
+
+        Always ``None`` without a target schema, since there is no identifier slot to know of.
+        """
+        if self.target_schemaview is None:
+            return None
+        if self._content_ids is None or self._content_ids.schemaview is not self.target_schemaview:
+            self._content_ids = ContentIdSynthesizer(self.target_schemaview)
+        id_slot = self._content_ids.identifier_slot(class_deriv.name)
+        if id_slot is None or id_slot in class_deriv.slot_derivations:
+            return None
+        return id_slot
+
+    def missing_identifiers(self) -> list[str]:
+        """Describe every class derivation that would emit records without their identifier.
+
+        Checks the whole specification, nested class derivations included: each target
+        identifier slot must be derived explicitly or minted (``mint_ids: true``).
+
+        :return: One message per offending class derivation; empty when all are covered.
+        """
+        top_level = [self._with_inherited_fields(cd) for cd in self.specification.class_derivations]
+        return [
+            missing_identifier_message(cd.name, id_slot)
+            for cd in _all_class_derivations(top_level)
+            if (id_slot := self._underived_identifier(cd)) is not None and not self._mints_ids(cd)
+        ]
+
+    def check_identifiers(self) -> None:
+        """Fail before any output if a class derivation would emit records without their identifier.
+
+        :raises ValueError: Listing every problem from :meth:`missing_identifiers`.
+        """
+        problems = self.missing_identifiers()
+        if problems:
+            raise ValueError("\n".join(problems))
 
     @contextmanager
     def _slot_error_context(
@@ -473,10 +572,10 @@ class ObjectTransformer(Transformer):
         if slot_derivation.value is not None:
             v = slot_derivation.value
         elif slot_derivation.unit_conversion:
-            v = self._perform_unit_conversion(slot_derivation, context)
+            v = perform_unit_conversion(slot_derivation, context.source_obj, context.sv, context.source_type)
         elif slot_derivation.pivot_operation:
             # MELT operation: wide format to EAV/long format
-            v = self._perform_melt(slot_derivation.pivot_operation, context.source_obj, slot_derivation)
+            v = perform_melt(slot_derivation.pivot_operation, context.source_obj, self.target_schemaview)
         elif slot_derivation.expr:
             v = self._eval_expr(slot_derivation.expr, bindings, functions=expr_functions)
         elif slot_derivation.populated_from:
@@ -512,6 +611,8 @@ class ObjectTransformer(Transformer):
             else:
                 (v, source_class_slot) = self._resolve_fk_or_literal(populated_from, slot_derivation, context)
 
+            v = self._nullify_missing_values(v, slot_derivation)
+
             if (slot_derivation.value_mappings or slot_derivation.expression_mappings) and v is not None:
                 v = self._apply_mappings(slot_derivation, v, bindings, functions=expr_functions)
 
@@ -534,14 +635,42 @@ class ObjectTransformer(Transformer):
                     class_deriv=context.class_deriv,
                     slot_derivation=slot_derivation,
                 )
+            v = self._nullify_missing_values(v, slot_derivation)
 
         if source_class_slot and v is not None and not slot_derivation.hide:
             target_range = slot_derivation.range
             v = self._map_value_by_range(v, source_class_slot, target_range, context.source_obj)
             v = self._coerce_cardinality(v, slot_derivation, context.class_deriv)
-            v = self._coerce_datatype(v, target_range)
+            v = self._coerce_datatype(
+                v, target_range or self._target_slot_datatype(context.class_deriv.name, slot_derivation.name)
+            )
+            v = self._resolve_enum_value(v, self._target_enum_index(context.class_deriv.name, slot_derivation))
             v = self._reshape_collection(v, slot_derivation, source_class_slot)
+        elif (slot_derivation.value is not None or slot_derivation.expr) and v is not None and not slot_derivation.hide:
+            v = self._coerce_cardinality(v, slot_derivation, context.class_deriv)
+            v = self._coerce_datatype(
+                v,
+                slot_derivation.range or self._target_slot_datatype(context.class_deriv.name, slot_derivation.name),
+            )
+            v = self._resolve_enum_value(v, self._target_enum_index(context.class_deriv.name, slot_derivation))
         return v
+
+    @staticmethod
+    def _nullify_missing_values(value: Any, slot_derivation: SlotDerivation) -> Any:
+        """Return ``None`` if ``value`` is a declared missing-value code, else ``value``.
+
+        Comparison is by string equality against ``slot_derivation.missing_values`` so a
+        sentinel like ``-9`` nulls only ``-9`` (not ``99``) and matches regardless of
+        whether the source value arrived as an int or a raw delimited-file string. Applied
+        at raw-value resolution, before mappings, offset, and range coercion.
+        """
+        if (
+            value is not None
+            and slot_derivation.missing_values
+            and str(value) in {str(mv) for mv in slot_derivation.missing_values}
+        ):
+            return None
+        return value
 
     def _eval_expr(
         self,
@@ -559,6 +688,9 @@ class ObjectTransformer(Transformer):
         :param functions: Extra functions injected into the evaluator
             (e.g. ``slot`` for referencing previously derived target slots).
         """
+        if self.unrestricted_eval and _is_statement_block(expr):
+            ctxt_obj, _ = bindings.get_ctxt_obj_and_dict()
+            return self._unrestricted_eval(expr, ctxt_obj, functions=functions, raise_undefined=True)
         try:
             return eval_expr_with_mapping(
                 expr,
@@ -571,12 +703,39 @@ class ObjectTransformer(Transformer):
             if not self.unrestricted_eval:
                 raise
             ctxt_obj, _ = bindings.get_ctxt_obj_and_dict()
-            usersyms = {"src": ctxt_obj, "target": None, "uuid5": _uuid5}
-            if functions:
-                usersyms.update(functions)
-            aeval = Interpreter(usersyms=usersyms)
-            aeval(expr)
-            return aeval.symtable["target"]
+            return self._unrestricted_eval(expr, ctxt_obj, functions=functions)
+
+    def _unrestricted_eval(
+        self,
+        expr: str,
+        src: Any,
+        functions: dict[str, Any] | None = None,
+        raise_undefined: bool = False,
+    ) -> Any:
+        """Evaluate *expr* with the unrestricted asteval interpreter.
+
+        This is the escape hatch reached only when restricted evaluation fails
+        *and* the user opted in via ``unrestricted_eval``. Callers own the gate;
+        this method assumes the opt-in has already been checked.
+
+        :param expr: The expression string to evaluate.
+        :param src: Object exposed to the expression as ``src``.
+        :param functions: Extra functions injected into the interpreter.
+        :param raise_undefined: Raise when the expression uses an undefined name, such as a
+            ``{slot}`` reference, which asteval can't resolve. Other errors, such as iterating
+            a missing value, still yield ``None``.
+        :raises ValueError: If ``raise_undefined`` and the expression uses an undefined name.
+        """
+        usersyms = {"src": src, "target": None, "uuid5": _uuid5}
+        if functions:
+            usersyms.update(functions)
+        aeval = Interpreter(usersyms=usersyms)
+        aeval(expr)
+        if raise_undefined and aeval.error and aeval.error[0].exc is NameError:
+            _, detail = aeval.error[0].get_error()
+            msg = f"Unrestricted expression uses an undefined name: {detail}. Statements read slots as src.<slot>."
+            raise ValueError(msg)
+        return aeval.symtable["target"]
 
     def _apply_mappings(
         self,
@@ -651,6 +810,8 @@ class ObjectTransformer(Transformer):
             (used for dot-notation without a matching join).
         :returns: Tuple of (resolved value, source slot definition or None).
         """
+        if "." in populated_from and self._is_inline_path(populated_from, context):
+            return self._resolve_inline_path(populated_from, slot_derivation, context)
         fk_resolution = resolve_fk_path(context.sv, context.source_type, populated_from)
         if fk_resolution:
             fk_value = context.source_obj.get(fk_resolution.fk_slot_name)
@@ -671,6 +832,96 @@ class ObjectTransformer(Transformer):
         source_class_slot = context.sv.induced_slot(populated_from, context.source_type)
         return v, source_class_slot
 
+    def _is_inline_path(self, populated_from: str, context: DerivationContext) -> bool:
+        """Decide whether a dot-path traverses inlined nested data rather than an FK.
+
+        Detection is declarative first, with a runtime fallback (issue #247):
+
+        * **Declarative:** the first path segment's source slot has a class range
+          and is marked ``inlined`` / ``inlined_as_list``.
+        * **Runtime fallback:** the value at the first segment is actually a nested
+          object (dict) or list, even when the schema doesn't declare ``inlined``.
+
+        Foreign keys (class range, scalar identifier value, not inlined) fall
+        through to :func:`resolve_fk_path` as before.
+
+        :param populated_from: The dotted ``populated_from`` path.
+        :param context: Current derivation context.
+        :returns: True if the path should be walked structurally through inline data.
+        """
+        first_segment = populated_from.split(".", 1)[0]
+        try:
+            slot = context.sv.induced_slot(first_segment, context.source_type)
+        except Exception:
+            slot = None
+        if slot and slot.range in context.sv.all_classes() and (slot.inlined or slot.inlined_as_list):
+            return True
+        value = context.source_obj.get(first_segment) if isinstance(context.source_obj, dict) else None
+        return isinstance(value, dict | list)
+
+    def _resolve_inline_path(
+        self,
+        populated_from: str,
+        slot_derivation: SlotDerivation,
+        context: DerivationContext,
+    ) -> tuple[Any, SlotDefinition | None]:
+        """Walk a dot-path structurally through inlined nested objects (issue #247).
+
+        Descends into the nested dict(s) one segment at a time and returns the
+        leaf value together with its source slot (for range mapping). A segment
+        that is legitimately absent yields ``None`` rather than an error.
+
+        :param populated_from: The dotted ``populated_from`` path.
+        :param slot_derivation: The active slot derivation (for diagnostics).
+        :param context: Current derivation context.
+        :returns: Tuple of (leaf value, final source slot or None).
+        :raises TransformationError: if a segment holds a list (multivalued inline
+            fan-out, tracked in #265) or a non-dict value is encountered mid-path.
+        """
+        segments = populated_from.split(".")
+        current_val: Any = context.source_obj
+        current_class: str | None = context.source_type
+        final_slot: SlotDefinition | None = None
+
+        for i, segment in enumerate(segments):
+            if not isinstance(current_val, dict):
+                msg = (
+                    f"Cannot traverse inlined path {populated_from!r}: segment {segment!r} "
+                    f"expected a nested object but found {type(current_val).__name__}"
+                )
+                raise TransformationError(
+                    message=msg,
+                    slot_derivation_name=slot_derivation.name,
+                    slot_populated_from=populated_from,
+                )
+            slot = None
+            if current_class:
+                try:
+                    slot = context.sv.induced_slot(segment, current_class)
+                except Exception:
+                    slot = None
+            current_val = current_val.get(segment)
+            if isinstance(current_val, list):
+                msg = (
+                    f"Inlined path {populated_from!r} reaches a multivalued segment {segment!r}; "
+                    f"per-item fan-out to a matching class_derivation is not yet supported (see #265)"
+                )
+                raise TransformationError(
+                    message=msg,
+                    slot_derivation_name=slot_derivation.name,
+                    slot_populated_from=populated_from,
+                )
+            if i == len(segments) - 1:
+                final_slot = slot
+            elif slot and slot.range in context.sv.all_classes():
+                current_class = slot.range
+            else:
+                current_class = slot.range if slot else None
+            if current_val is None:
+                break
+
+        return current_val, final_slot
+
     def _resolve_joined_row(
         self,
         table_name: str,
@@ -689,12 +940,14 @@ class ObjectTransformer(Transformer):
         :returns: Matched row as a dict, or ``None`` if no match found.
         :raises ValueError: If join spec is missing keys or lookup_index is not initialized.
         """
+        # Pre-joined fast path: when the joined row is already supplied inline via a
+        # MergedRow (the set-based DuckDB join engine, or an earlier merge of the same
+        # table), resolve from it directly instead of a per-row lookup.
+        if isinstance(source_obj, MergedRow) and table_name in source_obj.rows_by_table:
+            return source_obj.rows_by_table[table_name]
+
         spec = class_deriv.joins[table_name]
-        source_key = spec.source_key or spec.join_on
-        lookup_key = spec.lookup_key or spec.join_on
-        if not source_key or not lookup_key:
-            msg = f"Join spec for {table_name!r} must specify 'join_on' or both 'source_key' and 'lookup_key'"
-            raise ValueError(msg)
+        source_key, lookup_key = join_keys(spec)
         key_val = source_obj.get(source_key)
         if key_val is None:
             return None
@@ -763,7 +1016,12 @@ class ObjectTransformer(Transformer):
                 nested_source,
             )
 
-        return MergedRow(merged, rows_by_table={parent_source: parent_row, nested_source: joined_row})
+        # Carry ancestor tables forward so dot-notation (and the pre-joined fast
+        # path) keep resolving at arbitrary nesting depth — e.g.
+        # MeasurementObservationSet -> MeasurementObservation -> Quantity, where the
+        # deepest level still needs every star-joined table available.
+        inherited = parent_row.rows_by_table if isinstance(parent_row, MergedRow) else {parent_source: parent_row}
+        return MergedRow(merged, rows_by_table={**inherited, nested_source: joined_row})
 
     def _apply_offset(self, value: Any, slot_derivation: SlotDerivation, source_obj: DICT_OBJ) -> Any:
         """Apply an offset calculation using a value from another source field."""
@@ -839,34 +1097,37 @@ class ObjectTransformer(Transformer):
                 if has_join:
                     # Join spec exists (explicit or synthesized) — resolve and merge
                     joined_row = self._resolve_joined_row(nested_source, source_obj, parent_class_deriv)
-                    if joined_row is not None:
-                        join_spec = parent_class_deriv.joins[nested_source]
-                        join_key = join_spec.join_on or join_spec.source_key or ""
-                        effective_obj = self._merge_rows(
-                            source_obj,
-                            joined_row,
-                            join_key,
-                            parent_source,
+                    if joined_row is None:
+                        # Sparse join miss. The nested object is anchored to its
+                        # populated_from table, so with no matching row there is no
+                        # object to emit. Skip it entirely rather than building a hollow
+                        # object against the bare parent row: that would both mask absence
+                        # as a real null (re: #211) and bypass the _AMBIGUOUS markers that
+                        # _merge_rows adds, making ambiguity enforcement data-dependent. See #217.
+                        logger.debug(
+                            "No row in %r matched the join from %r for nested %r; emitting no object",
                             nested_source,
+                            parent_source,
+                            cls_derivation.name,
                         )
+                        continue
+                    join_spec = parent_class_deriv.joins[nested_source]
+                    join_key, _ = join_keys(join_spec)  # parent-side key; kept unmarked in the merge
+                    effective_obj = self._merge_rows(
+                        source_obj,
+                        joined_row,
+                        join_key,
+                        parent_source,
+                        nested_source,
+                    )
                 else:
                     # No join spec for this nested source — cross-table reference can't be resolved.
-                    # Re-derive the candidate set so the diagnostic tells the user *why* synthesis
-                    # failed (no overlap vs. multiple non-identifier candidates), recovering the
-                    # detail lost when the per-row resolution path was consolidated into
-                    # normalization-time synthesis.
-                    from linkml_map.utils.join_utils import find_common_columns
+                    # Re-derive the reason via the shared resolver so the diagnostic tells the user
+                    # *why* synthesis failed (no overlap vs. multiple non-identifier candidates),
+                    # using the same logic synthesis used rather than a parallel implementation.
+                    from linkml_map.utils.join_utils import resolve_join
 
-                    common = find_common_columns(self.source_schemaview, parent_source, nested_source)
-                    if not common:
-                        reason = f"no columns are shared between {parent_source!r} and {nested_source!r}"
-                    else:
-                        candidates = ", ".join(sorted(common))
-                        reason = (
-                            f"multiple candidate join columns are shared between "
-                            f"{parent_source!r} and {nested_source!r} ({candidates}); "
-                            f"specify which to use"
-                        )
+                    reason = resolve_join(self.source_schemaview, parent_source, nested_source).reason
                     raise TransformationError(
                         message=(
                             f"Nested class {cls_derivation.name!r} has "
@@ -880,7 +1141,7 @@ class ObjectTransformer(Transformer):
 
             nested_result = self.map_object(
                 effective_obj,
-                source_type=cls_derivation.populated_from,
+                source_type=cls_derivation.populated_from or parent_source,
                 target_type=cls_derivation.name,
                 class_derivation=cls_derivation,
             )
@@ -976,104 +1237,6 @@ class ObjectTransformer(Transformer):
         all_enums = sv.all_enums()
         return [ao.range for ao in slot.any_of if ao.range in all_enums]
 
-    def _perform_unit_conversion(
-        self,
-        slot_derivation: SlotDerivation,
-        context: DerivationContext,
-    ) -> float | dict | None:
-        """Perform unit conversion for a slot derivation."""
-        uc = slot_derivation.unit_conversion
-        curr_v = context.source_obj.get(slot_derivation.populated_from, None)
-
-        if curr_v is None:
-            logger.debug(f"No value found for slot '{slot_derivation.populated_from}'; skipping conversion")
-            return None
-
-        slot = context.sv.induced_slot(slot_derivation.populated_from, context.source_type)
-        schema_unit = None
-        from_unit = None
-        system = UnitSystem.UCUM
-
-        if slot.unit:
-            if slot.unit.ucum_code:
-                schema_unit = slot.unit.ucum_code
-            elif slot.unit.iec61360code:
-                schema_unit = slot.unit.iec61360code
-                system = UnitSystem.IEC61360
-            elif slot.unit.symbol:
-                schema_unit = slot.unit.symbol
-                system = None
-            elif slot.unit.abbreviation:
-                schema_unit = slot.unit.abbreviation
-                system = None
-            elif slot.unit.descriptive_name:
-                schema_unit = slot.unit.descriptive_name
-                system = None
-            else:
-                raise NotImplementedError(
-                    f"Cannot determine unit system for slot '{slot.name}' — all unit fields are None"
-                )
-
-        spec_unit = uc.source_unit if uc.source_unit else None
-
-        if schema_unit and spec_unit:
-            if schema_unit != spec_unit:
-                raise ValueError(
-                    f"Mismatch in source units for slot '{slot_derivation.populated_from}': "
-                    f"schema unit '{schema_unit}' vs. transformation spec '{spec_unit}'"
-                )
-            from_unit = schema_unit
-        elif schema_unit:
-            from_unit = schema_unit
-        elif spec_unit:
-            from_unit = spec_unit
-        else:
-            if uc.source_unit_slot:
-                from_unit = None
-            else:
-                slot_name = slot_derivation.populated_from
-                raise ValueError(f"No source unit provided in schema or transformation spec for slot '{slot_name}'")
-
-        if uc.source_unit_slot:
-            # Structured input, e.g., {"value": 120, "unit": "cm"}
-            from_unit_val = curr_v.get(uc.source_unit_slot)
-            if from_unit_val:
-                if from_unit and from_unit_val != from_unit:
-                    slot_name = slot_derivation.populated_from
-                    raise ValueError(
-                        f"Value unit '{from_unit_val}' does not match expected '{from_unit}' for slot '{slot_name}'"
-                    )
-                from_unit = from_unit_val
-            else:
-                raise ValueError(
-                    f"Missing unit in structured value for slot '{slot_derivation.populated_from}': {curr_v}"
-                )
-
-            magnitude = curr_v.get(uc.source_magnitude_slot)
-            if magnitude is None:
-                raise ValueError(
-                    f"Missing magnitude in structured value for slot '{slot_derivation.populated_from}': {curr_v}"
-                )
-        else:
-            magnitude = curr_v
-
-        try:
-            magnitude = float(magnitude)
-        except (TypeError, ValueError):
-            if uc.none_if_non_numeric:
-                return None
-            raise
-
-        to_unit = uc.target_unit or from_unit
-        if from_unit == to_unit:
-            result = magnitude
-        else:
-            result = convert_units(magnitude, from_unit=from_unit, to_unit=to_unit, system=system)
-
-        if uc.target_magnitude_slot:
-            return {uc.target_magnitude_slot: result, uc.target_unit_slot: to_unit}
-        return result
-
     def _multivalued_to_singlevalued(self, vs: list[Any], slot_derivation: SlotDerivation) -> Any:
         if slot_derivation.stringification:
             stringification = slot_derivation.stringification
@@ -1082,9 +1245,9 @@ class ObjectTransformer(Transformer):
                 return delimiter.join(vs)
             if stringification.syntax:
                 if stringification.syntax == SerializationSyntaxType.JSON:
-                    return json.dumps(vs)
+                    return dumps_json(vs, ensure_ascii=True)
                 if stringification.syntax == SerializationSyntaxType.YAML:
-                    return yaml.dump(vs, default_flow_style=True).strip()
+                    return dump_yaml(vs, default_flow_style=True, allow_unicode=False).strip()
                 msg = f"Unknown syntax: {stringification.syntax}"
                 raise ValueError(msg)
             msg = f"Cannot convert multivalued to single valued: {vs}; no delimiter"
@@ -1165,236 +1328,45 @@ class ObjectTransformer(Transformer):
         for enum_name in enum_names:
             enum_deriv = self._get_enum_derivation(enum_name)
             if enum_deriv.expr:
+                mapping = (
+                    {**source_obj, "NULL": None}
+                    if isinstance(source_obj, Mapping)
+                    else {"src": source_obj, "NULL": None}
+                )
                 try:
-                    v = eval_expr(enum_deriv.expr, **source_obj, NULL=None)
-                except Exception:
-                    aeval = Interpreter(usersyms={"src": source_obj, "target": None, "uuid5": _uuid5})
-                    aeval(enum_deriv.expr)
-                    v = aeval.symtable["target"]
+                    v = eval_expr_with_mapping(
+                        enum_deriv.expr,
+                        mapping,
+                        strict=self.strict,
+                        warned_unbound=self._warned_unbound_names,
+                    )
+                except (InvalidExpression, TypeError, ValueError):
+                    if not self.unrestricted_eval:
+                        raise
+                    v = self._unrestricted_eval(enum_deriv.expr, source_obj)
                 if v is not None:
                     return v
             for pv_deriv in enum_deriv.permissible_value_derivations.values():
-                if source_value == pv_deriv.populated_from:
-                    return pv_deriv.name
-                if source_value in pv_deriv.sources:
+                if pv_deriv.sources:
+                    from linkml_map.transformer.errors import SpecificationError
+
+                    msg = (
+                        f"PermissibleValueDerivation '{pv_deriv.name}' has 'sources' set; "
+                        "this should have been migrated to 'populated_from' during spec load. "
+                        "Did the spec bypass linkml_map.spec_normalizer.normalize_spec?"
+                    )
+                    raise SpecificationError(msg)
+                if pv_deriv.populated_from and source_value in pv_deriv.populated_from:
                     return pv_deriv.name
             if enum_deriv.mirror_source:
                 return str(source_value)
         return None
 
-    def _perform_pivot_operation(
-        self,
-        pivot_op: PivotOperation,
-        source_obj: DICT_OBJ,
-        class_deriv: ClassDerivation,
-        sv: SchemaView,
-        source_type: str,
-    ) -> DICT_OBJ | list[DICT_OBJ]:
-        """
-        Perform a pivot (MELT or UNMELT) operation.
 
-        :param pivot_op: The pivot operation configuration
-        :param source_obj: The source object to transform
-        :param class_deriv: The class derivation spec
-        :param sv: Source schema view
-        :param source_type: Source type name
-        :return: Transformed object(s)
-        """
-        if pivot_op.direction == PivotDirectionType.UNMELT:
-            return self._perform_unmelt(pivot_op, source_obj, class_deriv, sv, source_type)
-        elif pivot_op.direction == PivotDirectionType.MELT:
-            return self._perform_melt(pivot_op, source_obj, class_deriv)
-        else:
-            msg = f"Unknown pivot direction: {pivot_op.direction}"
-            raise ValueError(msg)
-
-    def _perform_unmelt(
-        self,
-        pivot_op: PivotOperation,
-        source_obj: DICT_OBJ,
-        class_deriv: ClassDerivation,
-        sv: SchemaView,
-        source_type: str,
-    ) -> DICT_OBJ:
-        """
-        Transform EAV/long format to wide format.
-
-        Handles both single record and collection-based unmelt:
-        - Single record: {att: 'len', val: 1.0} -> {len: 1.0}
-        - Collection: [{att: 'h', val: 1.8}, {att: 'w', val: 75}] -> {h: 1.8, w: 75}
-
-        :param pivot_op: The pivot operation configuration
-        :param source_obj: The source object (may contain EAV records)
-        :param class_deriv: The class derivation spec
-        :param sv: Source schema view
-        :param source_type: Source type name
-        :return: Wide-format object
-        """
-        variable_slot = pivot_op.variable_slot or "variable"
-        value_slot = pivot_op.value_slot or "value"
-        unit_slot = pivot_op.unit_slot
-        template = pivot_op.slot_name_template or "{variable}"
-
-        # Check if source_obj itself is an EAV record (has variable and value slots)
-        if variable_slot in source_obj and value_slot in source_obj:
-            return self._unmelt_single_record(pivot_op, source_obj, variable_slot, value_slot, unit_slot, template)
-
-        # Otherwise, look for a collection of EAV records in the source
-        # Try to find a multivalued slot containing EAV records
-        for slot_name, slot_value in source_obj.items():
-            if isinstance(slot_value, list) and len(slot_value) > 0:
-                first_item = slot_value[0]
-                if isinstance(first_item, dict) and variable_slot in first_item:
-                    return self._unmelt_collection(pivot_op, slot_value)
-
-        # Fallback: treat source_obj as a single EAV record
-        return self._unmelt_single_record(pivot_op, source_obj, variable_slot, value_slot, unit_slot, template)
-
-    def _unmelt_single_record(
-        self,
-        pivot_op: PivotOperation,
-        record: DICT_OBJ,
-        variable_slot: str,
-        value_slot: str,
-        unit_slot: str | None,
-        template: str,
-    ) -> DICT_OBJ:
-        """
-        Unmelt a single EAV record into slot assignment(s).
-
-        Example:
-            Input:  {att: 'len', val: 1.0, unit: 'm'}
-            Output: {len_m: 1.0}
-        """
-        result = {}
-
-        # Copy ID slots (non-pivoted attributes)
-        if pivot_op.id_slots:
-            for id_slot in pivot_op.id_slots:
-                if id_slot in record:
-                    result[id_slot] = record[id_slot]
-
-        # Get variable and value
-        variable = record.get(variable_slot)
-        value = record.get(value_slot)
-
-        if variable is None:
-            logger.warning(f"No variable found in slot '{variable_slot}'")
-            return result
-
-        # Generate target slot name
-        if unit_slot and unit_slot in record:
-            unit = record[unit_slot]
-            target_slot_name = template.format(variable=variable, unit=unit)
-        else:
-            target_slot_name = template.format(variable=variable, unit="")
-
-        # Validate against target schema if unmelt_to_class specified
-        if pivot_op.unmelt_to_class and self.target_schemaview:
-            valid_slots = [s.name for s in self.target_schemaview.class_induced_slots(pivot_op.unmelt_to_class)]
-            if pivot_op.unmelt_to_slots:
-                valid_slots = [s for s in valid_slots if s in pivot_op.unmelt_to_slots]
-
-            if target_slot_name not in valid_slots:
-                logger.warning(
-                    f"Generated slot name '{target_slot_name}' not in valid slots for "
-                    f"class '{pivot_op.unmelt_to_class}'"
-                )
-
-        result[target_slot_name] = value
-        return result
-
-    def _unmelt_collection(
-        self,
-        pivot_op: PivotOperation,
-        records: list[DICT_OBJ],
-    ) -> DICT_OBJ:
-        """
-        Unmelt a collection of EAV records into a single wide object.
-
-        Example:
-            Input:  [{att: 'height', val: 1.8}, {att: 'weight', val: 75.0}]
-            Output: {height: 1.8, weight: 75.0}
-        """
-        result = {}
-        variable_slot = pivot_op.variable_slot or "variable"
-        value_slot = pivot_op.value_slot or "value"
-        unit_slot = pivot_op.unit_slot
-        template = pivot_op.slot_name_template or "{variable}"
-
-        for record in records:
-            variable = record.get(variable_slot)
-            value = record.get(value_slot)
-
-            if variable is None:
-                continue
-
-            if unit_slot and unit_slot in record:
-                unit = record[unit_slot]
-                target_slot = template.format(variable=variable, unit=unit)
-            else:
-                target_slot = template.format(variable=variable, unit="")
-
-            if target_slot in result:
-                logger.warning(f"Duplicate variable '{variable}' in unmelt; last value wins")
-
-            result[target_slot] = value
-
-        # Copy ID slots from the first record (assuming they're the same across all)
-        if pivot_op.id_slots and records:
-            for id_slot in pivot_op.id_slots:
-                if id_slot in records[0]:
-                    result[id_slot] = records[0][id_slot]
-
-        return result
-
-    def _perform_melt(
-        self,
-        pivot_op: PivotOperation,
-        source_obj: DICT_OBJ,
-        slot_derivation: SlotDerivation | None = None,
-    ) -> list[DICT_OBJ]:
-        """
-        Transform wide format to EAV/long format.
-
-        Example:
-            Input:  {height: 1.8, weight: 75.0}
-            Output: [{variable: 'height', value: 1.8}, {variable: 'weight', value: 75.0}]
-
-        :param pivot_op: The pivot operation configuration
-        :param source_obj: The source object in wide format
-        :param slot_derivation: Optional slot derivation (for context)
-        :return: List of EAV records
-        """
-        variable_slot = pivot_op.variable_slot or "variable"
-        value_slot = pivot_op.value_slot or "value"
-
-        # Determine which slots to melt
-        if pivot_op.source_slots:
-            slots_to_melt = list(pivot_op.source_slots)
-        elif pivot_op.unmelt_to_class and self.target_schemaview:
-            # Infer from target class
-            slots_to_melt = [s.name for s in self.target_schemaview.class_induced_slots(pivot_op.unmelt_to_class)]
-        else:
-            # Melt all non-ID slots
-            id_slots = set(pivot_op.id_slots or [])
-            slots_to_melt = [k for k in source_obj.keys() if k not in id_slots]
-
-        results = []
-        base_record = {}
-
-        # Copy ID slots to base record
-        if pivot_op.id_slots:
-            for id_slot in pivot_op.id_slots:
-                if id_slot in source_obj:
-                    base_record[id_slot] = source_obj[id_slot]
-
-        # Create one record per melted slot
-        for slot_name in slots_to_melt:
-            if slot_name in source_obj and source_obj[slot_name] is not None:
-                record = base_record.copy()
-                record[variable_slot] = slot_name
-                record[value_slot] = source_obj[slot_name]
-                results.append(record)
-
-        return results
+def _all_class_derivations(class_derivations: list[ClassDerivation]) -> Iterator[ClassDerivation]:
+    """Yield *class_derivations* and every class derivation nested under their slots."""
+    for cd in class_derivations:
+        yield cd
+        for sd in cd.slot_derivations.values():
+            if sd.class_derivations:
+                yield from _all_class_derivations(sd.class_derivations)

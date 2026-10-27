@@ -7,7 +7,17 @@ type checkers see the real shape. Keep signatures in lockstep with the
 `#[pymethods]` / `#[pyfunction]` definitions.
 """
 
+import os
 from typing import Any
+
+class PathNotFoundError(FileNotFoundError, ValueError):
+    """A schema or specification path does not exist.
+
+    Both a ``FileNotFoundError`` (what upstream ``open(path)`` /
+    ``SchemaView(path)`` raise) and a ``ValueError`` (what this binding raised
+    for a bad path before it accepted ``os.PathLike``), so either ``except``
+    clause catches it.
+    """
 
 class Transformer:
     """Reusable transformer: loads schema(s) + spec once, then transforms objects.
@@ -27,17 +37,28 @@ class Transformer:
 
     def __init__(
         self,
-        source_schema: str,
-        spec: str,
-        target_schema: str | None = ...,
+        source_schema: str | os.PathLike[str],
+        spec: str | os.PathLike[str],
+        target_schema: str | os.PathLike[str] | None = ...,
         source_class: str | None = ...,
-    ) -> None: ...
+        *,
+        strict: bool = ...,
+    ) -> None:
+        """Load the schema(s) and spec from file paths (``str`` or ``pathlib.Path``).
+
+        A missing file raises ``PathNotFoundError``. ``strict`` mirrors upstream
+        ``ObjectTransformer.strict``: an expression reference that does not
+        resolve raises instead of yielding null.
+        """
+        ...
     @staticmethod
     def from_yaml(
         source_schema_yaml: str,
         spec_yaml: str,
         target_schema_yaml: str | None = ...,
         source_class: str | None = ...,
+        *,
+        strict: bool = ...,
     ) -> "Transformer":
         """Build from in-memory YAML strings (used by the `linkml_map` shim)."""
         ...
@@ -47,8 +68,18 @@ class Transformer:
         spec: Any,
         target_schemaview: Any | None = ...,
         source_class: str | None = ...,
+        *,
+        strict: bool = ...,
     ) -> "Transformer":
-        """Build directly from Python SchemaView / specification objects."""
+        """Build directly from Python SchemaView / specification objects.
+
+        ``source_schemaview`` / ``target_schemaview``: a ``SchemaView``, a
+        ``SchemaDefinition``, a schema file path (``os.PathLike``, or a ``str``
+        naming an existing file) or schema YAML text. ``spec``: a dict, a
+        ``linkml_runtime`` dataclass, a spec file path (``os.PathLike``, or a
+        ``str`` naming an existing file) or spec YAML text. An ``os.PathLike`` is
+        always a path (``PathNotFoundError`` if missing, never YAML text).
+        """
         ...
     def transform(self, obj: dict[str, Any]) -> dict[str, Any]:
         """Transform a single object."""
@@ -86,10 +117,11 @@ class Transformer:
 def transform_object(
     source_obj: dict[str, Any],
     *,
-    source_schema: str,
-    spec: str,
-    target_schema: str | None = ...,
+    source_schema: str | os.PathLike[str],
+    spec: str | os.PathLike[str],
+    target_schema: str | os.PathLike[str] | None = ...,
     source_class: str | None = ...,
+    strict: bool = ...,
 ) -> dict[str, Any]:
     """Transform one object; schema(s) + spec loaded on every call.
 
@@ -101,10 +133,11 @@ def transform_object(
 def transform_objects(
     source_objs: list[dict[str, Any]],
     *,
-    source_schema: str,
-    spec: str,
-    target_schema: str | None = ...,
+    source_schema: str | os.PathLike[str],
+    spec: str | os.PathLike[str],
+    target_schema: str | os.PathLike[str] | None = ...,
     source_class: str | None = ...,
+    strict: bool = ...,
 ) -> list[dict[str, Any]]:
     """Transform a batch; schema(s) + spec loaded once for the batch.
 
@@ -134,10 +167,10 @@ class ValidationMessage:
     def __str__(self) -> str: ...
 
 def validate_spec(
-    spec: str,
+    spec: str | os.PathLike[str],
     *,
-    source_schema: str | None = ...,
-    target_schema: str | None = ...,
+    source_schema: str | os.PathLike[str] | None = ...,
+    target_schema: str | os.PathLike[str] | None = ...,
     strict: bool = ...,
 ) -> list[ValidationMessage]:
     """Cross-reference a spec against its schema(s) WITHOUT running any transform.
@@ -153,5 +186,21 @@ def validate_spec(
     against. Validation runs on the spec exactly as parsed: no implicit-join
     synthesis (``Transformer``'s spec derivation) runs first, since the whole
     point of this check is to catch spec problems *before* that stage.
+    """
+    ...
+
+def load_specification(spec: dict[str, Any] | str | os.PathLike[str]) -> dict[str, Any]:
+    """Load a transformation specification from a YAML file or a dict.
+
+    Native counterpart of upstream ``linkml_map.utils.loaders.load_specification``.
+    A ``str`` / path-like is a file path (never YAML text; ``PathNotFoundError``
+    if missing); a dict is normalised like a file's contents. The result is
+    validated against the specification datamodel (``ValueError`` if invalid).
+
+    Divergence: upstream returns a pydantic ``TransformationSpecification`` and
+    normalises a dict argument in place. This returns the normalised plain dict
+    as a NEW dict and leaves the argument untouched. The ``linkml_map`` shim's
+    ``load_specification`` wraps it in a dict-backed stand-in and mirrors the
+    in-place normalisation.
     """
     ...

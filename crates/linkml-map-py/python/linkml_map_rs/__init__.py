@@ -5,16 +5,20 @@ The compiled core lives in `linkml_map_rs._native`; it is re-exported here so
 """
 
 from ._native import (
+    PathNotFoundError,
     Transformer,
     ValidationMessage,
+    load_specification,
     transform_object,
     transform_objects,
     validate_spec,
 )
 
 __all__ = [
+    "PathNotFoundError",
     "Transformer",
     "ValidationMessage",
+    "load_specification",
     "transform_object",
     "transform_objects",
     "validate_spec",

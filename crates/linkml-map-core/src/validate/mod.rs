@@ -7,6 +7,10 @@
 //! `_validate_slot_derivation`, `_validate_enum_derivation`), plus the two
 //! expression-reference extractors in [`expr_refs`].
 //!
+//! Later upstream validator changes ported on top: `cbf2f97` (dotted references
+//! through joined tables), `e373d93` (`_check_join_keys`), `b332fc7`
+//! (`range-override`) and the `unknown-range` check of `f299f3a`.
+//!
 //! # What this checks
 //!
 //! Given a spec and the source and/or target [`SchemaProvider`]s, it
@@ -51,7 +55,7 @@ use std::fmt;
 
 use crate::datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification};
 use crate::normalize::join_utils::{find_common_columns, pick_join_key};
-use crate::schema::SchemaProvider;
+use crate::schema::{LINKML_BUILTIN_TYPES, SchemaProvider, coercible_datatype};
 
 use expr_refs::{extract_expr_attribute_references, extract_expr_slot_references};
 
@@ -98,6 +102,12 @@ impl ValidationMessage {
             category: None,
         }
     }
+
+    /// Tag this message with a `category` downstream consumers can group on.
+    fn with_category(mut self, category: &str) -> Self {
+        self.category = Some(category.to_owned());
+        self
+    }
 }
 
 impl fmt::Display for ValidationMessage {
@@ -124,6 +134,10 @@ struct Ctx<'a> {
     pool: BTreeSet<String>,
     source_classes: BTreeSet<String>,
     target_classes: BTreeSet<String>,
+    target_enums: BTreeSet<String>,
+    /// Names a slot derivation's `range` may use: elements of either schema,
+    /// plus the spec's own derivations.
+    known_ranges: BTreeSet<String>,
 }
 
 /// Validate a spec's references against the source and/or target schemas.
@@ -144,6 +158,7 @@ pub fn validate_spec_semantics(
         return messages;
     }
 
+    let known_ranges = collect_known_ranges(spec, source_schema, target_schema);
     let ctx = Ctx {
         spec,
         source: source_schema,
@@ -152,6 +167,10 @@ pub fn validate_spec_semantics(
         pool: collect_class_derivation_pool(spec),
         source_classes: source_schema.map(class_name_set).unwrap_or_default(),
         target_classes: target_schema.map(class_name_set).unwrap_or_default(),
+        target_enums: target_schema
+            .map(|sv| sv.all_enum_names().into_iter().collect())
+            .unwrap_or_default(),
+        known_ranges,
     };
 
     identifiers::check_class_defaults(&ctx, &mut messages);
@@ -165,6 +184,33 @@ pub fn validate_spec_semantics(
     }
 
     messages
+}
+
+/// Names a slot derivation's `range` may use: elements of either schema, plus
+/// the spec's own derivations, which range inference assigns to nested-object
+/// slots. Mirrors the `known_ranges` set built in Python
+/// `validate_spec_semantics` (upstream f299f3a).
+fn collect_known_ranges(
+    spec: &TransformationSpecification,
+    source: Option<&dyn SchemaProvider>,
+    target: Option<&dyn SchemaProvider>,
+) -> BTreeSet<String> {
+    let mut known = collect_class_derivation_pool(spec);
+    known.extend(
+        spec.enum_derivations
+            .iter()
+            .flatten()
+            .map(|(_, ed)| ed.name.clone()),
+    );
+    for sv in [source, target].into_iter().flatten() {
+        known.extend(sv.all_type_names());
+        known.extend(sv.all_class_names());
+        known.extend(sv.all_enum_names());
+        // PARITY: Python's `all_types()` includes the `linkml:types` import;
+        // providers that don't load it still accept its built-in names.
+        known.extend(LINKML_BUILTIN_TYPES.iter().map(|t| (*t).to_owned()));
+    }
+    known
 }
 
 /// Names of all top-level class derivations. Mirrors Python
@@ -259,6 +305,7 @@ fn validate_class_derivation(
 
     // Source: populated_from class should exist.
     let mut source_class_slots: Option<BTreeSet<String>> = None;
+    let mut resolved_source_class: Option<&str> = None;
     if let (Some(source), Some(source_class)) = (ctx.source, cd.populated_from.as_deref()) {
         if !ctx.source_classes.contains(source_class) {
             messages.push(ValidationMessage::new(
@@ -269,6 +316,7 @@ fn validate_class_derivation(
                 ),
             ));
         } else {
+            resolved_source_class = Some(source_class);
             source_class_slots = Some(induced_slot_names(source, source_class));
         }
     }
@@ -278,7 +326,7 @@ fn validate_class_derivation(
     // (cd_name). Mirrors the runtime's _derive_nested_objects behaviour.
     if let Some(source) = ctx.source
         && cd.populated_from.is_none()
-        && source_class_slots.is_none()
+        && resolved_source_class.is_none()
     {
         let fallback = match parent_cd {
             Some(parent) => parent
@@ -288,9 +336,12 @@ fn validate_class_derivation(
             None => cd_name,
         };
         if !fallback.is_empty() && ctx.source_classes.contains(fallback) {
+            resolved_source_class = Some(fallback);
             source_class_slots = Some(induced_slot_names(source, fallback));
         }
     }
+
+    check_join_keys(ctx, cd, resolved_source_class, &cd_path, messages);
 
     let sds = slot_derivations(cd);
 
@@ -310,6 +361,12 @@ fn validate_class_derivation(
         );
 
         let sd_path = format!("{cd_path}.slot_derivations[{}]", sd.name);
+        check_range_exists(ctx, sd, &sd_path, messages);
+        if let (Some(target), Some(target_slots)) = (ctx.target, target_class_slots.as_ref())
+            && target_slots.contains(&sd.name)
+        {
+            check_range_override(ctx, sd, cd_name, target, &sd_path, messages);
+        }
         for nested in nested_class_derivations(sd) {
             validate_class_derivation(ctx, nested, Some(cd), &sd_path, messages);
         }
@@ -345,7 +402,7 @@ fn build_joined_class_map(
     }
 
     // Identity case: populated_from omitted -> the CD's own name is the source.
-    if ctx.source.is_some()
+    if let Some(source) = ctx.source
         && let Some(parent_source) = effective_source(cd)
     {
         for sd in sds {
@@ -356,6 +413,44 @@ fn build_joined_class_map(
                 {
                     let entry = resolve_joined_class(ctx, nested_source.to_string());
                     result.insert(nested_source.to_string(), entry);
+                }
+            }
+        }
+
+        // Implicit join targets named by a dotted reference — `populated_from:
+        // Other.slot` or `{Other.slot}` in an expression, where `Other` is
+        // another source class rather than a slot (upstream cbf2f97).
+        let source_slots = if ctx.source_classes.contains(parent_source) {
+            induced_slot_names(source, parent_source)
+        } else {
+            BTreeSet::new()
+        };
+        for sd in sds {
+            let mut bases: BTreeSet<String> = sd
+                .expr
+                .as_deref()
+                .filter(|e| !e.is_empty())
+                .map(|e| extract_expr_attribute_references(e).into_keys().collect())
+                .unwrap_or_default();
+            if let Some((base, _)) = sd
+                .populated_from
+                .as_deref()
+                .and_then(|pf| pf.split_once('.'))
+            {
+                bases.insert(base.to_owned());
+            }
+            // Python: `bases - source_slots - set(result) - {parent_source}`,
+            // evaluated before this `sd`'s additions land in `result`.
+            let new_bases: Vec<String> = bases
+                .into_iter()
+                .filter(|b| {
+                    !source_slots.contains(b) && !result.contains_key(b) && b != parent_source
+                })
+                .collect();
+            for base in new_bases {
+                if ctx.source_classes.contains(&base) {
+                    let slots = induced_slot_names(source, &base);
+                    result.insert(base.clone(), (base, Some(slots)));
                 }
             }
         }
@@ -373,6 +468,91 @@ fn resolve_joined_class(ctx: &Ctx, joined_class: String) -> JoinedClass {
             (joined_class, Some(slots))
         }
         _ => (joined_class, None),
+    }
+}
+
+/// An optional string key, treating `""` as absent (Python truthiness).
+fn non_empty(key: &Option<String>) -> Option<&str> {
+    key.as_deref().filter(|v| !v.is_empty())
+}
+
+/// Check that each entry of a class derivation's `joins:` has keys that resolve.
+///
+/// An entry needs `join_on`, or both `source_key` and `lookup_key`; without them
+/// the runtime raises. A key that isn't a slot on its class passes that check but
+/// silently resolves every joined value to null, so it is reported too:
+/// `source_key` against the primary class, `lookup_key` against the joined class,
+/// and `join_on` against both. `primary_class` is the class the derivation reads
+/// rows from, or `None` if unresolved. Mirrors Python `_check_join_keys`
+/// (upstream e373d93).
+fn check_join_keys(
+    ctx: &Ctx,
+    cd: &ClassDerivation,
+    primary_class: Option<&str>,
+    cd_path: &str,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    for (alias, join_spec) in cd.joins.iter().flatten() {
+        let join_path = format!("{cd_path}.joins[{alias}]");
+        // PARITY: Python truthiness — an empty string counts as missing.
+        let join_on = non_empty(&join_spec.join_on);
+        let source_key = non_empty(&join_spec.source_key);
+        let lookup_key = non_empty(&join_spec.lookup_key);
+        if join_on.is_none() && !(source_key.is_some() && lookup_key.is_some()) {
+            messages.push(ValidationMessage::new(
+                Severity::Warning,
+                &join_path,
+                format!(
+                    "Join spec for '{alias}' is missing keys: must specify 'join_on' or both \
+                     'source_key' and 'lookup_key'. Runtime will raise ValueError."
+                ),
+            ));
+            continue;
+        }
+        let joined_class = non_empty(&join_spec.class_named).unwrap_or(alias.as_str());
+        let (Some(source), Some(primary_class)) = (ctx.source, primary_class) else {
+            continue;
+        };
+        if !ctx.source_classes.contains(primary_class) || !ctx.source_classes.contains(joined_class)
+        {
+            continue;
+        }
+        let primary_slots = induced_slot_names(source, primary_class);
+        let joined_slots = induced_slot_names(source, joined_class);
+        let key_checks: [(&str, &str, &BTreeSet<String>, &str); 2] = match join_on {
+            Some(k) => [
+                ("join_on", k, &primary_slots, primary_class),
+                ("join_on", k, &joined_slots, joined_class),
+            ],
+            None => [
+                (
+                    "source_key",
+                    source_key.unwrap_or_default(),
+                    &primary_slots,
+                    primary_class,
+                ),
+                (
+                    "lookup_key",
+                    lookup_key.unwrap_or_default(),
+                    &joined_slots,
+                    joined_class,
+                ),
+            ],
+        };
+        for (key_label, key_value, slot_set, class_name) in key_checks {
+            if slot_set.contains(key_value) {
+                continue;
+            }
+            messages.push(ValidationMessage::new(
+                Severity::Warning,
+                &join_path,
+                format!(
+                    "Join spec for '{alias}': '{key_label}={key_value}' is not a slot on \
+                     source class '{class_name}'. Runtime will silently resolve cross-table \
+                     values to null."
+                ),
+            ));
+        }
     }
 }
 
@@ -395,64 +575,13 @@ fn check_cross_table_join(
         return;
     }
 
-    // Explicit join present: verify it carries enough keys to resolve a row.
-    if let Some(join_spec) = parent_cd.joins.as_ref().and_then(|j| j.get(nested_source)) {
-        let join_on = join_spec.join_on.as_deref();
-        let source_key = join_spec.source_key.as_deref();
-        let lookup_key = join_spec.lookup_key.as_deref();
-        if join_on.is_none() && !(source_key.is_some() && lookup_key.is_some()) {
-            messages.push(ValidationMessage::new(
-                Severity::Warning,
-                nested_path,
-                format!(
-                    "Join spec for '{nested_source}' is missing keys: must specify 'join_on' \
-                     or both 'source_key' and 'lookup_key'. Runtime will raise ValueError."
-                ),
-            ));
-        } else if ctx.source.is_some()
-            && ctx.source_classes.contains(parent_source)
-            && ctx.source_classes.contains(nested_source)
-        {
-            // Keys declared — verify they exist on the respective source classes.
-            let source = ctx.source.unwrap();
-            let parent_slots = induced_slot_names(source, parent_source);
-            let nested_slots = induced_slot_names(source, nested_source);
-            let key_checks: Vec<(&str, &BTreeSet<String>, &str, &str)> = if let Some(k) = join_on {
-                vec![
-                    (k, &parent_slots, parent_source, "join_on"),
-                    (k, &nested_slots, nested_source, "join_on"),
-                ]
-            } else {
-                vec![
-                    (
-                        source_key.unwrap(),
-                        &parent_slots,
-                        parent_source,
-                        "source_key",
-                    ),
-                    (
-                        lookup_key.unwrap(),
-                        &nested_slots,
-                        nested_source,
-                        "lookup_key",
-                    ),
-                ]
-            };
-            for (key_value, slot_set, class_name, key_label) in key_checks {
-                if slot_set.contains(key_value) {
-                    continue;
-                }
-                messages.push(ValidationMessage::new(
-                    Severity::Warning,
-                    nested_path,
-                    format!(
-                        "Join spec for '{nested_source}': '{key_label}={key_value}' is not a \
-                         slot on source class '{class_name}'. Runtime will silently resolve \
-                         cross-table values to null."
-                    ),
-                ));
-            }
-        }
+    // An explicit join covers the nested source; its keys are checked with the
+    // parent's other joins in `check_join_keys`.
+    if parent_cd
+        .joins
+        .as_ref()
+        .is_some_and(|j| j.contains_key(nested_source))
+    {
         return;
     }
 
@@ -570,16 +699,41 @@ fn validate_slot_derivation(
         ));
     }
 
-    // Source: populated_from slot should be valid on the source class.
+    // Source: populated_from slot should be valid on the source class. A dotted
+    // reference is checked through the joined class when its first segment is a
+    // join alias; otherwise the first segment must be a source slot.
+    // PARITY: upstream validator._validate_slot_derivation (cbf2f97).
     if let (Some(source_slots), Some(populated_from)) =
         (source_class_slots, sd.populated_from.as_deref())
-        && !source_slots.contains(populated_from)
     {
-        messages.push(ValidationMessage::new(
-            Severity::Error,
-            &sd_path,
-            format!("Source slot '{populated_from}' (populated_from) not found on source class"),
-        ));
+        let (base, attr) = populated_from
+            .split_once('.')
+            .unwrap_or((populated_from, ""));
+        if let Some((joined_class, joined_slots)) = joined_class_slots.get(base)
+            && !attr.is_empty()
+        {
+            let attr = attr.split('.').next().unwrap_or_default();
+            if let Some(joined_slots) = joined_slots
+                && !joined_slots.contains(attr)
+            {
+                messages.push(ValidationMessage::new(
+                    Severity::Error,
+                    &sd_path,
+                    format!(
+                        "Source slot '{populated_from}' (populated_from): '{attr}' is not a \
+                         slot on joined class '{joined_class}'"
+                    ),
+                ));
+            }
+        } else if !source_slots.contains(base) {
+            messages.push(ValidationMessage::new(
+                Severity::Error,
+                &sd_path,
+                format!(
+                    "Source slot '{populated_from}' (populated_from) not found on source class"
+                ),
+            ));
+        }
     }
 
     let (Some(expr), Some(source_slots)) = (sd.expr.as_deref(), source_class_slots) else {
@@ -633,6 +787,126 @@ fn validate_slot_derivation(
             }
         }
     }
+}
+
+// ── unknown range ───────────────────────────────────────────────────────────
+
+/// Report a slot derivation `range` that names nothing the schemas or spec
+/// define. Mirrors Python `_check_range_exists` (upstream f299f3a).
+///
+/// Values are coerced only to ranges the transformer recognises; any other name
+/// passes them through unchanged, so a misspelt `range: integr` would otherwise
+/// go unnoticed.
+fn check_range_exists(
+    ctx: &Ctx,
+    sd: &SlotDerivation,
+    sd_path: &str,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    let Some(range_name) = sd.range.as_deref() else {
+        return;
+    };
+    if ctx.known_ranges.contains(range_name) {
+        return;
+    }
+    messages.push(
+        ValidationMessage::new(
+            if ctx.strict {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            sd_path,
+            format!(
+                "range '{range_name}' is not a type, class or enum in the source or target schema"
+            ),
+        )
+        .with_category("unknown-range"),
+    );
+}
+
+// ── range override ──────────────────────────────────────────────────────────
+
+/// Datatypes whose values count as numbers (Python `_NUMERIC_DATATYPES`).
+const NUMERIC_DATATYPES: [&str; 3] = ["integer", "float", "decimal"];
+
+/// Whether values coerced to `spec_datatype` still validate against
+/// `target_datatype`. Mirrors Python `_datatype_fits`.
+///
+/// Integers and floats are valid wherever a float or decimal is; anything that
+/// isn't a number or a boolean stays a string. `None` is a range with no
+/// coercion, whose values pass through as the strings they arrived as.
+fn datatype_fits(spec_datatype: Option<&str>, target_datatype: &str) -> bool {
+    match target_datatype {
+        "string" => spec_datatype.is_none_or(|d| !NUMERIC_DATATYPES.contains(&d) && d != "boolean"),
+        "float" | "decimal" => spec_datatype.is_some_and(|d| NUMERIC_DATATYPES.contains(&d)),
+        other => spec_datatype == Some(other),
+    }
+}
+
+/// Report a slot derivation `range` that keeps values from matching the target
+/// slot's range. Mirrors Python `_check_range_override`.
+///
+/// An explicit `range` wins over the target schema's, so values are coerced to
+/// it instead and not resolved against a target enum. That is only a problem
+/// when the two disagree: a `range: string` on a slot whose target range is an
+/// enum or a decimal leaves the output invalid with no other sign of why.
+/// Under `strict` the finding is an error rather than a warning.
+fn check_range_override(
+    ctx: &Ctx,
+    sd: &SlotDerivation,
+    class_name: &str,
+    target: &dyn SchemaProvider,
+    sd_path: &str,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    // Python `induced_slot(...).range` falls back to the schema's `default_range`.
+    let Ok(target_slot) = target.induced_slot(&sd.name, class_name) else {
+        return;
+    };
+    let target_range = target_slot
+        .range
+        .name()
+        .map(str::to_owned)
+        .or_else(|| target.default_range());
+    let (Some(spec_range), Some(target_range)) = (sd.range.as_deref(), target_range.as_deref())
+    else {
+        return;
+    };
+    if spec_range == target_range {
+        return;
+    }
+    let consequence = if ctx.target_enums.contains(target_range) {
+        "its values aren't resolved to the target enum's permissible values".to_owned()
+    } else {
+        let Some(target_datatype) = coercible_datatype(target, Some(target_range)) else {
+            return;
+        };
+        let spec_datatype = if ctx.target_enums.contains(spec_range) {
+            Some("string")
+        } else {
+            coercible_datatype(target, Some(spec_range))
+        };
+        if datatype_fits(spec_datatype, target_datatype) {
+            return;
+        }
+        format!("its values aren't coerced to {target_datatype}")
+    };
+    messages.push(
+        ValidationMessage::new(
+            if ctx.strict {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            sd_path,
+            format!(
+                "range '{spec_range}' overrides the target slot's range '{target_range}', so \
+                 {consequence}. Remove the range to use the target schema's."
+            ),
+        )
+        .with_category("range-override"),
+    );
 }
 
 // ── enum derivation ─────────────────────────────────────────────────────────

@@ -20,6 +20,20 @@
 //! t.register_join_table("demographics", [{"patient_id": "P:1", "age": 42}], "patient_id")
 //! result = t.transform({"pid": "P:1"})   # spec's `joins:`/`{alias.field}` now resolves
 //!
+//! # Paths, strictness and spec loading
+//!
+//! Every schema/spec path argument takes a `str` or any `os.PathLike`
+//! (`pathlib.Path`); a missing file raises `PathNotFoundError`, a
+//! `FileNotFoundError` that is also a `ValueError`. `strict=True` is upstream's
+//! `ObjectTransformer.strict` (the engine's `with_strict_exprs`).
+//!
+//! ```python
+//! from pathlib import Path
+//! from linkml_map_rs import Transformer, load_specification
+//! t = Transformer(Path("source.yaml"), Path("transform.yaml"), strict=True)
+//! spec = load_specification(Path("transform.yaml"))   # normalised dict
+//! ```
+//!
 //! # Convenience free functions (schema/spec loaded on every call — use the
 //! # class when transforming many objects from the same spec).
 //! result = transform_object(obj, source_schema="source.yaml", spec="transform.yaml")
@@ -71,6 +85,8 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::sync::GILOnceCell;
+use pyo3::types::{PyDict, PyString, PyType};
 
 use linkml_map_core::{
     datamodel::TransformationSpecification,
@@ -85,7 +101,6 @@ use linkml_map_schemaview::SchemaViewProvider;
 /// Convert a Python object (dict, list, scalar) to a Rust `Value` by going
 /// through JSON.  The caller must hold the GIL (`py`).
 fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
-    use pyo3::types::PyDict;
     let json_mod = py.import("json")?;
     // `default=str` so non-JSON scalars (datetime.date / Decimal / etc., as
     // produced by linkml_runtime loaders) serialise to their string form rather
@@ -116,9 +131,118 @@ fn value_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
     Ok(py_obj)
 }
 
-/// Coerce a Python SchemaView (or string/path) argument to a JSON string.
+// ── Helpers: path arguments ───────────────────────────────────────────────────
+
+static PATH_NOT_FOUND: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+
+/// `linkml_map_rs.PathNotFoundError`: raised when a schema/spec path does not
+/// exist. It subclasses BOTH `FileNotFoundError` (what upstream `open(path)` /
+/// `SchemaView(path)` raise) and `ValueError` (what this binding has always
+/// raised for a bad path), so callers written against either keep working.
+fn path_not_found_type<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyType>> {
+    PATH_NOT_FOUND
+        .get_or_try_init(py, || -> PyResult<Py<PyType>> {
+            let builtins = py.import("builtins")?;
+            let bases = (
+                builtins.getattr("FileNotFoundError")?,
+                builtins.getattr("ValueError")?,
+            );
+            let namespace = PyDict::new(py);
+            namespace.set_item("__module__", "linkml_map_rs")?;
+            namespace.set_item(
+                "__doc__",
+                "A schema or specification path does not exist \
+                 (both a FileNotFoundError and a ValueError).",
+            )?;
+            let ty = builtins
+                .getattr("type")?
+                .call1(("PathNotFoundError", bases, namespace))?;
+            Ok(ty.downcast_into::<PyType>()?.unbind())
+        })
+        .map(|ty| ty.bind(py))
+}
+
+/// Build the `OSError(ENOENT, ..., path)`-shaped error for a missing path.
+fn path_not_found(path: &str) -> PyErr {
+    Python::with_gil(|py| match path_not_found_type(py) {
+        Ok(ty) => PyErr::from_type(
+            ty.clone(),
+            (2, "No such file or directory", path.to_owned()),
+        ),
+        Err(e) => e,
+    })
+}
+
+/// A schema/spec path argument: a `str` or any `os.PathLike` (`pathlib.Path`).
+///
+/// Mirrors upstream `173121b`, which accepts `str | Path` wherever a file is
+/// named. `bytes` paths are decoded with the filesystem encoding.
+struct PathArg(String);
+
+impl<'py> FromPyObject<'py> for PathArg {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        if let Ok(s) = ob.downcast::<PyString>() {
+            return Ok(Self(s.to_string()));
+        }
+        let decoded = ob.py().import("os")?.call_method1("fsdecode", (ob,))?;
+        Ok(Self(decoded.extract()?))
+    }
+}
+
+/// The filesystem path of an `os.PathLike` object, or `None` for anything else
+/// (including `str`, whose in-memory-YAML-text superset is handled by callers).
+fn fspath(ob: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+    if ob.is_instance_of::<PyString>() || !ob.hasattr("__fspath__")? {
+        return Ok(None);
+    }
+    let decoded = ob.py().import("os")?.call_method1("fsdecode", (ob,))?;
+    Ok(Some(decoded.extract()?))
+}
+
+/// Read a schema/spec file; a missing file raises [`path_not_found`].
+fn read_text(path: &str, what: &str) -> PyResult<String> {
+    if !std::path::Path::new(path).exists() {
+        return Err(path_not_found(path));
+    }
+    std::fs::read_to_string(path)
+        .map_err(|e| PyValueError::new_err(format!("Cannot read {what} file '{path}': {e}")))
+}
+
+/// Serialise a Python dict (or other `json.dumps`-able value) to a `serde_json::Value`.
+///
+/// `default=str` mirrors `py_to_value`: a dict loaded via `yaml.safe_load` can
+/// carry non-JSON scalars (e.g. a bare `publication_date: 2025-08-14` becomes
+/// `datetime.date`), which `json.dumps` otherwise rejects with `TypeError`.
+fn dict_to_json_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
+    let json_str: String = py
+        .import("json")?
+        .call_method("dumps", (obj,), Some(&kwargs))?
+        .extract()?;
+    serde_json::from_str(&json_str)
+        .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))
+}
+
+/// The `linkml_runtime` JSON dumper *instance*.
+///
+/// Fetched as the `linkml_runtime.dumpers.json_dumper` attribute of the package:
+/// importing the dotted name returns the *module* (`sys.modules`), which has no
+/// `dumps` in current `linkml-runtime` releases; the package attribute is the
+/// `JSONDumper()` instance everywhere.
+fn json_dumper<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    py.import("linkml_runtime.dumpers")?.getattr("json_dumper")
+}
+
+/// Coerce a Python SchemaView / SchemaDefinition / path / YAML-text argument to
+/// schema text (YAML or JSON) the Rust schema loader accepts.
+///
+/// A path-like is always a file path (missing file: `PathNotFoundError`). A
+/// `str` is a file path when such a file exists, otherwise YAML text.
 fn schema_to_json_str(py: Python<'_>, sv: &Bound<'_, PyAny>) -> PyResult<String> {
-    use pyo3::types::PyString;
+    if let Some(path) = fspath(sv)? {
+        return read_text(&path, "schema");
+    }
     if sv.is_instance_of::<PyString>() {
         let s: String = sv.extract()?;
         let path = std::path::Path::new(&s);
@@ -137,14 +261,22 @@ fn schema_to_json_str(py: Python<'_>, sv: &Bound<'_, PyAny>) -> PyResult<String>
         sv.clone()
     };
 
-    let json_dumper = py.import("linkml_runtime.dumpers.json_dumper")?;
+    let json_dumper = json_dumper(py)?;
     let json_str: String = json_dumper.call_method1("dumps", (schema,))?.extract()?;
     Ok(json_str)
 }
 
-/// Coerce a Python specification (dict, dataclass, string/path) argument to a `serde_json::Value`.
+/// Coerce a Python specification (dict, dataclass, path, YAML text) argument to a `serde_json::Value`.
+///
+/// A path-like is always a file path (missing file: `PathNotFoundError`). A
+/// `str` is a file path when such a file exists, otherwise YAML text (a
+/// superset of upstream, where a `str` is always a path).
 fn spec_to_json_value(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<serde_json::Value> {
-    use pyo3::types::{PyDict, PyString};
+    if let Some(path) = fspath(spec)? {
+        let content = read_text(&path, "spec")?;
+        return serde_yaml_ng::from_str(&content)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse spec: {e}")));
+    }
 
     if spec.is_instance_of::<PyString>() {
         let s: String = spec.extract()?;
@@ -161,23 +293,11 @@ fn spec_to_json_value(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<serde
     }
 
     if spec.is_instance_of::<PyDict>() {
-        // `default=str` mirrors `py_to_value`: a dict spec loaded via
-        // `yaml.safe_load` can carry non-JSON scalars (e.g. a bare
-        // `publication_date: 2025-08-14` becomes `datetime.date`), which
-        // `json.dumps` otherwise rejects with `TypeError`.
-        let json_mod = py.import("json")?;
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("default", py.import("builtins")?.getattr("str")?)?;
-        let json_str: String = json_mod
-            .call_method("dumps", (spec,), Some(&kwargs))?
-            .extract()?;
-        let val: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
-        return Ok(val);
+        return dict_to_json_value(py, spec);
     }
 
     // Otherwise assume it is a dataclass object.
-    let json_dumper = py.import("linkml_runtime.dumpers.json_dumper")?;
+    let json_dumper = json_dumper(py)?;
     let json_str: String = json_dumper.call_method1("dumps", (spec,))?.extract()?;
     let val: serde_json::Value = serde_json::from_str(&json_str)
         .map_err(|e| PyValueError::new_err(format!("JSON parse error: {e}")))?;
@@ -187,9 +307,7 @@ fn spec_to_json_value(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<serde
 // ── Schema / spec loading ─────────────────────────────────────────────────────
 
 fn load_spec(spec_path: &str) -> PyResult<TransformationSpecification> {
-    let yaml_str = std::fs::read_to_string(spec_path)
-        .map_err(|e| PyValueError::new_err(format!("Cannot read spec file '{spec_path}': {e}")))?;
-    parse_spec_yaml(&yaml_str)
+    parse_spec_yaml(&read_text(spec_path, "spec")?)
 }
 
 /// Parse a transform spec from a YAML string (the in-memory entry point used by
@@ -204,6 +322,9 @@ fn parse_spec_yaml(yaml_str: &str) -> PyResult<TransformationSpecification> {
 
 fn load_schema_provider(schema_path: &str) -> PyResult<SchemaViewProvider> {
     let path = std::path::Path::new(schema_path);
+    if !path.exists() {
+        return Err(path_not_found(schema_path));
+    }
     SchemaViewProvider::load_from_path(path)
         .map_err(|e| PyValueError::new_err(format!("Failed to load schema '{schema_path}': {e}")))
 }
@@ -216,6 +337,9 @@ fn load_source_provider(
     spec: &TransformationSpecification,
 ) -> PyResult<SchemaViewProvider> {
     let path = std::path::Path::new(schema_path);
+    if !path.exists() {
+        return Err(path_not_found(schema_path));
+    }
     SchemaViewProvider::load_from_path_with_patch(path, spec.source_schema_patches.as_ref())
         .map_err(|e| {
             PyValueError::new_err(format!("Failed to load source schema '{schema_path}': {e}"))
@@ -261,6 +385,7 @@ fn run_transform(
     source_class: Option<&str>,
     lookup_index: Option<&Arc<LookupIndex>>,
     compiled_exprs: Option<&CompiledExprs>,
+    strict: bool,
 ) -> PyResult<PyObject> {
     let input_value = py_to_value(py, obj)?;
 
@@ -269,6 +394,9 @@ fn run_transform(
         Some(source_provider as &dyn linkml_map_core::schema::SchemaProvider),
         target_provider.map(|p| p as &dyn linkml_map_core::schema::SchemaProvider),
     );
+    // Upstream `ObjectTransformer(strict=...)`: raise on unresolved expression
+    // references instead of warning and yielding null.
+    engine = engine.with_strict_exprs(strict);
     if let Some(ce) = compiled_exprs {
         engine = engine.with_compiled_exprs(ce);
     }
@@ -314,6 +442,8 @@ struct PyTransformer {
     target_provider: Option<SchemaViewProvider>,
     source_class: Option<String>,
     compiled_exprs: CompiledExprs,
+    /// Upstream `ObjectTransformer.strict`; forwarded to the engine on every call.
+    strict: bool,
     /// Cross-table join data, populated via `register_join_table`. `None`
     /// until the first registration; attached to the engine on every
     /// `transform` / `transform_many` / `map_object` call once present.
@@ -323,22 +453,23 @@ struct PyTransformer {
 #[pymethods]
 impl PyTransformer {
     #[new]
-    #[pyo3(signature = (source_schema, spec, target_schema=None, source_class=None))]
+    #[pyo3(signature = (source_schema, spec, target_schema=None, source_class=None, *, strict=false))]
     fn new(
-        source_schema: String,
-        spec: String,
-        target_schema: Option<String>,
+        source_schema: PathArg,
+        spec: PathArg,
+        target_schema: Option<PathArg>,
         source_class: Option<String>,
+        strict: bool,
     ) -> PyResult<Self> {
-        let spec_parsed = load_spec(&spec)?;
-        let source_provider = load_source_provider(&source_schema, &spec_parsed)?;
+        let spec_parsed = load_spec(&spec.0)?;
+        let source_provider = load_source_provider(&source_schema.0, &spec_parsed)?;
         let spec_parsed = derive_spec(spec_parsed, &source_provider)?;
         let compiled_exprs = CompiledExprs::build(&spec_parsed).map_err(|e| {
             PyValueError::new_err(format!("Failed to compile expression ASTs: {e}"))
         })?;
         let target_provider = target_schema
-            .as_deref()
-            .map(load_schema_provider)
+            .as_ref()
+            .map(|p| load_schema_provider(&p.0))
             .transpose()?;
         Ok(Self {
             spec: spec_parsed,
@@ -346,6 +477,7 @@ impl PyTransformer {
             target_provider,
             source_class,
             compiled_exprs,
+            strict,
             lookup_index: None,
         })
     }
@@ -354,12 +486,13 @@ impl PyTransformer {
     /// Used by the `linkml_map`-compatible shim, which dumps SchemaView / spec
     /// objects to YAML. Schemas/spec are parsed once here.
     #[staticmethod]
-    #[pyo3(signature = (source_schema_yaml, spec_yaml, target_schema_yaml=None, source_class=None))]
+    #[pyo3(signature = (source_schema_yaml, spec_yaml, target_schema_yaml=None, source_class=None, *, strict=false))]
     fn from_yaml(
         source_schema_yaml: String,
         spec_yaml: String,
         target_schema_yaml: Option<String>,
         source_class: Option<String>,
+        strict: bool,
     ) -> PyResult<Self> {
         let spec_parsed = parse_spec_yaml(&spec_yaml)?;
         let source_provider = SchemaViewProvider::from_yaml_str_with_patch(
@@ -385,6 +518,7 @@ impl PyTransformer {
             target_provider,
             source_class,
             compiled_exprs,
+            strict,
             lookup_index: None,
         })
     }
@@ -392,13 +526,14 @@ impl PyTransformer {
     /// Build from direct Python SchemaView and specification objects (or strings).
     /// Bypasses Python-side YAML dumping/parsing via JSON coercion.
     #[staticmethod]
-    #[pyo3(signature = (source_schemaview, spec, target_schemaview=None, source_class=None))]
+    #[pyo3(signature = (source_schemaview, spec, target_schemaview=None, source_class=None, *, strict=false))]
     fn from_python(
         py: Python<'_>,
         source_schemaview: Bound<'_, PyAny>,
         spec: Bound<'_, PyAny>,
         target_schemaview: Option<Bound<'_, PyAny>>,
         source_class: Option<String>,
+        strict: bool,
     ) -> PyResult<Self> {
         let mut spec_val = spec_to_json_value(py, &spec)?;
         linkml_map_core::datamodel::normalise_spec_json(&mut spec_val);
@@ -431,6 +566,7 @@ impl PyTransformer {
             target_provider,
             source_class,
             compiled_exprs,
+            strict,
             lookup_index: None,
         })
     }
@@ -446,6 +582,7 @@ impl PyTransformer {
             self.source_class.as_deref(),
             self.lookup_index.as_ref(),
             Some(&self.compiled_exprs),
+            self.strict,
         )
     }
 
@@ -468,6 +605,7 @@ impl PyTransformer {
             source_class,
             self.lookup_index.as_ref(),
             Some(&self.compiled_exprs),
+            self.strict,
         )
     }
 
@@ -488,6 +626,7 @@ impl PyTransformer {
                     self.source_class.as_deref(),
                     self.lookup_index.as_ref(),
                     Some(&self.compiled_exprs),
+                    self.strict,
                 )
             })
             .collect()
@@ -572,23 +711,24 @@ impl PyTransformer {
 /// dict
 ///     The transformed object.
 #[pyfunction]
-#[pyo3(signature = (source_obj, *, source_schema, spec, target_schema=None, source_class=None))]
+#[pyo3(signature = (source_obj, *, source_schema, spec, target_schema=None, source_class=None, strict=false))]
 fn transform_object(
     py: Python<'_>,
     source_obj: Bound<'_, PyAny>,
-    source_schema: String,
-    spec: String,
-    target_schema: Option<String>,
+    source_schema: PathArg,
+    spec: PathArg,
+    target_schema: Option<PathArg>,
     source_class: Option<String>,
+    strict: bool,
 ) -> PyResult<PyObject> {
-    let spec_parsed = load_spec(&spec)?;
-    let source = load_source_provider(&source_schema, &spec_parsed)?;
+    let spec_parsed = load_spec(&spec.0)?;
+    let source = load_source_provider(&source_schema.0, &spec_parsed)?;
     let spec_parsed = derive_spec(spec_parsed, &source)?;
     let compiled_exprs = CompiledExprs::build(&spec_parsed)
         .map_err(|e| PyValueError::new_err(format!("Failed to compile expression ASTs: {e}")))?;
     let target_opt: Option<SchemaViewProvider> = target_schema
-        .as_deref()
-        .map(load_schema_provider)
+        .as_ref()
+        .map(|p| load_schema_provider(&p.0))
         .transpose()?;
 
     run_transform(
@@ -600,6 +740,7 @@ fn transform_object(
         source_class.as_deref(),
         None,
         Some(&compiled_exprs),
+        strict,
     )
 }
 
@@ -623,23 +764,24 @@ fn transform_object(
 /// list[dict]
 ///     List of transformed objects.
 #[pyfunction]
-#[pyo3(signature = (source_objs, *, source_schema, spec, target_schema=None, source_class=None))]
+#[pyo3(signature = (source_objs, *, source_schema, spec, target_schema=None, source_class=None, strict=false))]
 fn transform_objects(
     py: Python<'_>,
     source_objs: Vec<Bound<'_, PyAny>>,
-    source_schema: String,
-    spec: String,
-    target_schema: Option<String>,
+    source_schema: PathArg,
+    spec: PathArg,
+    target_schema: Option<PathArg>,
     source_class: Option<String>,
+    strict: bool,
 ) -> PyResult<Vec<PyObject>> {
-    let spec_parsed = load_spec(&spec)?;
-    let source = load_source_provider(&source_schema, &spec_parsed)?;
+    let spec_parsed = load_spec(&spec.0)?;
+    let source = load_source_provider(&source_schema.0, &spec_parsed)?;
     let spec_parsed = derive_spec(spec_parsed, &source)?;
     let compiled_exprs = CompiledExprs::build(&spec_parsed)
         .map_err(|e| PyValueError::new_err(format!("Failed to compile expression ASTs: {e}")))?;
     let target_opt: Option<SchemaViewProvider> = target_schema
-        .as_deref()
-        .map(load_schema_provider)
+        .as_ref()
+        .map(|p| load_schema_provider(&p.0))
         .transpose()?;
 
     source_objs
@@ -654,6 +796,7 @@ fn transform_objects(
                 source_class.as_deref(),
                 None,
                 Some(&compiled_exprs),
+                strict,
             )
         })
         .collect()
@@ -759,20 +902,20 @@ impl From<ValidationMessage> for PyValidationMessage {
 #[pyfunction]
 #[pyo3(signature = (spec, *, source_schema=None, target_schema=None, strict=false))]
 fn validate_spec(
-    spec: String,
-    source_schema: Option<String>,
-    target_schema: Option<String>,
+    spec: PathArg,
+    source_schema: Option<PathArg>,
+    target_schema: Option<PathArg>,
     strict: bool,
 ) -> PyResult<Vec<PyValidationMessage>> {
-    let spec_parsed = load_spec(&spec)?;
+    let spec_parsed = load_spec(&spec.0)?;
 
     let source_provider: Option<SchemaViewProvider> = source_schema
-        .as_deref()
-        .map(|path| load_source_provider(path, &spec_parsed))
+        .as_ref()
+        .map(|path| load_source_provider(&path.0, &spec_parsed))
         .transpose()?;
     let target_provider: Option<SchemaViewProvider> = target_schema
-        .as_deref()
-        .map(load_schema_provider)
+        .as_ref()
+        .map(|p| load_schema_provider(&p.0))
         .transpose()?;
 
     let messages = validate_spec_semantics(
@@ -792,6 +935,60 @@ fn validate_spec(
         .collect())
 }
 
+// ── load_specification ────────────────────────────────────────────────────────
+
+/// Load a transformation specification from a YAML file or a dict.
+///
+/// Native counterpart of upstream `linkml_map.utils.loaders.load_specification`
+/// (`173121b`): a `str` / `os.PathLike` is a FILE PATH (never YAML text), a dict
+/// is normalised like a file's contents (`class_derivations` mapping to a named
+/// list, injected agent types, ...). The spec is also validated against the
+/// datamodel, as upstream's `TransformationSpecification(**spec)` does.
+///
+/// Parameters
+/// ----------
+/// spec : dict or str or os.PathLike
+///     A parsed specification, or the path of a YAML specification file.
+///
+/// Returns
+/// -------
+/// dict
+///     The normalised specification, as a NEW dict.
+///
+/// Notes
+/// -----
+/// Upstream returns a pydantic `TransformationSpecification` and normalises a
+/// dict argument IN PLACE; the Rust datamodel is not a Python class, so this
+/// returns the normalised plain dict and leaves the caller's dict untouched.
+/// The `linkml_map` shim wraps the result in a dict-backed
+/// `TransformationSpecification` and mirrors the in-place normalisation.
+///
+/// Raises
+/// ------
+/// PathNotFoundError
+///     (a `FileNotFoundError` and a `ValueError`) the path does not exist.
+/// ValueError
+///     The YAML is malformed or does not match the specification datamodel.
+#[pyfunction]
+fn load_specification(py: Python<'_>, spec: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    let mut value = if spec.is_instance_of::<PyDict>() {
+        dict_to_json_value(py, spec)?
+    } else {
+        let path = PathArg::extract_bound(spec)?.0;
+        serde_yaml_ng::from_str(&read_text(&path, "spec")?)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse spec: {e}")))?
+    };
+    linkml_map_core::datamodel::normalise_spec_json(&mut value);
+    serde_json::from_value::<TransformationSpecification>(value.clone())
+        .map_err(|e| PyValueError::new_err(format!("Failed to parse spec: {e}")))?;
+    let json_str = serde_json::to_string(&value)
+        .map_err(|e| PyValueError::new_err(format!("JSON serialisation error: {e}")))?;
+    Ok(py
+        .import("json")?
+        .call_method1("loads", (json_str,))?
+        .unbind())
+}
+
 // ── Module ────────────────────────────────────────────────────────────────────
 
 /// linkml-map Rust transform engine — compiled core, re-exported by the
@@ -803,5 +1000,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(transform_object, m)?)?;
     m.add_function(wrap_pyfunction!(transform_objects, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
+    m.add_function(wrap_pyfunction!(load_specification, m)?)?;
+    m.add("PathNotFoundError", path_not_found_type(m.py())?)?;
     Ok(())
 }
