@@ -452,7 +452,7 @@ fn cmp_num(a: &Num<'_>, b: &Num<'_>) -> Option<Ordering> {
 
 /// Python's ordering of two values for `symbol` (`<` or `>`): `None` when
 /// unordered (NaN), an error when the types do not order (`TypeError`).
-fn py_cmp(a: &Value, b: &Value, symbol: &str) -> ExprResult<Option<Ordering>> {
+pub(super) fn py_cmp(a: &Value, b: &Value, symbol: &str) -> ExprResult<Option<Ordering>> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(cmp_num(&x, &y));
     }
@@ -777,7 +777,7 @@ fn parse_int(text: &str, base: i64) -> ExprResult<Value> {
         ))
     };
     let normalised = pystr::ascii_digits(text);
-    let trimmed = normalised.trim_matches(pystr::is_py_space);
+    let trimmed = normalised.trim_matches(pystr::is_c_space);
     let (negative, unsigned) = match trimmed.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
@@ -873,27 +873,6 @@ fn int(args: &[Value]) -> ExprResult<Value> {
     }
 }
 
-/// Python's `float(str)`: surrounding whitespace, `inf`/`nan` spellings, and
-/// single underscores between digits.
-fn parse_py_float(text: &str) -> Option<f64> {
-    let normalised = pystr::ascii_digits(text);
-    let trimmed = normalised.trim_matches(pystr::is_py_space);
-    if trimmed.contains('_') {
-        let bytes = trimmed.as_bytes();
-        let valid = bytes.iter().enumerate().all(|(i, &b)| {
-            b != b'_'
-                || (i > 0
-                    && bytes[i - 1].is_ascii_digit()
-                    && bytes.get(i + 1).is_some_and(u8::is_ascii_digit))
-        });
-        if !valid {
-            return None;
-        }
-        return crate::value::parse_python_float(&trimmed.replace('_', ""));
-    }
-    crate::value::parse_python_float(trimmed)
-}
-
 fn float(args: &[Value]) -> ExprResult<Value> {
     check_arity("float", args, 0, 1)?;
     match args.first() {
@@ -902,7 +881,7 @@ fn float(args: &[Value]) -> ExprResult<Value> {
         Some(Value::Bool(b)) => Ok(Value::Float(f64::from(u8::from(*b)))),
         Some(Value::Float(f)) => Ok(Value::Float(*f)),
         Some(Value::Decimal(d)) => Ok(Value::Float(d.to_f64())),
-        Some(Value::Str(s)) => match parse_py_float(s) {
+        Some(Value::Str(s)) => match pystr::float_from_str(s) {
             Some(f) => Ok(Value::Float(f)),
             None => err(format!(
                 "could not convert string to float: {}",
@@ -1386,7 +1365,7 @@ fn is_numeric(args: &[Value]) -> ExprResult<Value> {
     check_arity("_is_numeric", args, 1, 1)?;
     Ok(Value::Bool(match &args[0] {
         Value::Int(_) | Value::Float(_) => true,
-        Value::Str(s) => parse_py_float(s).is_some(),
+        Value::Str(s) => pystr::float_from_str(s).is_some(),
         _ => false,
     }))
 }

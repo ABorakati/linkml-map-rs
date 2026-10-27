@@ -7,18 +7,21 @@
 //! and `capitalize` (full titlecase mapping, `Cased`-driven word starts and the
 //! final-sigma rule), and whitespace-run `split`.
 //!
-//! PARITY: the Unicode data in [`super::pytables`] comes from CPython 3.13
-//! (Unicode 15.1); `upper`/`lower` use Rust's own tables, so characters added in
-//! later Unicode versions are the only possible difference.
+//! PARITY: the Unicode data in [`super::pytables`] (case mappings, `Cased`,
+//! `Case_Ignorable`, decimal digits, whitespace, printable characters) is read
+//! from CPython 3.13 (Unicode 15.1) by `tools/gen_pytables.py`, not taken from
+//! Rust's `char`, whose Unicode version is newer. Regenerate it to follow a
+//! newer Python.
 
 use std::borrow::Cow;
 
 use super::pytables::{
-    CASE_IGNORABLE, DECIMAL_DIGITS, PY_SPACE, TITLE_EXCEPTIONS, TITLECASE_LETTERS,
+    CASE_IGNORABLE, CASED, DECIMAL_DIGITS, LOWER_RUNS, LOWER_SPECIAL, PY_SPACE, TITLE_EXCEPTIONS,
+    UPPER_RUNS, UPPER_SPECIAL,
 };
 
 /// Whether `cp` falls inside one of the sorted, inclusive `ranges`.
-fn in_ranges(ranges: &[(u32, u32)], cp: u32) -> bool {
+pub(crate) fn in_ranges(ranges: &[(u32, u32)], cp: u32) -> bool {
     ranges
         .binary_search_by(|&(lo, hi)| {
             if cp < lo {
@@ -34,8 +37,16 @@ fn in_ranges(ranges: &[(u32, u32)], cp: u32) -> bool {
 
 /// `str.isspace()` for one character: the set `str.strip()`/`str.split()` use by
 /// default. Wider than Rust's `char::is_whitespace` (it adds U+001C..U+001F).
-pub(super) fn is_py_space(c: char) -> bool {
+pub(crate) fn is_py_space(c: char) -> bool {
     in_ranges(PY_SPACE, c as u32)
+}
+
+/// `Py_ISSPACE`: the ASCII whitespace `int()` and `float()` strip once the text
+/// has been through [`ascii_digits`]. Narrower than [`is_py_space`]: U+001C to
+/// U+001F are `str.isspace()` but not `Py_ISSPACE`, so `float("\x1c1")` is an
+/// error.
+pub(super) fn is_c_space(c: char) -> bool {
+    matches!(c, ' ' | '\t'..='\r')
 }
 
 /// General category `Nd`: what `\d` matches in a Python `str` pattern.
@@ -59,7 +70,7 @@ fn decimal_value(c: char) -> Option<u32> {
 /// `_PyUnicode_TransformDecimalAndSpaceToASCII`, which `int()` and `float()` apply
 /// to a string first: Unicode decimal digits become ASCII digits, Unicode
 /// whitespace becomes a space, and any other non-ASCII character becomes `?`.
-pub(super) fn ascii_digits(s: &str) -> Cow<'_, str> {
+pub(crate) fn ascii_digits(s: &str) -> Cow<'_, str> {
     if s.is_ascii() {
         return Cow::Borrowed(s);
     }
@@ -76,31 +87,148 @@ pub(super) fn ascii_digits(s: &str) -> Cow<'_, str> {
     )
 }
 
+/// Whether every `_` of `s` sits between two ASCII digits, the only place
+/// PEP 515 allows one in a numeric literal (and in `int()`/`float()` text).
+fn underscores_between_digits(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.iter().enumerate().all(|(i, &b)| {
+        b != b'_'
+            || (i > 0
+                && bytes[i - 1].is_ascii_digit()
+                && bytes.get(i + 1).is_some_and(u8::is_ascii_digit))
+    })
+}
+
+/// `float(text)` for a `str`: `PyFloat_FromString`. The text is first reduced to
+/// ASCII ([`ascii_digits`]), surrounding `Py_ISSPACE` whitespace is stripped and
+/// single underscores between digits are allowed; what is left must be a decimal
+/// or scientific literal or an `inf`/`infinity`/`nan` spelling.
+pub(crate) fn float_from_str(text: &str) -> Option<f64> {
+    let normalised = ascii_digits(text);
+    let trimmed = normalised.trim_matches(is_c_space);
+    if trimmed.contains('_') {
+        if !underscores_between_digits(trimmed) {
+            return None;
+        }
+        return trimmed.replace('_', "").parse().ok();
+    }
+    trimmed.parse().ok()
+}
+
+/// `int(text)` for a `str` in base 10 whose value fits an `i64` (`None` for an
+/// invalid literal and for a big integer): the surrounding whitespace, sign and
+/// underscore rules of [`float_from_str`].
+pub(crate) fn int_from_str(text: &str) -> Option<i64> {
+    let normalised = ascii_digits(text);
+    let trimmed = normalised.trim_matches(is_c_space);
+    if trimmed.contains('_') {
+        if !underscores_between_digits(trimmed) {
+            return None;
+        }
+        return trimmed.replace('_', "").parse().ok();
+    }
+    trimmed.parse().ok()
+}
+
+/// The text `Decimal(text)` parses (`numeric_as_ascii` in `_decimal.c`): the
+/// surrounding `str.isspace()` whitespace is stripped (U+001C to U+001F
+/// included), then every `_` is dropped wherever it stands and Unicode decimal
+/// digits become ASCII ones. Other non-ASCII characters become `?`.
+pub(crate) fn decimal_text(text: &str) -> Cow<'_, str> {
+    let trimmed = text.trim_matches(is_py_space);
+    if trimmed.is_ascii() && !trimmed.contains('_') {
+        return Cow::Borrowed(trimmed);
+    }
+    Cow::Owned(
+        trimmed
+            .chars()
+            .filter(|&c| c != '_')
+            .map(|c| match c {
+                _ if c.is_ascii() => c,
+                _ if is_py_space(c) => ' ',
+                _ => decimal_value(c)
+                    .and_then(|d| char::from_digit(d, 10))
+                    .unwrap_or('?'),
+            })
+            .collect(),
+    )
+}
+
 /// Unicode `Cased` (`Lowercase` + `Uppercase` + titlecase letters).
 fn is_cased(c: char) -> bool {
-    c.is_lowercase() || c.is_uppercase() || TITLECASE_LETTERS.binary_search(&(c as u32)).is_ok()
+    in_ranges(CASED, c as u32)
 }
 
 fn is_case_ignorable(c: char) -> bool {
     in_ranges(CASE_IGNORABLE, c as u32)
 }
 
-/// `str.upper()`.
-pub(super) fn upper(s: &str) -> String {
-    s.to_uppercase()
+/// Apply a `(first, last, stride, delta)` run table (see `tools/gen_pytables.py`).
+fn map_run(runs: &[(u32, u32, u32, i32)], c: char) -> char {
+    let cp = c as u32;
+    let after = runs.partition_point(|&(first, ..)| first <= cp);
+    if let Some(&(first, last, stride, delta)) = after.checked_sub(1).map(|i| &runs[i])
+        && cp <= last
+        && (cp - first) % stride == 0
+    {
+        return char::from_u32(cp.wrapping_add_signed(delta)).unwrap_or(c);
+    }
+    c
 }
 
-/// `str.lower()` (including the final-sigma rule, which `str::to_lowercase`
-/// implements too).
+/// Append `str.upper()` of the single character `c`.
+pub(crate) fn push_upper(out: &mut String, c: char) {
+    if c.is_ascii() {
+        out.push(c.to_ascii_uppercase());
+    } else if let Ok(i) = UPPER_SPECIAL.binary_search_by_key(&(c as u32), |&(cp, _)| cp) {
+        out.push_str(UPPER_SPECIAL[i].1);
+    } else {
+        out.push(map_run(UPPER_RUNS, c));
+    }
+}
+
+/// Append `str.lower()` of the single character `c`, without the final-sigma
+/// context (see [`push_lower`]).
+fn push_lower_char(out: &mut String, c: char) {
+    if c.is_ascii() {
+        out.push(c.to_ascii_lowercase());
+    } else if let Ok(i) = LOWER_SPECIAL.binary_search_by_key(&(c as u32), |&(cp, _)| cp) {
+        out.push_str(LOWER_SPECIAL[i].1);
+    } else {
+        out.push(map_run(LOWER_RUNS, c));
+    }
+}
+
+/// `str.upper()`.
+pub(super) fn upper(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_uppercase();
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        push_upper(&mut out, c);
+    }
+    out
+}
+
+/// `str.lower()`, including the final-sigma rule.
 pub(super) fn lower(s: &str) -> String {
-    s.to_lowercase()
+    if s.is_ascii() {
+        return s.to_ascii_lowercase();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for i in 0..chars.len() {
+        push_lower(&mut out, &chars, i);
+    }
+    out
 }
 
 /// Append `_PyUnicode_ToTitleFull(c)`.
 fn push_title(out: &mut String, c: char) {
     match TITLE_EXCEPTIONS.binary_search_by_key(&(c as u32), |&(cp, _)| cp) {
         Ok(i) => out.push_str(TITLE_EXCEPTIONS[i].1),
-        Err(_) => out.extend(c.to_uppercase()),
+        Err(_) => push_upper(out, c),
     }
 }
 
@@ -109,7 +237,7 @@ fn push_title(out: &mut String, c: char) {
 fn push_lower(out: &mut String, chars: &[char], i: usize) {
     let c = chars[i];
     if c != '\u{3a3}' {
-        out.extend(c.to_lowercase());
+        push_lower_char(out, c);
         return;
     }
     // \p{cased} \p{case-ignorable}* SIGMA !(\p{case-ignorable}* \p{cased})
@@ -259,7 +387,7 @@ pub(super) fn underscore(word: &str) -> String {
         pass2.push(if c == '-' { '_' } else { c });
         prev = Some(c);
     }
-    pass2.to_lowercase()
+    lower(&pass2)
 }
 
 /// `inflection.camelize(string)` (`uppercase_first_letter=True`):
@@ -271,10 +399,10 @@ pub(super) fn camelize(string: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         if i == 0 && chars[0] != '\n' {
-            out.extend(chars[0].to_uppercase());
+            push_upper(&mut out, chars[0]);
             i = 1;
         } else if chars[i] == '_' && chars.get(i + 1).is_some_and(|&n| n != '\n') {
-            out.extend(chars[i + 1].to_uppercase());
+            push_upper(&mut out, chars[i + 1]);
             i += 2;
         } else {
             out.push(chars[i]);
@@ -289,7 +417,8 @@ pub(super) fn camelize(string: &str) -> String {
 /// where Python raises `IndexError`.
 pub(super) fn camelize_lower(string: &str) -> Option<String> {
     let first = string.chars().next()?;
-    let mut out: String = first.to_lowercase().collect();
+    let mut out = String::new();
+    push_lower_char(&mut out, first);
     out.extend(camelize(string).chars().skip(1));
     Some(out)
 }

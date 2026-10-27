@@ -12,11 +12,11 @@ pub mod eval;
 pub mod gate;
 pub mod lexer;
 pub mod parser;
-mod pystr;
+pub(crate) mod pystr;
 #[cfg(test)]
 mod syntax_tests;
 #[rustfmt::skip]
-mod pytables;
+pub(crate) mod pytables;
 mod slugify;
 pub mod stmt;
 

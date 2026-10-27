@@ -804,6 +804,16 @@ fn eval_compare(
     Ok(result)
 }
 
+/// `_try_numeric`: the number an operand retries as. Unlike
+/// [`Value::try_numeric`] a `Decimal` is not numeric here (`_try_numeric` only
+/// accepts `int`, `float` and `str`).
+fn retry_numeric(v: &Value) -> Option<f64> {
+    match v {
+        Value::Decimal(_) => None,
+        other => other.try_numeric(),
+    }
+}
+
 fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Value> {
     match op {
         CmpOp::Eq | CmpOp::NotEq => {
@@ -839,12 +849,26 @@ fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Val
             if left.is_null() || right.is_null() {
                 return Ok(Value::Null);
             }
-            let contained = membership(left, right)?;
-            Ok(Value::Bool(if op == CmpOp::In {
-                contained
-            } else {
-                !contained
-            }))
+            match membership(left, right) {
+                Ok(contained) => Ok(Value::Bool(if op == CmpOp::In {
+                    contained
+                } else {
+                    !contained
+                })),
+                // `_null_propagating` catches the `TypeError` of `"a" in 5` and
+                // retries on `_try_numeric` operands: a non-numeric one gives
+                // None (with a warning); when both are numeric the operator
+                // raises its `TypeError` again from inside the handler.
+                Err(e @ ExprError::Eval(_)) => {
+                    if retry_numeric(left).is_some() && retry_numeric(right).is_some() {
+                        Err(e)
+                    } else {
+                        warn_non_numeric(cmp_symbol(op), left, right);
+                        Ok(Value::Null)
+                    }
+                }
+                Err(e) => Err(e),
+            }
         }
     }
 }
@@ -866,6 +890,9 @@ fn ordering_compare(op: CmpOp, l: &Value, r: &Value) -> ExprResult<Value> {
             }
         }
         (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
+        // Lists order lexicographically (the first position whose items differ
+        // decides, else the length), as `list_richcompare` does.
+        (Value::List(_), Value::List(_)) => builtins::py_cmp(l, r, cmp_symbol(op))?,
         _ => {
             return Err(ExprError::Eval(format!(
                 "'{}' not supported between instances of '{}' and '{}'",
@@ -933,6 +960,11 @@ pub(super) fn membership(needle: &Value, haystack: &Value) -> ExprResult<bool> {
         Value::List(items) => Ok(items.iter().any(|item| item.py_eq(needle))),
         Value::Map(m) => match needle {
             Value::Str(k) => Ok(m.contains_key(k)),
+            // Hashing the needle comes first: a list or dict is a `TypeError`.
+            Value::List(_) | Value::Map(_) => Err(ExprError::Eval(format!(
+                "unhashable type: '{}'",
+                type_name(needle)
+            ))),
             _ => Ok(false),
         },
         other => Err(ExprError::Eval(format!(
@@ -998,7 +1030,7 @@ fn coerce_str_to_type_of(s: &str, target: &Value) -> Option<Value> {
 }
 /// decimal point).
 fn parse_python_int(s: &str) -> Option<i64> {
-    s.trim().parse::<i64>().ok()
+    super::pystr::int_from_str(s)
 }
 
 // --- arithmetic numeric-string coercion (mirrors upstream #285) ---
@@ -1164,8 +1196,10 @@ fn binop_name(op: BinOp) -> &'static str {
 }
 
 /// Attempt the operation with native (non-coerced) semantics.
-/// Returns `Ok(Some(v))` on success, `Ok(None)`/`Err` to signal the Python
-/// `TypeError`/`ValueError` retry path.
+/// Returns `Ok(Some(v))` on success, `Ok(None)` to signal the Python
+/// `TypeError`/`ValueError` retry path. An `Err` is an exception that leaves the
+/// operator wrapper altogether (including `ZeroDivisionError`, which only
+/// `TypeError` and `ValueError` handlers would catch).
 fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Option<Value>> {
     use Value::*;
 
@@ -1352,20 +1386,22 @@ fn int_binary(op: BinOp, a: i64, b: i64) -> ExprResult<Option<Value>> {
         BinOp::Div => {
             // Python `/` always yields float.
             if b == 0 {
-                return Ok(None); // ZeroDivisionError → retry path (will also fail → None)
+                return Err(ExprError::zero_division("division by zero"));
             }
             Value::Float(int_truediv(a, b))
         }
         BinOp::FloorDiv => {
             if b == 0 {
-                return Ok(None);
+                return Err(ExprError::zero_division(
+                    "integer division or modulo by zero",
+                ));
             }
             // `-2**63 // -1` is 2**63.
             Value::Int(python_floordiv_int(a, b).ok_or_else(ExprError::big_int)?)
         }
         BinOp::Mod => {
             if b == 0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("integer modulo by zero"));
             }
             Value::Int(python_mod_int(a, b))
         }
@@ -1463,19 +1499,19 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
         BinOp::Mul => Value::Float(a * b),
         BinOp::Div => {
             if b == 0.0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("float division by zero"));
             }
             Value::Float(a / b)
         }
         BinOp::FloorDiv => {
             if b == 0.0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("float floor division by zero"));
             }
             Value::Float(python_floordiv_float(a, b))
         }
         BinOp::Mod => {
             if b == 0.0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("float modulo by zero"));
             }
             Value::Float(python_mod_float(a, b))
         }
@@ -1495,7 +1531,7 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
 fn numeric_binary_f64(op: BinOp, a: f64, b: f64) -> ExprResult<Value> {
     match float_binary(op, a, b)? {
         Some(v) => Ok(v),
-        None => Ok(Value::Null), // e.g. div-by-zero or bitwise on floats
+        None => Ok(Value::Null), // bitwise on floats
     }
 }
 

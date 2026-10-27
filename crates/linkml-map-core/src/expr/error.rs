@@ -63,6 +63,13 @@ impl ExprError {
         Self::Uncaught("maximum recursion depth exceeded".into())
     }
 
+    /// `ZeroDivisionError` from `/`, `//` or `%`. `_null_propagating_arithmetic`
+    /// only catches `TypeError` and `ValueError`, and neither does `_eval_expr`,
+    /// so it aborts the row in both evaluation modes.
+    pub(crate) fn zero_division(message: &str) -> Self {
+        Self::Uncaught(message.into())
+    }
+
     /// True for the failures upstream's `ObjectTransformer._eval_expr` and
     /// `transform_enum` catch: `except (InvalidExpression, TypeError,
     /// ValueError)`. In restricted mode they are re-raised; with

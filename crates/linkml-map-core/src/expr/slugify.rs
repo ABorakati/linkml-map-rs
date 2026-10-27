@@ -43,7 +43,7 @@ fn slugify_lib(text: &str, separator: &str) -> String {
     let text = decode_entities(&text);
     // Re-normalise, lowercase, drop the quotes decoding may have produced.
     let text: String = text.nfkd().collect();
-    let text = text.to_lowercase();
+    let text = super::pystr::lower(&text);
     let text = replace_quote_runs(&text, "");
     // NUMBERS_PATTERN `(?<=\d),(?=\d)` -> "".
     let text = remove_digit_commas(&text);

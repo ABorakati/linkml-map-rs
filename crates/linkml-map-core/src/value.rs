@@ -190,15 +190,12 @@ impl Value {
     }
 }
 
-/// Parse a string the way Python's `float()` does for the cases relevant to
-/// these expressions: leading/trailing whitespace is stripped, decimals and
-/// scientific notation are accepted, an empty string fails.
+/// Parse a string the way Python's `float()` does: surrounding ASCII whitespace
+/// is stripped, Unicode decimal digits and single underscores between digits are
+/// accepted, as are decimals, scientific notation and `inf`/`nan`; an empty
+/// string fails. See [`crate::expr::pystr::float_from_str`].
 pub fn parse_python_float(s: &str) -> Option<f64> {
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    trimmed.parse::<f64>().ok()
+    crate::expr::pystr::float_from_str(s)
 }
 
 impl From<bool> for Value {
