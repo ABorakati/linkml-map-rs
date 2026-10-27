@@ -50,6 +50,19 @@ pub enum ExprError {
 }
 
 impl ExprError {
+    /// An integer result outside `i64`, where Python would return a big
+    /// integer. [`crate::value::Value`] has no big integers, so this is an
+    /// evaluation error rather than a silently wrapped or saturated number.
+    pub(crate) fn big_int() -> Self {
+        Self::Eval("integer result out of range (big integers are not supported)".into())
+    }
+
+    /// `RecursionError: maximum recursion depth exceeded`. Upstream does not
+    /// catch it, so it propagates in both evaluation modes.
+    pub(crate) fn recursion() -> Self {
+        Self::Uncaught("maximum recursion depth exceeded".into())
+    }
+
     /// True for the failures upstream's `ObjectTransformer._eval_expr` and
     /// `transform_enum` catch: `except (InvalidExpression, TypeError,
     /// ValueError)`. In restricted mode they are re-raised; with

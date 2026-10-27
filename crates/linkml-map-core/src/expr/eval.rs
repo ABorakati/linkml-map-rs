@@ -24,7 +24,7 @@ use super::error::{ExprError, ExprResult};
 use super::gate::{self, EvalMode, eval_parsed_gated};
 use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
 use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
-use crate::value::Value;
+use crate::value::{Value, cmp_int_float};
 
 /// Variable bindings: name → value mapping.
 pub type Bindings = IndexMap<String, Value>;
@@ -721,7 +721,11 @@ fn eval_unary(op: UnOp, v: Value) -> ExprResult<Value> {
     }
     match op {
         UnOp::Neg => match v {
-            Value::Int(i) => Ok(Value::Int(-i)),
+            // `-(-2**63)` is 2**63 in Python, which `i64` cannot hold.
+            Value::Int(i) => i
+                .checked_neg()
+                .map(Value::Int)
+                .ok_or_else(ExprError::big_int),
             Value::Float(f) => Ok(Value::Float(-f)),
             Value::Bool(b) => Ok(Value::Int(-(b as i64))),
             other => Err(ExprError::Eval(format!(
@@ -848,11 +852,18 @@ fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Val
 fn ordering_compare(op: CmpOp, l: &Value, r: &Value) -> ExprResult<Value> {
     use std::cmp::Ordering;
     let ord: Option<Ordering> = match (l, r) {
-        // numeric comparisons (bool counts as numeric for ordering in Python)
+        // numeric comparisons (bool counts as numeric for ordering in Python),
+        // exact between an int and a float as in CPython
         _ if numeric_for_ordering(l).is_some() && numeric_for_ordering(r).is_some() => {
-            let a = numeric_for_ordering(l).unwrap();
-            let b = numeric_for_ordering(r).unwrap();
-            a.partial_cmp(&b)
+            match (
+                numeric_for_ordering(l).unwrap(),
+                numeric_for_ordering(r).unwrap(),
+            ) {
+                (Ordered::Int(a), Ordered::Int(b)) => Some(a.cmp(&b)),
+                (Ordered::Float(a), Ordered::Float(b)) => a.partial_cmp(&b),
+                (Ordered::Int(a), Ordered::Float(b)) => cmp_int_float(a, b),
+                (Ordered::Float(a), Ordered::Int(b)) => cmp_int_float(b, a).map(Ordering::reverse),
+            }
         }
         (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
         _ => {
@@ -881,12 +892,18 @@ fn ordering_compare(op: CmpOp, l: &Value, r: &Value) -> ExprResult<Value> {
     Ok(Value::Bool(res))
 }
 
+/// A numeric operand of an ordering comparison.
+enum Ordered {
+    Int(i64),
+    Float(f64),
+}
+
 /// Numeric view for ordering: bool, int, float are all numeric here.
-fn numeric_for_ordering(v: &Value) -> Option<f64> {
+fn numeric_for_ordering(v: &Value) -> Option<Ordered> {
     match v {
-        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-        Value::Int(i) => Some(*i as f64),
-        Value::Float(f) => Some(*f),
+        Value::Bool(b) => Some(Ordered::Int(i64::from(*b))),
+        Value::Int(i) => Some(Ordered::Int(*i)),
+        Value::Float(f) => Some(Ordered::Float(*f)),
         _ => None,
     }
 }
@@ -1056,13 +1073,24 @@ fn eval_binary(op: BinOp, left: Value, right: Value) -> ExprResult<Value> {
     }
     // Try native op first — two strings still concatenate, list*int stays
     // repetition, int op int stays int.
-    match try_native_binary(op, &left, &right) {
-        Ok(Some(v)) => Ok(v),
-        Ok(None) | Err(_) => {
-            // TypeError/ValueError path: retry by coercing both to float.
+    match try_native_binary(op, &left, &right)? {
+        Some(v) => Ok(v),
+        None => {
+            // TypeError path: retry by coercing both to float.
             let ln = left.try_numeric();
             let rn = right.try_numeric();
             match (ln, rn) {
+                // Python re-applies the operator to the numeric operands and a
+                // bitwise operator on a float is a TypeError again, which
+                // propagates (`_null_propagating_arithmetic`).
+                (Some(_), Some(_)) if is_bitwise(op) && has_float_operand(&left, &right) => {
+                    Err(ExprError::Eval(format!(
+                        "unsupported operand type(s) for {}: '{}' and '{}'",
+                        binop_symbol(op),
+                        retried_type_name(&left),
+                        retried_type_name(&right)
+                    )))
+                }
                 (Some(a), Some(b)) => numeric_binary_f64(op, a, b),
                 _ => {
                     warn_non_numeric(binop_name(op), &left, &right);
@@ -1070,6 +1098,49 @@ fn eval_binary(op: BinOp, left: Value, right: Value) -> ExprResult<Value> {
                 }
             }
         }
+    }
+}
+
+/// Bitwise and shift operators, which Python defines for `int` only.
+fn is_bitwise(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::LShift | BinOp::RShift | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
+    )
+}
+
+/// Whether either operand is, or retries as, a float (a numeric string becomes
+/// one under `_try_numeric`).
+fn has_float_operand(left: &Value, right: &Value) -> bool {
+    [left, right]
+        .iter()
+        .any(|v| matches!(v, Value::Float(_) | Value::Str(_)))
+}
+
+/// The Python type name of an operand after the `_try_numeric` retry: a string
+/// is a float by then.
+fn retried_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Str(_) => "float",
+        other => type_name(other),
+    }
+}
+
+/// The source symbol of a binary operator, for `TypeError` messages.
+fn binop_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::FloorDiv => "//",
+        BinOp::Mod => "%",
+        BinOp::Pow => "** or pow()",
+        BinOp::LShift => "<<",
+        BinOp::RShift => ">>",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
     }
 }
 
@@ -1101,7 +1172,10 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
     // String concatenation / repetition.
     if let (Str(a), Str(b)) = (left, right) {
         return match op {
-            BinOp::Add => Ok(Some(Str(format!("{a}{b}")))),
+            BinOp::Add => {
+                check_concat_length(a.len(), b.len(), || a.chars().count() + b.chars().count())?;
+                Ok(Some(Str(format!("{a}{b}"))))
+            }
             // Other ops on two strings are TypeErrors → trigger numeric retry.
             _ => Ok(None),
         };
@@ -1110,6 +1184,7 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
     if let (List(a), List(b)) = (left, right) {
         return match op {
             BinOp::Add => {
+                check_concat_length(a.len(), b.len(), || a.len() + b.len())?;
                 let mut out = a.clone();
                 out.extend(b.iter().cloned());
                 Ok(Some(List(out)))
@@ -1120,21 +1195,23 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
 
     // list * int  / int * list  → repetition (genuine Python list semantics)
     if op == BinOp::Mul {
-        if let (List(items), Int(n)) = (left, right) {
-            let n = (*n).max(0) as usize;
-            let mut out = Vec::with_capacity(items.len() * n);
-            for _ in 0..n {
-                out.extend(items.iter().cloned());
+        match (left, right) {
+            (List(items), n) | (n, List(items)) => {
+                if let Some(v) = repeat_list(items, n)? {
+                    return Ok(Some(v));
+                }
             }
-            return Ok(Some(List(out)));
+            _ => {}
         }
-        if let (Int(n), List(items)) = (left, right) {
-            let n = (*n).max(0) as usize;
-            let mut out = Vec::with_capacity(items.len() * n);
-            for _ in 0..n {
-                out.extend(items.iter().cloned());
-            }
-            return Ok(Some(List(out)));
+    }
+
+    // `safe_power`, `safe_lshift`, `safe_rshift`: operands are checked before the
+    // operator runs, whatever their type.
+    if as_float_like(left).is_some() && as_float_like(right).is_some() {
+        match op {
+            BinOp::Pow => check_power_limits(left, right)?,
+            BinOp::LShift | BinOp::RShift => check_shift_limits(op, left, right)?,
+            _ => {}
         }
     }
 
@@ -1175,23 +1252,116 @@ fn as_float_like(v: &Value) -> Option<f64> {
     }
 }
 
+// simpleeval's limits (`simpleeval.MAX_STRING_LENGTH`, `MAX_POWER`, `MAX_SHIFT`),
+// enforced by its `safe_add`, `safe_mult`, `safe_power` and `safe_lshift`/`safe_rshift`
+// operators, which `LinkMLEvaluator` wraps. Exceeding one raises `NumberTooHigh` or
+// `IterableTooLong`, both `InvalidExpression`s: an [`ExprError::Eval`].
+const MAX_STRING_LENGTH: usize = 100_000;
+const MAX_POWER: f64 = 4_000_000.0;
+const MAX_SHIFT: i64 = 10_000;
+
+/// `simpleeval.safe_add`: `len(a) + len(b) > MAX_STRING_LENGTH` raises
+/// `IterableTooLong`. `len_a + len_b` is a cheap upper bound on the true sum
+/// (byte lengths of strings); `exact_len` is only computed when it exceeds the
+/// limit.
+fn check_concat_length(
+    len_a: usize,
+    len_b: usize,
+    exact_len: impl FnOnce() -> usize,
+) -> ExprResult<()> {
+    if len_a.saturating_add(len_b) > MAX_STRING_LENGTH && exact_len() > MAX_STRING_LENGTH {
+        return Err(ExprError::Eval(
+            "Sorry, adding those two together would make something too long.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `simpleeval.safe_mult` for a list and a number, then the repetition itself.
+///
+/// `None` when `n` is not an int/bool (a TypeError upstream: the caller falls
+/// through to the numeric retry). A float count still goes through the length
+/// check first, as `b * len(a) > MAX_STRING_LENGTH` runs before `a * b`.
+fn repeat_list(items: &[Value], n: &Value) -> ExprResult<Option<Value>> {
+    let too_long = || ExprError::Eval("Sorry, I will not evaluate something that long.".into());
+    let count = match n {
+        Value::Int(n) => *n,
+        Value::Bool(b) => i64::from(*b),
+        Value::Float(f) => {
+            if f * items.len() as f64 > MAX_STRING_LENGTH as f64 {
+                return Err(too_long());
+            }
+            return Ok(None);
+        }
+        _ => return Ok(None),
+    };
+    let count = usize::try_from(count).unwrap_or(0);
+    // `usize` cannot overflow `i128`; compare there to stay exact.
+    if (items.len() as i128) * (count as i128) > MAX_STRING_LENGTH as i128 {
+        return Err(too_long());
+    }
+    let mut out = Vec::with_capacity(items.len() * count);
+    for _ in 0..count {
+        out.extend(items.iter().cloned());
+    }
+    Ok(Some(Value::List(out)))
+}
+
+/// `simpleeval.safe_power`: `abs(a) > MAX_POWER or abs(b) > MAX_POWER` raises
+/// `NumberTooHigh`. Called with numeric operands only.
+fn check_power_limits(a: &Value, b: &Value) -> ExprResult<()> {
+    let magnitude = |v: &Value| as_float_like(v).map_or(0.0, f64::abs);
+    if magnitude(a) > MAX_POWER || magnitude(b) > MAX_POWER {
+        return Err(ExprError::Eval(format!(
+            "Sorry! I don't want to evaluate {} ** {}",
+            py_str(a),
+            py_str(b)
+        )));
+    }
+    Ok(())
+}
+
+/// `simpleeval.safe_lshift`/`safe_rshift`: `abs(b) > MAX_SHIFT or abs(a) >
+/// MAX_SHIFT_BASE` raises `NumberTooHigh` (`MAX_SHIFT_BASE` is
+/// `int(sys.float_info.max)`, so only an infinite float exceeds it). Called with
+/// numeric operands only.
+fn check_shift_limits(op: BinOp, a: &Value, b: &Value) -> ExprResult<()> {
+    let magnitude = |v: &Value| as_float_like(v).map_or(0.0, f64::abs);
+    if magnitude(b) > MAX_SHIFT as f64 || magnitude(a) > f64::MAX {
+        return Err(ExprError::Eval(format!(
+            "Sorry! I don't want to evaluate {} {} {}",
+            py_str(a),
+            binop_symbol(op),
+            py_str(b)
+        )));
+    }
+    Ok(())
+}
+
+/// The shift count of an `int << int` or `int >> int` that passed
+/// [`check_shift_limits`]: a negative one is Python's own `ValueError`.
+fn shift_count(b: i64) -> ExprResult<u32> {
+    u32::try_from(b).map_err(|_| ExprError::Eval("negative shift count".into()))
+}
+
 fn int_binary(op: BinOp, a: i64, b: i64) -> ExprResult<Option<Value>> {
     let v = match op {
-        BinOp::Add => Value::Int(a.wrapping_add(b)),
-        BinOp::Sub => Value::Int(a.wrapping_sub(b)),
-        BinOp::Mul => Value::Int(a.wrapping_mul(b)),
+        BinOp::Add => Value::Int(a.checked_add(b).ok_or_else(ExprError::big_int)?),
+        BinOp::Sub => Value::Int(a.checked_sub(b).ok_or_else(ExprError::big_int)?),
+        BinOp::Mul => Value::Int(a.checked_mul(b).ok_or_else(ExprError::big_int)?),
         BinOp::Div => {
             // Python `/` always yields float.
             if b == 0 {
                 return Ok(None); // ZeroDivisionError → retry path (will also fail → None)
             }
-            Value::Float(a as f64 / b as f64)
+            Value::Float(int_truediv(a, b))
         }
         BinOp::FloorDiv => {
             if b == 0 {
                 return Ok(None);
             }
-            Value::Int(python_floordiv_int(a, b))
+            // `-2**63 // -1` is 2**63.
+            Value::Int(python_floordiv_int(a, b).ok_or_else(ExprError::big_int)?)
         }
         BinOp::Mod => {
             if b == 0 {
@@ -1201,19 +1371,89 @@ fn int_binary(op: BinOp, a: i64, b: i64) -> ExprResult<Option<Value>> {
         }
         BinOp::Pow => {
             if b < 0 {
-                // Python returns a float for negative integer exponents.
-                Value::Float((a as f64).powi(b as i32))
-            } else {
-                Value::Int(ipow(a, b as u32))
+                // Python returns a float for negative integer exponents,
+                // computed as `float(a) ** float(b)`.
+                return Ok(Some(Value::Float(float_pow(a as f64, b as f64)?)));
             }
+            // `safe_power` has capped `b` (and `|a|`) at `MAX_POWER`.
+            let exp = u32::try_from(b).map_err(|_| ExprError::big_int())?;
+            Value::Int(a.checked_pow(exp).ok_or_else(ExprError::big_int)?)
         }
-        BinOp::LShift => Value::Int(a.wrapping_shl(b as u32)),
-        BinOp::RShift => Value::Int(a.wrapping_shr(b as u32)),
+        BinOp::LShift => {
+            let count = shift_count(b)?;
+            // `a << count` as a wide integer; anything outside `i64` is a big int.
+            let shifted = if a == 0 {
+                0
+            } else if count >= 64 {
+                return Err(ExprError::big_int());
+            } else {
+                i64::try_from(i128::from(a) << count).map_err(|_| ExprError::big_int())?
+            };
+            Value::Int(shifted)
+        }
+        BinOp::RShift => {
+            let count = shift_count(b)?;
+            // Shifting everything out leaves the sign.
+            Value::Int(a >> count.min(63))
+        }
         BinOp::BitAnd => Value::Int(a & b),
         BinOp::BitOr => Value::Int(a | b),
         BinOp::BitXor => Value::Int(a ^ b),
     };
     Ok(Some(v))
+}
+
+/// CPython's `int / int`: the correctly rounded quotient of the exact values.
+///
+/// Converting each operand to `f64` first rounds twice, which differs from
+/// Python in the last place once an operand exceeds 2**53.
+fn int_truediv(a: i64, b: i64) -> f64 {
+    const EXACT: u64 = 1 << 53;
+    if a.unsigned_abs() <= EXACT && b.unsigned_abs() <= EXACT || a == 0 {
+        return a as f64 / b as f64;
+    }
+    // Normalise both magnitudes to 64 significant bits, divide in 128 bits and
+    // fold the remainder into a sticky bit so `as f64` rounds the exact quotient.
+    let (ua, ub) = (a.unsigned_abs(), b.unsigned_abs());
+    let (la, lb) = (ua.leading_zeros(), ub.leading_zeros());
+    let (na, nb) = (u128::from(ua << la), u128::from(ub << lb));
+    let numerator = na << 64;
+    let mut quotient = numerator / nb;
+    if numerator % nb != 0 {
+        quotient |= 1;
+    }
+    // quotient / 2**64 is in (0.5, 2); undo the normalising shifts.
+    let magnitude = quotient as f64 * 2f64.powi(lb as i32 - la as i32 - 64);
+    if (a < 0) != (b < 0) {
+        -magnitude
+    } else {
+        magnitude
+    }
+}
+
+/// CPython's `float ** float` (`float_pow`) for finite or infinite operands.
+///
+/// The `ZeroDivisionError` and `OverflowError` are not caught upstream
+/// ([`ExprError::Uncaught`]); a negative base with a fractional exponent is a
+/// `complex` in Python, which [`Value`] cannot hold.
+fn float_pow(a: f64, b: f64) -> ExprResult<f64> {
+    if a == 0.0 && b < 0.0 {
+        return Err(ExprError::Uncaught(
+            "0.0 cannot be raised to a negative power".into(),
+        ));
+    }
+    if a < 0.0 && a.is_finite() && b.is_finite() && b.fract() != 0.0 {
+        return Err(ExprError::Eval(
+            "complex results are not supported (negative base with a fractional exponent)".into(),
+        ));
+    }
+    let result = a.powf(b);
+    if result.is_infinite() && a.is_finite() && b.is_finite() {
+        return Err(ExprError::Uncaught(
+            "(34, 'Numerical result out of range')".into(),
+        ));
+    }
+    Ok(result)
 }
 
 fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
@@ -1231,7 +1471,7 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
             if b == 0.0 {
                 return Ok(None);
             }
-            Value::Float((a / b).floor())
+            Value::Float(python_floordiv_float(a, b))
         }
         BinOp::Mod => {
             if b == 0.0 {
@@ -1239,7 +1479,10 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
             }
             Value::Float(python_mod_float(a, b))
         }
-        BinOp::Pow => Value::Float(a.powf(b)),
+        BinOp::Pow => {
+            check_power_limits(&Value::Float(a), &Value::Float(b))?;
+            Value::Float(float_pow(a, b)?)
+        }
         // Bitwise/shift on floats is a TypeError in Python → retry path.
         BinOp::LShift | BinOp::RShift | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
             return Ok(None);
@@ -1256,34 +1499,22 @@ fn numeric_binary_f64(op: BinOp, a: f64, b: f64) -> ExprResult<Value> {
     }
 }
 
-fn ipow(mut base: i64, mut exp: u32) -> i64 {
-    let mut acc: i64 = 1;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            acc = acc.wrapping_mul(base);
-        }
-        exp >>= 1;
-        if exp > 0 {
-            base = base.wrapping_mul(base);
-        }
-    }
-    acc
-}
-
-/// Python floor division for ints (floors toward negative infinity).
-fn python_floordiv_int(a: i64, b: i64) -> i64 {
-    let q = a / b;
+/// Python floor division for ints (floors toward negative infinity); `None`
+/// for `-2**63 // -1`, which is outside `i64`.
+fn python_floordiv_int(a: i64, b: i64) -> Option<i64> {
+    let q = a.checked_div(b)?;
     let r = a % b;
-    if (r != 0) && ((r < 0) != (b < 0)) {
+    Some(if (r != 0) && ((r < 0) != (b < 0)) {
         q - 1
     } else {
         q
-    }
+    })
 }
 
 /// Python modulo for ints (result has sign of divisor).
 fn python_mod_int(a: i64, b: i64) -> i64 {
-    let r = a % b;
+    // `-2**63 % -1` is 0, where the plain `%` would overflow.
+    let r = a.wrapping_rem(b);
     if r != 0 && (r < 0) != (b < 0) {
         r + b
     } else {
@@ -1291,13 +1522,32 @@ fn python_mod_int(a: i64, b: i64) -> i64 {
     }
 }
 
-/// Python modulo for floats (result has sign of divisor).
+/// CPython's `float % float` (`float_rem`): the result has the divisor's sign,
+/// and a zero result is `copysign(0.0, b)`.
 fn python_mod_float(a: f64, b: f64) -> f64 {
     let r = a % b;
-    if r != 0.0 && (r < 0.0) != (b < 0.0) {
-        r + b
+    if r == 0.0 {
+        return 0.0_f64.copysign(b);
+    }
+    if (r < 0.0) != (b < 0.0) { r + b } else { r }
+}
+
+/// CPython's `float // float` (`float_divmod`'s quotient), which differs from
+/// `(a / b).floor()` (`1 // 0.1` is `9.0`).
+fn python_floordiv_float(a: f64, b: f64) -> f64 {
+    let modulus = a % b;
+    let mut div = (a - modulus) / b;
+    if modulus != 0.0 && (b < 0.0) != (modulus < 0.0) {
+        div -= 1.0;
+    }
+    if div == 0.0 {
+        return 0.0_f64.copysign(a / b);
+    }
+    let floored = div.floor();
+    if div - floored > 0.5 {
+        floored + 1.0
     } else {
-        r
+        floored
     }
 }
 
@@ -1345,7 +1595,7 @@ pub(crate) fn py_int(v: &Value) -> ExprResult<Value> {
     match v {
         Value::Int(i) => Ok(Value::Int(*i)),
         Value::Bool(b) => Ok(Value::Int(*b as i64)),
-        Value::Float(f) => Ok(Value::Int(f.trunc() as i64)),
+        Value::Float(f) => builtins::float_to_int(f.trunc()),
         Value::Str(s) => match parse_python_int(s) {
             Some(i) => Ok(Value::Int(i)),
             None => Err(ExprError::Eval(format!(
@@ -1696,5 +1946,154 @@ mod tests {
         // wrapper prevents this.
         let got = eval_expr_with_mapping("x * y", &vars).unwrap();
         assert_eq!(got, Value::Null, "True * '1' should be None, not '1'");
+    }
+
+    // Expected values from upstream v0.6.0-rc1 (`eval_expr_with_mapping`, CPython
+    // 3.13). Where Python returns an integer outside `i64` the port raises the
+    // big-integer error instead of wrapping.
+    #[test]
+    fn integer_arithmetic_never_wraps() {
+        let big = "integer result out of range";
+        for src in [
+            "9223372036854775807 + 1",
+            "-9223372036854775807 - 2",
+            "2**63",
+            "3**40",
+            "1 << 63",
+            "1 << 100",
+            "-(-9223372036854775807 - 1)",
+            "(-9223372036854775807 - 1) * -1",
+            "(-9223372036854775807 - 1) // -1",
+            "abs(-9223372036854775807 - 1)",
+            "sum([9223372036854775807, 1])",
+            "int(1e19)",
+            "int('9223372036854775808')",
+            "round(1e30)",
+            "floor(1e30)",
+            "ceil(1e30)",
+            "9223372036854775807 * 2",
+            "10 ** 400",
+        ] {
+            let err = eval_expr(src).expect_err(src).to_string();
+            assert!(err.contains(big), "{src}: {err}");
+        }
+        // Results that stay in range are unchanged.
+        assert_eq!(eval("(-9223372036854775807 - 1) % -1"), Value::Int(0));
+        assert_eq!(eval("1 << 62"), Value::Int(1 << 62));
+        assert_eq!(eval("(-2)**63"), Value::Int(i64::MIN));
+        assert_eq!(eval("-1 >> 100"), Value::Int(-1));
+        assert_eq!(eval("1 >> 100"), Value::Int(0));
+    }
+
+    #[test]
+    fn shifts_and_powers_follow_simpleeval_limits() {
+        for (src, message) in [
+            ("1 << -1", "negative shift count"),
+            ("1 >> -1", "negative shift count"),
+            ("1 << 10001", "Sorry! I don't want to evaluate 1 << 10001"),
+            ("1 >> -10001", "Sorry! I don't want to evaluate 1 >> -10001"),
+            (
+                "3.0 << 9007199254740992",
+                "Sorry! I don't want to evaluate 3.0 << 9007199254740992",
+            ),
+            (
+                "2 ** 4000001",
+                "Sorry! I don't want to evaluate 2 ** 4000001",
+            ),
+            (
+                "4000001 ** 1",
+                "Sorry! I don't want to evaluate 4000001 ** 1",
+            ),
+            ("1e30 ** 2", "Sorry! I don't want to evaluate 1e+30 ** 2"),
+            (
+                "[1, 2] * 9223372036854775807",
+                "Sorry, I will not evaluate something that long.",
+            ),
+            (
+                "[1] * 1000000000000",
+                "Sorry, I will not evaluate something that long.",
+            ),
+            (
+                "[1] * 1e30",
+                "Sorry, I will not evaluate something that long.",
+            ),
+        ] {
+            let err = eval_expr(src).expect_err(src);
+            assert!(matches!(err, ExprError::Eval(_)), "{src}: {err:?}");
+            assert!(err.to_string().contains(message), "{src}: {err}");
+        }
+        assert_eq!(eval("[1, 2] * 3"), eval("3 * [1, 2]"));
+        assert_eq!(
+            eval("[1, 2] * True"),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert_eq!(eval("[1] * -1"), Value::List(vec![]));
+        assert!(matches!(eval("[1] * 100000"), Value::List(items) if items.len() == 100_000));
+        // `+` on two long strings or lists is `IterableTooLong`.
+        let half = "x".repeat(60_000);
+        let err = eval_expr(&format!("'{half}' + '{half}'")).expect_err("too long");
+        assert!(err.to_string().contains("too long"), "{err}");
+    }
+
+    #[test]
+    fn float_errors_that_upstream_does_not_catch() {
+        for (src, message) in [
+            ("0 ** -1", "0.0 cannot be raised to a negative power"),
+            ("10.0 ** 400", "(34, 'Numerical result out of range')"),
+            ("2.0 ** 1024", "(34, 'Numerical result out of range')"),
+        ] {
+            let err = eval_expr(src).expect_err(src);
+            assert!(matches!(err, ExprError::Uncaught(_)), "{src}: {err:?}");
+            assert!(err.to_string().contains(message), "{src}: {err}");
+        }
+        // A bitwise operator on a float is a TypeError again on the numeric retry.
+        let err = eval_expr("1.5 & 3").expect_err("TypeError");
+        assert!(matches!(err, ExprError::Eval(_)), "{err:?}");
+        // An odd-looking but correct result: Python floors via fmod.
+        assert_eq!(eval("1 // 0.1"), Value::Float(9.0));
+        assert_eq!(eval("-4.0 % 2.0"), Value::Float(0.0));
+        assert_eq!(eval("0.5 ** -2"), Value::Float(4.0));
+    }
+
+    #[test]
+    fn int_and_float_compare_exactly() {
+        assert_eq!(
+            eval("9007199254740993 > 9007199254740992"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval("9007199254740993 > 9007199254740992.0"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval("9007199254740993 == 9007199254740992.0"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval("9223372036854775807 < 9223372036854775808.0"),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn int_division_is_correctly_rounded() {
+        // Python rounds the exact quotient once; dividing the two f64 images rounds thrice.
+        assert_eq!(
+            eval("9007199254740992 / 10"),
+            Value::Float(900_719_925_474_099.2)
+        );
+        assert_eq!(
+            eval("9223372036854775807 / 7"),
+            Value::Float(1.3176245766935393e18)
+        );
+        assert_eq!(
+            eval("1 / 9223372036854775807"),
+            Value::Float(1.0842021724855044e-19)
+        );
+        assert_eq!(
+            eval("-9223372036854775807 / 3"),
+            Value::Float(-3.0744573456182584e18)
+        );
+        assert_eq!(eval("0 / -5"), Value::Float(-0.0));
     }
 }

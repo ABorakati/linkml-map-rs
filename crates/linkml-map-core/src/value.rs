@@ -3,6 +3,8 @@
 //! This mirrors the Python value model used by `linkml_map.utils.eval_utils`:
 //! a nullable dynamic value that can be a scalar, list, or map (object).
 
+use std::cmp::Ordering;
+
 use indexmap::IndexMap;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -291,6 +293,28 @@ impl From<&Value> for serde_json::Value {
     }
 }
 
+/// Exact comparison of an integer with a float; `None` for NaN.
+pub(crate) fn cmp_int_float(i: i64, f: f64) -> Option<Ordering> {
+    if f.is_nan() {
+        return None;
+    }
+    // 2^63 is exactly representable; every i64 is below it.
+    if f >= 9_223_372_036_854_775_808.0 {
+        return Some(Ordering::Less);
+    }
+    if f < -9_223_372_036_854_775_808.0 {
+        return Some(Ordering::Greater);
+    }
+    let floor = f.floor();
+    // `floor` is within i64 here.
+    let fi = floor as i64;
+    Some(i.cmp(&fi).then(if f > floor {
+        Ordering::Less
+    } else {
+        Ordering::Equal
+    }))
+}
+
 impl Value {
     /// Python-native equality between two values (used by `==` / `!=`).
     ///
@@ -306,7 +330,9 @@ impl Value {
             (Float(a), Float(b)) => a == b,
             (Bool(a), Int(b)) | (Int(b), Bool(a)) => (*a as i64) == *b,
             (Bool(a), Float(b)) | (Float(b), Bool(a)) => (if *a { 1.0 } else { 0.0 }) == *b,
-            (Int(a), Float(b)) | (Float(b), Int(a)) => (*a as f64) == *b,
+            (Int(a), Float(b)) | (Float(b), Int(a)) => {
+                cmp_int_float(*a, *b) == Some(Ordering::Equal)
+            }
             // Python compares a Decimal with int/bool/Decimal numerically and with
             // a float exactly (`Decimal("0.1") != 0.1`).
             (Decimal(a), Decimal(b)) => a == b,
@@ -315,7 +341,7 @@ impl Value {
                 *a == self::Decimal::from_i64(i64::from(*b))
             }
             (Decimal(a), Float(b)) | (Float(b), Decimal(a)) => {
-                a.cmp_f64(*b) == Some(std::cmp::Ordering::Equal)
+                a.cmp_f64(*b) == Some(Ordering::Equal)
             }
             (Temporal(a), Temporal(b)) => a == b,
             (Str(a), Str(b)) => a == b,

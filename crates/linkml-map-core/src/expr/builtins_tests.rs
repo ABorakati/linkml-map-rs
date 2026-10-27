@@ -1568,7 +1568,14 @@ fn python_parity_cases() {
     c.ok(r#"min([[2], [1, 5]])"#, json!({}), json!([1, 5]));
     c.err(r#"min([[1, 'a'], [1, 2]])"#, json!({})); // TypeError
     c.ok(r#"min('hello')"#, json!({}), json!("e"));
-    c.ok(r#"max([2**63 - 1, 9.3e18])"#, json!({}), json!(9.3e+18));
+    c.ok(
+        r#"max([9223372036854775807, 9.3e18])"#,
+        json!({}),
+        json!(9.3e+18),
+    );
+    // `2**63` is a big integer in Python (so `2**63 - 1` is the largest i64); here it
+    // is an error rather than a wrapped number.
+    c.err(r#"max([2**63 - 1, 9.3e18])"#, json!({}));
     c.ok(
         r#"min([2**62, 4.611686018427388e18])"#,
         json!({}),

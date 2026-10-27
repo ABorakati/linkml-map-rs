@@ -25,8 +25,39 @@ pub struct Decimal {
     negative: bool,
     /// ASCII digits without leading zeros; `"0"` for a zero coefficient.
     coeff: String,
-    exp: i32,
+    exp: i64,
 }
+
+/// Python's `decimal.MAX_EMAX`: the largest adjusted exponent a `Decimal` can be
+/// constructed with.
+const MAX_EMAX: i128 = 999_999_999_999_999_999;
+/// Python's `decimal.MIN_ETINY`: the smallest exponent a `Decimal` can be
+/// constructed with.
+const MIN_ETINY: i128 = -1_999_999_999_999_999_997;
+
+/// The default context's `prec`, `Emax` and `Etiny` (`Emin - prec + 1`), which
+/// operations such as [`Decimal::normalize`] apply (construction does not).
+const CONTEXT_PRECISION: usize = 28;
+const CONTEXT_EMAX: i64 = 999_999;
+const CONTEXT_ETINY: i64 = -999_999 - 27;
+
+/// The longest fixed-point spelling [`Decimal::to_fixed_string`] will build.
+/// Python would try to allocate it (and raise `MemoryError` or exhaust memory
+/// for the largest exponents); this keeps a stray `1E+999999999` from doing so.
+const MAX_FIXED_LEN: i64 = 1 << 28;
+
+/// `decimal.Overflow`: the result of a context operation has an adjusted
+/// exponent above `Emax` (999999 in the default context).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecimalOverflow;
+
+impl fmt::Display for DecimalOverflow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[<class 'decimal.Overflow'>]")
+    }
+}
+
+impl std::error::Error for DecimalOverflow {}
 
 /// Why a string is not a finite [`Decimal`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,9 +78,12 @@ impl Decimal {
     /// Python literals but not finite, so they report
     /// [`DecimalError::NotFinite`].
     ///
+    /// The exponent range is Python's: construction is exact and ignores the
+    /// context, so `Decimal("1e999999999999999999")` is valid and one more digit
+    /// of exponent is `InvalidOperation` ([`DecimalError::Invalid`]).
+    ///
     /// PARITY: Python also accepts Unicode decimal digits (`Decimal("١٢")`);
-    /// only ASCII digits are accepted here. An exponent outside `i32` is
-    /// rejected as invalid.
+    /// only ASCII digits are accepted here.
     pub fn parse_python(text: &str) -> Result<Self, DecimalError> {
         let t = text.trim();
         let (negative, body) = match t.strip_prefix('-') {
@@ -83,7 +117,7 @@ impl Decimal {
         if int_digits.is_empty() && frac_digits.is_empty() {
             return Err(DecimalError::Invalid);
         }
-        let mut exp: i64 = match exponent {
+        let exp: i128 = match exponent {
             None => 0,
             Some(e) => {
                 let (eneg, edigits) = match e.strip_prefix('-') {
@@ -94,18 +128,32 @@ impl Decimal {
                 if edigits.is_empty() {
                     return Err(DecimalError::Invalid);
                 }
-                let magnitude: i64 = edigits.parse().map_err(|_| DecimalError::Invalid)?;
+                // Leading zeros are fine (`1e0001`); more than 30 digits cannot
+                // be in range whatever they are.
+                let edigits = edigits.trim_start_matches('0');
+                if edigits.len() > 30 {
+                    return Err(DecimalError::Invalid);
+                }
+                let magnitude: i128 = if edigits.is_empty() {
+                    0
+                } else {
+                    edigits.parse().map_err(|_| DecimalError::Invalid)?
+                };
                 if eneg { -magnitude } else { magnitude }
             }
-        };
-        exp -= frac_digits.len() as i64;
-        let exp = i32::try_from(exp).map_err(|_| DecimalError::Invalid)?;
+        } - frac_digits.len() as i128;
         let mut digits = int_digits;
         digits.push_str(&frac_digits);
+        let coeff_len = digits.trim_start_matches('0').len().max(1) as i128;
+        // `Decimal(text)` is exact; only the absolute limits of the library apply.
+        if exp < MIN_ETINY || exp + coeff_len - 1 > MAX_EMAX {
+            return Err(DecimalError::Invalid);
+        }
+        let exp = i64::try_from(exp).map_err(|_| DecimalError::Invalid)?;
         Ok(Self::from_parts(negative, &digits, exp))
     }
 
-    fn from_parts(negative: bool, digits: &str, exp: i32) -> Self {
+    fn from_parts(negative: bool, digits: &str, exp: i64) -> Self {
         let trimmed = digits.trim_start_matches('0');
         let coeff = if trimmed.is_empty() { "0" } else { trimmed };
         Self {
@@ -157,7 +205,7 @@ impl Decimal {
     /// exponents, `d.dddE+X` otherwise (`1E-7`, `1E+3`, `0E+2`).
     pub fn to_sci_string(&self) -> String {
         let n = self.coeff.len() as i64;
-        let exp = i64::from(self.exp);
+        let exp = self.exp;
         let adjusted = exp + n - 1;
         let sign = if self.negative { "-" } else { "" };
         let body = if exp <= 0 && adjusted >= -6 {
@@ -189,14 +237,29 @@ impl Decimal {
 
     /// Python `format(d, 'f')`: fixed-point notation with every digit kept
     /// (`1E-7` is `0.0000001`, `1E+3` is `1000`).
+    ///
+    /// PARITY: Python builds the whole string, however long, and raises
+    /// `MemoryError` (or runs out of memory) for the largest exponents. A
+    /// spelling longer than 2**28 characters is not built here:
+    /// [`Decimal::try_to_fixed_string`] reports `None` and this method falls back
+    /// to the scientific spelling.
     pub fn to_fixed_string(&self) -> String {
+        self.try_to_fixed_string()
+            .unwrap_or_else(|| self.to_sci_string())
+    }
+
+    /// [`Decimal::to_fixed_string`], or `None` when the spelling would be longer
+    /// than 2**28 characters.
+    pub fn try_to_fixed_string(&self) -> Option<String> {
         let n = self.coeff.len() as i64;
-        let exp = i64::from(self.exp);
+        let exp = self.exp;
         let sign = if self.negative { "-" } else { "" };
         let body = if exp >= 0 {
             if self.is_zero() {
                 // PARITY: format(Decimal('0E+2'), 'f') is '0' (libmpdec).
                 "0".to_owned()
+            } else if exp.saturating_add(n) > MAX_FIXED_LEN {
+                return None;
             } else {
                 format!("{}{}", self.coeff, "0".repeat(exp as usize))
             }
@@ -205,11 +268,13 @@ impl Decimal {
             if point > 0 {
                 let (int, frac) = self.coeff.split_at(point as usize);
                 format!("{int}.{frac}")
+            } else if (-point).saturating_add(n) > MAX_FIXED_LEN {
+                return None;
             } else {
                 format!("0.{}{}", "0".repeat((-point) as usize), self.coeff)
             }
         };
-        format!("{sign}{body}")
+        Some(format!("{sign}{body}"))
     }
 
     /// The value as the nearest `f64` (Python `float(Decimal)`).
@@ -217,48 +282,40 @@ impl Decimal {
         self.to_sci_string().parse().unwrap_or(f64::NAN)
     }
 
-    /// Python `Decimal.normalize()` under the default context: the coefficient
-    /// is rounded to 28 significant digits (`ROUND_HALF_EVEN`), then trailing
-    /// zeros are folded into the exponent. A zero normalises to `0` (with its
-    /// sign).
-    pub fn normalize(&self) -> Self {
-        const PRECISION: usize = 28;
-        if self.coeff.len() <= PRECISION {
-            return self.trimmed();
+    /// Python `Decimal.normalize()` under the default context (`prec=28`,
+    /// `Emax=999999`, `Emin=-999999`, `ROUND_HALF_EVEN`): the coefficient is
+    /// rounded to 28 significant digits and, below `Etiny` (-1000026), to a
+    /// multiple of `10**Etiny`, then trailing zeros are folded into the
+    /// exponent. A zero normalises to `0` (with its sign).
+    ///
+    /// # Errors
+    /// [`DecimalOverflow`] when the adjusted exponent exceeds `Emax`, which
+    /// raises `decimal.Overflow` in Python (its default context traps it).
+    pub fn normalize(&self) -> Result<Self, DecimalOverflow> {
+        if self.is_zero() {
+            return Ok(self.trimmed());
         }
-        let (kept, dropped) = self.coeff.split_at(PRECISION);
-        let first = dropped.as_bytes()[0];
-        let rest_nonzero = dropped[1..].bytes().any(|b| b != b'0');
-        let last_odd = (kept.as_bytes()[PRECISION - 1] - b'0') % 2 == 1;
-        let round_up = match first.cmp(&b'5') {
-            Ordering::Greater => true,
-            Ordering::Less => false,
-            Ordering::Equal => rest_nonzero || last_odd,
-        };
-        let mut digits: Vec<u8> = kept.bytes().collect();
-        if round_up {
-            let mut i = digits.len();
-            loop {
-                if i == 0 {
-                    // Carried out of the top digit: 99..9 + 1 = 100..0.
-                    digits.insert(0, b'1');
-                    break;
-                }
-                i -= 1;
-                if digits[i] == b'9' {
-                    digits[i] = b'0';
-                } else {
-                    digits[i] += 1;
-                    break;
-                }
+        let mut coeff = self.coeff.clone().into_bytes();
+        let mut exp = self.exp;
+        if exp + coeff.len() as i64 - 1 > CONTEXT_EMAX {
+            return Err(DecimalOverflow);
+        }
+        // Digits to drop: down to the precision, and down to Etiny.
+        let to_precision = coeff.len().saturating_sub(CONTEXT_PRECISION) as i64;
+        let to_etiny = (CONTEXT_ETINY - exp).max(0);
+        let drop = to_precision.max(to_etiny);
+        if drop > 0 {
+            (coeff, exp) = round_half_even(coeff, exp, drop);
+            if exp + coeff.len() as i64 - 1 > CONTEXT_EMAX {
+                return Err(DecimalOverflow);
             }
         }
-        Self {
+        Ok(Self {
             negative: self.negative,
-            coeff: String::from_utf8(digits).unwrap_or_default(),
-            exp: self.exp + dropped.len() as i32,
+            coeff: String::from_utf8(coeff).unwrap_or_default(),
+            exp,
         }
-        .trimmed()
+        .trimmed())
     }
 
     /// This value with trailing coefficient zeros folded into the exponent.
@@ -270,7 +327,7 @@ impl Decimal {
         Self {
             negative: self.negative,
             coeff: stripped.to_owned(),
-            exp: self.exp + (self.coeff.len() - stripped.len()) as i32,
+            exp: self.exp + (self.coeff.len() - stripped.len()) as i64,
         }
     }
 
@@ -289,6 +346,51 @@ impl Decimal {
         }
         Some(self.cmp(&Self::from_f64_exact(f)?))
     }
+}
+
+/// Drop the last `drop` digits of `coeff` (whose exponent is `exp`), rounding
+/// half to even; returns the new coefficient and exponent. Dropping every
+/// digit leaves `0` or, past the half, `1`.
+fn round_half_even(coeff: Vec<u8>, exp: i64, drop: i64) -> (Vec<u8>, i64) {
+    let len = coeff.len() as i64;
+    let new_exp = exp + drop;
+    if drop > len {
+        // Less than half of one unit in the last place: rounds to zero.
+        return (b"0".to_vec(), new_exp);
+    }
+    let keep = (len - drop) as usize;
+    let (kept, dropped) = coeff.split_at(keep);
+    let first = dropped[0];
+    let rest_nonzero = dropped[1..].iter().any(|&b| b != b'0');
+    let last_odd = kept.last().is_some_and(|&b| (b - b'0') % 2 == 1);
+    let round_up = match first.cmp(&b'5') {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => rest_nonzero || last_odd,
+    };
+    let mut digits: Vec<u8> = if kept.is_empty() {
+        vec![b'0']
+    } else {
+        kept.to_vec()
+    };
+    if round_up {
+        let mut i = digits.len();
+        loop {
+            if i == 0 {
+                // Carried out of the top digit: 99..9 + 1 = 100..0.
+                digits.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if digits[i] == b'9' {
+                digits[i] = b'0';
+            } else {
+                digits[i] += 1;
+                break;
+            }
+        }
+    }
+    (digits, new_exp)
 }
 
 fn strip_underscores(s: &str) -> Result<String, DecimalError> {
@@ -360,7 +462,7 @@ impl Ord for Decimal {
                 Ordering::Greater
             };
         }
-        let adj = |d: &Self| i64::from(d.exp) + d.coeff.len() as i64;
+        let adj = |d: &Self| d.exp + d.coeff.len() as i64;
         let magnitude = adj(&a).cmp(&adj(&b)).then_with(|| {
             let width = a.coeff.len().max(b.coeff.len());
             let pad = |d: &Self| format!("{:0<width$}", d.coeff);
@@ -504,7 +606,7 @@ mod tests {
 
     #[test]
     fn normalize_rounds_to_28_digits_half_even() {
-        let n = |t: &str| d(t).normalize().to_fixed_string();
+        let n = |t: &str| d(t).normalize().unwrap().to_fixed_string();
         assert_eq!(n("52.30"), "52.3");
         assert_eq!(n("5.00"), "5");
         assert_eq!(n("1E+3"), "1000");
@@ -539,6 +641,79 @@ mod tests {
             n("12345678901234567890123456789"),
             "12345678901234567890123456790"
         );
+    }
+
+    // Expected values from CPython 3.13 (`decimal` 2.5.1, default context).
+    #[test]
+    fn construction_accepts_python_exponent_range() {
+        for (text, sci) in [
+            ("10e2147483647", "1.0E+2147483648"),
+            ("1e999999999999999999", "1E+999999999999999999"),
+            ("100e999999999999999997", "1.00E+999999999999999999"),
+            ("1e-1999999999999999997", "1E-1999999999999999997"),
+            ("0e999999999999999999", "0E+999999999999999999"),
+            ("1e0000000000000000000000000000000001", "1E+1"),
+        ] {
+            let parsed = d(text);
+            assert_eq!(parsed.to_sci_string(), sci, "str(Decimal({text:?}))");
+            // The spelling reads back as the same value.
+            assert_eq!(d(sci), parsed, "{text}");
+        }
+        for text in [
+            "1e1000000000000000000",
+            "10e999999999999999999",
+            "1e-1999999999999999998",
+            "0e1000000000000000000",
+            "1e99999999999999999999999999999999999999",
+        ] {
+            assert_eq!(
+                Decimal::parse_python(text),
+                Err(DecimalError::Invalid),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn extreme_exponents_order_and_compare_without_wrapping() {
+        let huge = d("10e2147483647");
+        assert!(huge > Decimal::from_i64(1));
+        assert!(d("1e-2147483649") < d("1e-2147483648"));
+        assert_eq!(d("1e2147483648"), d("10e2147483647"));
+        assert_ne!(d("1e2147483648"), d("1e2147483649"));
+    }
+
+    #[test]
+    fn normalize_applies_the_default_context_limits() {
+        let n = |t: &str| d(t).normalize().map(|x| x.to_sci_string());
+        assert_eq!(n("1e999999"), Ok("1E+999999".to_string()));
+        assert_eq!(n("10e999998"), Ok("1E+999999".to_string()));
+        assert_eq!(n("1e1000000"), Err(DecimalOverflow));
+        assert_eq!(n("10e2147483647"), Err(DecimalOverflow));
+        assert_eq!(
+            n("123456789012345678901234567895e999990"),
+            Err(DecimalOverflow)
+        );
+        // Below Etiny (-1000026) the coefficient is rounded half to even.
+        assert_eq!(n("1e-1000000"), Ok("1E-1000000".to_string()));
+        assert_eq!(n("15e-1000027"), Ok("2E-1000026".to_string()));
+        assert_eq!(n("25e-1000027"), Ok("2E-1000026".to_string()));
+        assert_eq!(n("14e-1000027"), Ok("1E-1000026".to_string()));
+        assert_eq!(n("1e-1000027"), Ok("0".to_string()));
+        assert_eq!(n("1e-999999999999999999"), Ok("0".to_string()));
+        assert_eq!(n("0e1000000"), Ok("0".to_string()));
+    }
+
+    #[test]
+    fn a_huge_fixed_spelling_is_not_built() {
+        assert_eq!(d("1e999999999999999999").try_to_fixed_string(), None);
+        assert_eq!(d("1e-999999999999999999").try_to_fixed_string(), None);
+        // The infallible spelling falls back to scientific notation.
+        assert_eq!(
+            d("1e999999999999999999").to_fixed_string(),
+            "1E+999999999999999999"
+        );
+        assert_eq!(d("0e999999999999999999").to_fixed_string(), "0");
     }
 
     #[test]

@@ -436,12 +436,18 @@ fn looks_like_statements(src: &str) -> bool {
 pub fn parse_program(src: &str) -> ExprResult<Program> {
     let lines = logical_lines(src);
     let mut pos = 0usize;
-    let stmts = parse_stmts(&lines, &mut pos, None)?;
+    let stmts = parse_stmts(&lines, &mut pos, None, 0)?;
     Ok(Program {
         stmts,
         lines: src.split('\n').map(str::to_string).collect(),
     })
 }
+
+/// How many blocks may be nested. CPython's tokenizer (`MAXINDENT` in
+/// `tokenizer.c`) raises `IndentationError: too many levels of indentation` for
+/// the hundredth indented level, so 99 nest and the 100th does not. Stopping
+/// here also bounds the recursion of the statement parser and interpreter.
+const MAX_INDENT_LEVELS: usize = 100;
 
 /// A logical line with its indentation depth (in columns; tabs = 1 each) and
 /// trimmed content. Blank lines are dropped.
@@ -629,6 +635,7 @@ fn parse_stmts(
     lines: &[Line],
     pos: &mut usize,
     block_indent: Option<usize>,
+    depth: usize,
 ) -> ExprResult<Vec<Stmt>> {
     let mut stmts = Vec::new();
     let base = block_indent.unwrap_or(0);
@@ -637,13 +644,13 @@ fn parse_stmts(
         if block_indent.is_some() && lines[*pos].indent < base {
             break;
         }
-        let stmt = parse_one_stmt(lines, pos)?;
+        let stmt = parse_one_stmt(lines, pos, depth)?;
         stmts.push(stmt);
     }
     Ok(stmts)
 }
 
-fn parse_one_stmt(lines: &[Line], pos: &mut usize) -> ExprResult<Stmt> {
+fn parse_one_stmt(lines: &[Line], pos: &mut usize, depth: usize) -> ExprResult<Stmt> {
     let line_indent = lines[*pos].indent;
     let text = lines[*pos].text.clone();
     let span = lines[*pos].span;
@@ -665,8 +672,11 @@ fn parse_one_stmt(lines: &[Line], pos: &mut usize) -> ExprResult<Stmt> {
         }
         // Indented block body: gather deeper-indented following lines.
         if *pos < lines.len() && lines[*pos].indent > line_indent {
+            if depth + 1 >= MAX_INDENT_LEVELS {
+                return Err(ExprError::Parse("too many levels of indentation".into()));
+            }
             let body_indent = lines[*pos].indent;
-            let body = parse_stmts(lines, pos, Some(body_indent))?;
+            let body = parse_stmts(lines, pos, Some(body_indent), depth + 1)?;
             return Ok(Stmt::If { cond, body, span });
         }
         // `if` with empty body — degrade to a no-op guard.

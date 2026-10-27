@@ -22,7 +22,7 @@ unguarded = []
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 indexmap = "2"
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml_ng = "0.10"
 tokio = { version = "1", features = ["rt", "fs"] }
 linkml-map-core = { path = "../crates/linkml-map-core" }

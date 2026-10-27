@@ -148,10 +148,14 @@ pub fn canonical(
         Value::Str(s) => Ok(Canon::Str(s.clone())),
         Value::Int(i) => Ok(Canon::Num(canonical_int(*i))),
         Value::Float(f) => Ok(Canon::Num(canonical_float(*f))),
-        Value::Decimal(d) => Ok(Canon::Num(canonical_decimal(d))),
-        other => Err(format!(
-            "Cannot synthesize an identifier from a value of type {}: {other:?}",
-            variant_name(other)
+        Value::Decimal(d) => canonical_decimal(d).map(Canon::Num),
+        // PARITY: content_id.py::_canonical raises `TypeError("Cannot synthesize
+        // an identifier from a value of type {type(value).__name__}:
+        // {value!r}")`; the only value type left here is a date or datetime.
+        Value::Temporal(t) => Err(format!(
+            "Cannot synthesize an identifier from a value of type {}: {}",
+            t.type_name(),
+            t.repr()
         )),
     }
 }
@@ -181,20 +185,6 @@ fn canonical_map(
     Ok(Canon::Map(out))
 }
 
-fn variant_name(value: &Value) -> &'static str {
-    match value {
-        Value::Null => "NoneType",
-        Value::Bool(_) => "bool",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Str(_) => "str",
-        Value::List(_) => "list",
-        Value::Map(_) => "dict",
-        #[allow(unreachable_patterns)]
-        _ => "unsupported",
-    }
-}
-
 /// Normalise an integer (Python: `Decimal(value).normalize()`, `0` for zero).
 ///
 /// An `i64` has at most 19 digits, well inside the 28-digit decimal context,
@@ -212,11 +202,16 @@ fn canonical_int(value: i64) -> String {
 /// to the active context precision (28 significant digits, half-even), so two
 /// decimals that differ only beyond the 28th digit share an id. Probably
 /// unintended upstream; kept so minted ids match.
-fn canonical_decimal(value: &Decimal) -> String {
+fn canonical_decimal(value: &Decimal) -> std::result::Result<String, String> {
     if value.is_zero() {
-        return "0".to_string();
+        return Ok("0".to_string());
     }
-    value.normalize().to_fixed_string()
+    // `decimal.Overflow` for an adjusted exponent above the context's `Emax`
+    // (999999); and a `MemoryError` where `format(d, "f")` cannot be built.
+    let normalized = value.normalize().map_err(|e| e.to_string())?;
+    normalized
+        .try_to_fixed_string()
+        .ok_or_else(|| "MemoryError".to_string())
 }
 
 /// Normalise a float so equal values encode identically.
