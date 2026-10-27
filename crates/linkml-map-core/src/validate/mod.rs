@@ -251,7 +251,7 @@ fn slot_derivations(cd: &ClassDerivation) -> Vec<&SlotDerivation> {
 
 /// Nested class derivations declared under a slot derivation, in order.
 fn nested_class_derivations(sd: &SlotDerivation) -> impl Iterator<Item = &ClassDerivation> {
-    sd.class_derivations.iter().flatten().map(|(_, v)| v)
+    sd.class_derivations.iter().flatten()
 }
 
 /// The effective source class of a class derivation: `populated_from`, falling
