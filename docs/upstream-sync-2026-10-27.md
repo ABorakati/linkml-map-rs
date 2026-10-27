@@ -133,10 +133,13 @@ Not caused by upstream drift; found while porting and fixed here.
 
 Each is marked `PARITY:` in the code.
 
-- **Single primary row block.** Rust streams one primary row block, plus constant
-  blocks once (as prologue or epilogue according to spec order). Upstream
-  `transform_spec` streams every block that has data. A single input file picks
-  the first row block, not the stem-matched one.
+- **Multi-block streaming (closed in a follow-up, `739394b`).** The pipeline now
+  streams every class derivation in spec order, as upstream `transform_spec`
+  does, with tables matched like upstream `DataLoader` (directory stems; a single
+  file is the table named by `--source-type`, else its stem). Remaining nuance:
+  `--source-type` on a directory overrides every block's source type, as
+  upstream, but Rust's lenient source-slot handling then succeeds where upstream
+  fails with "No such slot".
 - **Unrestricted mode is a native interpreter, not asteval.** The gate is ported
   (`expr/gate.rs`): restricted by default, `--unrestricted-eval` / `with_unrestricted_eval`
   / `unrestricted_eval=` to opt in. Unrestricted blocks cover assignments, `if` and
@@ -207,7 +210,6 @@ Each is marked `PARITY:` in the code.
 
 ## Still deferred
 
-- **Multi-block streaming driver** (see divergences above).
 - **DuckDB set-based join engine** (`510b0a50ca`) and **SCAN/MIGRATE
   normalisation**: unchanged from earlier reviews.
 - **Expression language gaps (closed):** the conditional expression
@@ -218,7 +220,7 @@ Each is marked `PARITY:` in the code.
   Python parses it as a set display and `LinkMLEvaluator._eval_set` gives the
   one-name/attribute form its reference meaning, which the parser mirrors. Set
   displays other than `{x}` and set comprehensions are rejected by upstream's
-  restricted evaluator (`expr::with_restricted_syntax`). A set is a
+  restricted evaluator; `expr/gate.rs` enforces this in restricted mode. A set is a
   de-duplicated list in insertion order and dict keys are stringified
   (`expr/compound.rs`).
 - **`Value` has no tuple, set, bytes or big-integer variant**, so for example
