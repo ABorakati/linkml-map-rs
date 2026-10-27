@@ -893,6 +893,72 @@ fn datatype_fits_doctests() {
     assert!(!datatype_fits(None, "boolean"));
 }
 
+// ── unknown range (upstream f299f3a, `unknown-range`) ──────────────────────
+
+/// Upstream `test_slot_range_must_name_something`.
+#[test]
+fn slot_range_must_name_something() {
+    let sv = joinable_schema();
+    let cases = [
+        (
+            "typo",
+            "integr",
+            vec!["range 'integr' is not a type, class or enum in the source or target schema"],
+        ),
+        ("builtin-type", "integer", vec![]),
+        ("source-class", "Reading", vec![]),
+        ("spec-derivation", "Outer", vec![]),
+    ];
+    for (id, range_name, expected) in cases {
+        let s = dotted_spec(
+            json!({"populated_from": "method", "range": range_name}),
+            None,
+        );
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let got: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.category.as_deref() == Some("unknown-range"))
+            .map(|m| m.message.as_str())
+            .collect();
+        assert_eq!(got, expected, "{id}");
+    }
+}
+
+/// Upstream `test_slot_range_unknown_is_error_when_strict`.
+#[test]
+fn slot_range_unknown_is_error_when_strict() {
+    let sv = joinable_schema();
+    let s = dotted_spec(json!({"populated_from": "method", "range": "integr"}), None);
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, true);
+    let severities: Vec<_> = msgs
+        .iter()
+        .filter(|m| m.category.as_deref() == Some("unknown-range"))
+        .map(|m| m.severity)
+        .collect();
+    assert_eq!(severities, [Severity::Error]);
+}
+
+/// Enum-derivation names and target-schema elements are known ranges too.
+#[test]
+fn slot_range_known_via_enum_derivation_and_target_schema() {
+    let target = range_target_schema();
+    let s = spec(json!({
+        "class_derivations": {"Participant": {"slot_derivations": {
+            "note": {"value": "x", "range": "MyEnum"},
+            "relationship": {"value": "x", "range": "Relationship"},
+            "site": {"value": "x", "range": "Site"},
+        }}},
+        "enum_derivations": {"MyEnum": {}},
+    }));
+    let msgs = validate_spec_semantics(&s, None, Some(&target), false);
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| m.category.as_deref() == Some("unknown-range")),
+        "{msgs:?}"
+    );
+}
+
 // ── enum derivations ─────────────────────────────────────────────────────────
 
 fn enum_schema() -> InMemorySchema {

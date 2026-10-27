@@ -50,7 +50,7 @@ use std::fmt;
 
 use crate::datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification};
 use crate::normalize::join_utils::{find_common_columns, pick_join_key};
-use crate::schema::{SchemaProvider, coercible_datatype};
+use crate::schema::{LINKML_BUILTIN_TYPES, SchemaProvider, coercible_datatype};
 
 use expr_refs::{extract_expr_attribute_references, extract_expr_slot_references};
 
@@ -127,6 +127,9 @@ struct Ctx<'a> {
     source_classes: BTreeSet<String>,
     target_classes: BTreeSet<String>,
     target_enums: BTreeSet<String>,
+    /// Names a slot derivation's `range` may use: elements of either schema,
+    /// plus the spec's own derivations.
+    known_ranges: BTreeSet<String>,
 }
 
 /// Validate a spec's references against the source and/or target schemas.
@@ -147,6 +150,7 @@ pub fn validate_spec_semantics(
         return messages;
     }
 
+    let known_ranges = collect_known_ranges(spec, source_schema, target_schema);
     let ctx = Ctx {
         source: source_schema,
         target: target_schema,
@@ -157,6 +161,7 @@ pub fn validate_spec_semantics(
         target_enums: target_schema
             .map(|sv| sv.all_enum_names().into_iter().collect())
             .unwrap_or_default(),
+        known_ranges,
     };
 
     for cd in spec.class_derivations.iter().flatten() {
@@ -168,6 +173,33 @@ pub fn validate_spec_semantics(
     }
 
     messages
+}
+
+/// Names a slot derivation's `range` may use: elements of either schema, plus
+/// the spec's own derivations, which range inference assigns to nested-object
+/// slots. Mirrors the `known_ranges` set built in Python
+/// `validate_spec_semantics` (upstream f299f3a).
+fn collect_known_ranges(
+    spec: &TransformationSpecification,
+    source: Option<&dyn SchemaProvider>,
+    target: Option<&dyn SchemaProvider>,
+) -> BTreeSet<String> {
+    let mut known = collect_class_derivation_pool(spec);
+    known.extend(
+        spec.enum_derivations
+            .iter()
+            .flatten()
+            .map(|(_, ed)| ed.name.clone()),
+    );
+    for sv in [source, target].into_iter().flatten() {
+        known.extend(sv.all_type_names());
+        known.extend(sv.all_class_names());
+        known.extend(sv.all_enum_names());
+        // PARITY: Python's `all_types()` includes the `linkml:types` import;
+        // providers that don't load it still accept its built-in names.
+        known.extend(LINKML_BUILTIN_TYPES.iter().map(|t| (*t).to_owned()));
+    }
+    known
 }
 
 /// Names of all top-level class derivations. Mirrors Python
@@ -318,6 +350,7 @@ fn validate_class_derivation(
         );
 
         let sd_path = format!("{cd_path}.slot_derivations[{}]", sd.name);
+        check_range_exists(ctx, sd, &sd_path, messages);
         if let (Some(target), Some(target_slots)) = (ctx.target, target_class_slots.as_ref())
             && target_slots.contains(&sd.name)
         {
@@ -753,6 +786,42 @@ fn validate_slot_derivation(
             }
         }
     }
+}
+
+// ── unknown range ───────────────────────────────────────────────────────────
+
+/// Report a slot derivation `range` that names nothing the schemas or spec
+/// define. Mirrors Python `_check_range_exists` (upstream f299f3a).
+///
+/// Values are coerced only to ranges the transformer recognises; any other name
+/// passes them through unchanged, so a misspelt `range: integr` would otherwise
+/// go unnoticed.
+fn check_range_exists(
+    ctx: &Ctx,
+    sd: &SlotDerivation,
+    sd_path: &str,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    let Some(range_name) = sd.range.as_deref() else {
+        return;
+    };
+    if ctx.known_ranges.contains(range_name) {
+        return;
+    }
+    messages.push(
+        ValidationMessage::new(
+            if ctx.strict {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            sd_path,
+            format!(
+                "range '{range_name}' is not a type, class or enum in the source or target schema"
+            ),
+        )
+        .with_category("unknown-range"),
+    );
 }
 
 // ── range override ──────────────────────────────────────────────────────────

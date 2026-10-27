@@ -453,6 +453,30 @@ impl SchemaProvider for InMemorySchema {
     }
 }
 
+/// The types defined by `linkml:types`. Providers that do not load that import
+/// (the schemaview backend) do not list them in [`SchemaProvider::all_type_names`].
+pub(crate) const LINKML_BUILTIN_TYPES: [&str; 19] = [
+    "string",
+    "integer",
+    "boolean",
+    "float",
+    "double",
+    "decimal",
+    "time",
+    "date",
+    "datetime",
+    "date_or_datetime",
+    "uriorcurie",
+    "curie",
+    "uri",
+    "ncname",
+    "objectidentifier",
+    "nodeidentifier",
+    "jsonpointer",
+    "jsonpath",
+    "sparqlpath",
+];
+
 /// The built-in datatypes a range can be coerced to.
 const COERCIBLE_TYPES: [&str; 5] = ["integer", "float", "decimal", "string", "boolean"];
 
