@@ -190,7 +190,7 @@ fn map_run(runs: &[(u32, u32, u32, i32)], c: char) -> char {
     let after = runs.partition_point(|&(first, ..)| first <= cp);
     if let Some(&(first, last, stride, delta)) = after.checked_sub(1).map(|i| &runs[i])
         && cp <= last
-        && (cp - first) % stride == 0
+        && (cp - first).is_multiple_of(stride)
     {
         return char::from_u32(cp.wrapping_add_signed(delta)).unwrap_or(c);
     }
