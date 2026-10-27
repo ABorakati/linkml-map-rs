@@ -20,6 +20,7 @@ use log::warn;
 
 use super::error::{ExprError, ExprResult};
 use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
+use super::slugify;
 use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
 use crate::value::Value;
 
@@ -1231,7 +1232,7 @@ fn call_function(name: &str, args: Vec<Value>) -> ExprResult<Value> {
         "capitalize" => distributing(args, "capitalize", |v| {
             Ok(Value::Str(py_capitalize(&py_str(&v))))
         }),
-        "slugify" => distributing(args, "slugify", |v| Ok(Value::Str(slugify(&py_str(&v))))),
+        "slugify" => distributing_slugify(args),
         "int" => distributing(args, "int", |v| py_int(&v)),
         "float" => distributing(args, "float", |v| py_float(&v)),
         "bool" => distributing(args, "bool", |v| Ok(Value::Bool(v.is_truthy()))),
@@ -1382,6 +1383,43 @@ fn distributing(
     f(arg)
 }
 
+/// `slugify(s, separator="_")`: distributes over a list first argument and
+/// propagates None like `_distributing`; the result is None when nothing
+/// identifier-shaped remains (upstream `_slugify`).
+fn distributing_slugify(args: Vec<Value>) -> ExprResult<Value> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ExprError::Eval(format!(
+            "slugify() takes 1 or 2 arguments ({} given)",
+            args.len()
+        )));
+    }
+    let separator = match args.get(1) {
+        None => "_".to_string(),
+        Some(Value::Null) => return Ok(Value::Null),
+        Some(sep) => py_str(sep),
+    };
+    let one = |v: &Value| match slugify::slugify(&py_str(v), &separator) {
+        Some(slug) => Value::Str(slug),
+        None => Value::Null,
+    };
+    Ok(match &args[0] {
+        Value::List(items) => Value::List(
+            items
+                .iter()
+                .map(|item| {
+                    if item.is_null() {
+                        Value::Null
+                    } else {
+                        one(item)
+                    }
+                })
+                .collect(),
+        ),
+        Value::Null => Value::Null,
+        v => one(v),
+    })
+}
+
 fn distributing_round(args: Vec<Value>) -> ExprResult<Value> {
     // round(x) or round(x, ndigits). Distributes over a list first-arg.
     if args.is_empty() || args.len() > 2 {
@@ -1513,26 +1551,6 @@ fn py_capitalize(s: &str) -> String {
             out
         }
     }
-}
-
-/// ASCII slug: lowercase, trim, collapse each run of non-alphanumeric
-/// characters to a single `-`, and strip leading/trailing `-`.
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut pending_dash = false;
-    for c in s.trim().chars() {
-        if c.is_ascii_alphanumeric() {
-            if pending_dash && !out.is_empty() {
-                out.push('-');
-            }
-            pending_dash = false;
-            out.push(c.to_ascii_lowercase());
-        } else {
-            // Any run of non-alphanumeric chars becomes a single separator.
-            pending_dash = true;
-        }
-    }
-    out
 }
 
 fn format_py_float(f: f64) -> String {
@@ -1701,16 +1719,34 @@ mod tests {
 
     #[test]
     fn test_slugify() {
+        // PARITY: upstream `_slugify` defaults to separator "_" and returns None
+        // when nothing identifier-shaped remains (see expr/slugify.rs).
         assert_eq!(
             eval("slugify('  Hello, World!  ')"),
-            Value::Str("hello-world".into())
+            Value::Str("hello_world".into())
         );
         assert_eq!(
             eval("slugify('Foo___Bar  Baz')"),
-            Value::Str("foo-bar-baz".into())
+            Value::Str("foo_bar_baz".into())
         );
         assert_eq!(eval("slugify('---abc---')"), Value::Str("abc".into()));
-        assert_eq!(eval("slugify('!!!')"), Value::Str("".into()));
+        assert_eq!(eval("slugify('!!!')"), Value::Null);
+        assert_eq!(eval("slugify('')"), Value::Null);
+        assert_eq!(
+            eval("slugify('caf\u{e9}-au-lait', '-')"),
+            Value::Str("cafe-au-lait".into())
+        );
+        assert_eq!(eval("slugify('123 hits')"), Value::Str("_123_hits".into()));
+        // `or`-chain fallback, the documented use.
+        assert_eq!(
+            eval("slugify('!!!') or 'anonymous'"),
+            Value::Str("anonymous".into())
+        );
+        // Distributes over a list; None stays None.
+        assert_eq!(
+            eval("slugify(['A b', None, '!'])"),
+            Value::List(vec![Value::Str("a_b".into()), Value::Null, Value::Null])
+        );
     }
 
     #[test]
