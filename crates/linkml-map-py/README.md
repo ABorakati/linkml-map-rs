@@ -20,6 +20,14 @@ out  = t.transform({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 outs = t.transform_many([obj1, obj2])     # schema/spec parsed once
 ```
 
+- Every schema/spec argument takes a `str` **or** a `pathlib.Path` (any
+  `os.PathLike`), as upstream does since `173121b`. A missing file raises
+  `linkml_map_rs.PathNotFoundError`, which is both a `FileNotFoundError` (what
+  upstream raises) and a `ValueError` (what this binding raised before it took
+  `Path`s).
+- `strict=True` (constructors and the free functions) mirrors upstream
+  `ObjectTransformer.strict`: an expression reference that does not resolve
+  raises instead of yielding `null`.
 - Schema + spec are parsed **once** at construction and reused for every call
   (previously they were reloaded per `transform` — fixed).
 - `Transformer.from_yaml(source_schema_yaml, spec_yaml, target_schema_yaml=None,
@@ -33,6 +41,24 @@ outs = t.transform_many([obj1, obj2])     # schema/spec parsed once
   loaded from a CSV/TSV/JSON file. Call it before `.transform()` /
   `.map_object()` / `.transform_many()`; calling again with the same `name`
   replaces that table, different names accumulate.
+
+### Loading a specification: `load_specification`
+
+```python
+from linkml_map_rs import load_specification
+
+spec = load_specification("transform.yaml")          # str or Path: a FILE path
+spec = load_specification({"class_derivations": {"Agent": {"populated_from": "Person"}}})
+spec["class_derivations"][0]["name"]                 # 'Agent'
+```
+
+Native counterpart of upstream `linkml_map.utils.loaders.load_specification`:
+a dict is normalised like a file's contents (dict-keyed `class_derivations`
+become a named list, and so on) and validated against the specification
+datamodel. **Divergence:** upstream returns a pydantic
+`TransformationSpecification` and normalises a dict argument in place; the
+native function returns the normalised plain **dict** (a new one) and leaves its
+argument untouched. The `linkml_map` shim below mirrors upstream more closely.
 
 ### Pre-flight validation: `validate_spec`
 
@@ -71,21 +97,59 @@ The `python/linkml_map/` package shadows upstream `linkml-map` for the common
 path, so existing imports work unchanged:
 
 ```python
-from linkml_runtime import SchemaView
-from linkml_map.transformer.object_transformer import ObjectTransformer
+from linkml_map import ObjectTransformer, load_specification
 
-tr = ObjectTransformer(source_schemaview=SchemaView("source.yaml"),
-                       specification=spec)   # dict, object, path, or YAML
+tr = ObjectTransformer("transform.yaml", "source.yaml",   # str / Path / dict / loaded spec;
+                       target_schemaview="target.yaml")   # SchemaView / SchemaDefinition / path
 out = tr.map_object({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
+
+spec = load_specification("transform.yaml")    # also: linkml_map.utils.loaders
+spec.class_derivations[0].name
 ```
 
-The shim dumps the SchemaView / spec to YAML and calls the Rust engine. Covered:
-`ObjectTransformer(source_schemaview=, specification=, target_schemaview=)`,
-`.map_object()`, `.create_transformer_specification()`, `.index()` (no-op — the
-Rust engine builds any FK index internally).
+Constructor, as upstream since `173121b`: `ObjectTransformer(specification=None,
+source_schemaview=None, *, target_schemaview=None, strict=False,
+unrestricted_eval=False)`. The first two positional arguments are
+`(specification, source_schemaview)` as upstream's dataclass fields (earlier
+shim releases took them the other way round); `target_schemaview` is
+keyword-only because upstream's third positional field is the private
+`_derived_specification`. The constructor **loads**: afterwards `.specification`
+is a loaded specification and the schema views are `linkml_runtime.SchemaView`s,
+so `tr.source_schemaview.schema.name` works. A dict specification is deep-copied
+(the caller's dict is never changed); a missing file raises `FileNotFoundError`
+at construction.
+
+Covered: `ObjectTransformer(...)`, `.map_object()`,
+`.create_transformer_specification()`, `.load_transformer_specification()`,
+`.load_source_schema()`, `.index()` (no-op — the Rust engine builds any FK index
+internally), `.strict`, `load_specification()`.
+
+Divergences from upstream, all deliberate:
+
+- `load_specification` (and `.specification`) return a small **dict-backed
+  `TransformationSpecification`** (`linkml_map/_specification.py`), not the
+  pydantic model: the shim must not ship upstream's datamodel. It offers
+  attribute access (`spec.class_derivations[0].name`), `model_dump()` (a plain
+  dict that `ObjectTransformer` accepts), `==`, and an unset field reads
+  `None`. It applies no defaults or Python-side validation (the Rust engine
+  validates when `load_specification` runs), a misspelt field reads `None`
+  rather than raising, and a list attribute is a fresh list of views over the
+  same dicts. Like upstream, `load_specification(dict)` normalises the dict in
+  place.
+- `unrestricted_eval` is accepted and stored, but has no effect: the Rust
+  engine merges upstream's restricted and unrestricted evaluators, so it
+  evaluates the statement blocks upstream only runs when the flag is set.
+- `spec_messages` is always `[]`: the deprecation scan that fills it upstream
+  is not ported.
+- A multi-line `str` that is not an existing file is read as YAML text (kept
+  from earlier releases; upstream raises `FileNotFoundError`). A `Path` is
+  always a file path.
+- `source_schema_patches` are applied inside the engine, not to the
+  `source_schemaview` object.
 
 **Install it instead of upstream `linkml-map`** (it shadows the import name).
-Needs `linkml-runtime` (for `SchemaView`) and `pyyaml`.
+Needs `linkml-runtime` (for `SchemaView`) and `pyyaml`. `linkml_map.__all__` is
+upstream's: `["ObjectTransformer", "load_specification"]`.
 
 ## Build
 
@@ -108,5 +172,6 @@ whole library:
 - **Unit conversion** uses a finite (medically-extended) table — not pint's full
   universe. Within-table units (incl. molar↔mass via `molecular_weight` and
   equivalents↔molar via `valence`) match; unknown units error loudly.
-- The shim covers `ObjectTransformer.map_object`; other upstream classes/methods
+- The shim covers `ObjectTransformer.map_object` and `load_specification`; other
+  upstream classes/methods (`DuckDBTransformer`, `derived_specification`, ...)
   are not shimmed.
