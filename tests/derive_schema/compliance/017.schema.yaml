@@ -1,0 +1,9 @@
+id: https://example.org/expr
+name: expr
+default_range: string
+classes:
+  C:
+    attributes:
+      s1:
+        range: string
+        multivalued: true

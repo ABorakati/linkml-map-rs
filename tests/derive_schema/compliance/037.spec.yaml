@@ -1,0 +1,9 @@
+class_derivations:
+  D:
+    populated_from: C
+    slot_derivations:
+      s1_verbatim:
+        populated_from: s1
+        stringification:
+          delimiter: '|'
+id: https://example.org/spec

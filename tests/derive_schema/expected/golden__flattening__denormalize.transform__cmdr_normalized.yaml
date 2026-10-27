@@ -1,0 +1,32 @@
+name: cmdr_normalized-derived
+id: https://w3id.org/linkml/examples/cmdr-normalized-derived
+imports:
+- linkml:types
+prefixes:
+  mappings:
+    prefix_prefix: mappings
+    prefix_reference: https://w3id.org/linkml/examples/cmdr-normalized/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://w3id.org/linkml/examples/cmdr-normalized-derived/
+default_range: string
+classes:
+  MappingSet:
+    name: MappingSet
+    attributes:
+      mappings:
+        name: mappings
+  Mapping:
+    name: Mapping
+    attributes:
+      subject_id:
+        name: subject_id
+      subject_name:
+        name: subject_name
+      object_id:
+        name: object_id
+      object_name:
+        name: object_name
+      predicate_id:
+        name: predicate_id

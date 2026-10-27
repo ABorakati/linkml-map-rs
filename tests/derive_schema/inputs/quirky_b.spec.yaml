@@ -1,0 +1,32 @@
+id: https://example.org/spec/quirky_b
+class_derivations:
+  Alpha:
+    populated_from: Alpha
+    slot_derivations:
+      multi: {}
+      shared: {}
+      own: {}
+      other:
+        overrides:
+          range: string
+          description: overridden
+          annotations: {x: y}
+      mystery:
+        populated_from: zeta
+      amb:
+        populated_from: shared
+  Gamma:
+    populated_from: Gamma
+    target_definition:
+      description: a gamma
+      mixins: [Alpha]
+      slot_usage:
+        zeta: {required: true}
+      attributes:
+        extra: {range: integer}
+    slot_derivations:
+      zeta:
+        target_definition:
+          description: z
+          annotations: {k: v}
+          any_of: [{range: string}]

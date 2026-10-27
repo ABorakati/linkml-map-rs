@@ -28,9 +28,6 @@ Divergences from upstream, all deliberate:
 * a ``str`` that is not an existing file but contains a newline is read as YAML
   text (a superset kept from earlier releases of this shim; upstream raises
   ``FileNotFoundError``);
-* ``unrestricted_eval`` is accepted and stored but has no effect: the Rust
-  engine merges the restricted and unrestricted evaluators, so it evaluates the
-  statement blocks that upstream only runs when the flag is set;
 * ``spec_messages`` is always an empty list (the deprecation scan that fills it
   upstream is not ported);
 * source-schema patches are applied inside the engine, not to the
@@ -50,7 +47,13 @@ from linkml_map.utils.loaders import load_specification
 
 # Assigning one of these discards the engine built for the previous values.
 _ENGINE_INPUTS = frozenset(
-    {"specification", "source_schemaview", "target_schemaview", "strict"}
+    {
+        "specification",
+        "source_schemaview",
+        "target_schemaview",
+        "strict",
+        "unrestricted_eval",
+    }
 )
 
 
@@ -124,7 +127,11 @@ class ObjectTransformer:
         Raise on expression references that do not resolve to a schema slot,
         instead of warning and yielding null.
     unrestricted_eval :
-        Accepted for compatibility; has no effect (see the module docstring).
+        As upstream: ``False`` (the default) uses the restricted evaluator, which
+        has no ``src``, runs only the first statement of a block and refuses
+        attribute access on comprehension variables; ``True`` also runs
+        statement blocks with the source object as ``src``. Forwarded to the
+        engine. Only enable it for trusted specifications.
     """
 
     def __init__(
@@ -188,6 +195,7 @@ class ObjectTransformer:
             self.target_schemaview,
             None,
             strict=self.strict,
+            unrestricted_eval=self.unrestricted_eval,
         )
 
     def map_object(self, source_obj: Any, source_type: Optional[str] = None) -> Any:

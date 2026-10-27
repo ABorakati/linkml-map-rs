@@ -1,0 +1,115 @@
+id: https://example.org/quirky
+name: quirky
+description: 12345
+imports:
+  - linkml:types
+  - sub/deep
+prefixes:
+  ex: https://example.org/quirky/
+  linkml: https://w3id.org/linkml/
+default_range: string
+slots:
+  shared:
+    range: integer
+    description: A top-level slot also used as attribute name elsewhere
+  multi:
+    multivalued: "true"
+    required: "false"
+    inlined: 1
+    rank: "7"
+    annotations:
+      - tag: a1
+        value: v1
+      - tag: a2
+        value: 2
+    structured_aliases:
+      - literal_form: alias one
+        predicate: EXACT_SYNONYM
+    equals_number: 3
+    minimum_value: 1.5
+    maximum_value: "10"
+    any_of:
+      - range: string
+      - range: integer
+    exactly_one_of:
+      - range: string
+    unit:
+      ucum_code: m
+      symbol: metre
+classes:
+  Alpha:
+    slots: [shared, multi]
+    slot_usage:
+      - name: shared
+        required: true
+      - multi:
+          range: float
+    attributes:
+      - name: own
+        range: string
+      - name: other
+        range: integer
+    annotations:
+      k1: v1
+      k2: 2
+      k3: true
+    union_of: [Alpha]
+    unique_keys:
+      uk: {unique_key_slots: [own]}
+    classification_rules:
+      - slot_conditions:
+          own: {required: true}
+    extra_slots:
+      allowed: true
+    see_also:
+      - https://example.org/see
+    deprecated: yes it is
+    examples:
+      - value: a
+      - {value: b, description: second}
+  Beta:
+    is_a: Alpha
+    attributes:
+      shared:
+        range: string
+      own:
+        range: integer
+    slot_usage:
+      shared:
+        description: usage description
+  Gamma:
+    attributes:
+      shared:
+        range: float
+      zeta: {}
+enums:
+  ListEnum:
+    permissible_values:
+      - A
+      - B
+      - text: C
+        description: see
+  DictEnum:
+    permissible_values:
+      X: {description: "an x", meaning: ex:X, unit: {ucum_code: kg}}
+      Y: "plain description"
+    code_set: ex:codes
+    pv_formula: CODE
+    include:
+      - permissible_values: {Z: {}}
+    minus:
+      - permissible_values: {Q: {}}
+types:
+  Distance:
+    typeof: float
+    base: float
+    uri: xsd:float
+    unit:
+      ucum_code: m
+    minimum_value: 0
+    equals_number: 5
+subsets:
+  s1: {description: one}
+settings:
+  s: {setting_value: v}
+bindings: []

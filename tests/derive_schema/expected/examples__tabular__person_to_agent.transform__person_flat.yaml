@@ -1,0 +1,28 @@
+name: person_flat-derived
+id: https://example.org/person_flat-derived
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  P:
+    prefix_prefix: P
+    prefix_reference: http://example.org/P/
+default_prefix: https://example.org/person_flat-derived/
+default_range: string
+classes:
+  Agent:
+    name: Agent
+    attributes:
+      id:
+        name: id
+        identifier: true
+      label:
+        name: label
+      email:
+        name: email
+      age:
+        name: age
+      gender:
+        name: gender

@@ -1,0 +1,14 @@
+name: quirky-derived
+id: https://example.org/quirky-derived
+imports:
+- linkml:types
+- sub/deep
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/quirky/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/quirky-derived/
+default_range: string

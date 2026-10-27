@@ -1,0 +1,12 @@
+id: https://example.org/spec/copy_include
+copy_directives:
+  some:
+    element_name: some
+    include:
+      - Person
+      - Status
+      - name
+class_derivations:
+  Agent:
+    populated_from: Person
+    is_a: Person

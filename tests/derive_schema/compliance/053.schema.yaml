@@ -1,0 +1,15 @@
+id: https://example.org/expr
+name: expr
+default_range: string
+classes:
+  C:
+    tree_root: true
+    attributes:
+      s1:
+        range: integer
+    mixins:
+    - D
+  D:
+    attributes:
+      s2:
+        range: integer

@@ -50,7 +50,9 @@ pub struct MapDataConfig {
     /// Output file path (-o).  Pass `"-"` to write to stdout (requires explicit
     /// output_format).
     pub output: String,
-    /// Source class name hint. `None` → engine resolves from spec.
+    /// Upstream's `--source-type`: the table a single tabular file holds (default:
+    /// its stem), or the source type of every block for a directory; see
+    /// [`linkml_map_pipeline::PipelineConfig::source_class`]. `None` → resolved from the spec.
     pub source_class: Option<String>,
     /// Input format override string ("auto" | "csv" | "tsv" | "json" | "jsonl" | "yaml").
     pub input_format: String,
@@ -64,9 +66,16 @@ pub struct MapDataConfig {
     /// enum value matching no (or more than one) permissible value of the
     /// target enum, instead of warning and carrying on.
     pub strict: bool,
+    /// Unrestricted evaluation (`--unrestricted-eval`): `expr:` statement blocks
+    /// run with the source object as `src`, and an expression the restricted
+    /// evaluator rejects yields null. Off by default, as upstream: the safe,
+    /// restricted evaluator has no `src` and evaluates one expression. Only
+    /// enable it for trusted specs. See
+    /// [`linkml_map_pipeline::PipelineConfig::unrestricted_eval`].
+    pub unrestricted_eval: bool,
     /// Input data path — a single data file (default), or a *directory* of tables
-    /// for multi-table joins (each file is a named table matched by filename stem;
-    /// the primary table is streamed and joined tables feed a lookup index). See
+    /// (each file is a named table matched by filename stem; every class
+    /// derivation streams its own table and joined tables feed a lookup index). See
     /// [`linkml_map_pipeline::PipelineConfig::source_path`].
     pub input: String,
     /// Output-writer options: `--table-name`, `--chunk-size`, `-O/--additional-output`.
@@ -92,6 +101,7 @@ impl MapDataConfig {
             workers: 4,
             unordered: false,
             strict: false,
+            unrestricted_eval: false,
             input: input.into(),
             write_options: WriteOptions::default(),
         }
@@ -131,6 +141,7 @@ pub async fn run_map_data_config_with_options(
         channel_depth: 256,
         write_options: cfg.write_options.clone(),
         strict: cfg.strict,
+        unrestricted_eval: cfg.unrestricted_eval,
     };
 
     eprintln!(

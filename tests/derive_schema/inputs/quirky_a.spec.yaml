@@ -1,0 +1,35 @@
+id: https://example.org/spec/quirky_a
+copy_directives:
+  all: {element_name: all, copy_all: true}
+class_derivations:
+  Alpha:
+    populated_from: Alpha
+    copy_directives:
+      c: {element_name: c, copy_all: true}
+  Beta:
+    populated_from: Beta
+    copy_directives:
+      c: {element_name: c, copy_all: true, exclude: own}
+    slot_derivations:
+      shared:
+        populated_from: shared
+      zeta:
+        populated_from: zeta
+      deep:
+        populated_from: depth
+  Delta:
+    populated_from: DeepThing
+    slot_derivations:
+      uid: {}
+      depth: {}
+enum_derivations:
+  ListEnum:
+    populated_from: ListEnum
+    mirror_source: true
+  DictEnum:
+    populated_from: DictEnum
+    permissible_value_derivations:
+      X:
+        populated_from: [X]
+      NEW:
+        populated_from: [Y]

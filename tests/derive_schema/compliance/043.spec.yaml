@@ -1,0 +1,23 @@
+class_derivations:
+  Container:
+    populated_from: Container
+    slot_derivations:
+      c_list:
+        populated_from: c_list
+        range: C
+      d:
+        populated_from: d
+        range: D
+  C:
+    populated_from: C
+    slot_derivations:
+      s1:
+        populated_from: s1
+      s2:
+        populated_from: s2
+  D:
+    populated_from: D
+    slot_derivations:
+      s3:
+        expr: s3
+id: https://example.org/spec

@@ -18,9 +18,22 @@ pub enum ExprError {
     #[error("parse error: {0}")]
     Parse(String),
 
-    /// Evaluation failed (unknown function, bad arity, private attr, ...).
+    /// Evaluation failed (unknown function, bad arity, bad operand, ...).
+    ///
+    /// These are the failures upstream raises as `InvalidExpression`,
+    /// `TypeError` or `ValueError`, the three classes
+    /// `ObjectTransformer._eval_expr` catches: re-raised in restricted mode,
+    /// swallowed into the unrestricted (asteval) fallback otherwise. See
+    /// [`ExprError::is_restricted_rejection`].
     #[error("eval error: {0}")]
     Eval(String),
+
+    /// Evaluation failed with an exception upstream does **not** catch:
+    /// `IndexError`, `KeyError`, `AttributeError` or a private-attribute
+    /// `NameError`. Displays exactly like [`ExprError::Eval`] but propagates in
+    /// both evaluation modes, past the unrestricted fallback.
+    #[error("eval error: {0}")]
+    Uncaught(String),
 
     /// A name that has no binding was read. Displays exactly like
     /// [`ExprError::Eval`]; it is a separate variant so the statement
@@ -34,6 +47,16 @@ pub enum ExprError {
         /// The message shown when the error is surfaced as-is.
         message: String,
     },
+}
+
+impl ExprError {
+    /// True for the failures upstream's `ObjectTransformer._eval_expr` and
+    /// `transform_enum` catch: `except (InvalidExpression, TypeError,
+    /// ValueError)`. In restricted mode they are re-raised; with
+    /// `unrestricted_eval` they hand the expression to the asteval fallback.
+    pub fn is_restricted_rejection(&self) -> bool {
+        matches!(self, Self::Eval(_))
+    }
 }
 
 /// Convenience alias.

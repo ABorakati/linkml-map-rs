@@ -1,0 +1,57 @@
+name: rich-derived
+id: https://example.org/rich-derived
+imports:
+- linkml:types
+- ./rich_common
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/rich/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+default_prefix: https://example.org/rich-derived/
+default_range: string
+enums:
+  Ghost:
+    name: Ghost
+classes:
+  Ghost:
+    name: Ghost
+    attributes:
+      boo:
+        name: boo
+        range: string
+      name:
+        name: name
+        annotations:
+          note:
+            tag: note
+            value: free text
+        description: The name
+        aliases:
+        - label
+        - title
+        exact_mappings:
+        - schema:name
+        slot_uri: schema:name
+        range: string
+        required: true
+      nickname:
+        name: nickname
+        description: An attribute only on Person
+        range: string
+  Nothing:
+    name: Nothing
+    description: defined entirely by the spec
+    attributes:
+      x:
+        name: x
+        range: integer
+      y:
+        name: y
+        range: string
+        required: true

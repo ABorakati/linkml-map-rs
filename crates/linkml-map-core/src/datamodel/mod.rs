@@ -956,6 +956,17 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
             }
             *cd = serde_json::Value::Array(list);
         }
+        // list form: names are explicit, but slot derivations may still be a mapping
+        if let Some(items) = obj
+            .get_mut("class_derivations")
+            .and_then(|cd| cd.as_array_mut())
+        {
+            for item in items {
+                if let Some(o) = item.as_object_mut() {
+                    normalise_class_derivation_body(o);
+                }
+            }
+        }
 
         // ── top-level slot_derivations: inject `name` from the mapping key ────
         if let Some(sd) = obj.get_mut("slot_derivations")
@@ -1027,6 +1038,58 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                 }
             }
         }
+    }
+
+    collapse_any_lists(root);
+}
+
+/// Mimic upstream's shape normalisation of `range: Any` slots.
+///
+/// PARITY: `spec_normalizer._shape_normalize` runs linkml's `ReferenceValidator`, which
+/// treats an `Any`-ranged field as single-valued: a list becomes its first element (an
+/// empty list becomes `null`). In the transformer model that hits `CopyDirective`'s
+/// `include` / `exclude` / `add` (so `exclude: [a, b]` only ever excludes `a`) and the
+/// derivations' `overrides` / `target_definition`. Dicts and nested content are untouched.
+/// Suggested upstream issue: declare these slots `multivalued` (or stop normalising `Any`).
+fn collapse_any_lists(node: &mut serde_json::Value) {
+    fn first(v: &mut serde_json::Value) {
+        if let serde_json::Value::Array(items) = v {
+            *v = if items.is_empty() {
+                serde_json::Value::Null
+            } else {
+                items.swap_remove(0)
+            };
+        }
+    }
+    match node {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                match key.as_str() {
+                    "copy_directives" => {
+                        if let Some(directives) = value.as_object_mut() {
+                            for directive in directives.values_mut() {
+                                if let Some(d) = directive.as_object_mut() {
+                                    for field in ["include", "exclude", "add"] {
+                                        if let Some(v) = d.get_mut(field) {
+                                            first(v);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Free-form content: collapse the list itself, never look inside.
+                    "overrides" | "target_definition" => {
+                        first(value);
+                        continue;
+                    }
+                    _ => {}
+                }
+                collapse_any_lists(value);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(collapse_any_lists),
+        _ => {}
     }
 }
 

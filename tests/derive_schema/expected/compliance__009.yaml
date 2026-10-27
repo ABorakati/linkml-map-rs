@@ -1,0 +1,24 @@
+name: types-derived
+id: https://example.org/types-derived
+default_prefix: https://example.org/types-derived/
+default_range: string
+classes:
+  C:
+    name: C
+    attributes:
+      ds:
+        name: ds
+        range: D
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+    tree_root: true
+  D:
+    name: D
+    attributes:
+      id:
+        name: id
+        identifier: true
+      s1:
+        name: s1
+        range: string

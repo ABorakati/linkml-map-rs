@@ -1,0 +1,13 @@
+name: types-derived
+id: https://example.org/types-derived
+default_prefix: https://example.org/types-derived/
+default_range: string
+classes:
+  C:
+    name: C
+    attributes:
+      s1:
+        name: s1
+        range: float
+        unit:
+          ucum_code: m[H2O]{35Cel}

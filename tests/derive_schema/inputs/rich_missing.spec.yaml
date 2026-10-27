@@ -1,0 +1,23 @@
+id: https://example.org/spec/missing
+class_derivations:
+  Ghost:
+    slot_derivations:
+      boo:
+        range: string
+      name:
+        populated_from: name
+      nickname:
+        populated_from: nickname
+  Nothing:
+    populated_from: NoSuchClass
+    target_definition:
+      description: defined entirely by the spec
+      attributes:
+        x:
+          range: integer
+        y:
+          range: string
+          required: true
+enum_derivations:
+  Ghost:
+    populated_from: NoSuchEnum

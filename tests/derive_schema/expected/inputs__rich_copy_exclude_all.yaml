@@ -1,0 +1,17 @@
+name: rich-derived
+id: https://example.org/rich-derived
+imports:
+- linkml:types
+- ./rich_common
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/rich/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+default_prefix: https://example.org/rich-derived/
+default_range: string

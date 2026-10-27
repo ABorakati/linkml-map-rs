@@ -1,0 +1,10 @@
+id: https://example.org/types
+name: types
+default_range: string
+classes:
+  C:
+    attributes:
+      height_in_m:
+        range: float
+        unit:
+          ucum_code: m
