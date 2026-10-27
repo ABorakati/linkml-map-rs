@@ -132,6 +132,15 @@ format inferred from the output extension (YAML when there is neither), `-O FILE
 records written per chunk. `--source-class` is accepted as an alias of
 `--source-type`.
 
+Input is read as upstream reads it. YAML data and transformation specs are YAML 1.1
+(PyYAML `safe_load`): an unquoted `yes`/`on` is a boolean, `017` the integer 15,
+`1_000` 1000, `1:30` 90 and `2024-01-01` a date (written back unquoted in YAML), while
+`1e3`, `0o7` and `1.0e20` are strings. A single `.json`/`.yaml` file goes through that
+loader first and falls back to JSON. TSV/CSV rows follow linkml's `TsvLoader`/`CsvLoader`
+(Python `csv` rules: universal newlines, spaces after a delimiter skipped, a byte-order
+mark kept in the first header; empty cells dropped, short rows padded with null), and
+columns whose source range is numeric are read with `int()`, then `float()`.
+
 Parquet and DuckDB output (`-f parquet`, `-f duckdb`, or a `.parquet`/`.duckdb`
 output extension) is built by DuckDB from the staged JSONL, so nested objects
 become `STRUCT` columns and lists of them `STRUCT[]`. It needs an output file,
@@ -335,7 +344,7 @@ concurrency lives in the pipeline, which parses the spec once into an
 
 ## Dependencies
 
-Runtime: `serde` / `serde_json` / `serde_yaml_ng` (YAML input; YAML output is the PyYAML-compatible emitter in `linkml-map-core`), `indexmap`, `anyhow` /
+Runtime: `serde` / `serde_json` / `serde_yaml_ng` (schema loading) and libyaml via `unsafe-libyaml` (YAML data and spec input, with PyYAML's YAML 1.1 scalar rules ported in `linkml-map-core`; YAML output is the PyYAML-compatible emitter there too), `indexmap`, `anyhow` /
 `thiserror`, `tokio` + `futures` (async I/O), `rayon` (data parallelism),
 `walkdir`. Python bindings: `pyo3` (built with `maturin`); the shim needs
 `linkml-runtime` + `pyyaml`. Schema introspection uses the LinkML metamodel and

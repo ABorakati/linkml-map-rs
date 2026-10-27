@@ -1,0 +1,22 @@
+id: https://example.org/input-e2e-transform
+class_derivations:
+  Out:
+    populated_from: Rec
+    slot_derivations:
+      id: {populated_from: id}
+      a: {populated_from: a}
+      b: {populated_from: b}
+      c: {populated_from: c}
+      d: {populated_from: d}
+      e: {populated_from: e}
+      f: {populated_from: f}
+      g: {populated_from: g}
+      n: {populated_from: n}
+      x: {populated_from: x}
+      m: {populated_from: m}
+      tags_json:
+        populated_from: tags
+        stringification: {syntax: JSON}
+      tags_yaml:
+        populated_from: tags
+        stringification: {syntax: YAML}

@@ -2039,6 +2039,8 @@ fn value_to_string_key(v: &Value) -> String {
         Value::Float(f) => f.to_string(),
         // Python `str(Decimal)`.
         Value::Decimal(d) => d.to_sci_string(),
+        // Python `str(date)`.
+        Value::Temporal(t) => t.to_string(),
         Value::Str(s) => s.clone(),
         Value::List(_) | Value::Map(_) => format!("{v:?}"),
     }
@@ -2287,6 +2289,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Int(_) => "int",
         Value::Float(_) => "float",
         Value::Decimal(_) => "Decimal",
+        Value::Temporal(t) => t.type_name(),
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",
@@ -2533,35 +2536,99 @@ fn unmelt_collection(pivot: &PivotOperation, records: &[Value]) -> Value {
     Value::Map(result)
 }
 
-/// Serialise a [`Value`] to a JSON string matching Python `json.dumps` default
-/// spacing (`", "` between items, `": "` in objects) — the form the upstream
-/// `stringification: {syntax: JSON}` cases expect.
+/// Serialise a [`Value`] to a JSON string matching upstream's
+/// `dumps_json(vs, ensure_ascii=True)` (`utils/serialization.py`, which calls
+/// `simplejson.dumps(obj, use_decimal=True, allow_nan=True, ensure_ascii=True)`):
+/// `", "` between items, `": "` in objects, floats as Python's `repr`,
+/// `NaN`/`Infinity` for non-finite floats, decimals as their exact `str()`
+/// literal, and every non-ASCII character escaped as `\uXXXX` (a surrogate
+/// pair outside the BMP).
+///
+/// This is the form `stringification: {syntax: JSON}` produces
+/// (`object_transformer.py::_multivalued_to_singlevalued`).
 fn py_json(v: &Value) -> String {
+    let mut out = String::new();
+    write_py_json(&mut out, v);
+    out
+}
+
+fn write_py_json(out: &mut String, v: &Value) {
     match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Int(i) => out.push_str(&i.to_string()),
+        Value::Float(f) => out.push_str(&py_json_float(*f)),
         // PARITY: utils/serialization.py::dumps_json (simplejson, use_decimal)
         // writes a Decimal as its exact `str()` literal.
-        Value::Decimal(d) => d.to_sci_string(),
-        // serde_json gives correct JSON string escaping + quoting.
-        Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}")),
+        Value::Decimal(d) => out.push_str(&d.to_sci_string()),
+        // PARITY (lenient): simplejson raises `TypeError: Object of type date is
+        // not JSON serializable` for the `datetime.date` PyYAML builds from an
+        // unquoted timestamp. A run that fails part-way is worse than the
+        // string, so the `str()` text is written instead.
+        Value::Temporal(t) => write_py_json_str(out, &t.to_string()),
+        Value::Str(s) => write_py_json_str(out, s),
         Value::List(items) => {
-            let inner: Vec<String> = items.iter().map(py_json).collect();
-            format!("[{}]", inner.join(", "))
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py_json(out, item);
+            }
+            out.push(']');
         }
         Value::Map(m) => {
-            let inner: Vec<String> = m
-                .iter()
-                .map(|(k, val)| {
-                    let key = serde_json::to_string(k).unwrap_or_else(|_| format!("{k:?}"));
-                    format!("{key}: {}", py_json(val))
-                })
-                .collect();
-            format!("{{{}}}", inner.join(", "))
+            out.push('{');
+            for (i, (k, val)) in m.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py_json_str(out, k);
+                out.push_str(": ");
+                write_py_json(out, val);
+            }
+            out.push('}');
         }
     }
+}
+
+/// simplejson's `FLOAT_REPR` (`float.__repr__`) with `allow_nan=True`.
+fn py_json_float(f: f64) -> String {
+    if f.is_nan() {
+        "NaN".to_owned()
+    } else if f.is_infinite() {
+        if f > 0.0 { "Infinity" } else { "-Infinity" }.to_owned()
+    } else {
+        crate::pyfmt::py_float_repr(f)
+    }
+}
+
+/// simplejson's `encode_basestring_ascii`: `"` and `\` are backslash-escaped,
+/// `\n \r \t \b \f` use their short forms, and everything outside printable
+/// ASCII (`' '..='~'`, so control characters, DEL and all non-ASCII) becomes
+/// `\uXXXX` with lowercase hex digits, as UTF-16 code units.
+fn write_py_json_str(out: &mut String, s: &str) {
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            ' '..='~' => out.push(ch),
+            _ => {
+                let mut units = [0u16; 2];
+                for unit in ch.encode_utf16(&mut units) {
+                    let _ = write!(out, "\\u{unit:04x}");
+                }
+            }
+        }
+    }
+    out.push('"');
 }
 
 /// Serialise a [`Value`] to a YAML *flow* string (`[a, b]`), matching the

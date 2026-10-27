@@ -906,6 +906,8 @@ pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
         // An exact decimal travels as a placeholder string that callers replace
         // with a plain numeric literal after serialising (see `crate::serialization`).
         Value::Decimal(d) => serde_json::Value::String(decimal_placeholder(d)),
+        // Lenient, as in `pycompat::write_json`: the `str()` text.
+        Value::Temporal(t) => serde_json::Value::String(t.to_string()),
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::List(items) => {
             serde_json::Value::Array(items.iter().map(value_to_json).collect::<Result<_>>()?)

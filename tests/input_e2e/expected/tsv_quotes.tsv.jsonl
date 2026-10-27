@@ -1,0 +1,4 @@
+{"id": "q1", "a": "has\ttab", "b": "say \"hi\""}
+{"id": "q2", "a": "two\nlines", "b": "mid\"quote"}
+{"id": "q3", "a": "closedtail", "b": "spaced"}
+{"id": "q4", "a": "crlf\ninside", "b": "x"}

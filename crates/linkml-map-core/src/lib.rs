@@ -9,5 +9,6 @@ pub mod normalize;
 pub mod pyfmt;
 pub mod pyyaml;
 pub mod schema;
+pub mod temporal;
 pub mod validate;
 pub mod value;

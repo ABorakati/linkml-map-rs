@@ -68,6 +68,7 @@
 //! | `float`           | `Float`          | `float`            |
 //! | `decimal.Decimal` | `Decimal`        | `decimal.Decimal`  |
 //! | `str`             | `Str`            | `str`              |
+//! | *(never built from Python)* | `Temporal` (YAML input) | `datetime.date` / `datetime.datetime` |
 //! | `list`, `tuple`   | `List`           | `list`             |
 //! | `dict`            | `Map` (ordered)  | `dict` (ordered)   |
 //!
@@ -280,6 +281,11 @@ fn value_to_bound<'py>(py: Python<'py>, val: &Value) -> PyResult<Bound<'py, PyAn
         // `to_sci_string` is Python's `str(Decimal)`, so this rebuilds the
         // value with its exact digits and exponent (`52.30` stays `52.30`).
         Value::Decimal(d) => decimal_type(py)?.call1((d.to_sci_string(),))?,
+        // A real `datetime.date` / `datetime.datetime`; `str()` is its isoformat.
+        Value::Temporal(t) => py
+            .import("datetime")?
+            .getattr(t.type_name())?
+            .call_method1("fromisoformat", (t.to_string(),))?,
         Value::Str(s) => PyString::new(py, s).into_any(),
         Value::List(items) => {
             let list = PyList::empty(py);

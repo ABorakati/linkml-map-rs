@@ -651,6 +651,35 @@ mod tests {
         assert_eq!(super::super::yaml_flow(&list), "[0.0000001, 2.50]");
     }
 
+    // Upstream: `dumps_json(vs, ensure_ascii=True)` is simplejson with
+    // `ensure_ascii=True`: non-ASCII becomes `\uXXXX` (surrogate pairs outside
+    // the BMP), DEL and control characters are escaped, floats use Python's
+    // `repr` and non-finite floats are `NaN` / `Infinity`. Expected strings were
+    // produced by `simplejson.dumps(..., use_decimal=True, ensure_ascii=True)`.
+    #[test]
+    fn multivalued_json_stringification_escapes_non_ascii_like_simplejson() {
+        let list = Value::List(vec![
+            s("caf\u{e9}"),
+            s("\u{1F600} \u{7f} \u{1} \" \\ / \u{8}\u{c}\n\r\t"),
+            Value::Float(1e16),
+            Value::Float(1e-5),
+            Value::Float(f64::NAN),
+            Value::Float(f64::NEG_INFINITY),
+            Value::Float(2.0),
+        ]);
+        assert_eq!(
+            super::super::py_json(&list),
+            "[\"caf\\u00e9\", \"\\ud83d\\ude00 \\u007f \\u0001 \\\" \\\\ / \\b\\f\\n\\r\\t\", \
+             1e+16, 1e-05, NaN, -Infinity, 2.0]"
+        );
+        let mut m = indexmap::IndexMap::new();
+        m.insert("k\u{e9}y".to_owned(), s("\u{4e2d}"));
+        assert_eq!(
+            super::super::py_json(&Value::List(vec![Value::Map(m)])),
+            "[{\"k\\u00e9y\": \"\\u4e2d\"}]"
+        );
+    }
+
     // ── target schema lookups ─────────────────────────────────────────────────
 
     fn slot(name: &str, range: RangeKind, multivalued: bool) -> SlotDef {

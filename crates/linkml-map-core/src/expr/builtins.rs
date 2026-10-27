@@ -235,6 +235,7 @@ fn tn(v: &Value) -> &'static str {
         Value::Int(_) => "int",
         Value::Float(_) => "float",
         Value::Decimal(_) => "Decimal",
+        Value::Temporal(t) => t.type_name(),
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",

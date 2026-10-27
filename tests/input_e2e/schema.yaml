@@ -1,0 +1,27 @@
+id: https://example.org/input-e2e
+name: input_e2e
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+default_range: string
+classes:
+  Rec:
+    attributes:
+      id:
+        identifier: true
+      a: {}
+      b: {}
+      c: {}
+      d: {}
+      e: {}
+      f: {}
+      g: {}
+      n:
+        range: integer
+      x:
+        range: float
+      m:
+        range: decimal
+      tags:
+        multivalued: true

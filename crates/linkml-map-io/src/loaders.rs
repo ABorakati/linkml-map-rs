@@ -4,29 +4,30 @@
 //!
 //! | Format | Streaming | Item shape |
 //! |--------|-----------|-----------|
-//! | CSV    | ✓ row-by-row | `Value::Map` keyed by header column names; strings by default, schema-hinted numeric columns are numbers |
+//! | CSV    | ✓ row-by-row | `Value::Map` keyed by header column names, read as upstream's `CsvLoader` does (`delimited.rs`); text unless hinted numeric |
 //! | TSV    | ✓ row-by-row | same as CSV |
 //! | JSONL  | ✓ line-by-line | one `Value` per line |
 //! | JSON   | whole-file | array → one `Value` per element; object → single `Value` |
-//! | YAML   | whole-file | same semantics as JSON |
+//! | YAML   | whole-file | PyYAML `safe_load` semantics (YAML 1.1 scalars); array → one `Value` per element |
 //!
-//! By default type coercion is intentionally **not** done here.  The
-//! schema-aware entry points accept precomputed numeric column hints, which
-//! lets CSV/TSV inputs preserve numeric values without guessing from their
-//! lexical form (and consequently preserves e.g. ZIP codes and enum values).
+//! [`load_stream`] does no type coercion. The schema-aware entry points accept
+//! precomputed numeric column hints, which lets CSV/TSV inputs coerce exactly
+//! the numeric-ranged columns, as upstream does through its source schema
+//! (and consequently preserves e.g. ZIP codes and enum values).
 
-use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use csv_async::AsyncReaderBuilder;
 use futures::stream::{self, BoxStream, StreamExt};
+use linkml_map_core::pyyaml::LoadError;
 use linkml_map_core::value::Value;
-use serde::Deserialize;
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
+use crate::delimited::{CsvReader, DictReader, NewlineTranslator};
 use crate::format::Format;
+use crate::yaml_load::safe_load_all;
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -41,8 +42,8 @@ pub async fn load_stream(
 ) -> Result<BoxStream<'static, Result<Value>>> {
     let path = path.as_ref().to_owned();
     match format {
-        Format::Csv => Ok(csv_stream_inner(path, b',', NumericColumnHints::new())),
-        Format::Tsv => Ok(csv_stream_inner(path, b'\t', NumericColumnHints::new())),
+        Format::Csv => Ok(delimited_stream(path, ',', NumericColumnHints::new())),
+        Format::Tsv => Ok(delimited_stream(path, '\t', NumericColumnHints::new())),
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
@@ -52,21 +53,15 @@ pub async fn load_stream(
     }
 }
 
-/// Scalar type to use for a numeric tabular column.
-///
-/// This deliberately only represents numeric LinkML ranges. String and enum
-/// ranges must never be inferred from a numeric-looking cell value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NumericColumnKind {
-    Integer,
-    Float,
-}
-
-/// Numeric type hints keyed by CSV/TSV header name.
+/// Names of the columns upstream coerces to numbers: the slots of the source
+/// class whose range is (a subtype of) `integer`, `float`, `double` or
+/// `decimal` (`data_loaders._numeric_slots_for`).
 ///
 /// Callers build this once from their already-loaded source schema, then reuse
 /// it for every row. This avoids reparsing a source schema for each input file.
-pub type NumericColumnHints = HashMap<String, NumericColumnKind>;
+/// Every named column goes through `_parse_numeric` (`int`, then `float`, else
+/// the text), whichever numeric range it declares; every other column is text.
+pub type NumericColumnHints = HashSet<String>;
 
 /// Like [`load_stream`], but applies precomputed source-schema numeric hints to
 /// CSV and TSV columns. Other formats are unchanged.
@@ -77,8 +72,8 @@ pub async fn load_stream_with_numeric_hints(
 ) -> Result<BoxStream<'static, Result<Value>>> {
     let path = path.as_ref().to_owned();
     match format {
-        Format::Csv => Ok(csv_stream_inner(path, b',', numeric_hints)),
-        Format::Tsv => Ok(csv_stream_inner(path, b'\t', numeric_hints)),
+        Format::Csv => Ok(delimited_stream(path, ',', numeric_hints)),
+        Format::Tsv => Ok(delimited_stream(path, '\t', numeric_hints)),
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
@@ -121,154 +116,114 @@ pub async fn load_all_with_numeric_hints(
 
 // ─── CSV / TSV ───────────────────────────────────────────────────────────────
 
-/// Build a `BoxStream` for CSV/TSV. The file-open and header-read happen
-/// inside the stream itself so this function is sync and infallible.
-fn csv_stream_inner(
+/// Bytes read from the file per round trip.
+const CHUNK_BYTES: usize = 64 * 1024;
+
+/// Streaming state for [`delimited_stream`].
+struct DelimitedState {
     path: std::path::PathBuf,
-    delimiter: u8,
+    file: Option<File>,
+    /// Undecoded bytes: the tail of the previous chunk that ends mid-character.
+    pending: Vec<u8>,
+    newlines: NewlineTranslator,
+    reader: CsvReader,
+    dict: DictReader,
+    ready: VecDeque<Value>,
+    done: bool,
+}
+
+impl DelimitedState {
+    /// Read and parse one more chunk, queueing any finished rows.
+    async fn fill(&mut self) -> Result<()> {
+        if self.file.is_none() {
+            let file = File::open(&self.path)
+                .await
+                .with_context(|| format!("failed to open {:?}", self.path))?;
+            self.file = Some(file);
+        }
+        let Some(file) = self.file.as_mut() else {
+            return Ok(());
+        };
+        let mut chunk = vec![0u8; CHUNK_BYTES];
+        let n = file.read(&mut chunk).await?;
+        let at_eof = n == 0;
+        self.pending.extend_from_slice(&chunk[..n]);
+
+        // `open(source)` decodes strictly; a multi-byte character may straddle
+        // two chunks.
+        let valid = match std::str::from_utf8(&self.pending) {
+            Ok(text) => text.len(),
+            Err(e) if e.error_len().is_none() && !at_eof => e.valid_up_to(),
+            Err(e) => anyhow::bail!(
+                "{:?}: UnicodeDecodeError: invalid utf-8 sequence at byte {}",
+                self.path,
+                e.valid_up_to()
+            ),
+        };
+        let mut text = String::with_capacity(valid + 1);
+        let decoded = std::str::from_utf8(&self.pending[..valid])?;
+        self.newlines.translate(decoded, &mut text);
+        self.pending.drain(..valid);
+        if at_eof {
+            self.newlines.finish(&mut text);
+        }
+
+        for c in text.chars() {
+            self.reader.feed(c)?;
+            if c == '\n'
+                && let Some(record) = self.reader.end_of_line()
+            {
+                self.ready.extend(self.dict.push_record(record));
+            }
+        }
+        if at_eof {
+            if let Some(record) = self.reader.finish() {
+                self.ready.extend(self.dict.push_record(record));
+            }
+            self.done = true;
+        }
+        Ok(())
+    }
+}
+
+/// Stream the rows of a CSV/TSV file exactly as upstream's `TsvLoader` /
+/// `CsvLoader` yield them (see `delimited.rs`). The file is opened and
+/// read lazily, one chunk at a time.
+///
+/// `numeric_hints` is upstream's `_numeric_slots` for a schema-aware load: only
+/// those columns are coerced.
+fn delimited_stream(
+    path: std::path::PathBuf,
+    delimiter: char,
     numeric_hints: NumericColumnHints,
 ) -> BoxStream<'static, Result<Value>> {
-    use csv_async::StringRecord;
-
-    // The state machine used in `stream::unfold`:
-    // - `Init`: file not yet opened
-    // - `Running`: headers known, reader ready for data rows
-    enum State {
-        Init(std::path::PathBuf, u8, NumericColumnHints),
-        Running {
-            rdr: csv_async::AsyncReader<File>,
-            headers: Vec<String>,
-            numeric_hints: NumericColumnHints,
-        },
-    }
-
-    let init = State::Init(path, delimiter, numeric_hints);
-
-    stream::unfold(init, |state| async move {
-        match state {
-            State::Init(path, delim, numeric_hints) => {
-                // Open file and read headers, then yield the first data row.
-                let file = match File::open(&path).await {
-                    Ok(f) => f,
-                    Err(e) => {
-                        return Some((
-                            Err(anyhow::anyhow!("failed to open {:?}: {}", path, e)),
-                            State::Init(path, delim, numeric_hints),
-                        ));
-                    }
-                };
-                let mut rdr = AsyncReaderBuilder::new()
-                    .delimiter(delim)
-                    .has_headers(true)
-                    // Sparse delimited tables (upstream #210) often have rows
-                    // with fewer fields than the header — trailing columns are
-                    // empty and the trailing delimiters are simply omitted. The
-                    // delimiter is already fixed by the declared `Format` (`\t`
-                    // for TSV, `,` for CSV), so there is no sniffing to get
-                    // wrong; we just need to tolerate ragged rows instead of
-                    // aborting with `UnequalLengths`. Short records are padded
-                    // to the header width in `row_to_value` via `get(i)`.
-                    .flexible(true)
-                    .create_reader(file);
-
-                let headers: Vec<String> = match rdr.headers().await {
-                    Ok(h) => h.iter().map(|s| s.to_owned()).collect(),
-                    Err(e) => {
-                        return Some((
-                            Err(anyhow::anyhow!("CSV header error: {}", e)),
-                            State::Init(path, delim, numeric_hints),
-                        ));
-                    }
-                };
-
-                // Read first data row.
-                let mut record = StringRecord::new();
-                match rdr.read_record(&mut record).await {
-                    Ok(true) => {
-                        let val = row_to_value(&headers, &record, &numeric_hints);
-                        Some((
-                            Ok(val),
-                            State::Running {
-                                rdr,
-                                headers,
-                                numeric_hints,
-                            },
-                        ))
-                    }
-                    Ok(false) => None, // empty file (headers only)
-                    Err(e) => Some((
-                        Err(anyhow::anyhow!("CSV read error: {}", e)),
-                        State::Running {
-                            rdr,
-                            headers,
-                            numeric_hints,
-                        },
-                    )),
-                }
+    let state = DelimitedState {
+        path,
+        file: None,
+        pending: Vec::new(),
+        newlines: NewlineTranslator::default(),
+        reader: CsvReader::new(delimiter),
+        dict: DictReader::new(Some(numeric_hints)),
+        ready: VecDeque::new(),
+        done: false,
+    };
+    stream::unfold(state, |mut state| async move {
+        loop {
+            if let Some(row) = state.ready.pop_front() {
+                return Some((Ok(row), state));
             }
-            State::Running {
-                mut rdr,
-                headers,
-                numeric_hints,
-            } => {
-                let mut record = StringRecord::new();
-                match rdr.read_record(&mut record).await {
-                    Ok(true) => {
-                        let val = row_to_value(&headers, &record, &numeric_hints);
-                        Some((
-                            Ok(val),
-                            State::Running {
-                                rdr,
-                                headers,
-                                numeric_hints,
-                            },
-                        ))
-                    }
-                    Ok(false) => None, // EOF
-                    Err(e) => Some((
-                        Err(anyhow::anyhow!("CSV read error: {}", e)),
-                        State::Running {
-                            rdr,
-                            headers,
-                            numeric_hints,
-                        },
-                    )),
-                }
+            if state.done {
+                return None;
+            }
+            if let Err(e) = state.fill().await {
+                // The error ends the stream: nothing further can be read.
+                state.done = true;
+                state.ready.clear();
+                return Some((Err(e), state));
             }
         }
     })
     .boxed()
-}
-
-/// Convert a `StringRecord` into a `Value::Map` using the header names as keys.
-/// Only columns explicitly identified as numeric from the source schema are
-/// coerced; malformed numeric cells remain strings for later validation.
-fn row_to_value(
-    headers: &[String],
-    record: &csv_async::StringRecord,
-    numeric_hints: &NumericColumnHints,
-) -> Value {
-    // Build through serde_json::Map so we get `Value::Map(IndexMap)` without
-    // depending on `indexmap` directly in this crate.
-    let mut obj = serde_json::Map::new();
-    for (i, header) in headers.iter().enumerate() {
-        let cell = record.get(i).unwrap_or("");
-        let value = match numeric_hints.get(header) {
-            Some(NumericColumnKind::Integer) => cell
-                .parse::<i64>()
-                .map(serde_json::Value::from)
-                .unwrap_or_else(|_| serde_json::Value::String(cell.to_owned())),
-            Some(NumericColumnKind::Float) => cell
-                .parse::<f64>()
-                .ok()
-                .filter(|value| value.is_finite())
-                .map(serde_json::Value::from)
-                .unwrap_or_else(|| serde_json::Value::String(cell.to_owned())),
-            None => serde_json::Value::String(cell.to_owned()),
-        };
-        obj.insert(header.clone(), value);
-    }
-    json_to_value(serde_json::Value::Object(obj))
 }
 
 // ─── JSONL ────────────────────────────────────────────────────────────────────
@@ -317,32 +272,100 @@ async fn json_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result
 
 // ─── YAML (whole-file) ────────────────────────────────────────────────────────
 
-async fn yaml_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result<Value>>> {
-    let bytes = tokio::fs::read(&path)
+/// Read a file as text the way `open(path)` does: strict UTF-8.
+async fn read_text(path: &Path) -> Result<String> {
+    let bytes = tokio::fs::read(path)
         .await
-        .with_context(|| format!("opening {:?}", path.as_ref()))?;
+        .with_context(|| format!("opening {path:?}"))?;
+    String::from_utf8(bytes).with_context(|| format!("{path:?}: UnicodeDecodeError"))
+}
 
-    // A multi-document stream (what `YamlStreamWriter` emits: one document per
-    // record, each followed by `---`) yields every document in turn; the empty
-    // document after a trailing `---` is not a record.
-    let mut docs: Vec<serde_json::Value> = Vec::new();
-    for doc in serde_yaml_ng::Deserializer::from_slice(&bytes) {
-        docs.push(serde_json::Value::deserialize(doc).context("YAML parse error")?);
-    }
+/// The documents of a YAML text as `yaml.safe_load` builds them (see
+/// [`crate::yaml_load`]). One document is the data itself; a multi-document
+/// stream (what `YamlStreamWriter` emits: one document per record, each
+/// followed by `---`) yields every document in turn, and the empty document
+/// after a trailing `---` is not a record.
+///
+/// PARITY (extension): `yaml.safe_load` rejects a multi-document stream
+/// (`ComposerError: expected a single document`); reading one back is useful
+/// for round trips, and no valid upstream input is affected.
+fn yaml_documents(text: &str) -> std::result::Result<Vec<Value>, LoadError> {
+    let mut docs = safe_load_all(text)?;
     if docs.len() > 1 {
-        while docs.len() > 1 && docs.last().is_some_and(serde_json::Value::is_null) {
+        while docs.len() > 1 && docs.last().is_some_and(Value::is_null) {
             docs.pop();
         }
     }
-    let items: Vec<Value> = match docs.len() {
-        0 => serde_json_value_to_values(serde_json::Value::Null),
-        1 => serde_json_value_to_values(docs.remove(0)),
-        _ => docs.into_iter().map(json_to_value).collect(),
+    Ok(match docs.len() {
+        0 => vec![Value::Null],
+        1 => values_of(docs.remove(0)),
+        _ => docs,
+    })
+}
+
+async fn yaml_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result<Value>>> {
+    let path = path.as_ref();
+    let text = read_text(path).await?;
+    let items = yaml_documents(&text).map_err(|e| anyhow::anyhow!("{path:?}: {e}"))?;
+    Ok(stream::iter(items.into_iter().map(Ok)).boxed())
+}
+
+// ─── Single-object input (`map-data FILE.yaml|FILE.json`) ─────────────────────
+
+/// Open a `.yaml` / `.json` file the way `cli.py::_map_data_single` does:
+/// `yaml.safe_load` first, then `json.loads` when PyYAML raises a
+/// `yaml.YAMLError`.
+///
+/// JSON therefore goes through the YAML 1.1 loader whenever PyYAML accepts it,
+/// which changes some values: `1e5` and `1E+5` (an exponent with no `.`) are
+/// the *strings* `"1e5"`, `"1E+5"`; `0123`-style octals cannot occur in JSON.
+/// A plain Python exception from the constructors (an impossible date such as
+/// `2024-13-45`) is *not* a `YAMLError` and ends the run.
+///
+/// Directory and tabular input does not take this path: `DataLoader` reads
+/// `.json` with `json.load` and `.yaml` with `yaml.safe_load`
+/// ([`load_stream_with_numeric_hints`]).
+pub async fn load_stream_single_object(
+    path: impl AsRef<Path>,
+    format: Format,
+) -> Result<BoxStream<'static, Result<Value>>> {
+    let path = path.as_ref();
+    if !matches!(format, Format::Yaml | Format::Json) {
+        return load_stream_with_numeric_hints(path, format, NumericColumnHints::new()).await;
+    }
+    let text = read_text(path).await?;
+    let items = match yaml_documents(&text) {
+        Ok(items) => items,
+        Err(LoadError::Value(msg)) => anyhow::bail!("{path:?}: {msg}"),
+        Err(LoadError::Yaml(yaml_error)) => {
+            let json: serde_json::Value = serde_json::from_str(&text).map_err(|json_error| {
+                anyhow::anyhow!("{path:?}: {yaml_error}; as JSON: {json_error}")
+            })?;
+            serde_json_value_to_values(json)
+        }
     };
     Ok(stream::iter(items.into_iter().map(Ok)).boxed())
 }
 
+/// Collect [`load_stream_single_object`].
+pub async fn load_all_single_object(path: impl AsRef<Path>, format: Format) -> Result<Vec<Value>> {
+    let mut stream = load_stream_single_object(path, format).await?;
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        out.push(item?);
+    }
+    Ok(out)
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// A loaded document as items: arrays are expanded, anything else is one item.
+fn values_of(v: Value) -> Vec<Value> {
+    match v {
+        Value::List(items) => items,
+        other => vec![other],
+    }
+}
 
 /// Convert a `serde_json::Value` into a `Vec<Value>`.
 /// Arrays are expanded; single objects/scalars yield a one-element vec.
