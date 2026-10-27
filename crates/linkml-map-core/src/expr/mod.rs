@@ -3,10 +3,16 @@
 //! Native Rust port of `linkml_map.utils.eval_utils`. See [`eval`] for the
 //! evaluator semantics and the module-level tests for the ported doctests.
 
+mod builtins;
+#[cfg(test)]
+mod builtins_tests;
 pub mod error;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+mod pystr;
+#[rustfmt::skip]
+mod pytables;
 mod slugify;
 pub mod stmt;
 

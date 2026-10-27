@@ -18,9 +18,9 @@
 use indexmap::IndexMap;
 use log::warn;
 
+use super::builtins;
 use super::error::{ExprError, ExprResult};
 use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
-use super::slugify;
 use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
 use crate::value::Value;
 
@@ -38,26 +38,58 @@ pub const INJECTED_EVAL_NAMES: &[&str] = &["src", "target", "uuid5"];
 /// Names of the built-in expression functions. A qualified `{func.x}` root
 /// resolves to a function (not an unknown name), so it must not fail loud;
 /// normalization-time reference checking treats these as known too. Mirrors the
-/// keys of Python `eval_utils.FUNCTIONS` (plus the injected `slot`).
+/// keys of Python `eval_utils.FUNCTIONS` (plus the `list`/`tuple` constructors
+/// simpleeval adds, and the injected `slot`); `builtins::function_names` is the
+/// table the evaluator dispatches on and a unit test keeps the two in step.
 pub const FUNCTION_NAMES: &[&str] = &[
     "max",
     "min",
     "len",
+    "sum",
+    "sorted",
+    "any",
+    "all",
+    "reversed",
+    "first",
+    "last",
     "str",
-    "lower",
-    "upper",
-    "title",
-    "capitalize",
-    "slugify",
     "int",
     "float",
     "bool",
     "abs",
     "round",
+    "floor",
+    "ceil",
     "strlen",
     "uuid5",
+    "substr",
+    "upper",
+    "lower",
+    "title",
+    "capitalize",
+    "strip",
+    "lstrip",
+    "rstrip",
+    "replace",
+    "startswith",
+    "endswith",
+    "contains",
+    "split",
+    "join",
+    "slugify",
+    "to_snake",
+    "to_camel",
+    "to_pascal",
+    "is_str",
+    "is_int",
+    "is_float",
+    "is_bool",
+    "is_list",
     "case",
+    "coalesce",
     "is_numeric",
+    "list",
+    "tuple",
     "slot",
 ];
 
@@ -426,7 +458,7 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             if func == "slot" {
                 return call_slot_function(evaled, vars);
             }
-            call_function(func, evaled)
+            builtins::call_function(func, evaled)
         }
     }
 }
@@ -470,7 +502,7 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
 
 // --- subscript (mirrors Python __getitem__ for list/str/dict) ---
 
-fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
+pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
     match obj {
         Value::List(items) => {
             let i = match idx {
@@ -811,7 +843,7 @@ fn cmp_symbol(op: CmpOp) -> &'static str {
     }
 }
 
-fn membership(needle: &Value, haystack: &Value) -> ExprResult<bool> {
+pub(super) fn membership(needle: &Value, haystack: &Value) -> ExprResult<bool> {
     match haystack {
         Value::Str(s) => match needle {
             Value::Str(sub) => Ok(s.contains(sub.as_str())),
@@ -1208,287 +1240,6 @@ fn python_mod_float(a: f64, b: f64) -> f64 {
     }
 }
 
-// --- function calls ---
-
-fn call_function(name: &str, args: Vec<Value>) -> ExprResult<Value> {
-    match name {
-        // list-functions: take the list directly, null-safe (None arg → None).
-        "max" => list_func_reduce(name, args, |items| reduce_minmax(items, true)),
-        "min" => list_func_reduce(name, args, |items| reduce_minmax(items, false)),
-        "len" => null_safe_unary(args, "len", |v| match v {
-            Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-            Value::List(l) => Ok(Value::Int(l.len() as i64)),
-            Value::Map(m) => Ok(Value::Int(m.len() as i64)),
-            other => Err(ExprError::Eval(format!(
-                "object of type '{}' has no len()",
-                type_name(&other)
-            ))),
-        }),
-
-        // distributing scalar functions
-        "str" => distributing(args, "str", |v| Ok(Value::Str(py_str(&v)))),
-        "lower" => distributing(args, "lower", |v| Ok(Value::Str(py_str(&v).to_lowercase()))),
-        "upper" => distributing(args, "upper", |v| Ok(Value::Str(py_str(&v).to_uppercase()))),
-        "title" => distributing(args, "title", |v| Ok(Value::Str(py_title(&py_str(&v))))),
-        "capitalize" => distributing(args, "capitalize", |v| {
-            Ok(Value::Str(py_capitalize(&py_str(&v))))
-        }),
-        "slugify" => distributing_slugify(args),
-        "int" => distributing(args, "int", |v| py_int(&v)),
-        "float" => distributing(args, "float", |v| py_float(&v)),
-        "bool" => distributing(args, "bool", |v| Ok(Value::Bool(v.is_truthy()))),
-        "abs" => distributing(args, "abs", |v| py_abs(&v)),
-        "round" => distributing_round(args),
-        "strlen" => distributing(args, "strlen", |v| match v {
-            Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-            Value::List(l) => Ok(Value::Int(l.len() as i64)),
-            Value::Map(m) => Ok(Value::Int(m.len() as i64)),
-            other => Err(ExprError::Eval(format!(
-                "object of type '{}' has no len()",
-                type_name(&other)
-            ))),
-        }),
-        "uuid5" => distributing_uuid5(args),
-
-        "case" => eval_conditional(args),
-        "is_numeric" => {
-            if args.len() != 1 {
-                return Err(ExprError::Eval(format!(
-                    "is_numeric() takes 1 argument ({} given)",
-                    args.len()
-                )));
-            }
-            Ok(Value::Bool(args[0].is_numeric()))
-        }
-
-        other => Err(ExprError::Eval(format!(
-            "function '{other}' is not defined"
-        ))),
-    }
-}
-
-/// `case(*conds)`: first pair `(cond, val)` whose cond is truthy → val, else Null.
-fn eval_conditional(args: Vec<Value>) -> ExprResult<Value> {
-    for arg in &args {
-        let pair = match arg {
-            Value::List(items) if items.len() == 2 => items,
-            _ => {
-                return Err(ExprError::Eval(
-                    "case() arguments must be (cond, value) pairs".into(),
-                ));
-            }
-        };
-        if pair[0].is_truthy() {
-            return Ok(pair[1].clone());
-        }
-    }
-    Ok(Value::Null)
-}
-
-fn list_func_reduce(
-    name: &str,
-    args: Vec<Value>,
-    f: impl Fn(&[Value]) -> ExprResult<Value>,
-) -> ExprResult<Value> {
-    // _null_safe: any None arg → None.
-    if args.iter().any(|a| a.is_null()) {
-        return Ok(Value::Null);
-    }
-    // max/min/len accept the list as a single argument (no distribution).
-    if args.len() == 1
-        && let Value::List(items) = &args[0]
-    {
-        return f(items);
-    }
-    // max/min over multiple positional args also valid in Python, but the
-    // single-list form is what these expressions use.
-    // Multiple positional args: treat them as the iterable.
-    f(&args).map_err(|_| ExprError::Eval(format!("{name}() argument error")))
-}
-
-fn reduce_minmax(items: &[Value], want_max: bool) -> ExprResult<Value> {
-    if items.is_empty() {
-        return Err(ExprError::Eval(
-            "max()/min() arg is an empty sequence".into(),
-        ));
-    }
-    let mut best = items[0].clone();
-    for item in &items[1..] {
-        let cmp = compare_for_minmax(item, &best)?;
-        let take = if want_max {
-            cmp == std::cmp::Ordering::Greater
-        } else {
-            cmp == std::cmp::Ordering::Less
-        };
-        if take {
-            best = item.clone();
-        }
-    }
-    Ok(best)
-}
-
-fn compare_for_minmax(a: &Value, b: &Value) -> ExprResult<std::cmp::Ordering> {
-    if let (Some(x), Some(y)) = (numeric_for_ordering(a), numeric_for_ordering(b)) {
-        return Ok(x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal));
-    }
-    if let (Value::Str(x), Value::Str(y)) = (a, b) {
-        return Ok(x.cmp(y));
-    }
-    Err(ExprError::Eval("unorderable types in max()/min()".into()))
-}
-
-fn null_safe_unary(
-    args: Vec<Value>,
-    name: &str,
-    f: impl Fn(Value) -> ExprResult<Value>,
-) -> ExprResult<Value> {
-    if args.len() != 1 {
-        return Err(ExprError::Eval(format!(
-            "{name}() takes 1 argument ({} given)",
-            args.len()
-        )));
-    }
-    if args[0].is_null() {
-        return Ok(Value::Null);
-    }
-    f(args.into_iter().next().unwrap())
-}
-
-/// Distribute a scalar unary function over a list first-arg, propagate None.
-fn distributing(
-    args: Vec<Value>,
-    name: &str,
-    f: impl Fn(Value) -> ExprResult<Value> + Copy,
-) -> ExprResult<Value> {
-    if args.len() != 1 {
-        return Err(ExprError::Eval(format!(
-            "{name}() takes 1 argument ({} given)",
-            args.len()
-        )));
-    }
-    let arg = args.into_iter().next().unwrap();
-    if let Value::List(items) = arg {
-        let mut out = Vec::with_capacity(items.len());
-        for item in items {
-            if item.is_null() {
-                out.push(Value::Null);
-            } else {
-                out.push(f(item)?);
-            }
-        }
-        return Ok(Value::List(out));
-    }
-    if arg.is_null() {
-        return Ok(Value::Null);
-    }
-    f(arg)
-}
-
-/// `slugify(s, separator="_")`: distributes over a list first argument and
-/// propagates None like `_distributing`; the result is None when nothing
-/// identifier-shaped remains (upstream `_slugify`).
-fn distributing_slugify(args: Vec<Value>) -> ExprResult<Value> {
-    if args.is_empty() || args.len() > 2 {
-        return Err(ExprError::Eval(format!(
-            "slugify() takes 1 or 2 arguments ({} given)",
-            args.len()
-        )));
-    }
-    let separator = match args.get(1) {
-        None => "_".to_string(),
-        Some(Value::Null) => return Ok(Value::Null),
-        Some(sep) => py_str(sep),
-    };
-    let one = |v: &Value| match slugify::slugify(&py_str(v), &separator) {
-        Some(slug) => Value::Str(slug),
-        None => Value::Null,
-    };
-    Ok(match &args[0] {
-        Value::List(items) => Value::List(
-            items
-                .iter()
-                .map(|item| {
-                    if item.is_null() {
-                        Value::Null
-                    } else {
-                        one(item)
-                    }
-                })
-                .collect(),
-        ),
-        Value::Null => Value::Null,
-        v => one(v),
-    })
-}
-
-fn distributing_round(args: Vec<Value>) -> ExprResult<Value> {
-    // round(x) or round(x, ndigits). Distributes over a list first-arg.
-    if args.is_empty() || args.len() > 2 {
-        return Err(ExprError::Eval(format!(
-            "round() takes 1 or 2 arguments ({} given)",
-            args.len()
-        )));
-    }
-    let tail: Vec<Value> = args[1..].to_vec();
-    let first = args[0].clone();
-    if let Value::List(items) = first {
-        let mut out = Vec::with_capacity(items.len());
-        for item in items {
-            if item.is_null() || tail.iter().any(|t| t.is_null()) {
-                out.push(Value::Null);
-            } else {
-                out.push(py_round(&item, tail.first())?);
-            }
-        }
-        return Ok(Value::List(out));
-    }
-    if first.is_null() || tail.iter().any(|t| t.is_null()) {
-        return Ok(Value::Null);
-    }
-    py_round(&first, tail.first())
-}
-
-fn distributing_uuid5(args: Vec<Value>) -> ExprResult<Value> {
-    // uuid5(namespace, name). Distributes over a list first arg, null-safe.
-    if args.len() != 2 {
-        return Err(ExprError::Eval(format!(
-            "uuid5() takes 2 arguments ({} given)",
-            args.len()
-        )));
-    }
-    let ns = args[0].clone();
-    let name = args[1].clone();
-    if let Value::List(items) = ns {
-        let mut out = Vec::with_capacity(items.len());
-        for item in items {
-            if item.is_null() || name.is_null() {
-                out.push(Value::Null);
-            } else {
-                out.push(Value::Str(uuid5_two_level(&item, &name)?));
-            }
-        }
-        return Ok(Value::List(out));
-    }
-    if ns.is_null() || name.is_null() {
-        return Ok(Value::Null);
-    }
-    Ok(Value::Str(uuid5_two_level(&ns, &name)?))
-}
-
-fn uuid5_two_level(namespace: &Value, name: &Value) -> ExprResult<String> {
-    let ns_str = match namespace {
-        Value::Str(s) => s.clone(),
-        other => py_str(other),
-    };
-    let name_str = match name {
-        Value::Str(s) => s.clone(),
-        other => py_str(other),
-    };
-    let derived = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, ns_str.as_bytes());
-    let result = uuid::Uuid::new_v5(&derived, name_str.as_bytes());
-    Ok(result.to_string())
-}
-
 // --- scalar function implementations mirroring Python builtins ---
 
 pub(crate) fn py_str(v: &Value) -> String {
@@ -1518,41 +1269,6 @@ pub(crate) fn py_repr(v: &Value) -> String {
         Value::Str(s) => crate::pyfmt::py_repr_str(s),
         Value::Decimal(d) => format!("Decimal('{}')", d.to_sci_string()),
         other => py_str(other),
-    }
-}
-
-/// Python `str.title`: uppercase the first letter of each run of letters,
-/// lowercase the rest. A letter that follows a non-letter starts a new word.
-fn py_title(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut prev_is_letter = false;
-    for c in s.chars() {
-        if c.is_alphabetic() {
-            if prev_is_letter {
-                out.extend(c.to_lowercase());
-            } else {
-                out.extend(c.to_uppercase());
-            }
-            prev_is_letter = true;
-        } else {
-            out.push(c);
-            prev_is_letter = false;
-        }
-    }
-    out
-}
-
-/// Python `str.capitalize`: first character uppercased, the rest lowercased.
-fn py_capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => {
-            let mut out = String::with_capacity(s.len());
-            out.extend(first.to_uppercase());
-            out.push_str(&chars.as_str().to_lowercase());
-            out
-        }
     }
 }
 
@@ -1595,77 +1311,6 @@ pub(crate) fn py_float(v: &Value) -> ExprResult<Value> {
             "float() argument must be a string or a number, not '{}'",
             type_name(other)
         ))),
-    }
-}
-
-fn py_abs(v: &Value) -> ExprResult<Value> {
-    match v {
-        Value::Int(i) => Ok(Value::Int(i.abs())),
-        Value::Float(f) => Ok(Value::Float(f.abs())),
-        Value::Bool(b) => Ok(Value::Int(*b as i64)),
-        other => Err(ExprError::Eval(format!(
-            "bad operand type for abs(): '{}'",
-            type_name(other)
-        ))),
-    }
-}
-
-fn py_round(v: &Value, ndigits: Option<&Value>) -> ExprResult<Value> {
-    let num = match v {
-        Value::Int(i) => {
-            // round(int) is int; round(int, n) is int.
-            if ndigits.is_none() {
-                return Ok(Value::Int(*i));
-            }
-            *i as f64
-        }
-        Value::Float(f) => *f,
-        Value::Bool(b) => {
-            if ndigits.is_none() {
-                return Ok(Value::Int(*b as i64));
-            }
-            if *b { 1.0 } else { 0.0 }
-        }
-        other => {
-            return Err(ExprError::Eval(format!(
-                "type {} doesn't define __round__ method",
-                type_name(other)
-            )));
-        }
-    };
-    match ndigits {
-        None => Ok(Value::Int(banker_round(num, 0) as i64)),
-        Some(Value::Int(n)) => Ok(Value::Float(banker_round(num, *n as i32))),
-        Some(Value::Bool(b)) => Ok(Value::Float(banker_round(num, *b as i32))),
-        Some(other) => Err(ExprError::Eval(format!(
-            "'{}' object cannot be interpreted as an integer",
-            type_name(other)
-        ))),
-    }
-}
-
-/// Python's round() uses banker's rounding (round-half-to-even).
-fn banker_round(x: f64, ndigits: i32) -> f64 {
-    let factor = 10f64.powi(ndigits);
-    let scaled = x * factor;
-    let rounded = round_half_even(scaled);
-    rounded / factor
-}
-
-fn round_half_even(x: f64) -> f64 {
-    let floor = x.floor();
-    let diff = x - floor;
-    if diff < 0.5 {
-        floor
-    } else if diff > 0.5 {
-        floor + 1.0
-    } else {
-        // exactly .5 → round to even
-        if (floor as i64) % 2 == 0 {
-            floor
-        } else {
-            floor + 1.0
-        }
     }
 }
 
@@ -1746,9 +1391,11 @@ mod tests {
 
     #[test]
     fn test_string_funcs_non_string_input() {
-        // Operate on the py_str of the value.
-        assert_eq!(eval("upper(123)"), Value::Str("123".into()));
-        assert_eq!(eval("lower(True)"), Value::Str("true".into()));
+        // PARITY: upstream binds the unbound `str` methods (`str.upper`, ...), so
+        // a non-string argument is a TypeError rather than being stringified.
+        assert!(eval_expr("upper(123)").is_err());
+        assert!(eval_expr("lower(True)").is_err());
+        assert!(eval_expr("slugify(123)").is_err());
     }
 
     #[test]
