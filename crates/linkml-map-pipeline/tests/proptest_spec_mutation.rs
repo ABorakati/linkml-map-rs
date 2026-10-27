@@ -201,7 +201,7 @@ fn load_spec_json(fx: &Fixture) -> Json {
 fn exercise(fx: &Fixture, spec: &Json, dir: &Path, row: &Value) -> Result<(), TestCaseError> {
     let path = dir.join("mutated.transform.yaml");
     std::fs::write(&path, serde_yaml_ng::to_string(spec).unwrap()).unwrap();
-    let Ok(plan) = CompiledPlan::load(
+    let Ok(mut plan) = CompiledPlan::load(
         &path,
         &fx.source_schema,
         fx.target_schema.as_deref(),
@@ -209,9 +209,14 @@ fn exercise(fx: &Fixture, spec: &Json, dir: &Path, row: &Value) -> Result<(), Te
     ) else {
         return Ok(());
     };
-    let first = plan.transform(row.clone());
-    let second = plan.transform(row.clone());
-    prop_assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    // Both evaluator modes: restricted (the default) and `unrestricted_eval`.
+    for unrestricted in [false, true] {
+        plan.set_unrestricted_eval(unrestricted);
+        let first = plan.transform(row.clone());
+        let second = plan.transform(row.clone());
+        prop_assert_eq!(format!("{first:?}"), format!("{second:?}"));
+    }
+    plan.set_unrestricted_eval(true);
     let _ = plan.transform(Value::Null);
     let _ = plan.transform(Value::Map(Default::default()));
     let _ = plan.missing_identifiers();
@@ -252,14 +257,20 @@ mutation_test!(mutated_type_coercion_spec, type_coercion);
 #[test]
 fn unmutated_fixtures_load() {
     for fx in fixtures::all() {
-        let plan = CompiledPlan::load(
+        let mut plan = CompiledPlan::load(
             &fx.spec,
             &fx.source_schema,
             fx.target_schema.as_deref(),
             Some(fx.class),
         )
         .unwrap_or_else(|e| panic!("{}: {e:#}", fx.name));
-        let _ = plan.transform(fx.data_row.clone());
+        plan.set_unrestricted_eval(fx.unrestricted);
+        // A foreign-key spec (flattening) cannot transform a lone row without an object index;
+        // `proptest_pipeline.rs` runs it over whole containers.
+        if !plan.requires_object_index() {
+            plan.transform(fx.data_row.clone())
+                .unwrap_or_else(|e| panic!("{} rejects its own row: {e:#}", fx.name));
+        }
     }
 }
 
@@ -278,12 +289,13 @@ fn mutants_often_still_load() {
         let mutated = mutate(&spec, &ops);
         let path = dir.path().join("m.yaml");
         std::fs::write(&path, serde_yaml_ng::to_string(&mutated).unwrap()).unwrap();
-        if let Ok(plan) = CompiledPlan::load(
+        if let Ok(mut plan) = CompiledPlan::load(
             &path,
             &fx.source_schema,
             fx.target_schema.as_deref(),
             Some(fx.class),
         ) {
+            plan.set_unrestricted_eval(true);
             loaded += 1;
             if plan.transform(fx.data_row.clone()).is_ok() {
                 ran += 1;

@@ -63,6 +63,7 @@ fn run(
     cfg.source_format = Some(Format::Jsonl);
     cfg.out_format = Some(out_format);
     cfg.source_class = Some(fx.class.to_string());
+    cfg.unrestricted_eval = fx.unrestricted;
     cfg.workers = r.workers;
     cfg.ordered = r.ordered;
     cfg.channel_depth = r.channel_depth;
@@ -75,13 +76,14 @@ fn run(
 /// Keep the rows the engine accepts one by one: a row that fails fails the whole run,
 /// which is not what is being tested here.
 fn accepted_rows(fx: &Fixture, rows: Vec<Value>) -> (CompiledPlan, Vec<Value>) {
-    let plan = CompiledPlan::load(
+    let mut plan = CompiledPlan::load(
         &fx.spec,
         &fx.source_schema,
         fx.target_schema.as_deref(),
         Some(fx.class),
     )
     .unwrap_or_else(|e| panic!("{}: {e:#}", fx.name));
+    plan.set_unrestricted_eval(fx.unrestricted);
     // The JSONL writer drops null map values, so the rows are what the pipeline will read.
     let rows = rows
         .iter()
@@ -217,19 +219,26 @@ proptest! {
     }
 
     #[test]
-    fn flattening_pipeline_is_deterministic(
-        rows in prop::collection::vec(arb_row("flattening"), 0..30),
-        format in arb_format(),
-    ) {
-        check_fixture(&fixtures::flattening(), rows, format)?;
-    }
-
-    #[test]
     fn type_coercion_pipeline_is_deterministic(
         rows in prop::collection::vec(arb_row("type_coercion"), 0..30),
         format in arb_format(),
     ) {
         check_fixture(&fixtures::type_coercion(), rows, format)?;
+    }
+}
+
+/// Guard against vacuous runs: every fixture accepts its own real row in the mode the tests
+/// use, so the generated rows are not all filtered out.
+#[test]
+fn fixtures_accept_their_real_row() {
+    // (`flattening` dereferences foreign keys, so it only works on a whole container: see
+    // `flattening_container_pipeline_is_deterministic`.)
+    for fx in fixtures::all()
+        .into_iter()
+        .filter(|f| f.name != "flattening")
+    {
+        let (_, rows) = accepted_rows(&fx, vec![fx.data_row.clone()]);
+        assert_eq!(rows.len(), 1, "{} rejects its own data row", fx.name);
     }
 }
 
@@ -241,4 +250,91 @@ fn large_batches_stay_ordered() {
     let strat = prop::collection::vec(arb_row("measurements"), 1000..1001);
     let rows = strat.new_tree(&mut runner).unwrap().current();
     check_fixture(&fixtures::measurements(), rows, Format::Jsonl).unwrap();
+}
+
+/// The flattening fixture resolves foreign keys (`subject.id`), which needs the whole
+/// container: the pipeline buffers it, builds one object index and fans the rows out.
+/// Output must not depend on the worker count or channel depth, and must equal the
+/// hand-computed denormalisation.
+fn flattening_case(
+    entities: Vec<String>,
+    links: Vec<(usize, usize, String)>,
+    format: Format,
+) -> Result<(), TestCaseError> {
+    let fx = fixtures::flattening();
+    let rt = runtime();
+    let dir = tempfile::tempdir().unwrap();
+    let name = |i: usize| format!("E:{i}");
+    let container = serde_json::json!({
+        "mappings": links.iter().map(|(s, o, p)| serde_json::json!({
+            "subject": name(s % entities.len()),
+            "object": name(o % entities.len()),
+            "predicate": p,
+        })).collect::<Vec<_>>(),
+        "entities": entities.iter().enumerate()
+            .map(|(i, n)| (name(i), serde_json::json!({ "name": n })))
+            .collect::<serde_json::Map<_, _>>(),
+    });
+    let input = dir.path().join("container.json");
+    std::fs::write(&input, container.to_string()).unwrap();
+
+    let mut first: Option<String> = None;
+    for workers in [0usize, 1, 2, 8] {
+        for channel_depth in [1usize, 256] {
+            let out = dir.path().join(format!(
+                "out-{workers}-{channel_depth}.{}",
+                format.extension()
+            ));
+            let mut cfg = PipelineConfig::new(
+                input.to_str().unwrap(),
+                fx.source_schema.to_str().unwrap(),
+                fx.target_schema
+                    .as_ref()
+                    .map(|p| p.to_str().unwrap().to_string()),
+                fx.spec.to_str().unwrap(),
+                out.to_str().unwrap(),
+            );
+            cfg.out_format = Some(format);
+            cfg.source_class = Some("MappingSet".into());
+            cfg.workers = workers;
+            cfg.channel_depth = channel_depth;
+            rt.block_on(run_pipeline(cfg)).map_err(|e| {
+                TestCaseError::fail(format!("workers={workers} depth={channel_depth}: {e:#}"))
+            })?;
+            let text = std::fs::read_to_string(&out).unwrap();
+            match &first {
+                None => first = Some(text),
+                Some(f) => prop_assert_eq!(f, &text, "workers={} depth={}", workers, channel_depth),
+            }
+        }
+    }
+    // The oracle (JSON output only).
+    if format == Format::Json && !links.is_empty() {
+        let got: serde_json::Value = serde_json::from_str(first.as_deref().unwrap()).unwrap();
+        let want = serde_json::json!({
+            "mappings": links.iter().map(|(s, o, p)| {
+                let (s, o) = (s % entities.len(), o % entities.len());
+                serde_json::json!({
+                    "subject_id": name(s), "subject_name": entities[s],
+                    "object_id": name(o), "object_name": entities[o],
+                    "predicate_id": p,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        prop_assert_eq!(got, want);
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(config(10))]
+
+    #[test]
+    fn flattening_container_pipeline_is_deterministic(
+        entities in prop::collection::vec("x[a-z]{1,5}", 1..6),
+        links in prop::collection::vec((0usize..6, 0usize..6, "P:[0-9]{1,2}"), 0..25),
+        format in prop::sample::select(vec![Format::Json, Format::Json, Format::Yaml]),
+    ) {
+        flattening_case(entities, links, format)?;
+    }
 }

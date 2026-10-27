@@ -16,6 +16,8 @@ pub struct Fixture {
     pub data_row: Value,
     /// The source class the rows belong to.
     pub class: &'static str,
+    /// Needs `unrestricted_eval` (the spec has `expr:` statement blocks).
+    pub unrestricted: bool,
 }
 
 fn root() -> PathBuf {
@@ -38,6 +40,7 @@ pub fn measurements() -> Fixture {
         target_schema: Some(d.join("target/quantity_value_flat.yaml")),
         data_row: Value::from(&load_yaml(d.join("data/PersonQuantityValue-001.yaml"))),
         class: "Person",
+        unrestricted: false,
     }
 }
 
@@ -50,6 +53,7 @@ pub fn personinfo() -> Fixture {
         target_schema: Some(d.join("target/agent.yaml")),
         data_row: Value::from(&load_yaml(d.join("data/Person-001.yaml"))),
         class: "Person",
+        unrestricted: true,
     }
 }
 
@@ -63,6 +67,7 @@ pub fn flattening() -> Fixture {
         target_schema: Some(d.join("target/denormalized.yaml")),
         data_row: Value::from(&container["mappings"][0]),
         class: "Mapping",
+        unrestricted: false,
     }
 }
 
@@ -75,6 +80,7 @@ pub fn type_coercion() -> Fixture {
         target_schema: Some(d.join("target/target.yaml")),
         data_row: Value::from(&load_yaml(d.join("data/MyRecord-001.yaml"))),
         class: "MyRecord",
+        unrestricted: false,
     }
 }
 

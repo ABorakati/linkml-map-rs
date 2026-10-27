@@ -58,9 +58,19 @@ proptest! {
         let _ = load(json);
     }
 
-    /// Normalisation is idempotent: a normalised spec is a fixed point.
+    /// Normalisation is idempotent: a normalised spec is a fixed point. The exceptions are
+    /// the `range: Any` slots (`overrides`, `target_definition` and the copy directives'
+    /// `include`/`exclude`/`add`), where the port deliberately mirrors upstream's one-shot
+    /// "a list becomes its first element" (see `collapse_any_lists`): `[[]]` -> `[]` -> null.
     #[test]
-    fn normalise_is_idempotent(json in arb_spec_json()) {
+    fn normalise_is_idempotent(
+        json in arb_spec_json().prop_filter("no Any-ranged slots", |j| {
+            let text = j.to_string();
+            ["\"overrides\"", "\"target_definition\"", "\"include\"", "\"exclude\"", "\"add\""]
+                .iter()
+                .all(|k| !text.contains(k))
+        })
+    ) {
         let mut once = json;
         normalise_spec_json(&mut once);
         let mut twice = once.clone();
