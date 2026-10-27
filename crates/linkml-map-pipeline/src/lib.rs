@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
     datamodel::{ClassDerivation, TransformationSpecification},
-    engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer},
+    engine::{CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer},
     schema::{RangeKind, SchemaProvider},
     value::Value,
 };
@@ -154,6 +154,13 @@ pub struct CompiledPlan {
     /// single-file mode — the historical behavior. Shared (`Arc`) into every
     /// per-row engine so lock-free join resolution runs across worker threads.
     lookup_index: Option<Arc<LookupIndex>>,
+    /// Content-id synthesiser for identifier slots the spec doesn't derive
+    /// (upstream #342), built once from the target schema and borrowed by every
+    /// per-row engine. `None` without a target schema.
+    content_ids: Option<ContentIds>,
+    /// Emit records whose identifier is neither derived nor minted instead of
+    /// failing (`--continue-on-error`; see [`CompiledPlan::missing_identifiers`]).
+    emit_without_identifiers: bool,
 }
 
 impl CompiledPlan {
@@ -253,6 +260,12 @@ impl CompiledPlan {
             })
             .transpose()?;
 
+        // Content-id synthesis needs the target schema, so it is built once here
+        // and only when a target is present.
+        let content_ids = target_provider
+            .as_deref()
+            .map(|target| ContentIds::for_spec(target, &spec));
+
         // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
         // surface here at plan-build time rather than per row.
         let compiled_exprs = CompiledExprs::build(&spec)
@@ -275,7 +288,38 @@ impl CompiledPlan {
             compiled_exprs,
             source_class,
             lookup_index: None,
+            content_ids,
+            emit_without_identifiers: false,
         })
+    }
+
+    /// Apply the plan-wide engine settings (shared content-id synthesiser,
+    /// identifier policy) to a per-row engine.
+    fn configure<'a>(&'a self, mut engine: ObjectTransformer<'a>) -> ObjectTransformer<'a> {
+        if let Some(ids) = &self.content_ids {
+            engine = engine.with_content_ids(ids);
+        }
+        engine.with_emit_without_identifiers(self.emit_without_identifiers)
+    }
+
+    /// Describe every class derivation that would emit records without their
+    /// identifier (neither derived nor minted). Empty without a target schema.
+    /// Mirrors upstream `ObjectTransformer.missing_identifiers`.
+    pub fn missing_identifiers(&self) -> Result<Vec<String>> {
+        self.configure(ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        ))
+        .missing_identifiers()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Let per-row engines emit records without their identifier instead of
+    /// failing; set after the caller has reported
+    /// [`CompiledPlan::missing_identifiers`] (`--continue-on-error`).
+    pub fn set_emit_without_identifiers(&mut self, emit: bool) {
+        self.emit_without_identifiers = emit;
     }
 
     /// Attach a pre-built cross-table [`LookupIndex`] (directory mode).
@@ -402,12 +446,13 @@ impl CompiledPlan {
     /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
     /// a reference to each parallel worker — zero per-row index rebuild.
     pub fn transform_with_index(&self, row: Value, index: &ObjectIndex) -> Result<Value> {
-        let mut engine = ObjectTransformer::new_borrowed(
+        let engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
             self.target_provider.as_deref(),
         )
         .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.configure(engine);
         if let Some(li) = &self.lookup_index {
             engine = engine.with_lookup_index(Arc::clone(li));
         }
@@ -422,12 +467,13 @@ impl CompiledPlan {
     /// reader/writer I/O path.
     pub fn transform(&self, row: Value) -> Result<Value> {
         // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
-        let mut engine = ObjectTransformer::new_borrowed(
+        let engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
             self.target_provider.as_deref(),
         )
         .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.configure(engine);
         if let Some(li) = &self.lookup_index {
             engine = engine.with_lookup_index(Arc::clone(li));
         }
@@ -446,7 +492,7 @@ impl CompiledPlan {
             Some(self.source_provider.as_ref()),
             self.target_provider.as_deref(),
         );
-        engine
+        self.configure(engine)
             .map_object(&row, self.source_class.as_deref())
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
     }
@@ -500,6 +546,20 @@ pub async fn run_pipeline_with_options(
         config.source_class.as_deref(),
     )
     .context("compiling plan")?;
+
+    // ── 1a. Identifier slots must be derived or minted (upstream
+    // `cli._require_identifiers`), checked before any output is opened. Without
+    // `--continue-on-error` a problem refuses the run; with it each problem is
+    // reported once, records are emitted without ids, and the run ends non-zero.
+    let identifier_problems = plan.missing_identifiers()?;
+    if !identifier_problems.is_empty() && !continue_on_error {
+        anyhow::bail!("{}", identifier_problems.join("\n"));
+    }
+    for problem in &identifier_problems {
+        eprintln!("  - {problem}");
+    }
+    plan.set_emit_without_identifiers(!identifier_problems.is_empty());
+    let identifier_errors = identifier_problems.len();
 
     // ── 1b. Directory-source mode: resolve the primary table's file and build
     // the cross-table LookupIndex from sibling files (multi-table joins). In
@@ -848,6 +908,11 @@ pub async fn run_pipeline_with_options(
             rows_in - rows_out,
             rows_in
         );
+    }
+
+    // The identifier problems reported up front count toward the exit status.
+    if identifier_errors > 0 {
+        anyhow::bail!("{identifier_errors} transformation error(s)");
     }
 
     let elapsed = start.elapsed();

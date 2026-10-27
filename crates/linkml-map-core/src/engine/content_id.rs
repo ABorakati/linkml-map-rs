@@ -245,7 +245,11 @@ fn lay_out_fixed(digits: &str, exp: i32) -> String {
     if point >= n {
         format!("{digits}{}", "0".repeat((point - n) as usize))
     } else if point > 0 {
-        format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+        format!(
+            "{}.{}",
+            &digits[..point as usize],
+            &digits[point as usize..]
+        )
     } else {
         format!("0.{}{digits}", "0".repeat((-point) as usize))
     }
@@ -393,8 +397,10 @@ impl ContentIds {
             let mut slots = SlotDescription::new();
             let mut identifier_slot = None;
             if let Ok(induced) = target.induced_slots(&name) {
-                let ordered: HashSet<String> =
-                    target.list_elements_ordered_slots(&name).into_iter().collect();
+                let ordered: HashSet<String> = target
+                    .list_elements_ordered_slots(&name)
+                    .into_iter()
+                    .collect();
                 for slot in induced {
                     let range_class = match &slot.range {
                         RangeKind::Class(c) => Some(c.clone()),
@@ -405,15 +411,20 @@ impl ContentIds {
                     {
                         queue.push_back(c.clone());
                     }
-                    slots.insert(slot.name.clone(), (ordered.contains(&slot.name), range_class));
+                    slots.insert(
+                        slot.name.clone(),
+                        (ordered.contains(&slot.name), range_class),
+                    );
                 }
                 if !target.is_abstract_or_mixin(&name) {
                     identifier_slot = target.identifier_slot_without_key(&name);
                 }
             }
             // Same two-level scheme as the `uuid5()` expression function.
-            let namespace =
-                Uuid::new_v5(&Uuid::NAMESPACE_URL, format!("{schema_id}/{name}").as_bytes());
+            let namespace = Uuid::new_v5(
+                &Uuid::NAMESPACE_URL,
+                format!("{schema_id}/{name}").as_bytes(),
+            );
             classes.insert(
                 name,
                 ClassInfo {
@@ -643,3 +654,269 @@ impl<'s> ObjectTransformer<'s> {
 /// Lazily-built synthesiser storage for engines that were not handed a shared
 /// one (plain library use); see [`ObjectTransformer::content_ids`].
 pub(super) type OwnedContentIds = OnceLock<ContentIds>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{ClassDef, InMemorySchemaBuilder, SlotDef};
+    use serde_json::json;
+
+    fn v(j: serde_json::Value) -> Value {
+        serde_json::from_value(j).unwrap()
+    }
+
+    fn cj(value: &Value) -> String {
+        canonical_json(value).unwrap()
+    }
+
+    #[test]
+    fn content_ids_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ContentIds>();
+        assert_send_sync::<ObjectTransformer<'static>>();
+    }
+
+    // content_id.mints_ids doctests
+    #[test]
+    fn mints_ids_precedence() {
+        assert!(!mints_ids(None, None, None));
+        assert!(mints_ids(Some(true), None, None));
+        assert!(mints_ids(Some(false), Some(true), None));
+        assert!(!mints_ids(Some(false), Some(true), Some(false)));
+    }
+
+    // content_id.canonical_json doctests
+    #[test]
+    fn canonical_json_doctests() {
+        let record = v(json!({"b": 5.0, "a": null, "c": [], "d": ["y", "x"]}));
+        assert_eq!(cj(&record), r#"{"b":5,"d":["x","y"]}"#);
+        // Decimal("52.30") is covered once `Value::Decimal` exists (TODO(decimal)).
+        let list = Value::List(vec![
+            Value::Float(52.3),
+            Value::Float(155.448_000_000_000_01),
+            Value::Float(-0.0),
+            Value::Float(1e-7),
+            Value::Int(100),
+        ]);
+        // Sorted by each item's encoding, as text.
+        assert_eq!(cj(&list), "[0,0.0000001,100,155.448,52.3]");
+    }
+
+    #[test]
+    fn number_formats() {
+        let n = |f: f64| canonical_float(f);
+        assert_eq!(n(5.0), "5");
+        assert_eq!(n(52.30), "52.3");
+        assert_eq!(n(0.1 + 0.2), "0.3");
+        assert_eq!(n(1e-7), "0.0000001");
+        assert_eq!(n(1e22), "10000000000000000000000");
+        assert_eq!(n(-0.0), "0");
+        assert_eq!(n(0.0), "0");
+        assert_eq!(n(-52.3), "-52.3");
+        assert_eq!(n(123_456_789.123_456_789), "123456789.123457");
+        // `.15g` rounds exact ties half-even, like Python.
+        assert_eq!(n(1_000_000_000_000_005.0), "1000000000000000");
+        assert_eq!(n(1_000_000_000_000_015.0), "1000000000000020");
+        assert_eq!(n(f64::NAN), "NaN");
+        assert_eq!(n(f64::INFINITY), "Infinity");
+        assert_eq!(n(f64::NEG_INFINITY), "-Infinity");
+        assert_eq!(canonical_int(5), "5");
+        assert_eq!(canonical_int(-7), "-7");
+        assert_eq!(canonical_int(0), "0");
+        // int and float spellings of one number hash alike.
+        assert_eq!(cj(&Value::Int(5)), cj(&Value::Float(5.0)),);
+    }
+
+    #[test]
+    fn booleans_encode_as_json_not_numbers() {
+        assert_eq!(
+            cj(&v(json!({"a": true, "b": false}))),
+            r#"{"a":true,"b":false}"#
+        );
+    }
+
+    #[test]
+    fn string_escapes_match_json_dumps_without_ensure_ascii() {
+        let s = Value::Str("é \"q\" \\ \n \r \t \u{8} \u{c} \u{1f} \u{7f} 😀".into());
+        assert_eq!(
+            cj(&s),
+            "\"é \\\"q\\\" \\\\ \\n \\r \\t \\b \\f \\u001f \u{7f} 😀\""
+        );
+    }
+
+    #[test]
+    fn keys_sorted_by_code_point_and_empties_dropped() {
+        let record = v(json!({"b": {"y": 1, "x": {}}, "a": [[], [1, 0]], "é": 1, "Z": 2}));
+        assert_eq!(cj(&record), r#"{"Z":2,"a":[[0,1]],"b":{"y":1},"é":1}"#);
+    }
+
+    #[test]
+    fn lists_sort_as_text() {
+        let list = v(json!([100, 52.3, 0, 155.448, 52.3]));
+        assert_eq!(cj(&list), "[0,100,155.448,52.3,52.3]");
+    }
+
+    fn schema() -> crate::schema::InMemorySchema {
+        let slot = |name: &str, id: bool, key: bool| SlotDef {
+            name: name.into(),
+            range: RangeKind::Type("string".into()),
+            multivalued: false,
+            inlined: false,
+            inlined_as_list: false,
+            required: false,
+            identifier: id,
+            key,
+            unit: None,
+            any_of_enums: vec![],
+        };
+        let class = |name: &str| ClassDef {
+            name: name.into(),
+            tree_root: false,
+            is_a: None,
+            mixins: vec![],
+        };
+        InMemorySchemaBuilder::new()
+            .with_schema_id("https://example.org/t")
+            .add_class(class("Thing"))
+            .add_slot("Thing", slot("id", true, false))
+            .add_slot("Thing", slot("label", false, false))
+            .add_class(class("Keyed"))
+            .add_slot("Keyed", slot("k", false, true))
+            .add_class(class("Base"))
+            .add_slot("Base", slot("id", true, false))
+            .mark_abstract("Base")
+            .build()
+    }
+
+    #[test]
+    fn identifier_slot_ignores_keys_and_abstract_classes() {
+        let schema = schema();
+        let ids = ContentIds::build(&schema, ["Thing", "Keyed", "Base", "Missing"]);
+        assert_eq!(ids.identifier_slot("Thing"), Some("id"));
+        // `get_identifier_slot(use_key=False)`: a `key:` slot does not count.
+        assert_eq!(ids.identifier_slot("Keyed"), None);
+        assert_eq!(ids.identifier_slot("Base"), None);
+        assert_eq!(ids.identifier_slot("Missing"), None);
+    }
+
+    #[test]
+    fn content_id_is_a_pure_function_of_content() {
+        let schema = schema();
+        let ids = ContentIds::build(&schema, ["Thing"]);
+        let rec = |pairs: &[(&str, &str)]| -> IndexMap<String, Value> {
+            pairs
+                .iter()
+                .map(|(k, val)| (k.to_string(), Value::Str(val.to_string())))
+                .collect()
+        };
+        let a = ids.content_id(&rec(&[("label", "x")]), "Thing").unwrap();
+        let b = ids.content_id(&rec(&[("label", "x")]), "Thing").unwrap();
+        let c = ids.content_id(&rec(&[("label", "y")]), "Thing").unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        // namespace = uuid5(NAMESPACE_URL, "<schema id>/<class>"), id = uuid5(namespace, canonical)
+        let ns = Uuid::new_v5(&Uuid::NAMESPACE_URL, b"https://example.org/t/Thing");
+        assert_eq!(a, Uuid::new_v5(&ns, br#"{"label":"x"}"#).to_string());
+    }
+
+    fn spec(extra: serde_json::Value) -> TransformationSpecification {
+        let mut j = json!({
+            "class_derivations": {
+                "Thing": {"populated_from": "Thing", "slot_derivations": {"label": {"populated_from": "label"}}}
+            }
+        });
+        for (k, val) in extra.as_object().unwrap() {
+            j[k] = val.clone();
+        }
+        crate::datamodel::normalise_spec_json(&mut j);
+        serde_json::from_value(j).unwrap()
+    }
+
+    #[test]
+    fn engine_mints_only_with_a_target_schema_and_opt_in() {
+        let schema = schema();
+        let row = v(json!({"label": "x"}));
+
+        // No target schema: nothing to mint, nothing to check.
+        let tr = ObjectTransformer::new(spec(json!({"mint_ids": true})), Some(&schema), None);
+        assert_eq!(
+            serde_json::to_value(tr.map_object(&row, Some("Thing")).unwrap()).unwrap(),
+            json!({"label": "x"})
+        );
+        assert!(tr.missing_identifiers().unwrap().is_empty());
+
+        // Target, no opt-in: error with upstream's message.
+        let tr = ObjectTransformer::new(spec(json!({})), Some(&schema), Some(&schema));
+        let err = tr.map_object(&row, Some("Thing")).unwrap_err();
+        assert!(matches!(err, Error::MissingIdentifier { .. }));
+        assert_eq!(err.to_string(), missing_identifier_message("Thing", "id"));
+        assert_eq!(
+            tr.missing_identifiers().unwrap(),
+            vec![missing_identifier_message("Thing", "id")]
+        );
+
+        // `emit_without_identifiers`: records pass through without an id.
+        let tr = tr.with_emit_without_identifiers(true);
+        assert_eq!(
+            serde_json::to_value(tr.map_object(&row, Some("Thing")).unwrap()).unwrap(),
+            json!({"label": "x"})
+        );
+
+        // Opt-in: the id leads the record.
+        let tr = ObjectTransformer::new(
+            spec(json!({"mint_ids": true})),
+            Some(&schema),
+            Some(&schema),
+        );
+        let out = tr.map_object(&row, Some("Thing")).unwrap();
+        let Value::Map(m) = out else { panic!() };
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["id", "label"]);
+    }
+
+    #[test]
+    fn shared_content_ids_match_lazily_built_ones() {
+        let schema = schema();
+        let row = v(json!({"label": "x"}));
+        let s = spec(json!({"mint_ids": true}));
+        let shared = ContentIds::for_spec(&schema, &s);
+        let a = ObjectTransformer::new_borrowed(&s, Some(&schema), Some(&schema))
+            .with_content_ids(&shared)
+            .map_object(&row, Some("Thing"))
+            .unwrap();
+        let b = ObjectTransformer::new_borrowed(&s, Some(&schema), Some(&schema))
+            .map_object(&row, Some("Thing"))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&a).unwrap(),
+            serde_json::to_value(&b).unwrap()
+        );
+    }
+
+    #[test]
+    fn minting_is_deterministic_across_threads() {
+        let schema = schema();
+        let s = spec(json!({"mint_ids": true}));
+        let shared = ContentIds::for_spec(&schema, &s);
+        let row = v(json!({"label": "x"}));
+        let expected = serde_json::to_value(
+            ObjectTransformer::new_borrowed(&s, Some(&schema), Some(&schema))
+                .with_content_ids(&shared)
+                .map_object(&row, Some("Thing"))
+                .unwrap(),
+        )
+        .unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..100 {
+                        let out = ObjectTransformer::new_borrowed(&s, Some(&schema), Some(&schema))
+                            .with_content_ids(&shared)
+                            .map_object(&row, Some("Thing"))
+                            .unwrap();
+                        assert_eq!(serde_json::to_value(&out).unwrap(), expected);
+                    }
+                });
+            }
+        });
+    }
+}

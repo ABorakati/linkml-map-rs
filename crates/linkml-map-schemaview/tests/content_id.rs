@@ -144,17 +144,15 @@ fn provider(yaml: &str) -> SchemaViewProvider {
     SchemaViewProvider::from_yaml_str(yaml).expect("schema loads")
 }
 
-fn transform_with(
-    row: Json,
-    spec: &Json,
-    target: Option<&str>,
-) -> Result<Value, Error> {
+fn transform_with(row: Json, spec: &Json, target: Option<&str>) -> Result<Value, Error> {
     let source = provider(SOURCE_SCHEMA);
     let target = target.map(provider);
     ObjectTransformer::new(
         to_spec(spec.clone()),
         Some(&source),
-        target.as_ref().map(|t| t as &dyn linkml_map_core::schema::SchemaProvider),
+        target
+            .as_ref()
+            .map(|t| t as &dyn linkml_map_core::schema::SchemaProvider),
     )
     .map_object(&value(row), Some("Row"))
 }
@@ -184,7 +182,10 @@ fn spec_with(spec_mint_ids: Option<bool>, class_mint_ids: Option<bool>, nested: 
     spec.as_object_mut().unwrap().remove("mint_ids");
     let cd = &mut spec["class_derivations"]["Measurement"];
     if !nested {
-        cd["slot_derivations"].as_object_mut().unwrap().remove("value_quantity");
+        cd["slot_derivations"]
+            .as_object_mut()
+            .unwrap()
+            .remove("value_quantity");
     }
     if let Some(b) = spec_mint_ids {
         spec["mint_ids"] = json!(b);
@@ -218,7 +219,10 @@ fn minted_record_round_trips_through_yaml() {
     let yaml = serde_yaml::to_string(&out).unwrap();
     let loaded: Json = serde_yaml::from_str(&yaml).unwrap();
     assert_eq!(loaded["id"], "e2f19c73-a77b-5b80-90b8-3394ef6f96d3");
-    assert_eq!(loaded["value_quantity"]["id"], "199f65b6-2954-565e-912a-b814c2568cd9");
+    assert_eq!(
+        loaded["value_quantity"]["id"],
+        "199f65b6-2954-565e-912a-b814c2568cd9"
+    );
 }
 
 // test_same_content_same_id_across_transformers
@@ -232,7 +236,10 @@ fn same_content_same_id_across_transformers() {
         .rev()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    assert_eq!(id_of(&transform(row)), id_of(&transform(Json::Object(reversed))));
+    assert_eq!(
+        id_of(&transform(row)),
+        id_of(&transform(Json::Object(reversed)))
+    );
 }
 
 // test_different_content_different_id
@@ -269,7 +276,11 @@ fn null_and_empty_count_as_absent() {
     without.as_object_mut().unwrap().remove("tags");
     let expected = id_of(&transform(without));
     for absent in [json!({"tags": null}), json!({"tags": []})] {
-        assert_eq!(expected, id_of(&transform(with(absent.clone()))), "{absent}");
+        assert_eq!(
+            expected,
+            id_of(&transform(with(absent.clone()))),
+            "{absent}"
+        );
     }
 }
 
@@ -325,7 +336,10 @@ fn mint_ids_setting() {
 fn nested_derivation_follows_the_spec_not_its_parent() {
     let mut spec = spec_with(None, Some(true), true);
     let text = error_text(transform_with(row_json(), &spec, Some(TARGET_SCHEMA)));
-    assert!(text.contains("'Quantity' does not derive identifier slot 'id'"), "{text}");
+    assert!(
+        text.contains("'Quantity' does not derive identifier slot 'id'"),
+        "{text}"
+    );
     spec["class_derivations"]["Measurement"]["slot_derivations"]["value_quantity"]["class_derivations"]
         ["Quantity"]["mint_ids"] = json!(true);
     let out = transform_with(row_json(), &spec, Some(TARGET_SCHEMA)).unwrap();
@@ -383,9 +397,14 @@ fn class_defaults_precedence() {
 fn class_defaults_list_form_and_null() {
     let mut spec = spec_with(None, None, false);
     spec["class_defaults"] = json!([{"name": "Measurement", "mint_ids": true}]);
-    assert!(map(&transform_with(row_json(), &spec, Some(TARGET_SCHEMA)).unwrap()).contains_key("id"));
+    assert!(
+        map(&transform_with(row_json(), &spec, Some(TARGET_SCHEMA)).unwrap()).contains_key("id")
+    );
     spec["class_defaults"] = json!({"Measurement": null});
-    assert!(error_text(transform_with(row_json(), &spec, Some(TARGET_SCHEMA))).contains("mint_ids is not true"));
+    assert!(
+        error_text(transform_with(row_json(), &spec, Some(TARGET_SCHEMA)))
+            .contains("mint_ids is not true")
+    );
 }
 
 // `mint_ids` and `class_defaults` survive a serde round trip of the spec.
@@ -398,8 +417,14 @@ fn mint_settings_round_trip() {
         serde_json::from_value(serde_json::to_value(&parsed).unwrap()).unwrap();
     assert_eq!(parsed, again);
     assert_eq!(again.mint_ids, Some(true));
-    assert_eq!(again.class_defaults.as_ref().unwrap()["Measurement"].mint_ids, Some(true));
-    assert_eq!(again.class_defaults.as_ref().unwrap()["Quantity"].mint_ids, Some(false));
+    assert_eq!(
+        again.class_defaults.as_ref().unwrap()["Measurement"].mint_ids,
+        Some(true)
+    );
+    assert_eq!(
+        again.class_defaults.as_ref().unwrap()["Quantity"].mint_ids,
+        Some(false)
+    );
 }
 
 // test_inherited_id_derivation_and_abstract_classes_need_no_minting
@@ -422,7 +447,10 @@ fn inherited_id_derivation_and_abstract_classes_need_no_minting() {
     assert!(tr.missing_identifiers().unwrap().is_empty());
     let out = tr.map_object(&value(row_json()), Some("Row")).unwrap();
     let got: Json = serde_json::to_value(&out).unwrap();
-    assert_eq!(got, json!({"id": "R-P1", "observation_type": "OBA:VT0000184"}));
+    assert_eq!(
+        got,
+        json!({"id": "R-P1", "observation_type": "OBA:VT0000184"})
+    );
 
     let messages = validate_spec_semantics(&to_spec(spec), Some(&source), Some(&target), false);
     assert!(
@@ -468,8 +496,7 @@ fn validate(spec: &Json) -> Vec<linkml_map_core::validate::ValidationMessage> {
     validate_spec_semantics(&to_spec(spec.clone()), Some(&source), Some(&target), false)
 }
 
-const SYNTHESIZED: &str =
-    "Identifier slot 'id' has no derivation; it will be synthesized from a hash of the record's content";
+const SYNTHESIZED: &str = "Identifier slot 'id' has no derivation; it will be synthesized from a hash of the record's content";
 
 // test_validator_reports_minting
 #[test]
@@ -515,7 +542,8 @@ fn validator_honors_class_defaults_and_rejects_unknown_classes() {
         vec![(
             Severity::Error,
             "class_defaults[NoSuchClass]".to_string(),
-            "class_defaults names 'NoSuchClass', which is not a class in the target schema".to_string()
+            "class_defaults names 'NoSuchClass', which is not a class in the target schema"
+                .to_string()
         )]
     );
     // The unknown-class check comes first, as upstream.

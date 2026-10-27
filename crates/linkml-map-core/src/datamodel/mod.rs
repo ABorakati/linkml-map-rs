@@ -712,7 +712,11 @@ where
                     serde_json::Value::Null => None,
                     serde_json::Value::Bool(b) => Some(b),
                     serde_json::Value::Object(o) => {
-                        match o.get("mint_ids").cloned().unwrap_or(serde_json::Value::Null) {
+                        match o
+                            .get("mint_ids")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null)
+                        {
                             serde_json::Value::Null => None,
                             serde_json::Value::Bool(b) => Some(b),
                             other => {

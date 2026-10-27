@@ -63,7 +63,12 @@ fn with_inherited_derivations(
         if !seen.insert(std::ptr::from_ref(node)) {
             return;
         }
-        names.extend(node.slot_derivations.iter().flatten().map(|(_, sd)| sd.name.clone()));
+        names.extend(
+            node.slot_derivations
+                .iter()
+                .flatten()
+                .map(|(_, sd)| sd.name.clone()),
+        );
         if mint.is_none() {
             *mint = node.mint_ids;
         }

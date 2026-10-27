@@ -1005,6 +1005,7 @@ dependencies = [
  "linkml-map-pipeline",
  "linkml-map-schemaview",
  "log",
+ "serde_json",
  "serde_yaml_ng",
  "tempfile",
  "tokio",
@@ -1100,6 +1101,7 @@ name = "linkml-map-schemaview"
 version = "0.1.21"
 dependencies = [
  "anyhow",
+ "indexmap",
  "linkml-map-core",
  "linkml_meta",
  "schemaview",

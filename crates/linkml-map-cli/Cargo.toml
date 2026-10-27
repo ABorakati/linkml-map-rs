@@ -20,5 +20,6 @@ serde_yaml_ng = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio    = { workspace = true }
