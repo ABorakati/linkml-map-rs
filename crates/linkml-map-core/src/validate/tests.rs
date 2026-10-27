@@ -550,7 +550,9 @@ fn dotted_populated_from_unknown_base_still_errors() {
 #[test]
 fn top_level_join_keys_checked() {
     let sv = joinable_schema();
-    let cases: [(&str, serde_json::Value, Vec<(&str, &str)>); 4] = [
+    // (id, join spec, expected (key, class) misses)
+    type Case<'a> = (&'a str, serde_json::Value, Vec<(&'a str, &'a str)>);
+    let cases: [Case; 4] = [
         (
             "join_on-typo",
             json!({"join_on": "subjet_id"}),
