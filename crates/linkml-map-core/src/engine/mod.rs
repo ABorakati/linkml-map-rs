@@ -83,8 +83,14 @@ pub struct CompiledExprs {
 impl CompiledExprs {
     /// Parse every `expr:` in `spec` once.
     ///
-    /// Returns a parse error if any expression is syntactically invalid; this
-    /// surfaces malformed exprs at plan-build time rather than on the first row.
+    /// PARITY: upstream parses an expression when a row first evaluates it, so a spec
+    /// with a malformed `expr:` loads, and runs without error when no row reaches it
+    /// (zero rows, or no row reaches the slot). A malformed
+    /// expression is therefore left out of the cache -- the row path then parses the
+    /// text again and reports the parse error on first use, with the text upstream
+    /// gives -- instead of failing the whole plan here. Valid expressions stay cached.
+    ///
+    /// The result is `Ok` for every spec; the `Result` is kept so callers need not change.
     pub fn build(spec: &TransformationSpecification) -> ExprResult<Self> {
         let mut slot_exprs: FastMap<String, FastMap<String, (String, ParsedExpr)>> =
             FastMap::default();
@@ -92,8 +98,9 @@ impl CompiledExprs {
             for cd in cds {
                 if let Some(sds) = &cd.slot_derivations {
                     for (_, sd) in sds {
-                        if let Some(expr) = &sd.expr {
-                            let parsed = parse_expr(expr)?;
+                        if let Some(expr) = &sd.expr
+                            && let Ok(parsed) = parse_expr(expr)
+                        {
                             slot_exprs
                                 .entry(cd.name.clone())
                                 .or_default()
@@ -114,8 +121,10 @@ impl CompiledExprs {
         let mut enum_exprs = HashMap::new();
         if let Some(eds) = &spec.enum_derivations {
             for (key, ed) in eds {
-                if let Some(expr) = &ed.expr {
-                    enum_exprs.insert(key.clone(), parse_expr(expr)?);
+                if let Some(expr) = &ed.expr
+                    && let Ok(parsed) = parse_expr(expr)
+                {
+                    enum_exprs.insert(key.clone(), parsed);
                 }
             }
         }
@@ -240,7 +249,12 @@ fn resolve_class_derivation(
 /// [`ObjectTransformer::eval_expr_for_slot`]). Local to one pass over a row's
 /// slot derivations, so the engine itself stays `Send + Sync`.
 #[derive(Default)]
-struct RowBindings(std::cell::RefCell<Option<Bindings>>);
+struct RowBindings(
+    std::cell::RefCell<Option<Bindings>>,
+    /// The row's keys that are not slots of the source type (see
+    /// [`ObjectTransformer::check_row_names`]), found once per row.
+    std::cell::OnceCell<Vec<String>>,
+);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -789,10 +803,10 @@ impl<'s> ObjectTransformer<'s> {
             }
             // Source slot def for range/cardinality coercion.
             // _source_class is virtual — no real schema slot to look up.
-            let ssd = if populated_from == "_source_class" {
-                None
-            } else {
+            let ssd = if populated_from == "_source_class" || populated_from.contains('.') {
                 induced_slot_cow(self.source_schema, populated_from, source_type)
+            } else {
+                self.require_source_slot(populated_from, source_type)?
             };
             (mapped, ssd)
         } else if slot_deriv.class_derivations.is_some() {
@@ -813,7 +827,7 @@ impl<'s> ObjectTransformer<'s> {
             // 5. Implicit same-name copy.
             let raw = source_map.get(slot_name).cloned().unwrap_or(Value::Null);
             let raw = apply_missing_values(raw, slot_deriv);
-            let ssd = induced_slot_cow(self.source_schema, slot_name, source_type);
+            let ssd = self.require_source_slot(slot_name, source_type)?;
             (raw, ssd)
         };
 
@@ -1011,6 +1025,7 @@ impl<'s> ObjectTransformer<'s> {
             && !slot_deriv.hide.unwrap_or(false)
         {
             v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), source_map, index)?;
+            self.require_target_slot(slot_deriv, class_deriv, &v, ts)?;
             v = self.coerce_cardinality(v, slot_deriv, class_deriv, ts)?;
             if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv, ts) {
                 v = coerce_datatype(v, &datatype)?;
@@ -1029,6 +1044,7 @@ impl<'s> ObjectTransformer<'s> {
             // No `_map_value_by_range` / `_reshape_collection` (they need a
             // source slot). A `value:`/`expr:` result is coerced to the spec
             // range even without a target schema.
+            self.require_target_slot(slot_deriv, class_deriv, &v, ts)?;
             v = self.coerce_cardinality(v, slot_deriv, class_deriv, ts)?;
             if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv, ts) {
                 v = coerce_datatype(v, &datatype)?;
@@ -1036,6 +1052,82 @@ impl<'s> ObjectTransformer<'s> {
             v = self.resolve_enum_value(v, slot_deriv, class_deriv, ts)?;
         }
         Ok(v)
+    }
+
+    /// The source schema's induced slot for a plain (undotted) `populated_from` or an
+    /// implicit same-name copy; `None` without a source schema.
+    ///
+    /// PARITY: `ObjectTransformer._resolve_fk_or_literal` and the implicit-copy `else` arm
+    /// of `_derive_slot` call `context.sv.induced_slot(name, context.source_type)`
+    /// unguarded, so a slot the source type does not have (or a source type that is not a
+    /// class: `--source-type` is forced onto every block of a directory) raises
+    /// `ValueError` instead of yielding null. `TransformationError` wraps it with the
+    /// derivation context.
+    fn require_source_slot(
+        &self,
+        slot_name: &str,
+        source_type: &str,
+    ) -> Result<Option<Cow<'s, SlotDef>>> {
+        let Some(schema) = self.source_schema else {
+            return Ok(None);
+        };
+        induced_slot_cow(Some(schema), slot_name, source_type)
+            .map(Some)
+            .ok_or_else(|| {
+                Error::Python(match schema.get_class(source_type) {
+                    Err(_) => format!("ValueError: Class: \"{source_type}\" not found"),
+                    Ok(_) => format!(
+                        "ValueError: No such slot {slot_name} as an attribute of {source_type} ancestors or as a slot definition in the schema"
+                    ),
+                })
+            })
+    }
+
+    /// Upstream raises `ValueError` ("No such slot ...") from `sv.induced_slot` when a
+    /// target schema is loaded but does not resolve the derived slot on the target class
+    /// (or the class itself).
+    ///
+    /// PARITY: `Transformer._is_coerce_to_multivalued` / `_is_coerce_to_singlevalued`
+    /// (reached from `ObjectTransformer._coerce_cardinality`) and
+    /// `_resolve_target_slot_datatype` (reached when the spec has no `range`) look the
+    /// slot up on `target_schemaview`, so a derived slot absent from the target class
+    /// fails the row. The only lookups upstream skips: a `MultiValued`/`MultiValuedDict`
+    /// cast or a reversed stringification short-circuits the cardinality probes for a
+    /// non-list value (the datatype probe still runs when the spec has no `range`).
+    fn require_target_slot(
+        &self,
+        slot_deriv: &SlotDerivation,
+        class_deriv: &ClassDerivation,
+        v: &Value,
+        ts: Option<&TargetSlot>,
+    ) -> Result<()> {
+        let Some(target) = self.target_schema else {
+            return Ok(());
+        };
+        if self
+            .target_slot_multivalued(&class_deriv.name, &slot_deriv.name, ts)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let cardinality_shortcut = matches!(
+            slot_deriv.cast_collection_as,
+            Some(CollectionType::MultiValued | CollectionType::MultiValuedDict)
+        ) || slot_deriv
+            .stringification
+            .as_ref()
+            .is_some_and(|s| s.reversed.unwrap_or(false));
+        let probes_datatype = slot_deriv.range.as_deref().is_none_or(str::is_empty);
+        if cardinality_shortcut && !matches!(v, Value::List(_)) && !probes_datatype {
+            return Ok(());
+        }
+        Err(Error::Python(match target.get_class(&class_deriv.name) {
+            Err(_) => format!("ValueError: Class {:?} not found", class_deriv.name),
+            Ok(_) => format!(
+                "ValueError: No such slot {} as an attribute of {} ancestors or as a slot definition in the schema",
+                slot_deriv.name, class_deriv.name
+            ),
+        }))
     }
 
     /// Perform a `unit_conversion:` slot derivation.
@@ -1402,6 +1494,56 @@ impl<'s> ObjectTransformer<'s> {
         bindings
     }
 
+    /// An `expr:` that names a row key which is not a slot of the source type fails.
+    ///
+    /// PARITY: `Bindings.__getitem__` resolves a name found in the row through
+    /// `get_ctxt_obj_and_dict` -> `dynamic_object(row, sv, source_type)`, whose
+    /// `sv.induced_slot(key, source_type)` raises `ValueError` for a key the source class
+    /// lacks. This is what makes `--source-type X` over a directory fail for another
+    /// block's expression (corpus case d398794d299d). Join aliases are resolved first and
+    /// never reach it. Syntactic names stand in for the names evaluation would touch.
+    fn check_row_names(
+        &self,
+        expr: &str,
+        source_map: &IndexMap<String, Value>,
+        source_type: &str,
+        class_deriv: &ClassDerivation,
+        row: &RowBindings,
+    ) -> Result<()> {
+        let Some(schema) = self.source_schema else {
+            return Ok(());
+        };
+        let unknown = row.1.get_or_init(|| {
+            source_map
+                .keys()
+                .filter(|k| {
+                    schema.induced_slot_ref(k, source_type).is_none()
+                        && schema.induced_slot(k, source_type).is_err()
+                })
+                .cloned()
+                .collect()
+        });
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let names = crate::validate::expr_refs::extract_expr_slot_references(expr);
+        for key in unknown {
+            let is_join = class_deriv
+                .joins
+                .as_ref()
+                .is_some_and(|j| j.contains_key(key));
+            if !is_join && names.contains(key) {
+                return Err(Error::Python(match schema.get_class(source_type) {
+                    Err(_) => format!("ValueError: Class: \"{source_type}\" not found"),
+                    Ok(_) => format!(
+                        "ValueError: No such slot {key} as an attribute of {source_type} ancestors or as a slot definition in the schema"
+                    ),
+                }));
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn eval_expr_for_slot(
         &self,
@@ -1415,6 +1557,7 @@ impl<'s> ObjectTransformer<'s> {
         target_attrs: Option<&IndexMap<String, Value>>,
     ) -> Result<Value> {
         let class_name = class_deriv.name.as_str();
+        self.check_row_names(expr, source_map, source_type, class_deriv, row)?;
         // The row's bindings are built by the row's first `expr:` slot and kept
         // for the rest: only `__slot_values` changes from slot to slot.
         let mut cell = row.0.borrow_mut();
@@ -1849,7 +1992,7 @@ impl<'s> ObjectTransformer<'s> {
             // local #266 behaviour, which over-broadly dropped ANY hollow nested
             // object (including genuine same-table `{slot: null}` objects that
             // upstream retains).
-            if self.nested_join_misses(cls_deriv, source_map, class_deriv) {
+            if self.nested_join_misses(cls_deriv, source_map, class_deriv)? {
                 continue;
             }
 
@@ -1858,6 +2001,37 @@ impl<'s> ObjectTransformer<'s> {
             let nested =
                 self.map_object_internal(source_map, effective_source_type, cls_deriv, index)?;
             derived.push(nested);
+        }
+
+        // PARITY: `_derive_nested_objects` ends with
+        // `self.target_schemaview.induced_slot(slot_derivation.name, target_type)`, so
+        // without a target schema (`None`) it raises `AttributeError`, and with one that
+        // does not resolve the slot, `ValueError`. Both fail the row. (`target_type` is
+        // `None` for a top-level class derivation, which makes upstream's lookup
+        // class-less -- any slot or attribute of that name in the schema -- so a slot
+        // missing on the target class only fails when no target class has it either;
+        // a nested derivation's lookup is always class-based, which is not modelled.)
+        match self.target_schema {
+            None => {
+                return Err(Error::Python(
+                    "AttributeError: 'NoneType' object has no attribute 'induced_slot'".to_owned(),
+                ));
+            }
+            Some(target) => {
+                let resolves = self
+                    .target_slot_multivalued(&class_deriv.name, &slot_deriv.name, None)
+                    .is_some()
+                    || target
+                        .all_class_names()
+                        .iter()
+                        .any(|class| target.induced_slot(&slot_deriv.name, class).is_ok());
+                if !resolves {
+                    return Err(Error::Python(format!(
+                        "ValueError: No such slot {} as an attribute of {} ancestors or as a slot definition in the schema",
+                        slot_deriv.name, class_deriv.name
+                    )));
+                }
+            }
         }
 
         // Decide cardinality from the target schema slot when available,
@@ -1895,16 +2069,16 @@ impl<'s> ObjectTransformer<'s> {
         nested: &ClassDerivation,
         source_map: &IndexMap<String, Value>,
         parent_class_deriv: &ClassDerivation,
-    ) -> bool {
+    ) -> Result<bool> {
         let parent_source = parent_class_deriv
             .populated_from
             .as_deref()
             .unwrap_or(parent_class_deriv.name.as_str());
         let Some(nested_source) = nested.populated_from.as_deref() else {
-            return false;
+            return Ok(false);
         };
         if nested_source == parent_source {
-            return false;
+            return Ok(false);
         }
         // Join spec is keyed by the nested source (mirrors upstream
         // `parent_class_deriv.joins[nested_source]`).
@@ -1915,26 +2089,35 @@ impl<'s> ObjectTransformer<'s> {
         else {
             // No join spec: upstream raises rather than collapsing. The error is
             // surfaced by the normal resolution path; do not treat as a miss.
-            return false;
+            return Ok(false);
         };
         // Python: source_key = spec.source_key or spec.join_on. Missing key spec
         // is a config error handled elsewhere — not a miss.
         let Some(source_key) = join_source_key(ac) else {
-            return false;
+            return Ok(false);
         };
         // Python: key_val = source_obj.get(source_key); if key_val is None: None.
         let key_str = match source_map.get(source_key) {
             Some(Value::Str(s)) => s.clone(),
             Some(Value::Int(i)) => i.to_string(),
             // Null / absent / non-scalar key ⇒ no join possible ⇒ miss.
-            _ => return true,
+            _ => return Ok(true),
         };
         let table = ac.class_named.as_deref().unwrap_or(nested_source);
-        // Miss when the index is absent or holds no row for this key.
-        self.lookup_index
-            .as_deref()
-            .and_then(|li| li.lookup_row(table, &key_str))
-            .is_none()
+        // PARITY: `_resolve_joined_row` (see `resolve_populated_from_raw`): with a key
+        // value, no index at all (or no such table in it) raises; only a registered
+        // table without a matching row is a miss.
+        let Some(li) = self.lookup_index.as_deref() else {
+            return Err(Error::Python(format!(
+                "ValueError: Join configured for {nested_source:?} but lookup_index has not been initialized"
+            )));
+        };
+        if !li.is_registered(table) {
+            return Err(Error::Python(format!(
+                "duckdb.CatalogException: Catalog Error: Table with name {table} does not exist!"
+            )));
+        }
+        Ok(li.lookup_row(table, &key_str).is_none())
     }
 
     // ── Cardinality coercion ──────────────────────────────────────────────────
@@ -2135,16 +2318,26 @@ impl<'s> ObjectTransformer<'s> {
         enum_names: &[String],
         source_obj: &Value,
     ) -> Result<Value> {
-        let enum_derivations = match &self.spec.enum_derivations {
-            Some(m) => m,
-            None => return Ok(source_value.clone()),
-        };
+        let no_enum_derivations = IndexMap::new();
+        let enum_derivations = self
+            .spec
+            .enum_derivations
+            .as_ref()
+            .unwrap_or(&no_enum_derivations);
 
         for enum_name in enum_names {
-            // Find a matching enum derivation for this enum name.
-            let (ed_key, ed) = match find_enum_derivation(enum_derivations, enum_name) {
-                Some((k, e)) => (k.as_str(), e),
-                None => continue,
+            // PARITY: `Transformer._get_enum_derivation` raises `ValueError` unless exactly
+            // one derivation matches (`populated_from == enum` or, with no
+            // `populated_from`, `name == enum`): none and several both fail.
+            let mut matching = enum_derivations.iter().filter(|(_, ed)| {
+                ed.populated_from.as_deref() == Some(enum_name)
+                    || (ed.populated_from.is_none() && ed.name == *enum_name)
+            });
+            let enum_deriv = matching.next().filter(|_| matching.next().is_none());
+            let Some((ed_key, ed)) = enum_deriv.map(|(k, e)| (k.as_str(), e)) else {
+                return Err(Error::Python(format!(
+                    "ValueError: Could not find what to derive from a source {enum_name}"
+                )));
             };
 
             // Expr evaluation on the enum level (rare).
@@ -2417,23 +2610,47 @@ fn resolve_populated_from_raw(
         }
         let alias = &populated_from[..dot];
         let field = &populated_from[dot + 1..];
-        if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
-            && let Some(ac) = joins.get(alias)
+        if let Some(ac) = class_deriv
+            .joins
+            .as_ref()
+            .and_then(|joins| joins.get(alias))
         {
             let table = ac.class_named.as_deref().unwrap_or(alias);
-            return Ok(source_map
-                .get(join_source_key(ac).unwrap_or(""))
-                .and_then(|kv| {
-                    let ks = match kv {
-                        Value::Str(s) => s.clone(),
-                        Value::Int(i) => i.to_string(),
-                        _ => return None,
-                    };
-                    li.lookup_row(table, &ks)?.get(field).cloned()
-                })
+            // PARITY: `_resolve_joined_row`: `join_keys(spec)` raises on an unresolved key;
+            // no key value on the row is a miss (`None`); but a key value with no
+            // `lookup_index` at all (single-object input) raises `ValueError`, and with
+            // an index that has no such table (a join table with no file) DuckDB raises
+            // a `CatalogException`. Only a registered table can miss quietly.
+            let Some(source_key) = join_source_key(ac) else {
+                return Err(Error::Python(format!(
+                    "ValueError: Join {alias:?} must specify 'join_on' or both 'source_key' and 'lookup_key'"
+                )));
+            };
+            let Some(key) = source_map.get(source_key).filter(|kv| !kv.is_null()) else {
+                return Ok(Value::Null);
+            };
+            let Some(li) = lookup_index else {
+                return Err(Error::Python(format!(
+                    "ValueError: Join configured for {alias:?} but lookup_index has not been initialized"
+                )));
+            };
+            if !li.is_registered(table) {
+                return Err(Error::Python(format!(
+                    "duckdb.CatalogException: Catalog Error: Table with name {table} does not exist!"
+                )));
+            }
+            let ks = match key {
+                Value::Str(s) => s.clone(),
+                Value::Int(i) => i.to_string(),
+                _ => return Ok(Value::Null),
+            };
+            return Ok(li
+                .lookup_row(table, &ks)
+                .and_then(|row| row.get(field))
+                .cloned()
                 .unwrap_or(Value::Null));
         }
-        // No join index — fall through to plain map lookup.
+        // Not a join alias — fall through to plain map lookup.
         return Ok(source_map
             .get(populated_from)
             .cloned()
@@ -2895,6 +3112,22 @@ mod tests {
 
     // ── Schema helpers ────────────────────────────────────────────────────────
 
+    /// A single-valued string slot (extra `Person` slots used by the nested-object tests).
+    fn plain_string_slot(name: &str) -> SlotDef {
+        SlotDef {
+            name: name.into(),
+            range: RangeKind::Type("string".into()),
+            multivalued: false,
+            required: false,
+            identifier: false,
+            key: false,
+            unit: None,
+            any_of_enums: vec![],
+            inlined: false,
+            inlined_as_list: false,
+        }
+    }
+
     fn make_person_schema() -> InMemorySchema {
         InMemorySchemaBuilder::new()
             .add_type("string")
@@ -3071,6 +3304,8 @@ mod tests {
                     inlined_as_list: false,
                 },
             )
+            .add_slot("Person", plain_string_slot("first"))
+            .add_slot("Person", plain_string_slot("missing_note"))
             .build()
     }
 
@@ -3522,6 +3757,16 @@ mod tests {
                 slot_derivations: Some(slots),
                 ..Default::default()
             }]),
+            // The `gender` slot ranges over an enum, so upstream's `map_object` runs the
+            // value through `transform_enum`, which needs an enum derivation.
+            enum_derivations: Some(IndexMap::from([(
+                "GenderType".to_owned(),
+                EnumDerivation {
+                    name: "GenderType".into(),
+                    mirror_source: Some(true),
+                    ..Default::default()
+                },
+            )])),
             ..Default::default()
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), None);
@@ -5717,7 +5962,30 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let engine = ObjectTransformer::new(spec, Some(&schema), None);
+        // Upstream raises unless the target schema resolves every derived slot
+        // (`_derive_nested_objects` / `_coerce_cardinality` look them up there).
+        let target = {
+            use crate::schema::{ClassDef, InMemorySchemaBuilder};
+            InMemorySchemaBuilder::new()
+                .add_type("string")
+                .add_class(ClassDef {
+                    name: "Person".into(),
+                    tree_root: true,
+                    is_a: None,
+                    mixins: vec![],
+                })
+                .add_slot("Person", plain_string_slot("full_name"))
+                .add_slot("Person", plain_string_slot("note"))
+                .add_class(ClassDef {
+                    name: "FullName".into(),
+                    tree_root: false,
+                    is_a: None,
+                    mixins: vec![],
+                })
+                .add_slot("FullName", plain_string_slot("first"))
+                .build()
+        };
+        let engine = ObjectTransformer::new(spec, Some(&schema), Some(&target));
 
         // No `first` in source, same-table nested (no join miss) → nested object
         // is retained as `{first: null}`; scalar null slot also stays present.
@@ -5996,6 +6264,37 @@ mod lookup_index_tests {
     use indexmap::IndexMap;
     use std::sync::Arc;
 
+    /// A target schema whose class `class` has one single-valued string slot `slot`.
+    /// Upstream's `_derive_nested_objects` looks the slot up on the target schema
+    /// (`target_schemaview.induced_slot`), so a nested derivation needs one.
+    fn target_with_slot(class: &str, slot_name: &str) -> crate::schema::InMemorySchema {
+        use crate::schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef};
+        InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_class(ClassDef {
+                name: class.into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
+            })
+            .add_slot(
+                class,
+                SlotDef {
+                    name: slot_name.into(),
+                    range: RangeKind::Type("string".into()),
+                    multivalued: false,
+                    required: false,
+                    identifier: false,
+                    key: false,
+                    unit: None,
+                    any_of_enums: vec![],
+                    inlined: false,
+                    inlined_as_list: false,
+                },
+            )
+            .build()
+    }
+
     fn get(v: &Value, key: &str) -> Value {
         match v {
             Value::Map(m) => m.get(key).cloned().unwrap_or(Value::Null),
@@ -6261,7 +6560,8 @@ mod lookup_index_tests {
             ("id", Value::Str("M2".into())),
             ("subject_id", Value::Str("S_NODATA".into())),
         ]);
-        let result = ObjectTransformer::new(spec, None, None)
+        let target = target_with_slot("Measurement", "observation");
+        let result = ObjectTransformer::new(spec, None, Some(&target))
             .with_lookup_index(Arc::new(li))
             .map_object(&source, Some("Measurement"))
             .unwrap();
@@ -6310,7 +6610,8 @@ mod lookup_index_tests {
 
         // subject_id S1 HAS a matching reading → no miss → object built.
         let source = val_map(&[("subject_id", Value::Str("S1".into()))]);
-        let result = ObjectTransformer::new(spec, None, None)
+        let target = target_with_slot("Measurement", "observation");
+        let result = ObjectTransformer::new(spec, None, Some(&target))
             .with_lookup_index(Arc::new(li))
             .map_object(&source, Some("Measurement"))
             .unwrap();
@@ -6609,6 +6910,417 @@ mod inline_dotpath_tests {
             msg.contains("expected a nested object") && msg.contains("deeper"),
             "diagnostic should explain the non-object segment: {msg}"
         );
+    }
+}
+
+/// Failures upstream raises where the engine used to carry on: each test cites the
+/// upstream raise site (`linkml_map.transformer`, v0.6.0-rc1).
+#[cfg(test)]
+mod upstream_errors {
+    use super::*;
+    use crate::datamodel::{
+        AliasedClass, ClassDerivation, EnumDerivation, SlotDerivation, TransformationSpecification,
+    };
+    use crate::schema::{
+        ClassDef, EnumDef, InMemorySchema, InMemorySchemaBuilder, PermissibleValue, RangeKind,
+        SlotDef,
+    };
+
+    fn slot_def(name: &str, range: RangeKind, multivalued: bool) -> SlotDef {
+        SlotDef {
+            name: name.into(),
+            range,
+            multivalued,
+            required: false,
+            identifier: false,
+            key: false,
+            unit: None,
+            any_of_enums: vec![],
+            inlined: false,
+            inlined_as_list: false,
+        }
+    }
+
+    /// One class with string slots (and optionally an enum-ranged `status` slot).
+    fn schema(class: &str, slots: &[&str], enum_slot: bool) -> InMemorySchema {
+        let mut b = InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_class(ClassDef {
+                name: class.into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
+            });
+        for s in slots {
+            b = b.add_slot(class, slot_def(s, RangeKind::Type("string".into()), false));
+        }
+        if enum_slot {
+            b = b
+                .add_enum(EnumDef {
+                    name: "Status".into(),
+                    permissible_values: vec![PermissibleValue {
+                        text: "A".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .add_slot(
+                    class,
+                    slot_def("status", RangeKind::Enum("Status".into()), false),
+                );
+        }
+        b.build()
+    }
+
+    fn spec_with(
+        class: &str,
+        populated_from: &str,
+        slots: Vec<SlotDerivation>,
+    ) -> TransformationSpecification {
+        TransformationSpecification {
+            class_derivations: Some(vec![ClassDerivation {
+                name: class.into(),
+                populated_from: Some(populated_from.into()),
+                slot_derivations: Some(slots.into_iter().map(|s| (s.name.clone(), s)).collect()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    fn pf(name: &str, from: &str) -> SlotDerivation {
+        SlotDerivation {
+            name: name.into(),
+            populated_from: Some(from.into()),
+            ..Default::default()
+        }
+    }
+
+    fn row(pairs: &[(&str, &str)]) -> Value {
+        Value::Map(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), Value::Str((*v).to_owned())))
+                .collect(),
+        )
+    }
+
+    fn err_text(
+        spec: TransformationSpecification,
+        source: &InMemorySchema,
+        target: Option<&InMemorySchema>,
+        input: &Value,
+    ) -> String {
+        ObjectTransformer::new(spec, Some(source), target.map(|t| t as &dyn SchemaProvider))
+            .map_object(input, Some("Person"))
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// `_resolve_fk_or_literal` / `_derive_slot`: `induced_slot(name, source_type)` raises for
+    /// a slot the source class does not have, for `populated_from` and the implicit copy
+    /// (corpus cases ec97df02fa7b, daba191bd3ff: `--source-type` forced onto every block).
+    #[test]
+    fn source_slot_missing_from_the_source_class_raises() {
+        let source = schema("Person", &["id"], false);
+        let input = row(&[("id", "p1")]);
+        for slot in [
+            pf("out", "nosuch"),
+            SlotDerivation {
+                name: "nosuch".into(),
+                ..Default::default()
+            },
+        ] {
+            let msg = err_text(
+                spec_with("Agent", "Person", vec![slot]),
+                &source,
+                None,
+                &input,
+            );
+            assert!(
+                msg.contains("No such slot nosuch as an attribute of Person ancestors"),
+                "{msg}"
+            );
+        }
+    }
+
+    /// `_derive_nested_objects` ends in `self.target_schemaview.induced_slot(...)`: with no
+    /// target schema that is an `AttributeError` (corpus cases 3b8230615745, 5f42931ad2d0).
+    #[test]
+    fn nested_derivation_without_a_target_schema_raises() {
+        let source = schema("Person", &["id"], false);
+        let nested = ClassDerivation {
+            name: "Inner".into(),
+            populated_from: Some("Person".into()),
+            slot_derivations: Some([("a".to_owned(), pf("a", "id"))].into_iter().collect()),
+            ..Default::default()
+        };
+        let outer = SlotDerivation {
+            name: "inner".into(),
+            class_derivations: Some(vec![nested]),
+            ..Default::default()
+        };
+        let input = row(&[("id", "p1")]);
+        let msg = err_text(
+            spec_with("Agent", "Person", vec![outer.clone()]),
+            &source,
+            None,
+            &input,
+        );
+        assert!(
+            msg.contains("'NoneType' object has no attribute 'induced_slot'"),
+            "{msg}"
+        );
+
+        // With a target schema that has the slot it works.
+        let target = InMemorySchemaBuilder::new()
+            .add_type("string")
+            .add_class(ClassDef {
+                name: "Agent".into(),
+                tree_root: true,
+                is_a: None,
+                mixins: vec![],
+            })
+            .add_slot(
+                "Agent",
+                slot_def("inner", RangeKind::Type("string".into()), false),
+            )
+            .add_class(ClassDef {
+                name: "Inner".into(),
+                tree_root: false,
+                is_a: None,
+                mixins: vec![],
+            })
+            .add_slot(
+                "Inner",
+                slot_def("a", RangeKind::Type("string".into()), false),
+            )
+            .build();
+        let ok = ObjectTransformer::new(
+            spec_with("Agent", "Person", vec![outer]),
+            Some(&source),
+            Some(&target),
+        )
+        .map_object(&input, Some("Person"));
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
+    /// `_coerce_cardinality` -> `_is_coerce_to_multivalued` -> `induced_slot`: a derived slot the
+    /// target class lacks fails the row (the `type_coercion` example's `id_as_url`), unless a
+    /// `MultiValued` cast short-circuits the probe for a scalar and the spec gives a `range`.
+    #[test]
+    fn derived_slot_missing_from_the_target_class_raises() {
+        let source = schema("Person", &["id"], false);
+        let target = schema("Agent", &["id"], false);
+        let input = row(&[("id", "p1")]);
+        let msg = err_text(
+            spec_with("Agent", "Person", vec![pf("id", "id"), pf("extra", "id")]),
+            &source,
+            Some(&target),
+            &input,
+        );
+        assert!(
+            msg.contains("No such slot extra as an attribute of Agent ancestors"),
+            "{msg}"
+        );
+
+        let mut cast = pf("extra", "id");
+        cast.cast_collection_as = Some(crate::datamodel::CollectionType::MultiValued);
+        cast.range = Some("string".into());
+        let ok = ObjectTransformer::new(
+            spec_with("Agent", "Person", vec![pf("id", "id"), cast]),
+            Some(&source),
+            Some(&target),
+        )
+        .map_object(&input, Some("Person"));
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
+    /// `Bindings.__getitem__` -> `dynamic_object` -> `induced_slot`: an `expr:` naming a row key
+    /// that is not a slot of the source type raises; a name the row lacks, or an expression that
+    /// does not use the stray key, does not (corpus case d398794d299d).
+    #[test]
+    fn expr_naming_a_non_slot_row_key_raises() {
+        let source = schema("Person", &["id"], false);
+        let expr = |e: &str| SlotDerivation {
+            name: "out".into(),
+            expr: Some(e.into()),
+            ..Default::default()
+        };
+        let input = row(&[("id", "p1"), ("age", "3")]);
+        let msg = err_text(
+            spec_with("Agent", "Person", vec![expr("{age} * 2")]),
+            &source,
+            None,
+            &input,
+        );
+        assert!(
+            msg.contains("No such slot age as an attribute of Person ancestors"),
+            "{msg}"
+        );
+        let ok = ObjectTransformer::new(
+            spec_with("Agent", "Person", vec![expr("{id}")]),
+            Some(&source),
+            None,
+        )
+        .map_object(&input, Some("Person"));
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
+    /// `_get_enum_derivation` raises `ValueError` unless exactly one derivation matches
+    /// (corpus cases 7d8cef5c3417, 8ee12775ef35).
+    #[test]
+    fn enum_ranged_slot_needs_exactly_one_enum_derivation() {
+        let source = schema("Person", &["id"], true);
+        let input = row(&[("id", "p1"), ("status", "A")]);
+        let msg = err_text(
+            spec_with("Agent", "Person", vec![pf("out", "status")]),
+            &source,
+            None,
+            &input,
+        );
+        assert!(
+            msg.contains("Could not find what to derive from a source Status"),
+            "{msg}"
+        );
+
+        let derivation = |name: &str| EnumDerivation {
+            name: name.into(),
+            populated_from: Some("Status".into()),
+            mirror_source: Some(true),
+            ..Default::default()
+        };
+        let mut spec = spec_with("Agent", "Person", vec![pf("out", "status")]);
+        spec.enum_derivations = Some([("S1".to_owned(), derivation("S1"))].into_iter().collect());
+        let out = ObjectTransformer::new(spec.clone(), Some(&source), None)
+            .map_object(&input, Some("Person"))
+            .unwrap();
+        assert_eq!(out, row(&[("out", "A")]));
+
+        // Two derivations of one enum are as bad as none.
+        spec.enum_derivations
+            .as_mut()
+            .unwrap()
+            .insert("S2".into(), derivation("S2"));
+        let msg = err_text(spec, &source, None, &input);
+        assert!(
+            msg.contains("Could not find what to derive from a source Status"),
+            "{msg}"
+        );
+    }
+
+    fn join_spec(index_slot: SlotDerivation) -> TransformationSpecification {
+        let mut spec = spec_with("Agent", "Person", vec![index_slot]);
+        spec.class_derivations.as_mut().unwrap()[0].joins = Some(
+            [(
+                "Order".to_owned(),
+                AliasedClass {
+                    alias: "Order".into(),
+                    source_key: Some("order_ref".into()),
+                    lookup_key: Some("id".into()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        spec
+    }
+
+    /// `_resolve_joined_row`: no value for the join key is a miss; a value with no
+    /// `lookup_index` raises `ValueError` (corpus case e5c5ef4b88ee); with an index that does
+    /// not hold the table DuckDB raises.
+    #[test]
+    fn join_with_a_key_needs_a_registered_lookup_table() {
+        let source = schema("Person", &["id", "order_ref"], false);
+        let target = schema("Agent", &["o"], false);
+        let spec = || join_spec(pf("o", "Order.id"));
+
+        let keyless = row(&[("id", "p1")]);
+        let out = ObjectTransformer::new(spec(), Some(&source), Some(&target))
+            .map_object(&keyless, Some("Person"))
+            .unwrap();
+        assert_eq!(
+            out,
+            Value::Map([("o".to_owned(), Value::Null)].into_iter().collect())
+        );
+
+        let keyed = row(&[("id", "p1"), ("order_ref", "o1")]);
+        let msg = err_text(spec(), &source, Some(&target), &keyed);
+        assert!(
+            msg.contains("ValueError: Join configured for \"Order\" but lookup_index has not been initialized"),
+            "{msg}"
+        );
+
+        let mut index = LookupIndex::new();
+        index.register_table("Other", &[], "id");
+        let err = ObjectTransformer::new(spec(), Some(&source), Some(&target))
+            .with_lookup_index(Arc::new(index))
+            .map_object(&keyed, Some("Person"))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Table with name Order does not exist"),
+            "{err}"
+        );
+
+        let mut index = LookupIndex::new();
+        index.register_table("Order", &[row(&[("id", "o1")])], "id");
+        let out = ObjectTransformer::new(spec(), Some(&source), Some(&target))
+            .with_lookup_index(Arc::new(index))
+            .map_object(&keyed, Some("Person"))
+            .unwrap();
+        assert_eq!(
+            out,
+            Value::Map(
+                [("o".to_owned(), Value::Str("o1".into()))]
+                    .into_iter()
+                    .collect()
+            )
+        );
+    }
+
+    /// Upstream parses an `expr:` when a row first evaluates it, so a spec whose expression
+    /// the parser rejects still loads (`CompiledExprs::build` no longer fails the plan); the
+    /// row path reports it, and valid expressions stay cached.
+    #[test]
+    fn malformed_expressions_fail_on_first_use_not_at_build() {
+        let source = schema("Person", &["id"], false);
+        let bad = SlotDerivation {
+            name: "bad".into(),
+            expr: Some("{id} +".into()),
+            ..Default::default()
+        };
+        let good = SlotDerivation {
+            name: "good".into(),
+            expr: Some("{id}".into()),
+            ..Default::default()
+        };
+        let mut spec = spec_with("Agent", "Person", vec![good, bad]);
+        spec.enum_derivations = Some(
+            [(
+                "E".to_owned(),
+                EnumDerivation {
+                    name: "E".into(),
+                    expr: Some("(".into()),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let compiled = CompiledExprs::build(&spec).expect("build never fails on a parse error");
+        assert!(
+            compiled.slot("Agent", "good", "{id}").is_some(),
+            "valid expr stays cached"
+        );
+        assert!(compiled.slot("Agent", "bad", "{id} +").is_none());
+        let engine =
+            ObjectTransformer::new(spec, Some(&source), None).with_compiled_exprs(&compiled);
+        let err = engine
+            .map_object(&row(&[("id", "p1")]), Some("Person"))
+            .unwrap_err();
+        assert!(err.to_string().contains("bad"), "{err}");
     }
 }
 

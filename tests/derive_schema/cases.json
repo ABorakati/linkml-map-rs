@@ -162,7 +162,8 @@
   "name": "attic__transform-s1-to-s2__personinfo_s1",
   "spec": "tests/compliance/attic/transform-s1-to-s2.yaml",
   "schema": "tests/compliance/attic/personinfo_s1.yaml",
-  "error": true
+  "error": true,
+  "known_divergence": "upstream's SchemaMapper._derive_enum raises AttributeError on the explicit `permissible_value_derivations: null` of this legacy spec (pydantic keeps the null); the Rust datamodel cannot tell an explicit null from an absent field, so it derives the schema"
  },
  {
   "name": "attic__denormalize-mapping__personinfo_s1",
