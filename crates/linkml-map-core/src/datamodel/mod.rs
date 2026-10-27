@@ -41,8 +41,32 @@ where
     Ok(match value {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::Array(arr)) => Some(arr.into_iter().map(stringify).collect()),
+        // PARITY: ReferenceValidator `ensure_list` turns a mapping into the list
+        // of its values.
+        Some(serde_json::Value::Object(map)) => Some(map.into_values().map(stringify).collect()),
         Some(scalar) => Some(vec![stringify(scalar)]),
     })
+}
+
+/// Deserialize a list field whose items are `Any`, accepting a bare value as
+/// shorthand for a one-element list.
+///
+/// PARITY: `SlotDerivation.coerce_missing_values` (a `mode='before'` validator,
+/// "accept a single scalar as shorthand for a one-element list") — and
+/// `ReferenceValidator`, which wraps a scalar bound for any multivalued field.
+fn deserialize_any_seq_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<serde_json::Value>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Array(items)) => Some(items),
+            Some(scalar) => Some(vec![scalar]),
+        },
+    )
 }
 
 /// Serialize `Option<Vec<String>>` as a bare scalar when it holds exactly one
@@ -191,10 +215,18 @@ pub struct SpecificationComponent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub implements: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub comments: Option<Vec<String>>,
 }
 
@@ -280,7 +312,11 @@ pub struct StringificationConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reversed: Option<bool>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub over_slots: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -344,7 +380,11 @@ pub struct PivotOperation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unmelt_to_class: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub unmelt_to_slots: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -353,10 +393,18 @@ pub struct PivotOperation {
     #[serde(default = "default_slot_name_template")]
     pub slot_name_template: String,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub source_slots: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub id_slots: Option<Vec<String>>,
 }
 
@@ -474,9 +522,10 @@ pub struct SlotDerivation {
 
     /// Nested target objects derived from source data (v0.6.0: replaces the
     /// removed `object_derivations` — one nesting level flatter). Mirrors
-    /// Python `SlotDerivation.class_derivations`.
+    /// Python `SlotDerivation.class_derivations`, a *list*: entries may share a
+    /// `name` and each one produces its own object.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub class_derivations: Option<IndexMap<String, ClassDerivation>>,
+    pub class_derivations: Option<Vec<ClassDerivation>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
@@ -487,7 +536,11 @@ pub struct SlotDerivation {
     /// Sentinel source values that map to null (e.g. `-9`, `999`, `"NA"`).
     /// When the derived value equals one of these, the slot is set to null.
     /// v0.6.0 (#269). Mirrors Python `SlotDerivation.missing_values`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_any_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub missing_values: Option<Vec<serde_json::Value>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -535,7 +588,11 @@ pub struct SlotDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_a: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mixins: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -556,10 +613,18 @@ pub struct SlotDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub implements: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub comments: Option<Vec<String>>,
 }
 
@@ -597,7 +662,11 @@ pub struct PermissibleValueDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_a: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mixins: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -615,10 +684,18 @@ pub struct PermissibleValueDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub implements: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub comments: Option<Vec<String>>,
 }
 
@@ -650,7 +727,11 @@ pub struct EnumDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_a: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mixins: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -668,10 +749,18 @@ pub struct EnumDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub implements: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub comments: Option<Vec<String>>,
 }
 
@@ -786,7 +875,11 @@ pub struct ClassDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_a: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mixins: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -804,10 +897,18 @@ pub struct ClassDerivation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub implements: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub comments: Option<Vec<String>>,
 }
 
@@ -913,10 +1014,18 @@ pub struct TransformationSpecification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub implements: Option<Vec<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub comments: Option<Vec<String>>,
 }
 
@@ -1047,10 +1156,15 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
 ///
 /// PARITY: `spec_normalizer._shape_normalize` runs linkml's `ReferenceValidator`, which
 /// treats an `Any`-ranged field as single-valued: a list becomes its first element (an
-/// empty list becomes `null`). In the transformer model that hits `CopyDirective`'s
-/// `include` / `exclude` / `add` (so `exclude: [a, b]` only ever excludes `a`) and the
-/// derivations' `overrides` / `target_definition`. Dicts and nested content are untouched.
-/// Suggested upstream issue: declare these slots `multivalued` (or stop normalising `Any`).
+/// empty list becomes `null`). In the transformer model that hits `SlotDerivation.value`
+/// (so `value: [a, b]` is the constant `a`), `CopyDirective`'s `include` / `exclude` /
+/// `add` (so `exclude: [a, b]` only ever excludes `a`) and the derivations' `overrides` /
+/// `target_definition`. Dicts and nested content are untouched, and so are the `value` of
+/// a `KeyVal` (`value_mappings`, `expression_mappings`), which `ReferenceValidator` leaves
+/// alone. A list of lists makes upstream raise `NotImplementedError("List of Lists")`
+/// at load; here it collapses to its first list.
+/// Suggested upstream issue: declare these slots `multivalued` (or stop normalising `Any`);
+/// a constant `value: [a, b]` is silently truncated to `a`.
 fn collapse_any_lists(node: &mut serde_json::Value) {
     fn first(v: &mut serde_json::Value) {
         if let serde_json::Value::Array(items) = v {
@@ -1074,6 +1188,18 @@ fn collapse_any_lists(node: &mut serde_json::Value) {
                                             first(v);
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                    // The constant of each slot derivation (`SlotDerivation.value`).
+                    "slot_derivations" => {
+                        if let Some(slots) = value.as_object_mut() {
+                            for slot in slots.values_mut() {
+                                if let Some(v) =
+                                    slot.as_object_mut().and_then(|s| s.get_mut("value"))
+                                {
+                                    first(v);
                                 }
                             }
                         }
@@ -1137,37 +1263,68 @@ fn normalise_slot_derivations(sdm: &mut serde_json::Map<String, serde_json::Valu
                 .or_insert_with(|| serde_json::Value::String(slot_name.clone()));
             normalise_keyval_mapping(so, "value_mappings");
             normalise_keyval_mapping(so, "expression_mappings");
-            // Slot-level nested class_derivations stay a mapping (IndexMap);
-            // inject each class name from its key and recurse. The list form
-            // (`- name: Project ...`, which upstream's loader also accepts) is
-            // first re-keyed by each entry's `name`.
-            if let Some(cd) = so.get_mut("class_derivations")
-                && let Some(items) = cd.as_array_mut()
-            {
-                let keyed: serde_json::Map<String, serde_json::Value> = items
-                    .drain(..)
-                    .filter_map(|item| {
-                        let name = item.get("name")?.as_str()?.to_owned();
-                        Some((name, item))
-                    })
-                    .collect();
-                *cd = serde_json::Value::Object(keyed);
-            }
-            if let Some(cd) = so.get_mut("class_derivations")
-                && let Some(cdm) = cd.as_object_mut()
-            {
-                for (cls_name, cls_val) in cdm.iter_mut() {
-                    if cls_val.is_null() {
-                        *cls_val = serde_json::json!({});
-                    }
-                    if let Some(co) = cls_val.as_object_mut() {
-                        co.entry("name")
-                            .or_insert_with(|| serde_json::Value::String(cls_name.clone()));
-                        normalise_class_derivation_body(co);
+            // Slot-level nested class_derivations are a list (`- name: Project
+            // ...`; entries may repeat a name). The mapping form
+            // (`{Project: ...}`) and the compact-key list form
+            // (`- Project: ...`) are first expanded to explicit-name entries.
+            if let Some(cd) = so.get_mut("class_derivations") {
+                expand_slot_class_derivations(cd);
+                if let Some(items) = cd.as_array_mut() {
+                    for item in items {
+                        if let Some(co) = item.as_object_mut() {
+                            normalise_class_derivation_body(co);
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/// Bring a slot-level `class_derivations` to the list-of-`{name, ...}` shape.
+///
+/// A mapping becomes a list with each key as the entry's `name` (unless it
+/// has one); in a list, a compact-key entry (`{Condition: {...}}`, sole key
+/// not `name`, a mapping or null value) is expanded the same way. Mirrors
+/// `spec_normalizer._expand_compact_keys`.
+fn expand_slot_class_derivations(cd: &mut serde_json::Value) {
+    let expand = |key: String, val: serde_json::Value| {
+        let mut body = if val.is_null() {
+            serde_json::json!({})
+        } else {
+            val
+        };
+        if let Some(o) = body.as_object_mut() {
+            o.entry("name").or_insert(serde_json::Value::String(key));
+        }
+        body
+    };
+    match cd {
+        serde_json::Value::Object(map) => {
+            let list = std::mem::take(map)
+                .into_iter()
+                .map(|(key, val)| expand(key, val))
+                .collect();
+            *cd = serde_json::Value::Array(list);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                let compact = match item.as_object() {
+                    Some(o) if o.len() == 1 => o
+                        .iter()
+                        .next()
+                        .filter(|(k, v)| *k != "name" && (v.is_object() || v.is_null()))
+                        .map(|(k, _)| k.clone()),
+                    _ => None,
+                };
+                if let Some(key) = compact
+                    && let Some(val) = item.as_object_mut().and_then(|o| o.remove(&key))
+                {
+                    *item = expand(key, val);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1436,9 +1593,89 @@ mod tests {
             .expect("nested joins entry keyed only by alias should deserialize");
         let cds = spec.class_derivations.unwrap();
         let child = &cds[0].slot_derivations.as_ref().unwrap()["child"];
-        let nested = &child.class_derivations.as_ref().unwrap()["NestedTarget"];
+        let nested = &child.class_derivations.as_ref().unwrap()[0];
         let joins = nested.joins.as_ref().unwrap();
         assert_eq!(joins["Reading"].alias, "Reading");
         assert_eq!(joins["Reading"].join_on.as_deref(), Some("patient_id"));
+    }
+
+    fn spec_from_yaml(yaml: &str) -> TransformationSpecification {
+        let mut j: serde_json::Value = serde_yaml_ng::from_str(yaml).unwrap();
+        normalise_spec_json(&mut j);
+        serde_json::from_value(j).unwrap()
+    }
+
+    fn first_slot(spec: &TransformationSpecification) -> &SlotDerivation {
+        &spec.class_derivations.as_ref().unwrap()[0]
+            .slot_derivations
+            .as_ref()
+            .unwrap()["x"]
+    }
+
+    // `SlotDerivation.coerce_missing_values` and `ReferenceValidator` wrap a scalar
+    // bound for a list field (corpus 1ddd4049b2aa).
+    #[test]
+    fn scalar_for_a_list_field_is_wrapped() {
+        let spec = spec_from_yaml(
+            "class_derivations:\n  A:\n    mixins: B\n    comments: c\n    slot_derivations:\n      x:\n        missing_values: b\n        pivot_operation: {direction: MELT, source_slots: s, id_slots: i}\n",
+        );
+        let slot = first_slot(&spec);
+        assert_eq!(slot.missing_values, Some(vec![serde_json::json!("b")]));
+        let pivot = slot.pivot_operation.as_ref().unwrap();
+        assert_eq!(pivot.source_slots, Some(vec!["s".to_owned()]));
+        assert_eq!(pivot.id_slots, Some(vec!["i".to_owned()]));
+        let cd = &spec.class_derivations.as_ref().unwrap()[0];
+        assert_eq!(cd.mixins, Some(vec!["B".to_owned()]));
+        assert_eq!(cd.comments, Some(vec!["c".to_owned()]));
+    }
+
+    // `ReferenceValidator` reads an `Any` slot as single-valued: `value: [a, b]`
+    // is `a` (corpus 52b0ea786261, 39e83db9a8fa, c30315a19010), `[]` is null,
+    // a mapping is left alone, and a `KeyVal`'s value is not collapsed.
+    #[test]
+    fn any_ranged_value_collapses_to_its_first_element() {
+        let spec = spec_from_yaml(
+            "class_derivations:\n  A:\n    slot_derivations:\n      x:\n        value: [a, b]\n      y:\n        value: []\n      z:\n        value: {k: [1, 2]}\n      w:\n        value_mappings:\n          k: {value: [p, q]}\n",
+        );
+        let slots = spec.class_derivations.as_ref().unwrap()[0]
+            .slot_derivations
+            .as_ref()
+            .unwrap();
+        assert_eq!(slots["x"].value, Some(serde_json::json!("a")));
+        assert_eq!(slots["y"].value, None);
+        assert_eq!(slots["z"].value, Some(serde_json::json!({"k": [1, 2]})));
+        let kv = &slots["w"].value_mappings.as_ref().unwrap()["k"];
+        assert_eq!(kv.value, Some(serde_json::json!(["p", "q"])));
+    }
+
+    // Slot-level `class_derivations` is a list: a repeated name keeps every
+    // entry, a mapping and the compact `- Name: {...}` form are expanded
+    // (corpus a8873701d43d).
+    #[test]
+    fn slot_class_derivations_are_a_list() {
+        let spec = spec_from_yaml(
+            "class_derivations:\n  A:\n    slot_derivations:\n      x:\n        class_derivations:\n        - {name: C, populated_from: P}\n        - {name: C, populated_from: Q}\n        - D: {populated_from: R}\n      y:\n        class_derivations:\n          E: {populated_from: S}\n",
+        );
+        let slots = spec.class_derivations.as_ref().unwrap()[0]
+            .slot_derivations
+            .as_ref()
+            .unwrap();
+        let names = |s: &SlotDerivation| -> Vec<(String, Option<String>)> {
+            s.class_derivations
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| (c.name.clone(), c.populated_from.clone()))
+                .collect()
+        };
+        assert_eq!(
+            names(&slots["x"]),
+            vec![
+                ("C".into(), Some("P".into())),
+                ("C".into(), Some("Q".into())),
+                ("D".into(), Some("R".into())),
+            ]
+        );
+        assert_eq!(names(&slots["y"]), vec![("E".into(), Some("S".into()))]);
     }
 }

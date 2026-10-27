@@ -254,7 +254,7 @@ pub(crate) fn collect_all_joins(class_deriv: &ClassDerivation) -> Result<BTreeMa
             out.insert(table, lookup_key.to_string());
         }
         for (_, sd) in cd.slot_derivations.iter().flatten() {
-            for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+            for nested in sd.class_derivations.iter().flatten() {
                 collect_from(nested, out)?;
             }
         }

@@ -289,7 +289,7 @@ permissible value keys (by key, `meaning`, `title` or alias), foreign-key joins,
 (is_a/mixins), stringification (delimiter + JSON/YAML), unit conversion
 (scheme-aware, with a medically-extended table incl. molar↔mass via
 `molecular_weight` and equivalents↔molar via `valence`), slot-level nested
-`class_derivations`, `missing_values` (sentinel codes → null), **offset /
+`class_derivations` (a list: entries may repeat a class name), `missing_values` (sentinel codes → null), **offset /
 aggregation / pivot (melt/unmelt)**, target-schema derivation, content-hash
 identifier minting (see [Identifiers](#identifiers)), Parquet/DuckDB output
 (`columnar` feature), and the inverse (round-trip) transformer.

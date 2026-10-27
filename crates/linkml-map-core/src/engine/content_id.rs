@@ -497,7 +497,7 @@ impl ContentIds {
 fn collect_class_derivation_names(cd: &ClassDerivation, out: &mut Vec<String>) {
     out.push(cd.name.clone());
     for sd in cd.slot_derivations.iter().flatten().map(|(_, v)| v) {
-        for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+        for nested in sd.class_derivations.iter().flatten() {
             collect_class_derivation_names(nested, out);
         }
     }
@@ -508,7 +508,7 @@ fn collect_class_derivation_names(cd: &ClassDerivation, out: &mut Vec<String>) {
 fn all_class_derivations<'a>(cd: &'a ClassDerivation, out: &mut Vec<&'a ClassDerivation>) {
     out.push(cd);
     for sd in cd.slot_derivations.iter().flatten().map(|(_, v)| v) {
-        for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+        for nested in sd.class_derivations.iter().flatten() {
             all_class_derivations(nested, out);
         }
     }

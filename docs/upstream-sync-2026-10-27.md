@@ -208,6 +208,15 @@ Each is marked `PARITY:` in the code.
 - `_unrestricted_eval` errors go to asteval's stderr writer and are swallowed
   (a typo such as `src.evnts` silently gives `None`).
 
+- A constant `value: [a, b]` (and `overrides`, `target_definition`, a copy
+  directive's `include`/`exclude`/`add`) is silently truncated to its first
+  element by `ReferenceValidator`, which treats an `Any`-ranged slot as
+  single-valued; `[[...]]` raises `NotImplementedError: List of Lists`.
+- `perform_unit_conversion` ignores `unit_conversion` on a slot with no
+  `populated_from` (`source_obj.get(None)`) instead of using the slot name, and
+  writes a `None` key when `target_magnitude_slot` is set without
+  `target_unit_slot`.
+
 ## Still deferred
 
 - **DuckDB set-based join engine** (`510b0a50ca`) and **SCAN/MIGRATE
@@ -231,10 +240,25 @@ Each is marked `PARITY:` in the code.
   `type: Agent`. Low priority.
 - **`python-compat` CI matrix** is capped at Python 3.13 by PyO3 0.23 (upstream
   supports 3.14).
-- **Three Rust gaps exposed by the `a62221f` triage, not addressed here:** a
-  slot-level `pivot_operation` is ignored by the engine; the UNMELT fallback
-  passes the row through where upstream returns the `id_slots` subset; and a
-  missing source unit is not an error where upstream raises `ValueError`.
+- **The three Rust gaps exposed by the `a62221f` triage are closed** (engine
+  parity pass, port/fixengine): `engine/pivot.rs` is a faithful port of
+  `transformer/pivot.py` (slot-level `pivot_operation` melts; the UNMELT
+  fallback returns the `id_slots` subset; `slot_name_template` follows
+  `str.format`), and a missing source unit is a `ValueError`. The same pass
+  fixed the other engine gaps in the differential corpus: `str(True)` as the
+  `value_mappings` key; `offset` applied before the range coercion with
+  Python's arithmetic (a `TypeError` on a non-numeric operand); `_coerce_cardinality`
+  in upstream's order (a scalar bound for a multivalued target is split on the
+  delimiter; `delimiter.join` raises on non-strings; a reversed JSON/YAML
+  `stringification` parses); a scalar in a multivalued source slot wrapped in
+  `_map_value_by_range` (which needs the induced slot to take the schema's
+  `default_range`, as `SchemaView.induced_slot` does); enum-derivation `expr:`
+  seeing the whole row for an `any_of` enum slot; slot-level `class_derivations`
+  as a *list* (repeated names kept); a scalar for any list field of the spec
+  wrapped; and the `Any`-list collapse extended to `SlotDerivation.value`.
+  Still open: a list of lists in an `Any` field raises `NotImplementedError` at
+  upstream's spec load (here it collapses to its first list), and an unset
+  `target_unit_slot` writes a `None` key upstream (omitted here).
 
 ## Verification
 
