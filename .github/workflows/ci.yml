@@ -249,7 +249,7 @@ jobs:
           SEED=1; BUDGET=300
         fi
         tests/differential/run.sh --fuzz 1000000 --seed "$SEED" --time-budget "$BUDGET" \
-          --corpus "$RUNNER_TEMP/counterexamples" --fail-on-diff --known-from-corpus
+          --corpus "$RUNNER_TEMP/counterexamples" --fail-on-diff --known-from-corpus --avoid-known
 
     - name: Upload counterexamples and reports
       if: always()

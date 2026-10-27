@@ -11,6 +11,7 @@
 #   --profiles        comma list of generator profiles (all,core,awkward,enums,expr,joins,nested,multivalued,inherit,units,mint,yaml,tsv)
 #   --corpus DIR      where counterexamples go (default tests/differential/corpus)
 #   --known-from-corpus  do not re-report divergences whose signature is already in corpus/
+#   --avoid-known     do not generate inputs that hit divergences already reported as open (empty TSV cells, >64-bit ints, ...)
 #   --build           cargo build --release -p linkml-map-cli first
 #   --fail-on-diff    exit 1 if the examples sweep has a divergent cell or the fuzzer found a new divergence
 # No flags: --examples --fuzz 300.
@@ -25,7 +26,7 @@ PY="${UPSTREAM_PY:-/home/user/upstream/upvenv/bin/python}"
 export UPSTREAM_BIN="${UPSTREAM_BIN:-$(dirname "$PY")/linkml-map}"
 UPSTREAM_DIR="${UPSTREAM_DIR:-/home/user/upstream/linkml-map}"
 
-do_examples=0; fuzz=0; seed=1; budget=""; profiles=""; corpus=""; build=0; known=0; gate=0; report=""
+do_examples=0; fuzz=0; seed=1; budget=""; profiles=""; corpus=""; build=0; known=0; avoid=0; gate=0; report=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --examples) do_examples=1 ;;
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
     --corpus) corpus="$2"; shift ;;
     --build) build=1 ;;
     --known-from-corpus) known=1 ;;
+    --avoid-known) avoid=1 ;;
     --fail-on-diff) gate=1 ;;
     --report) report="$2"; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
@@ -65,6 +67,7 @@ if [ "$fuzz" != 0 ]; then
   [ -n "$profiles" ] && args+=(--profiles "$profiles")
   [ -n "$corpus" ] && args+=(--corpus "$corpus")
   [ "$known" = 1 ] && args+=(--known-from-corpus)
+  [ "$avoid" = 1 ] && args+=(--avoid-known)
   out="$("$PY" "$here/fuzz.py" "${args[@]}" | tee /dev/stderr | tail -1)"
   if [ "$gate" = 1 ] && [ "$out" != "[]" ]; then status=1; fi
 fi
