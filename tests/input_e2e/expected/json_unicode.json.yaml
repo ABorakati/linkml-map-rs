@@ -1,0 +1,4 @@
+id: j3
+a: é中
+tags_json: '["\u00e9", "\u4e2d\u6587"]'
+tags_yaml: '["\xE9", "\u4E2D\u6587"]'

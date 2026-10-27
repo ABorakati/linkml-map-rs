@@ -26,7 +26,9 @@
 
 #[cfg(feature = "columnar")]
 pub mod columnar;
+mod delimited;
 pub mod format;
+mod libyaml;
 pub mod loaders;
 pub mod pycompat;
 /// The PyYAML-compatible emitter (re-exported from `linkml-map-core`, where the
@@ -34,12 +36,13 @@ pub mod pycompat;
 pub use linkml_map_core::pyyaml;
 pub mod serialization;
 pub mod writers;
+pub mod yaml_load;
 
 // Re-export the most commonly used items at crate root.
 pub use format::Format;
 pub use loaders::{
-    NumericColumnHints, NumericColumnKind, load_all, load_all_with_numeric_hints, load_stream,
-    load_stream_auto, load_stream_with_numeric_hints,
+    NumericColumnHints, load_all, load_all_single_object, load_all_with_numeric_hints, load_stream,
+    load_stream_auto, load_stream_single_object, load_stream_with_numeric_hints,
 };
 pub use writers::{
     DEFAULT_CHUNK_SIZE, MultiStreamWriter, StreamWriter, Target, WriteOptions, columnar_needs_file,
@@ -204,10 +207,7 @@ mod tests {
         .await
         .unwrap();
 
-        let hints = NumericColumnHints::from([
-            ("count".to_owned(), NumericColumnKind::Integer),
-            ("ratio".to_owned(), NumericColumnKind::Float),
-        ]);
+        let hints = NumericColumnHints::from(["count".to_owned(), "ratio".to_owned()]);
         let loaded = load_all_with_numeric_hints(&path, Format::Csv, hints)
             .await
             .unwrap();
@@ -260,7 +260,7 @@ mod tests {
             .await
             .unwrap();
 
-        let hints = NumericColumnHints::from([("score".to_owned(), NumericColumnKind::Float)]);
+        let hints = NumericColumnHints::from(["score".to_owned()]);
         let loaded = load_all_with_numeric_hints(&path, Format::Tsv, hints)
             .await
             .unwrap();
@@ -309,38 +309,32 @@ mod tests {
         let loaded = load_all(&path, Format::Tsv).await.unwrap();
         assert_eq!(loaded.len(), 3, "expected 3 data rows");
 
-        let get = |row: &Value, key: &str| -> String {
+        let get = |row: &Value, key: &str| -> Option<Value> {
             match row {
-                Value::Map(m) => match m.get(key) {
-                    Some(Value::Str(s)) => s.clone(),
-                    Some(other) => panic!("non-string cell for {key}: {other:?}"),
-                    None => panic!("missing column {key}"),
-                },
+                Value::Map(m) => m.get(key).cloned(),
                 other => panic!("expected Map row, got {other:?}"),
             }
         };
+        let text = |s: &str| Some(Value::Str(s.to_owned()));
 
-        // Row with omitted trailing tabs: declared columns must still split
-        // correctly, with the missing trailing columns defaulting to empty.
-        assert_eq!(get(&loaded[0], "patient_id"), "P001");
-        assert_eq!(get(&loaded[0], "name"), "Alice");
-        assert_eq!(
-            get(&loaded[0], "site"),
-            "",
-            "trailing column should be empty, not mis-split"
-        );
-        assert_eq!(get(&loaded[0], "notes"), "");
+        // PARITY: a short row keeps its columns, with `None` (Null) for the
+        // missing trailing ones (`csv.DictReader` `restval`; the loader's
+        // `v != ""` filter keeps `None`).
+        assert_eq!(get(&loaded[0], "patient_id"), text("P001"));
+        assert_eq!(get(&loaded[0], "name"), text("Alice"));
+        assert_eq!(get(&loaded[0], "site"), Some(Value::Null));
+        assert_eq!(get(&loaded[0], "notes"), Some(Value::Null));
 
         // Full-width row.
-        assert_eq!(get(&loaded[1], "patient_id"), "P002");
-        assert_eq!(get(&loaded[1], "site"), "LEEDS");
-        assert_eq!(get(&loaded[1], "notes"), "vip");
+        assert_eq!(get(&loaded[1], "patient_id"), text("P002"));
+        assert_eq!(get(&loaded[1], "site"), text("LEEDS"));
+        assert_eq!(get(&loaded[1], "notes"), text("vip"));
 
-        // Present-but-empty trailing columns.
-        assert_eq!(get(&loaded[2], "patient_id"), "P003");
-        assert_eq!(get(&loaded[2], "name"), "Carol");
-        assert_eq!(get(&loaded[2], "site"), "");
-        assert_eq!(get(&loaded[2], "notes"), "");
+        // Present-but-empty trailing cells are dropped.
+        assert_eq!(get(&loaded[2], "patient_id"), text("P003"));
+        assert_eq!(get(&loaded[2], "name"), text("Carol"));
+        assert_eq!(get(&loaded[2], "site"), None);
+        assert_eq!(get(&loaded[2], "notes"), None);
     }
 
     // ── JSON round-trip ─────────────────────────────────────────────────────
@@ -361,6 +355,74 @@ mod tests {
         let loaded = load_all(&path, Format::Json).await.unwrap();
 
         assert_eq!(loaded, original, "JSON round-trip mismatch");
+    }
+
+    // ── YAML input is PyYAML `safe_load` (YAML 1.1) ──────────────────────────
+
+    #[tokio::test]
+    async fn test_yaml_input_resolves_scalars_as_yaml_1_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.yaml");
+        std::fs::write(
+            &path,
+            "a: yes\nb: 017\nc: 1_000\nd: 1:30\ne: ~\nf: 1.0e20\ng: 0o7\nh: 2024-01-01\n\
+             i: 'yes'\nj: 2024-01-01 10:30:00Z\n",
+        )
+        .unwrap();
+        let loaded = load_all(&path, Format::Yaml).await.unwrap();
+        let Value::Map(m) = &loaded[0] else {
+            panic!("map expected");
+        };
+        assert_eq!(m["a"], Value::Bool(true));
+        assert_eq!(m["b"], Value::Int(15));
+        assert_eq!(m["c"], Value::Int(1000));
+        assert_eq!(m["d"], Value::Int(90));
+        assert_eq!(m["e"], Value::Null);
+        assert_eq!(m["f"], Value::Str("1.0e20".into()));
+        assert_eq!(m["g"], Value::Str("0o7".into()));
+        assert_eq!(m["i"], Value::Str("yes".into()));
+        let Value::Temporal(date) = &m["h"] else {
+            panic!("date expected");
+        };
+        assert_eq!(date.to_string(), "2024-01-01");
+        let Value::Temporal(datetime) = &m["j"] else {
+            panic!("datetime expected");
+        };
+        assert_eq!(datetime.to_string(), "2024-01-01 10:30:00+00:00");
+    }
+
+    // Upstream `_map_data_single`: `yaml.safe_load`, then `json.loads` on a YAMLError.
+    #[tokio::test]
+    async fn test_single_object_json_goes_through_the_yaml_loader_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.json");
+        // PyYAML reads an exponent without a `.` as a string.
+        std::fs::write(&path, r#"{"a": 1e5, "b": 1.5e+5, "c": 1E+5, "d": [1, 2]}"#).unwrap();
+        let loaded = load_all_single_object(&path, Format::Json).await.unwrap();
+        let Value::Map(m) = &loaded[0] else {
+            panic!("map expected");
+        };
+        assert_eq!(m["a"], Value::Str("1e5".into()));
+        assert_eq!(m["b"], Value::Float(150000.0));
+        assert_eq!(m["c"], Value::Str("1E+5".into()));
+        // DataLoader (directory/tabular input) reads `.json` with json.load.
+        let strict = load_all(&path, Format::Json).await.unwrap();
+        let Value::Map(m) = &strict[0] else {
+            panic!("map expected");
+        };
+        assert_eq!(m["a"], Value::Float(100000.0));
+
+        // A tab-indented document is not YAML: fall back to JSON.
+        std::fs::write(&path, "{\n\t\"a\": 1e5\n}").unwrap();
+        let loaded = load_all_single_object(&path, Format::Json).await.unwrap();
+        assert_eq!(
+            loaded,
+            vec![make_map_mixed(&[("a", Value::Float(100000.0))])]
+        );
+
+        // An impossible date is a ValueError upstream, not a YAMLError: no fallback.
+        std::fs::write(&path, "a: 2024-13-45\n").unwrap();
+        assert!(load_all_single_object(&path, Format::Yaml).await.is_err());
     }
 
     // ── YAML round-trip ─────────────────────────────────────────────────────

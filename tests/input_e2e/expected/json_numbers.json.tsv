@@ -1,0 +1,2 @@
+id	a	b	c	d	e	f	g	n	x	m	tags_json	tags_yaml
+j1	1e5	1E+5	150000.0	-1e-3	0.0015	None	None	12	2.5	None	["\u00e9", 1, 2.0, true, null]	["\xE9", 1, 2.0, true, null]

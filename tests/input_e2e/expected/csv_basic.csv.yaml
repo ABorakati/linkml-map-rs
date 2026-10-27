@@ -1,0 +1,18 @@
+a: hello, world
+id: c1
+n: 2
+x: 2
+---
+a: say "hi"
+id: c2
+n: 2.5
+x: 1000.0
+---
+a: spaced
+id: c3
+n: 3
+x: 4
+---
+id: c4
+n: 5
+---

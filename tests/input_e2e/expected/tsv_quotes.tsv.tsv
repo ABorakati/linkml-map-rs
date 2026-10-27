@@ -1,0 +1,7 @@
+id	a	b	c	d	e	f	g	n	x	m	tags_json	tags_yaml
+q1	"has	tab"	"say ""hi"""										
+q2	"two
+lines"	"mid""quote"										
+q3	closedtail	spaced										
+q4	"crlf
+inside"	x										
