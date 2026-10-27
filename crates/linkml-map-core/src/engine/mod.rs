@@ -217,6 +217,29 @@ impl<'s> ObjectTransformer<'s> {
         self.map_object_with_type(source_obj, &source_type, None)
     }
 
+    /// Transform a single source object through an explicit class derivation.
+    ///
+    /// Mirrors Python `ObjectTransformer.map_object(..., class_derivation=cd)`:
+    /// the derivation is used as given, skipping the by-source-type lookup and
+    /// therefore the `is_a`/`mixins` merge, so callers merge first
+    /// ([`crate::normalize::inheritance::with_inherited_fields`]). The streaming
+    /// driver uses it to emit a constants-only block once from an empty row
+    /// (upstream `transform_spec`, `1323cc8`).
+    pub fn map_object_with_derivation(
+        &self,
+        source_obj: &Value,
+        source_type: Option<&str>,
+        class_derivation: &ClassDerivation,
+    ) -> Result<Value> {
+        let source_type = self.resolve_source_type(source_type)?;
+        self.map_object_with_type_and_derivation(
+            source_obj,
+            &source_type,
+            None,
+            Some(class_derivation),
+        )
+    }
+
     /// Transform a single source object with a pre-built [`ObjectIndex`].
     ///
     /// This is the FK-pipeline entry point: the caller builds the index ONCE
@@ -276,6 +299,18 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
+        self.map_object_with_type_and_derivation(source_obj, source_type, index, None)
+    }
+
+    /// [`Self::map_object_with_type`] with an optional explicit derivation
+    /// (Python `class_deriv = class_derivation or self._get_class_derivation(...)`).
+    fn map_object_with_type_and_derivation(
+        &self,
+        source_obj: &Value,
+        source_type: &str,
+        index: Option<&ObjectIndex>,
+        class_derivation: Option<&ClassDerivation>,
+    ) -> Result<Value> {
         // Enum pass-through: if source_type is an enum, transform via enum derivation.
         if let Some(ss) = self.source_schema
             && ss.all_enum_names().contains(&source_type.to_string())
@@ -300,7 +335,14 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         // Find the matching class derivation(s).
-        let class_deriv = self.get_class_derivation(source_type)?;
+        let looked_up;
+        let class_deriv = match class_derivation {
+            Some(cd) => cd,
+            None => {
+                looked_up = self.get_class_derivation(source_type)?;
+                &looked_up
+            }
+        };
 
         // Class-level pivot (melt/unmelt) replaces per-slot derivation entirely.
         // Mirrors Python `ObjectTransformer._perform_pivot_operation`.
@@ -321,7 +363,7 @@ impl<'s> ObjectTransformer<'s> {
                     slot_deriv,
                     source_map,
                     source_type,
-                    &class_deriv,
+                    class_deriv,
                     index,
                     Some(&tgt_attrs),
                 )
@@ -1785,7 +1827,8 @@ impl<'s> ObjectTransformer<'s> {
     ///
     /// Matches on `populated_from == source_type` (explicit mapping) OR
     /// `name == source_type` when `populated_from` is absent (identity mapping).
-    /// Then resolves is_a / mixin inheritance by merging ancestor slot_derivations.
+    /// Then resolves is_a / mixin inheritance by merging every ancestor field
+    /// ([`crate::normalize::inheritance::with_inherited_fields`]).
     fn get_class_derivation(&self, source_type: &str) -> Result<ClassDerivation> {
         let derivations = match &self.spec.class_derivations {
             Some(v) => v,
@@ -1812,49 +1855,8 @@ impl<'s> ObjectTransformer<'s> {
             });
         }
 
-        let cd = matching[0].clone();
-        self.resolve_class_derivation_ancestors(cd, derivations)
-    }
-
-    /// Merge is_a / mixin ancestor slot_derivations into `cd` (Python:
-    /// `_class_derivation_ancestors`).
-    ///
-    /// Ancestor slots are added only when the descendant does not already
-    /// override the same slot name.
-    fn resolve_class_derivation_ancestors(
-        &self,
-        mut cd: ClassDerivation,
-        all: &[ClassDerivation],
-    ) -> Result<ClassDerivation> {
-        let parents: Vec<String> = {
-            let mut p = cd.mixins.clone().unwrap_or_default();
-            if let Some(is_a) = &cd.is_a {
-                p.push(is_a.clone());
-            }
-            p
-        };
-
-        for parent_name in &parents {
-            let parent = all
-                .iter()
-                .find(|d| &d.name == parent_name)
-                .cloned()
-                .ok_or_else(|| Error::NoClassDerivation {
-                    source_type: parent_name.clone(),
-                    count: 0,
-                })?;
-            // Recursively resolve the parent too.
-            let parent = self.resolve_class_derivation_ancestors(parent, all)?;
-            // Merge: ancestor slots that don't already exist in cd.
-            if let Some(ancestor_slots) = parent.slot_derivations {
-                let cd_slots = cd.slot_derivations.get_or_insert_with(IndexMap::new);
-                for (k, v) in ancestor_slots {
-                    cd_slots.entry(k).or_insert(v);
-                }
-            }
-        }
-
-        Ok(cd)
+        // Python: `return self._with_inherited_fields(matching_tgt_class_derivs[0])`.
+        crate::normalize::inheritance::with_inherited_fields(matching[0], derivations)
     }
 
     // ── Source type resolution ────────────────────────────────────────────────
