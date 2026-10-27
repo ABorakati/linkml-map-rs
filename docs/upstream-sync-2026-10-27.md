@@ -180,6 +180,21 @@ Each is marked `PARITY:` in the code.
 - **Two ported constant-block tests adjusted.** Upstream drives `transform_spec`,
   which has no identifier pre-check; the Rust pipeline mirrors the CLI's
   `_require_identifiers`, so the tests set `mint_ids` or drop the target schema.
+- **Integers are `i64`, never wrapped.** Python has big integers; an `int` result outside
+  `i64` (`i + 1` at the maximum, `2**63`, `1 << 100`, `-(-2**63)`, `int(1e30)`) is an
+  `Eval` error ("big integers are not supported"), so `2**63 - 1` fails where Python
+  gives `9223372036854775807`. An integer literal outside `i64` is still read as a float.
+  The simpleeval limits (`MAX_POWER`, `MAX_SHIFT`, `MAX_STRING_LENGTH`) are mirrored.
+- **Expression depth.** More than 200 open brackets is a lexer error (CPython's
+  `MAXLEVEL`), more than 99 nested statement blocks an indentation error, and an
+  expression tree deeper than 496 nodes an uncaught `RecursionError`
+  (`expr::parser::MAX_AST_DEPTH`; measured against v0.6.0-rc1, the figure depends on the
+  caller's stack depth). Upstream raises at evaluation time, so a conditional expression
+  whose deep branch is never taken evaluates there but is refused here.
+- **Division by zero is `None`** (`1 / 0`, `1 // 0`, `1 % 0`) where upstream's
+  `ZeroDivisionError` is not caught and aborts the row. Not changed: `0 ** -1` and float
+  `**` overflow, which also raise upstream, do raise here.
+- **Complex results** (`(-8) ** 0.5`) are an `Eval` error: `Value` has no complex type.
 
 ## Suggested upstream issues (not filed)
 

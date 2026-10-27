@@ -14,8 +14,9 @@ use linkml_map_core::expr::lexer::lex;
 use linkml_map_core::expr::parser::parse;
 use linkml_map_core::expr::stmt::{is_statement_block, parse_program};
 use linkml_map_core::expr::{
-    Bindings, EvalMode, eval_enum_parsed, eval_expr_with_mapping, eval_expr_with_mapping_strict,
-    eval_parsed, eval_parsed_gated, eval_parsed_strict, expression_asts, parse_expr,
+    Bindings, EvalMode, ExprError, eval_enum_parsed, eval_expr_with_mapping,
+    eval_expr_with_mapping_strict, eval_parsed, eval_parsed_gated, eval_parsed_strict,
+    expression_asts, parse_expr,
 };
 use linkml_map_core::value::Value;
 use proptest::prelude::*;
@@ -223,100 +224,144 @@ deep_case!(long_comparison_chain, vec!["1"; DEPTH].join(" < "));
 // evaluator both recurse once per nesting level and neither has a depth limit.
 // CPython rejects this with SyntaxError ("too many nested parentheses") or
 // RecursionError, so the parity behaviour is a graceful `Err`.
+deep_case!(deep_parentheses, nest("(", "1", ")", DEPTH));
+deep_case!(deep_brackets, nest("[", "1", "]", DEPTH));
+deep_case!(deep_nested_calls, nest("len(", "x", ")", DEPTH));
+deep_case!(deep_braces, nest("{", "x", "}", DEPTH));
+deep_case!(deep_unary_minus, format!("{}1", "-".repeat(DEPTH)));
+deep_case!(deep_not, format!("{}x", "not ".repeat(DEPTH)));
+deep_case!(deep_subscripts, format!("x{}", "[0]".repeat(DEPTH)));
+deep_case!(deep_attributes, format!("x{}", ".a".repeat(DEPTH)));
+deep_case!(long_addition_chain, vec!["1"; DEPTH].join(" + "));
+deep_case!(long_power_chain, vec!["1"; DEPTH].join(" ** "));
 deep_case!(
-    #[ignore = "bug: parser stack overflow (SIGABRT) at ~600 nested parentheses in release (2 MiB stack)"]
-    deep_parentheses,
-    nest("(", "1", ")", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: parser stack overflow at ~600 nested brackets in release (2 MiB stack)"]
-    deep_brackets,
-    nest("[", "1", "]", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: parser stack overflow at ~600 nested calls in release (2 MiB stack)"]
-    deep_nested_calls,
-    nest("len(", "x", ")", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: parser stack overflow at ~600 nested braces in release (2 MiB stack)"]
-    deep_braces,
-    nest("{", "x", "}", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: stack overflow at ~1700 chained unary minus (eval) / ~11k (parse) in release"]
-    deep_unary_minus,
-    format!("{}1", "-".repeat(DEPTH))
-);
-deep_case!(
-    #[ignore = "bug: stack overflow at ~1700 chained `not` (eval) / ~4.7k (parse) in release"]
-    deep_not,
-    format!("{}x", "not ".repeat(DEPTH))
-);
-deep_case!(
-    #[ignore = "bug: eval stack overflow at ~1700 chained subscripts in release (parse: ~33k)"]
-    deep_subscripts,
-    format!("x{}", "[0]".repeat(DEPTH))
-);
-deep_case!(
-    #[ignore = "bug: eval stack overflow at ~1700 chained attributes in release (parse: ~33k)"]
-    deep_attributes,
-    format!("x{}", ".a".repeat(DEPTH))
-);
-deep_case!(
-    #[ignore = "bug: eval stack overflow at ~1700 terms of a flat `1 + 1 + ...` in release (parse: ~33k)"]
-    long_addition_chain,
-    vec!["1"; DEPTH].join(" + ")
-);
-deep_case!(
-    #[ignore = "bug: stack overflow at ~2700 terms of `1 ** 1 ** ...` (parse), ~1700 (eval) in release"]
-    long_power_chain,
-    vec!["1"; DEPTH].join(" ** ")
-);
-deep_case!(
-    #[ignore = "bug: stack overflow (SIGABRT) on ~10k chained `a if x else b` (new IfExp)"]
     deep_ternary_chain,
     format!("{}1", "1 if x else ".repeat(DEPTH))
 );
-deep_case!(
-    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested dict displays (new Dict)"]
-    deep_dict_nesting,
-    nest("{1: ", "1", "}", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested set/brace displays (new Set)"]
-    deep_set_nesting,
-    nest("{", "1", "}", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested keyword-argument calls (new Call.keywords)"]
-    deep_keyword_calls,
-    nest("dict(a=", "1", ")", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: stack overflow (SIGABRT) on ~10k nested generator expressions (new Comp)"]
-    deep_generators,
-    nest("(1 for q in ", "x", ")", DEPTH)
-);
-deep_case!(
-    #[ignore = "bug: statement parser stack overflow on deeply nested `if` blocks"]
-    deep_if_blocks,
-    {
-        let mut s = String::new();
-        for i in 0..DEPTH / 10 {
-            s.push_str(&" ".repeat(i));
-            s.push_str("if x:\n");
-        }
-        s.push_str(&" ".repeat(DEPTH / 10));
-        s.push_str("target = 1\n");
-        s
+deep_case!(deep_dict_nesting, nest("{1: ", "1", "}", DEPTH));
+deep_case!(deep_set_nesting, nest("{", "1", "}", DEPTH));
+deep_case!(deep_keyword_calls, nest("dict(a=", "1", ")", DEPTH));
+deep_case!(deep_generators, nest("(1 for q in ", "x", ")", DEPTH));
+deep_case!(deep_if_blocks, {
+    let mut s = String::new();
+    for i in 0..DEPTH / 10 {
+        s.push_str(&" ".repeat(i));
+        s.push_str("if x:\n");
     }
-);
+    s.push_str(&" ".repeat(DEPTH / 10));
+    s.push_str("target = 1\n");
+    s
+});
+
+// ── The depth limit ──────────────────────────────────────────────────────────
+//
+// Mirrors CPython: more than 200 open brackets is a `SyntaxError` (tokenizer
+// `MAXLEVEL`), and a tree deeper than about 496 levels exceeds the recursion limit
+// of upstream's evaluator (measured against v0.6.0-rc1: 495 chained `-` evaluate,
+// 496 raise `RecursionError`). What is accepted must also fit a 2 MiB thread, in a
+// debug build too.
+
+/// Evaluate `src` (parse errors included) with the evaluator's own error text.
+fn eval_text(src: &str) -> Result<Value, String> {
+    eval_expr_with_mapping(src, &Bindings::new()).map_err(|e| e.to_string())
+}
+
+#[test]
+fn accepted_depth_fits_a_small_stack() {
+    // 2 MiB is a tokio/rayon worker's stack. A debug build's frames are about ten
+    // times larger, so it gets 32 MiB; `cargo test --release` checks the real figure.
+    let stack = if cfg!(debug_assertions) { 32 } else { 2 } * 1024 * 1024;
+    crash_isolated_with_stack("accepted_depth_fits_a_small_stack", stack, || {
+        let chains: Vec<(&str, String)> = vec![
+            ("unary", format!("{}1", "-".repeat(495))),
+            ("not", format!("{}1", "not ".repeat(495))),
+            ("add", vec!["1"; 496].join(" + ")),
+            ("pow", vec!["1"; 496].join(" ** ")),
+            ("ternary", format!("{}1", "1 if 0 else ".repeat(495))),
+            ("subscript", format!("[0]{}", "[0]".repeat(494))),
+            ("brackets", nest("[", "1", "]", 200)),
+            ("parentheses", nest("(", "1", ")", 200)),
+            ("parenthesised_unary", nest("(-", "1", ")", 200)),
+            ("dicts", nest("{1: ", "1", "}", 200)),
+            ("calls", nest("len(", "[1]", ")", 199)),
+            ("mixed", format!("{}1{}", "(-".repeat(150), ")".repeat(150))),
+        ];
+        for (name, src) in chains {
+            let parsed = parse_expr(&src);
+            assert!(parsed.is_ok(), "{name}: {:?}", parsed.err());
+            // Evaluating must not overflow; the result may be an error (`len(1)`).
+            let _ = eval_text(&src);
+        }
+    });
+}
+
+#[test]
+fn depth_just_past_the_limit_is_an_error() {
+    crash_isolated("depth_just_past_the_limit_is_an_error", || {
+        let past: Vec<(&str, String, &str)> = vec![
+            ("unary", format!("{}1", "-".repeat(496)), "recursion"),
+            ("not", format!("{}1", "not ".repeat(496)), "recursion"),
+            ("add", vec!["1"; 497].join(" + "), "recursion"),
+            ("pow", vec!["1"; 497].join(" ** "), "recursion"),
+            (
+                "ternary",
+                format!("{}1", "1 if 0 else ".repeat(496)),
+                "recursion",
+            ),
+            (
+                "brackets",
+                nest("[", "1", "]", 201),
+                "too many nested parentheses",
+            ),
+            (
+                "parentheses",
+                nest("(", "1", ")", 201),
+                "too many nested parentheses",
+            ),
+            (
+                "braces",
+                nest("{", "x", "}", 201),
+                "too many nested parentheses",
+            ),
+        ];
+        for (name, src, expected) in past {
+            let err = eval_text(&src).expect_err(name);
+            assert!(err.contains(expected), "{name}: {err}");
+        }
+        // Deep nesting is an uncaught `RecursionError`, a bracket overflow a `SyntaxError`.
+        let recursion = eval_expr_with_mapping(&format!("{}1", "-".repeat(500)), &Bindings::new());
+        assert!(
+            matches!(recursion, Err(ExprError::Uncaught(_))),
+            "{recursion:?}"
+        );
+    });
+}
+
+#[test]
+fn nested_blocks_stop_at_cpython_indentation_limit() {
+    let nested = |levels: usize| {
+        let mut src = String::new();
+        for level in 0..levels {
+            src.push_str(&" ".repeat(level));
+            src.push_str("if x:\n");
+        }
+        src.push_str(&" ".repeat(levels));
+        src.push_str("target = 1\n");
+        src
+    };
+    // `ast.parse` accepts 99 indented levels and raises `IndentationError` for 100.
+    assert!(parse_program(&nested(99)).is_ok());
+    let err = parse_program(&nested(100)).expect_err("100 levels");
+    assert!(
+        err.to_string().contains("too many levels of indentation"),
+        "{err}"
+    );
+}
 
 // ── Allocation hazards ───────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "bug: `[1, 2] * 9223372036854775807` panics with `capacity overflow` (eval.rs list repetition: items.len() * n); CPython raises MemoryError"]
+
 fn list_repetition_overflow_is_an_error() {
     let r = std::panic::catch_unwind(|| {
         eval_expr_with_mapping("[1, 2] * 9223372036854775807", &Bindings::new())
@@ -325,7 +370,7 @@ fn list_repetition_overflow_is_an_error() {
 }
 
 #[test]
-#[ignore = "bug: `[1] * 1000000000000` aborts the process (memory allocation of 72 TB failed); CPython raises MemoryError"]
+
 fn huge_list_repetition_is_an_error() {
     crash_isolated("huge_list_repetition_is_an_error", || {
         let r = eval_expr_with_mapping("[1] * 1000000000000", &Bindings::new());

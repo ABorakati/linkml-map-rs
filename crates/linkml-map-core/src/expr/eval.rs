@@ -1947,4 +1947,153 @@ mod tests {
         let got = eval_expr_with_mapping("x * y", &vars).unwrap();
         assert_eq!(got, Value::Null, "True * '1' should be None, not '1'");
     }
+
+    // Expected values from upstream v0.6.0-rc1 (`eval_expr_with_mapping`, CPython
+    // 3.13). Where Python returns an integer outside `i64` the port raises the
+    // big-integer error instead of wrapping.
+    #[test]
+    fn integer_arithmetic_never_wraps() {
+        let big = "integer result out of range";
+        for src in [
+            "9223372036854775807 + 1",
+            "-9223372036854775807 - 2",
+            "2**63",
+            "3**40",
+            "1 << 63",
+            "1 << 100",
+            "-(-9223372036854775807 - 1)",
+            "(-9223372036854775807 - 1) * -1",
+            "(-9223372036854775807 - 1) // -1",
+            "abs(-9223372036854775807 - 1)",
+            "sum([9223372036854775807, 1])",
+            "int(1e19)",
+            "int('9223372036854775808')",
+            "round(1e30)",
+            "floor(1e30)",
+            "ceil(1e30)",
+            "9223372036854775807 * 2",
+            "10 ** 400",
+        ] {
+            let err = eval_expr(src).expect_err(src).to_string();
+            assert!(err.contains(big), "{src}: {err}");
+        }
+        // Results that stay in range are unchanged.
+        assert_eq!(eval("(-9223372036854775807 - 1) % -1"), Value::Int(0));
+        assert_eq!(eval("1 << 62"), Value::Int(1 << 62));
+        assert_eq!(eval("(-2)**63"), Value::Int(i64::MIN));
+        assert_eq!(eval("-1 >> 100"), Value::Int(-1));
+        assert_eq!(eval("1 >> 100"), Value::Int(0));
+    }
+
+    #[test]
+    fn shifts_and_powers_follow_simpleeval_limits() {
+        for (src, message) in [
+            ("1 << -1", "negative shift count"),
+            ("1 >> -1", "negative shift count"),
+            ("1 << 10001", "Sorry! I don't want to evaluate 1 << 10001"),
+            ("1 >> -10001", "Sorry! I don't want to evaluate 1 >> -10001"),
+            (
+                "3.0 << 9007199254740992",
+                "Sorry! I don't want to evaluate 3.0 << 9007199254740992",
+            ),
+            (
+                "2 ** 4000001",
+                "Sorry! I don't want to evaluate 2 ** 4000001",
+            ),
+            (
+                "4000001 ** 1",
+                "Sorry! I don't want to evaluate 4000001 ** 1",
+            ),
+            ("1e30 ** 2", "Sorry! I don't want to evaluate 1e+30 ** 2"),
+            (
+                "[1, 2] * 9223372036854775807",
+                "Sorry, I will not evaluate something that long.",
+            ),
+            (
+                "[1] * 1000000000000",
+                "Sorry, I will not evaluate something that long.",
+            ),
+            (
+                "[1] * 1e30",
+                "Sorry, I will not evaluate something that long.",
+            ),
+        ] {
+            let err = eval_expr(src).expect_err(src);
+            assert!(matches!(err, ExprError::Eval(_)), "{src}: {err:?}");
+            assert!(err.to_string().contains(message), "{src}: {err}");
+        }
+        assert_eq!(eval("[1, 2] * 3"), eval("3 * [1, 2]"));
+        assert_eq!(
+            eval("[1, 2] * True"),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert_eq!(eval("[1] * -1"), Value::List(vec![]));
+        assert!(matches!(eval("[1] * 100000"), Value::List(items) if items.len() == 100_000));
+        // `+` on two long strings or lists is `IterableTooLong`.
+        let half = "x".repeat(60_000);
+        let err = eval_expr(&format!("'{half}' + '{half}'")).expect_err("too long");
+        assert!(err.to_string().contains("too long"), "{err}");
+    }
+
+    #[test]
+    fn float_errors_that_upstream_does_not_catch() {
+        for (src, message) in [
+            ("0 ** -1", "0.0 cannot be raised to a negative power"),
+            ("10.0 ** 400", "(34, 'Numerical result out of range')"),
+            ("2.0 ** 1024", "(34, 'Numerical result out of range')"),
+        ] {
+            let err = eval_expr(src).expect_err(src);
+            assert!(matches!(err, ExprError::Uncaught(_)), "{src}: {err:?}");
+            assert!(err.to_string().contains(message), "{src}: {err}");
+        }
+        // A bitwise operator on a float is a TypeError again on the numeric retry.
+        let err = eval_expr("1.5 & 3").expect_err("TypeError");
+        assert!(matches!(err, ExprError::Eval(_)), "{err:?}");
+        // An odd-looking but correct result: Python floors via fmod.
+        assert_eq!(eval("1 // 0.1"), Value::Float(9.0));
+        assert_eq!(eval("-4.0 % 2.0"), Value::Float(0.0));
+        assert_eq!(eval("0.5 ** -2"), Value::Float(4.0));
+    }
+
+    #[test]
+    fn int_and_float_compare_exactly() {
+        assert_eq!(
+            eval("9007199254740993 > 9007199254740992"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval("9007199254740993 > 9007199254740992.0"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval("9007199254740993 == 9007199254740992.0"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            eval("9223372036854775807 < 9223372036854775808.0"),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn int_division_is_correctly_rounded() {
+        // Python rounds the exact quotient once; dividing the two f64 images rounds thrice.
+        assert_eq!(
+            eval("9007199254740992 / 10"),
+            Value::Float(900_719_925_474_099.2)
+        );
+        assert_eq!(
+            eval("9223372036854775807 / 7"),
+            Value::Float(1.3176245766935393e18)
+        );
+        assert_eq!(
+            eval("1 / 9223372036854775807"),
+            Value::Float(1.0842021724855044e-19)
+        );
+        assert_eq!(
+            eval("-9223372036854775807 / 3"),
+            Value::Float(-3.0744573456182584e18)
+        );
+        assert_eq!(eval("0 / -5"), Value::Float(-0.0));
+    }
 }

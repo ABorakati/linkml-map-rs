@@ -20,6 +20,85 @@
 use super::error::{ExprError, ExprResult};
 use super::lexer::{Token, lex};
 
+/// The deepest expression tree the parser accepts, counted in nodes along the
+/// longest path (a leaf is 1, `1 + 1` is 2).
+///
+/// PARITY: upstream evaluates the `ast` CPython built with a recursive
+/// `_eval`, so a tree deeper than the interpreter's recursion limit raises
+/// `RecursionError`, which `_eval_expr` does not catch. `simpleeval` costs two
+/// frames per level of a binary operation, unary operation, attribute or
+/// subscript, so with the default limit of 1000 a chain fails at about 496
+/// levels (measured against v0.6.0-rc1: 495 chained `-` evaluate, 496 do not).
+/// The real threshold also depends on how deep the caller already is; this is
+/// the figure at a shallow stack. Upstream raises at evaluation time, so a
+/// conditional expression whose deep branch is never taken evaluates there but
+/// is refused here at parse time. Bounding the depth also bounds the stack the
+/// evaluator, `Clone`, `Drop` and the AST walkers use.
+pub const MAX_AST_DEPTH: usize = 496;
+
+/// An error for a tree deeper than [`MAX_AST_DEPTH`].
+fn too_deep() -> ExprError {
+    ExprError::recursion()
+}
+
+/// Whether `ast` is deeper than [`MAX_AST_DEPTH`]. Iterative, so a tree too deep
+/// to recurse over is still safe to measure.
+fn exceeds_max_depth(ast: &Ast) -> bool {
+    let mut stack: Vec<(&Ast, usize)> = vec![(ast, 1)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > MAX_AST_DEPTH {
+            return true;
+        }
+        let next = depth + 1;
+        match node {
+            Ast::Int(_) | Ast::Float(_) | Ast::Str(_) | Ast::Bool(_) | Ast::None | Ast::Name(_) => {
+            }
+            Ast::Brace(inner) => stack.push((inner, next)),
+            Ast::Attribute { value, .. } => stack.push((value, next)),
+            Ast::Set(items) | Ast::List(items) | Ast::Tuple(items) => {
+                stack.extend(items.iter().map(|item| (item, next)));
+            }
+            Ast::Dict(pairs) => {
+                for (key, value) in pairs {
+                    stack.push((key, next));
+                    stack.push((value, next));
+                }
+            }
+            Ast::Subscript { value, index } => {
+                stack.push((value, next));
+                stack.push((index, next));
+            }
+            Ast::Comp(comp) => {
+                stack.push((&comp.elt, next));
+                stack.extend(comp.value.iter().map(|value| (value, next)));
+                for generator in &comp.generators {
+                    stack.push((&generator.iter, next));
+                    stack.extend(generator.ifs.iter().map(|cond| (cond, next)));
+                }
+            }
+            Ast::IfExp { test, body, orelse } => {
+                stack.extend([(&**test, next), (&**body, next), (&**orelse, next)]);
+            }
+            Ast::Call { args, keywords, .. } => {
+                stack.extend(args.iter().map(|arg| (arg, next)));
+                stack.extend(keywords.iter().map(|(_, value)| (value, next)));
+            }
+            Ast::Unary { operand, .. } => stack.push((operand, next)),
+            Ast::Binary { left, right, .. } => {
+                stack.extend([(&**left, next), (&**right, next)]);
+            }
+            Ast::Compare {
+                left, comparators, ..
+            } => {
+                stack.push((left, next));
+                stack.extend(comparators.iter().map(|c| (c, next)));
+            }
+            Ast::BoolOp { values, .. } => stack.extend(values.iter().map(|v| (v, next))),
+        }
+    }
+    false
+}
+
 /// Binary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -221,6 +300,16 @@ impl Parser {
         t
     }
 
+    /// Count one more link of a left-nested chain (`a + b + c`, `x.a.b`, `x[0][1]`),
+    /// whose tree is as deep as the chain is long.
+    fn chain_link(links: &mut usize) -> ExprResult<()> {
+        *links += 1;
+        if *links >= MAX_AST_DEPTH {
+            return Err(too_deep());
+        }
+        Ok(())
+    }
+
     fn expect(&mut self, tok: Token) -> ExprResult<()> {
         if *self.peek() == tok {
             self.next();
@@ -245,25 +334,41 @@ impl Parser {
     // Python's `expression` rule: the conditional expression has the lowest
     // precedence and chains to the right (`a if b else c if d else e` is
     // `a if b else (c if d else e)`).
+    //
+    // Iterative over the chain, so a long `a if b else c if d else ...` costs no
+    // stack; the tree it builds is bounded by [`MAX_AST_DEPTH`] (checked here,
+    // once per expression, so every nested expression is checked too).
     fn parse_expr(&mut self) -> ExprResult<Ast> {
-        let body = self.parse_or()?;
-        if !self.peek_keyword("if") {
-            return Ok(body);
+        let mut arms: Vec<(Ast, Ast)> = Vec::new();
+        let mut result = loop {
+            let body = self.parse_or()?;
+            if !self.peek_keyword("if") {
+                break body;
+            }
+            self.next(); // if
+            let test = self.parse_or()?;
+            if !self.peek_keyword("else") {
+                return Err(ExprError::Parse(
+                    "expected 'else' after the condition of a conditional expression".into(),
+                ));
+            }
+            self.next(); // else
+            arms.push((body, test));
+            if arms.len() >= MAX_AST_DEPTH {
+                return Err(too_deep());
+            }
+        };
+        while let Some((body, test)) = arms.pop() {
+            result = Ast::IfExp {
+                test: Box::new(test),
+                body: Box::new(body),
+                orelse: Box::new(result),
+            };
         }
-        self.next(); // if
-        let test = self.parse_or()?;
-        if !self.peek_keyword("else") {
-            return Err(ExprError::Parse(
-                "expected 'else' after the condition of a conditional expression".into(),
-            ));
+        if exceeds_max_depth(&result) {
+            return Err(too_deep());
         }
-        self.next(); // else
-        let orelse = self.parse_expr()?;
-        Ok(Ast::IfExp {
-            test: Box::new(test),
-            body: Box::new(body),
-            orelse: Box::new(orelse),
-        })
+        Ok(result)
     }
 
     // or := and ('or' and)*
@@ -300,18 +405,24 @@ impl Parser {
         }
     }
 
-    // not := 'not' not | comparison
+    // not := 'not' not | comparison   (iterative: a run of `not`s costs no stack)
     fn parse_not(&mut self) -> ExprResult<Ast> {
-        if *self.peek() == Token::Not {
+        let mut nots = 0usize;
+        while *self.peek() == Token::Not {
             self.next();
-            let operand = self.parse_not()?;
-            Ok(Ast::Unary {
-                op: UnOp::Not,
-                operand: Box::new(operand),
-            })
-        } else {
-            self.parse_comparison()
+            nots += 1;
+            if nots >= MAX_AST_DEPTH {
+                return Err(too_deep());
+            }
         }
+        let mut node = self.parse_comparison()?;
+        for _ in 0..nots {
+            node = Ast::Unary {
+                op: UnOp::Not,
+                operand: Box::new(node),
+            };
+        }
+        Ok(node)
     }
 
     // comparison := bitor (cmp_op bitor)*
@@ -367,8 +478,10 @@ impl Parser {
     // bitor := bitxor ('|' bitxor)*
     fn parse_bitor(&mut self) -> ExprResult<Ast> {
         let mut left = self.parse_bitxor()?;
+        let mut links = 0;
         while *self.peek() == Token::Pipe {
             self.next();
+            Self::chain_link(&mut links)?;
             let right = self.parse_bitxor()?;
             left = Ast::Binary {
                 op: BinOp::BitOr,
@@ -382,8 +495,10 @@ impl Parser {
     // bitxor := bitand ('^' bitand)*
     fn parse_bitxor(&mut self) -> ExprResult<Ast> {
         let mut left = self.parse_bitand()?;
+        let mut links = 0;
         while *self.peek() == Token::Caret {
             self.next();
+            Self::chain_link(&mut links)?;
             let right = self.parse_bitand()?;
             left = Ast::Binary {
                 op: BinOp::BitXor,
@@ -397,8 +512,10 @@ impl Parser {
     // bitand := shift ('&' shift)*
     fn parse_bitand(&mut self) -> ExprResult<Ast> {
         let mut left = self.parse_shift()?;
+        let mut links = 0;
         while *self.peek() == Token::Amp {
             self.next();
+            Self::chain_link(&mut links)?;
             let right = self.parse_shift()?;
             left = Ast::Binary {
                 op: BinOp::BitAnd,
@@ -412,6 +529,7 @@ impl Parser {
     // shift := arith (('<<'|'>>') arith)*
     fn parse_shift(&mut self) -> ExprResult<Ast> {
         let mut left = self.parse_arith()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 Token::LShift => BinOp::LShift,
@@ -419,6 +537,7 @@ impl Parser {
                 _ => break,
             };
             self.next();
+            Self::chain_link(&mut links)?;
             let right = self.parse_arith()?;
             left = Ast::Binary {
                 op,
@@ -432,6 +551,7 @@ impl Parser {
     // arith := term (('+'|'-') term)*
     fn parse_arith(&mut self) -> ExprResult<Ast> {
         let mut left = self.parse_term()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 Token::Plus => BinOp::Add,
@@ -439,6 +559,7 @@ impl Parser {
                 _ => break,
             };
             self.next();
+            Self::chain_link(&mut links)?;
             let right = self.parse_term()?;
             left = Ast::Binary {
                 op,
@@ -452,6 +573,7 @@ impl Parser {
     // term := factor (('*'|'/'|'//'|'%') factor)*
     fn parse_term(&mut self) -> ExprResult<Ast> {
         let mut left = self.parse_factor()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 Token::Star => BinOp::Mul,
@@ -461,6 +583,7 @@ impl Parser {
                 _ => break,
             };
             self.next();
+            Self::chain_link(&mut links)?;
             let right = self.parse_factor()?;
             left = Ast::Binary {
                 op,
@@ -472,39 +595,49 @@ impl Parser {
     }
 
     // factor := ('+'|'-'|'~') factor | power
-    fn parse_factor(&mut self) -> ExprResult<Ast> {
-        let op = match self.peek() {
-            Token::Plus => Some(UnOp::Pos),
-            Token::Minus => Some(UnOp::Neg),
-            Token::Tilde => Some(UnOp::Invert),
-            _ => None,
-        };
-        if let Some(op) = op {
-            self.next();
-            let operand = self.parse_factor()?;
-            Ok(Ast::Unary {
-                op,
-                operand: Box::new(operand),
-            })
-        } else {
-            self.parse_power()
-        }
-    }
-
     // power := postfix ('**' factor)?   (right-assoc; binds tighter than unary
     //          on the right, looser on the left — matches Python)
-    fn parse_power(&mut self) -> ExprResult<Ast> {
-        let base = self.parse_postfix()?;
-        if *self.peek() == Token::DoubleStar {
-            self.next();
-            let exp = self.parse_factor()?;
-            Ok(Ast::Binary {
-                op: BinOp::Pow,
-                left: Box::new(base),
-                right: Box::new(exp),
-            })
-        } else {
-            Ok(base)
+    //
+    // Iterative: `- - - x` and `a ** b ** c ** ...` cost no stack. Each pending
+    // frame is a run of unary operators and a power base that still waits for
+    // its exponent; the frames are folded once the innermost factor is known.
+    fn parse_factor(&mut self) -> ExprResult<Ast> {
+        let mut pending: Vec<(Vec<UnOp>, Ast)> = Vec::new();
+        loop {
+            let mut ops = Vec::new();
+            while let Some(op) = match self.peek() {
+                Token::Plus => Some(UnOp::Pos),
+                Token::Minus => Some(UnOp::Neg),
+                Token::Tilde => Some(UnOp::Invert),
+                _ => None,
+            } {
+                self.next();
+                ops.push(op);
+                if ops.len() >= MAX_AST_DEPTH {
+                    return Err(too_deep());
+                }
+            }
+            let base = self.parse_postfix()?;
+            if *self.peek() == Token::DoubleStar {
+                self.next();
+                pending.push((ops, base));
+                if pending.len() >= MAX_AST_DEPTH {
+                    return Err(too_deep());
+                }
+                continue;
+            }
+            let mut result = apply_unary(ops, base);
+            while let Some((ops, base)) = pending.pop() {
+                result = apply_unary(
+                    ops,
+                    Ast::Binary {
+                        op: BinOp::Pow,
+                        left: Box::new(base),
+                        right: Box::new(result),
+                    },
+                );
+            }
+            return Ok(result);
         }
     }
 
@@ -512,10 +645,12 @@ impl Parser {
     // (call args are only attached directly to a bare name -> function call)
     fn parse_postfix(&mut self) -> ExprResult<Ast> {
         let mut node = self.parse_atom()?;
+        let mut links = 0;
         loop {
             match self.peek() {
                 Token::Dot => {
                     self.next();
+                    Self::chain_link(&mut links)?;
                     let attr = match self.next() {
                         Token::Name(n) => n,
                         other => {
@@ -532,6 +667,7 @@ impl Parser {
                 Token::LBracket => {
                     // Subscript: value[index].
                     self.next();
+                    Self::chain_link(&mut links)?;
                     let index = self.parse_expr()?;
                     self.expect(Token::RBracket)?;
                     node = Ast::Subscript {
@@ -776,6 +912,16 @@ impl Parser {
         }
         Ok((args, keywords))
     }
+}
+
+/// Wrap `operand` in `ops`, the innermost operator last (`-~x` is `[Neg, Invert]`).
+fn apply_unary(ops: Vec<UnOp>, operand: Ast) -> Ast {
+    ops.into_iter()
+        .rev()
+        .fold(operand, |operand, op| Ast::Unary {
+            op,
+            operand: Box::new(operand),
+        })
 }
 
 fn comprehension(kind: CompKind, elt: Ast, value: Option<Ast>, generators: Vec<Generator>) -> Ast {

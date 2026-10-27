@@ -146,6 +146,23 @@ pub fn py_repr_str(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // `dtoa` takes the even candidate when the exact value is halfway between two
+    // shortest ones (values from CPython 3.13); Rust's formatter takes the upper.
+    #[test]
+    fn float_repr_ties_go_to_the_even_digit() {
+        // Exactly representable, so the literals parse to the halfway values.
+        let cases = [
+            ("900719925474099.25", "900719925474099.2"),
+            ("1823995865647838.25", "1823995865647838.2"),
+            ("900719925474099.75", "900719925474099.8"),
+            ("900719925474100.25", "900719925474100.2"),
+        ];
+        for (text, want) in cases {
+            let f: f64 = text.parse().expect("a float");
+            assert_eq!(py_float_repr(f), want, "repr({text})");
+        }
+    }
+
     #[test]
     fn float_repr_matches_python() {
         let cases: &[(f64, &str)] = &[

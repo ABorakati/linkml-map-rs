@@ -537,10 +537,20 @@ pub fn arb_expr_source(wild: bool) -> BoxedStrategy<String> {
 /// `name` must be the exact name of the calling top-level `#[test]` function. The
 /// child runs on a 2 MiB thread, the stack size of a tokio/rayon worker.
 pub fn crash_isolated(name: &str, body: impl FnOnce() + Send + 'static) {
+    crash_isolated_with_stack(name, 2 * 1024 * 1024, body);
+}
+
+/// [`crash_isolated`] with an explicit child thread stack size, for checks whose
+/// debug-build frames are too large for 2 MiB (see `accepted_depth_fits_a_small_stack`).
+pub fn crash_isolated_with_stack(
+    name: &str,
+    stack_size: usize,
+    body: impl FnOnce() + Send + 'static,
+) {
     const ENV: &str = "LINKML_MAP_CRASH_CHILD";
     if std::env::var(ENV).as_deref() == Ok(name) {
         std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
+            .stack_size(stack_size)
             .spawn(body)
             .expect("spawn child thread")
             .join()

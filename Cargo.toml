@@ -13,7 +13,9 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+# `float_roundtrip`: without it serde_json rounds a float of more than 15 significant digits
+# to a neighbouring f64 about one time in ten, where CPython's `json.loads` is exact.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml_ng = "0.10"
 indexmap = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v5"] }

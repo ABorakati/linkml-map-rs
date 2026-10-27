@@ -79,8 +79,9 @@ proptest! {
         prop_assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
         prop_assert_eq!(a == b, a.cmp(&b) == std::cmp::Ordering::Equal);
         prop_assert_eq!(a.cmp(&a), std::cmp::Ordering::Equal);
-        let n = a.normalize();
-        prop_assert_eq!(n.normalize().to_sci_string(), n.to_sci_string());
+        let n = a.normalize().expect("exponents here are within the context's Emax");
+        let again = n.normalize().expect("a normalised decimal normalises");
+        prop_assert_eq!(again.to_sci_string(), n.to_sci_string());
         if a.to_fixed_string().trim_start_matches('-').trim_start_matches('0').replace('.', "").trim_end_matches('0').len() <= 28 {
             prop_assert_eq!(&a, &n, "normalize changed a value of at most 28 digits");
         }
@@ -130,7 +131,6 @@ proptest! {
 /// `normalize()` (used by content-id canonicalisation) and the numeric ordering both
 /// fold trailing coefficient zeros into the exponent with an unchecked `i32` addition.
 #[test]
-#[ignore = "bug: Decimal::normalize/cmp overflow i32 when folding trailing zeros into an exponent near i32::MAX (`10e2147483647`): panic in debug, silent wrap in release"]
 fn decimal_exponent_overflow_is_not_a_panic() {
     let d = Decimal::parse_python("10e2147483647").unwrap();
     let _ = d.normalize();
@@ -162,7 +162,6 @@ fn decimal_non_finite_literals_are_reported_as_such() {
 /// `json.loads` (and Rust's own `str::parse`) always round correctly. Every JSON/JSONL
 /// data value and every `Value` deserialised from JSON text goes through this parser.
 #[test]
-#[ignore = "bug: serde_json is built without `float_roundtrip`, so JSON floats with >15 digits can be 1 ULP off (e.g. 1.8728745502104746e160 loads as ...743e160); enable the feature in the workspace serde_json dependency"]
 fn json_float_parsing_is_correctly_rounded() {
     for text in [
         "1.8728745502104746e160",
@@ -352,7 +351,6 @@ proptest! {
 /// `i32::MAX`: the value cannot be read back from its own `str()`. Python's `Decimal` has
 /// no such gap (`Emax` is 999999999999999999).
 #[test]
-#[ignore = "bug: Decimal::parse_python(d.to_sci_string()) fails for `10e2147483647` (adjusted exponent 2147483648 is outside i32)"]
 fn decimal_sci_string_of_extreme_exponent_parses_back() {
     let d = Decimal::parse_python("10e2147483647").unwrap();
     Decimal::parse_python(&d.to_sci_string()).expect("str(Decimal) parses");
@@ -362,7 +360,6 @@ fn decimal_sci_string_of_extreme_exponent_parses_back() {
 /// type {type(value).__name__}: {value!r}")`; for a `datetime.date` that is `type date:
 /// datetime.date(2000, 1, 1)`. The port prints `type unsupported: Temporal(Date(..))`.
 #[test]
-#[ignore = "divergence: content-id error text for a Temporal says `unsupported` and Debug-prints the value (upstream: `type date: datetime.date(2000, 1, 1)`); use Temporal::type_name()/repr() in content_id.rs::variant_name"]
 fn content_id_error_for_a_date_matches_upstream_text() {
     use linkml_map_core::value::Temporal;
     let date = Temporal::from_yaml_timestamp("2000-01-01").unwrap();
