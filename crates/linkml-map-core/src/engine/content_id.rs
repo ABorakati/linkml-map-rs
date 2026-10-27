@@ -687,6 +687,7 @@ mod tests {
 
     // content_id.canonical_json doctests
     #[test]
+    #[allow(clippy::excessive_precision)] // the noisy literal is the point
     fn canonical_json_doctests() {
         let record = v(json!({"b": 5.0, "a": null, "c": [], "d": ["y", "x"]}));
         assert_eq!(cj(&record), r#"{"b":5,"d":["x","y"]}"#);
@@ -703,6 +704,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)] // the noisy literals are the point
     fn number_formats() {
         let n = |f: f64| canonical_float(f);
         assert_eq!(n(5.0), "5");
