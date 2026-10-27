@@ -46,8 +46,8 @@ A real fix only lands here once it has landed upstream and we re-pin.
 
 ## Upstream reference
 
-- Pinned upstream commit: **`v0.5.3`** tag (commits up through `ea0d4ee8c`).
-- Latest pin-drift review: [`docs/upstream-sync-2026-07-25.md`](docs/upstream-sync-2026-07-25.md)
+- Pinned upstream commit: **`v0.6.0-rc1`** tag (commits up through `1323cc8`).
+- Latest pin-drift review: [`docs/upstream-sync-2026-10-27.md`](docs/upstream-sync-2026-10-27.md)
 
 ## Architecture
 
@@ -69,7 +69,15 @@ cargo build --release
 cargo test --workspace                       # all crates
 cargo test --workspace --exclude linkml-map-py   # when Python isn't on PATH
 cargo clippy --workspace --all-targets       # keep clippy-clean
+cargo test -p linkml-map-cli --features columnar   # Parquet/DuckDB output tests
 ```
+
+- Parquet and DuckDB output is behind the off-by-default **`columnar`** cargo feature.
+  It compiles a bundled DuckDB, so the first build is slow; default builds never
+  compile DuckDB.
+- **Parallel git worktrees must not share `CARGO_TARGET_DIR`.** Cargo's metadata hash
+  for path dependencies is workspace-relative, so worktrees overwrite each other's
+  artefacts. Give each worktree its own target directory.
 
 - The `conformance_suite` test (in `crates/linkml-map-conformance`) re-runs every
   golden/example fixture and regenerates [`tests/CONFORMANCE_REPORT.md`](tests/CONFORMANCE_REPORT.md);

@@ -87,7 +87,7 @@ pip install ./crates/linkml-map-py
 
 ### CLI (Rust Binary)
 
-Install the command-line interface (`linkml-map`) from source.
+Install the command-line interface (`linkml-tr-rs`) from source.
 
 1. Clone the repository (if you haven't already):
    ```bash
@@ -98,6 +98,8 @@ Install the command-line interface (`linkml-map`) from source.
    ```bash
    cargo install --path crates/linkml-map-cli
    ```
+   Add `--features columnar` for Parquet/DuckDB output (see
+   [Quickstart](#cli); it compiles a bundled DuckDB, so the first build is slow).
 
 ---
 
@@ -150,11 +152,15 @@ tr = ObjectTransformer(source_schemaview=SchemaView("source.yaml"),
 out = tr.map_object({"id": "P:1", "height": {"value": 172.0, "unit": "cm"}})
 ```
 
-Source objects and specifications cross the Python↔Rust boundary via a JSON
-round-trip (`json.dumps(default=str)`), so a `date`/`datetime` value anywhere
-in the input — including a `yaml.safe_load`-parsed spec dict passed to
-`create_transformer_specification` — comes back out the other side as a
-plain `str`, never a native `datetime.date`/`datetime.datetime` object.
+Source objects and specifications are converted directly between Python and
+Rust values, with no JSON round-trip. A `range: decimal` slot comes back as an
+exact `decimal.Decimal`. Any other non-JSON scalar (a `date`/`datetime`, say) is
+converted with `str()`, so a `date`/`datetime` anywhere in the input, including a
+`yaml.safe_load`-parsed spec dict passed to `create_transformer_specification`,
+comes back as a plain `str`, never a native `datetime.date`/`datetime.datetime`.
+Schema and specification arguments accept a `str` or `os.PathLike`;
+`ObjectTransformer(..., strict=True)` turns on strict mode, and
+`linkml_map.load_specification(path_or_dict)` loads and validates a specification.
 
 <details>
 <summary><b>Native Python API (Reference Only)</b></summary>
@@ -252,8 +258,9 @@ permissible value keys (by key, `meaning`, `title` or alias), foreign-key joins,
 (scheme-aware, with a medically-extended table incl. molar↔mass via
 `molecular_weight` and equivalents↔molar via `valence`), slot-level nested
 `class_derivations`, `missing_values` (sentinel codes → null), **offset /
-aggregation / pivot (melt/unmelt)**, target-schema derivation, and the inverse
-(round-trip) transformer.
+aggregation / pivot (melt/unmelt)**, target-schema derivation, content-hash
+identifier minting (see [Identifiers](#identifiers)), Parquet/DuckDB output
+(`columnar` feature), and the inverse (round-trip) transformer.
 
 > **v0.6.0 parity:** tracks upstream linkml-map v0.6.0. The deprecated
 > `sources`, `derived_from`, `object_derivations`, and top-level
@@ -339,6 +346,7 @@ SchemaView Rust crates, compiled from the unofficial [Kapernikov/rust-linkml-cor
 ```bash
 cargo build --release            # engine + CLI + pipeline
 cargo test --workspace           # all tests
+cargo build --release -p linkml-map-cli --features columnar   # + Parquet/DuckDB output (bundled DuckDB, slow first build)
 
 # Python wheel + shim
 pip install maturin
