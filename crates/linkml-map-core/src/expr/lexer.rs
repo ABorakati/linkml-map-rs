@@ -3,7 +3,8 @@
 //! Produces a flat token stream consumed by the Pratt parser in
 //! [`crate::expr::parser`]. The grammar is a Python-expression subset, so the
 //! lexer recognizes Python operators, numeric/string literals, names, and the
-//! `{` `}` braces used for the `{x}` variable-reference syntax.
+//! `{` `}` braces used for the `{x}` variable-reference syntax and for dict/set
+//! literals (`:` separates a dict key from its value, `=` a keyword argument).
 
 use super::error::{ExprError, ExprResult};
 
@@ -34,6 +35,8 @@ pub enum Token {
     RBrace,
     Comma,
     Dot,
+    Colon,  // :  (dict literals; `if`/`else` are keywords lexed as names)
+    Assign, // =  (keyword arguments `f(k=v)`)
 
     // Operators
     Plus,
@@ -224,6 +227,8 @@ pub fn lex(src: &str) -> ExprResult<Vec<Token>> {
             '{' => Token::LBrace,
             '}' => Token::RBrace,
             ',' => Token::Comma,
+            ':' => Token::Colon,
+            '=' => Token::Assign,
             '.' => Token::Dot,
             other => {
                 return Err(ExprError::Lex(format!("unexpected character: {other:?}")));

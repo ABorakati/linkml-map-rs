@@ -818,8 +818,8 @@ mod tests {
     #[test]
     fn malformed_single_line_reports_the_expression_error() {
         // Not statements: the error is the expression parser's, as before.
-        let err = parse_single_or_program("{1 + 2}").err().expect("error");
-        assert_eq!(Some(err), parse_single_expression("{1 + 2}").err());
+        let err = parse_single_or_program("{1 + }").err().expect("error");
+        assert_eq!(Some(err), parse_single_expression("{1 + }").err());
         // Statements with a bad part: the program parser's error.
         let err = parse_single_or_program("x = \ntarget = 1")
             .err()

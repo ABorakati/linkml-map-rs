@@ -133,18 +133,40 @@ fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visit: &mut F) {
             walk_ast(value, visit);
             walk_ast(index, visit);
         }
-        Ast::ListComp {
-            elt, iter, cond, ..
-        } => {
-            walk_ast(elt, visit);
-            walk_ast(iter, visit);
-            if let Some(c) = cond {
-                walk_ast(c, visit);
+        Ast::Set(items) => {
+            for item in items {
+                walk_ast(item, visit);
             }
         }
-        Ast::Call { args, .. } => {
+        Ast::Dict(pairs) => {
+            for (k, v) in pairs {
+                walk_ast(k, visit);
+                walk_ast(v, visit);
+            }
+        }
+        Ast::Comp(c) => {
+            walk_ast(&c.elt, visit);
+            if let Some(value) = &c.value {
+                walk_ast(value, visit);
+            }
+            for g in &c.generators {
+                walk_ast(&g.iter, visit);
+                for cond in &g.ifs {
+                    walk_ast(cond, visit);
+                }
+            }
+        }
+        Ast::IfExp { test, body, orelse } => {
+            walk_ast(test, visit);
+            walk_ast(body, visit);
+            walk_ast(orelse, visit);
+        }
+        Ast::Call { args, keywords, .. } => {
             for a in args {
                 walk_ast(a, visit);
+            }
+            for (_, v) in keywords {
+                walk_ast(v, visit);
             }
         }
         Ast::Unary { operand, .. } => walk_ast(operand, visit),
@@ -214,11 +236,19 @@ pub fn extract_braced_reference_roots(expression: &str) -> ExprResult<BTreeSet<S
     let mut roots = BTreeSet::new();
     for ast in expression_asts(expression)? {
         walk_ast(&ast, &mut |node| {
-            if let Ast::Brace(inner) = node
-                && let Ast::Attribute { value, .. } = inner.as_ref()
-                && let Ast::Name(root) = value.as_ref()
-            {
-                roots.insert(root.clone());
+            // Every element of every set display, as upstream's `ast.Set` walk:
+            // the one-element `{x.y}` reference form and genuine sets alike.
+            let elts = match node {
+                Ast::Brace(inner) => std::slice::from_ref(inner.as_ref()),
+                Ast::Set(elts) => elts.as_slice(),
+                _ => return,
+            };
+            for elt in elts {
+                if let Ast::Attribute { value, .. } = elt
+                    && let Ast::Name(root) = value.as_ref()
+                {
+                    roots.insert(root.clone());
+                }
             }
         });
     }
@@ -399,5 +429,22 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn braced_roots_see_into_the_new_syntax() {
+        // Every element of every set display counts, as upstream's `ast.Set` walk.
+        let roots = |e: &str| extract_braced_reference_roots(e).unwrap();
+        let set = |names: &[&str]| -> BTreeSet<String> {
+            names.iter().map(|n| (*n).to_string()).collect()
+        };
+        assert_eq!(
+            roots("{'k': {A.x}} if {B.y} else dict(c={C.z})"),
+            set(&["A", "B", "C"])
+        );
+        assert_eq!(roots("{D.x, E.y}"), set(&["D", "E"]));
+        assert_eq!(roots("[{F.x} for v in xs if {G.y}]"), set(&["F", "G"]));
+        // A dict display is not a reference.
+        assert!(roots("{'a': H.x}").is_empty());
     }
 }
