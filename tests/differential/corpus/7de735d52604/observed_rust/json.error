@@ -1,5 +1,0 @@
-{
-  "exit_code": 1,
-  "class": "error",
-  "message": "writing output to -: opening source stream /home/user/wt/difffuzz/tests/differential/corpus/7de735d52604/data/Person-001.yaml: YAML parse error: age: JSON number out of range at line 2 column 6"
-}

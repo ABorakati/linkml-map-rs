@@ -95,6 +95,13 @@ RULES = [
      "Rust's YAML/spec reader rejects integers outside i64/u64 (`JSON number out of range`) and TSV integers above i64 stay strings; Python ints are arbitrary precision.",
      lambda c, f: "number out of range" in rs_msg(f) or has(c, r"\d{19,}") or any(
          re.search(r"\d{19,}", p.read_text()) for p in (c["dir"] / "data").rglob("*") if p.is_file())),
+    ("rust-gap: nested class_derivations list with repeated names keeps only the last",
+     "Two entries with the same `name` in a slot-level `class_derivations:` list must both emit an object; Rust (mapping-keyed) drops all but the last.",
+     lambda c, f: (lambda names: len(names) != len(set(names)))(re.findall(r"(?m)^\s+- name: (\w+)", c["spec"].split("slot_derivations:", 1)[-1]))
+     and f["up_out"] is not None and f["rs_out"] is not None),
+    ("rust-gap: float formatting is not Python's shortest round-trip repr",
+     "17-significant-digit floats print differently (123456789.12345679 vs 123456789.1234568).",
+     lambda c, f: f["up_out"] is not None and f["rs_out"] is not None and re.search(r"\d[\d.]{15,}", f["up_out"]) is not None),
     ("rust-gap: TSV/CSV numeric-column parsing (e.g. '1.0' in an integer column)",
      "Upstream's delimited loader tries int then float on numeric-range columns ('1.0' -> 1.0 -> 1); Rust keeps the string and int('1.0') fails.",
      lambda c, f: "invalid literal for int()" in rs_msg(f) and f["up_out"] is not None),

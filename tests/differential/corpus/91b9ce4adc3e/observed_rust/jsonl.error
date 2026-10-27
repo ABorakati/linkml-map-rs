@@ -1,5 +1,0 @@
-{
-  "exit_code": 1,
-  "class": "error",
-  "message": "writing output to -: transform error at row 1; class_derivation=Agent: transformation error in 'Agent.age': coercion failed for value ''1.0'' to type 'integer': invalid literal for int() with base 10: '1.0'"
-}
