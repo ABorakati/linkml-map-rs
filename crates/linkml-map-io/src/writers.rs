@@ -38,10 +38,9 @@ use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
 use crate::format::Format;
-use crate::pycompat::{
-    dumps_json, flatten, py_str, sort_keys, strip_empty, strip_nulls, tabular_cell,
-};
-use crate::serialization::{decimal_placeholder, restore_yaml_decimals};
+use crate::pycompat::{dumps_json, flatten, py_str, strip_empty, strip_nulls, tabular_cell};
+use crate::serialization::decimal_placeholder;
+use linkml_map_core::pyyaml::{self, DumpOptions};
 
 /// Records handed to a [`StreamWriter`] per `write_chunk` call (upstream
 /// `--chunk-size` default).
@@ -222,38 +221,26 @@ impl StreamWriter for YamlStreamWriter {
             // `dump_yaml(_strip_nulls(obj))`; `dump_yaml` is `yaml.dump` with its
             // default `sort_keys=True`, so stream YAML is key-sorted (unlike
             // `dump_output`, which passes `sort_keys=False`).
-            out.push_str(&dump_yaml(&sort_keys(&strip_nulls(obj)))?);
+            dump_yaml_into(&mut out, &strip_nulls(obj), true);
             out.push_str("---\n");
         }
         Ok(out)
     }
 }
 
-/// `yaml.dump(obj, default_flow_style=False, allow_unicode=True)`.
-fn dump_yaml(value: &Value) -> Result<String> {
-    // PARITY: utils/serialization.py::dump_yaml — a Decimal is a plain scalar with
-    // every digit (`format(d, 'f')`); placeholders are swapped in after serialising.
-    let tree = decimals_as_placeholders(value);
-    let text = serde_yaml_ng::to_string(&tree).context("serialising YAML")?;
-    Ok(restore_yaml_decimals(&text).into_owned())
-}
-
-/// Copy of *value* with each decimal replaced by its [`decimal_placeholder`] string.
-fn decimals_as_placeholders(value: &Value) -> Value {
-    match value {
-        Value::Decimal(d) => Value::Str(decimal_placeholder(d)),
-        Value::List(items) => Value::List(items.iter().map(decimals_as_placeholders).collect()),
-        Value::Map(map) => Value::Map(
-            map.iter()
-                .map(|(k, v)| (k.clone(), decimals_as_placeholders(v)))
-                .collect(),
-        ),
-        scalar @ (Value::Null
-        | Value::Bool(_)
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::Str(_)) => scalar.clone(),
-    }
+/// `dump_yaml(value, sort_keys=sort_keys)`: `yaml.dump` with
+/// `default_flow_style=False`, `allow_unicode=True` and a Decimal written as a
+/// plain scalar (`utils/serialization.py::dump_yaml`), emitted by the ported
+/// PyYAML emitter in [`linkml_map_core::pyyaml`].
+fn dump_yaml_into(out: &mut String, value: &Value, sort_keys: bool) {
+    pyyaml::dump_yaml_into(
+        out,
+        value,
+        DumpOptions {
+            sort_keys,
+            ..DumpOptions::default()
+        },
+    );
 }
 
 // ─── CSV / TSV ───────────────────────────────────────────────────────────────
@@ -620,7 +607,12 @@ async fn fan_out(
 ///   cells rendered with Python's `str()` and **not** quoted.
 pub fn dump_output(data: &Value, format: Format) -> Result<String> {
     Ok(match format {
-        Format::Yaml => dump_yaml(&strip_empty(data))?,
+        Format::Yaml => {
+            // PARITY: cli.py::dump_output — `dump_yaml(_strip_empty(data), sort_keys=False)`.
+            let mut text = String::new();
+            dump_yaml_into(&mut text, &strip_empty(data), false);
+            text
+        }
         Format::Json => format!("{}\n", dumps_json(data, Some(2), true)),
         Format::Jsonl => match data {
             Value::List(items) => {

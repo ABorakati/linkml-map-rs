@@ -147,8 +147,13 @@ Each is marked `PARITY:` in the code.
   differ.
 - **Decimals:** ASCII digits only when parsing; Parquet/DuckDB decimals are staged
   as strings (VARCHAR), not cast to `DECIMAL(p,s)`.
-- **YAML scalar styling not emulated** (PyYAML quoting, 80-column wrap,
-  multi-line): YAML is byte-identical for plain scalars only.
+- **YAML anchors for a repeated `Decimal` object.** All YAML output now goes
+  through a port of PyYAML's emitter (`linkml_map_core::pyyaml`), including
+  quoting, 80-column folding and multi-line scalars. The one thing it cannot
+  reproduce is object identity: PyYAML writes the *same* `Decimal` object twice
+  as `&id001` / `*id001` (`SafeRepresenter.ignore_aliases` exempts `str`, `int`,
+  `float` and `bool` but not `Decimal`), whereas `Value` always writes the value
+  out in full.
 - **`--chunk-size 0` is an error** (upstream writes nothing); a failed columnar
   conversion removes its staging file.
 - **`validate`:** the schemaview backend does not load `linkml:types` and builtins
@@ -197,9 +202,17 @@ Each is marked `PARITY:` in the code.
   normalisation**: unchanged from earlier reviews.
 - **`unrestricted_eval` gate.** The CLI accepts `--unrestricted-eval` and
   `--no-unrestricted-eval` as no-ops (`b737280`).
-- **Expression language gaps:** the conditional expression `x if c else y`,
-  dict literals, and the `dict()`/`set()` constructors (upstream `test_ternary`,
-  `test_dict_literal`). These need parser/AST work.
+- **Expression language gaps (closed):** the conditional expression
+  `x if c else y`, dict displays, `dict()`/`set()` (with keyword arguments),
+  dict/set comprehensions, generator expressions and `for k, v in ...` targets
+  now parse and evaluate, checked against upstream v0.6.0-rc1 itself (restricted
+  simpleeval and unrestricted asteval). Upstream does not pre-process `{x}`:
+  Python parses it as a set display and `LinkMLEvaluator._eval_set` gives the
+  one-name/attribute form its reference meaning, which the parser mirrors. Set
+  displays other than `{x}` and set comprehensions are rejected by upstream's
+  restricted evaluator (`expr::with_restricted_syntax`). A set is a
+  de-duplicated list in insertion order and dict keys are stringified
+  (`expr/compound.rs`).
 - **`Value` has no tuple, set, bytes or big-integer variant**, so for example
   `is_list((1, 2))` is true, and integer results beyond `i64` raise.
 - **Joined/dotted `populated_from` values** are not coerced to the target range.

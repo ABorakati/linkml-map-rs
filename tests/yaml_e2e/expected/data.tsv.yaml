@@ -1,0 +1,50 @@
+active: 'true'
+age: 42
+bio: 'A long free-text biography that certainly needs to be folded because it runs
+  well past the eighty column mark, with a colon: and a #hash and ''quotes''.'
+id: P:0001
+label: Zoë Müller 日本語 😀
+status: 'yes'
+weight: 1.0e+20
+---
+active: 'false'
+age: 7
+bio: short
+id: P:0002
+label: Plain Name
+status: 'no'
+weight: 0.1
+---
+active: 'true'
+age: -3
+bio: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+id: P:0003
+label: kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+status: 'null'
+weight: 5.0e-07
+---
+active: 'true'
+age: 5
+bio: 'a: b'
+id: P:0004
+label: '- dash'
+status: '~'
+weight: 2.5
+---
+active: 'false'
+age: 0
+bio: '2024-01-01'
+id: P:0005
+label: 1e3
+status: '.5'
+weight: 1.0e+16
+---
+active: 'true'
+age: 9
+bio: 'a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a
+  a a a a a a a a a a a a a a a a a a a a a a '
+id: P:0006
+label: it's "both"
+status: 'on'
+weight: 3.14
+---

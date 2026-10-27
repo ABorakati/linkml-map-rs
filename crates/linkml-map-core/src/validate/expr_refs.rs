@@ -23,6 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::expr::parser::Target;
 use crate::expr::stmt::{is_statement_block, parse_program};
 use crate::expr::{Ast, FUNCTION_NAMES, INJECTED_EVAL_NAMES, expression_asts};
 
@@ -60,18 +61,40 @@ fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visit: &mut F) {
             walk_ast(value, visit);
             walk_ast(index, visit);
         }
-        Ast::ListComp {
-            elt, iter, cond, ..
-        } => {
-            walk_ast(elt, visit);
-            walk_ast(iter, visit);
-            if let Some(c) = cond {
-                walk_ast(c, visit);
+        Ast::Set(items) => {
+            for item in items {
+                walk_ast(item, visit);
             }
         }
-        Ast::Call { args, .. } => {
+        Ast::Dict(pairs) => {
+            for (k, v) in pairs {
+                walk_ast(k, visit);
+                walk_ast(v, visit);
+            }
+        }
+        Ast::Comp(c) => {
+            walk_ast(&c.elt, visit);
+            if let Some(value) = &c.value {
+                walk_ast(value, visit);
+            }
+            for g in &c.generators {
+                walk_ast(&g.iter, visit);
+                for cond in &g.ifs {
+                    walk_ast(cond, visit);
+                }
+            }
+        }
+        Ast::IfExp { test, body, orelse } => {
+            walk_ast(test, visit);
+            walk_ast(body, visit);
+            walk_ast(orelse, visit);
+        }
+        Ast::Call { args, keywords, .. } => {
             for a in args {
                 walk_ast(a, visit);
+            }
+            for (_, v) in keywords {
+                walk_ast(v, visit);
             }
         }
         Ast::Unary { operand, .. } => walk_ast(operand, visit),
@@ -149,9 +172,17 @@ pub fn extract_expr_slot_references(expr: &str) -> BTreeSet<String> {
             Ast::Call { func, .. } => {
                 names.insert(func.clone());
             }
-            // A comprehension variable is a locally bound name.
-            Ast::ListComp { var, .. } => {
-                bound.insert(var.clone());
+            // A comprehension variable is a locally bound name (a `Store`-context
+            // name upstream, so the names of a tuple target are bound too).
+            Ast::Comp(c) => {
+                for g in &c.generators {
+                    match &g.target {
+                        Target::Name(var) => {
+                            bound.insert(var.clone());
+                        }
+                        Target::Tuple(vars) => bound.extend(vars.iter().cloned()),
+                    }
+                }
             }
             _ => {}
         });
