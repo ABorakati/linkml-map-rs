@@ -274,8 +274,16 @@ pub(super) fn subscript_slice(
         Value::List(_) | Value::Str(_) => {}
         // PARITY: a dict keyed by a slice is a `KeyError` (slices are hashable
         // since Python 3.12); no map here has such a key.
+        // An unhashable bound makes the slice itself unhashable: a `TypeError`.
         Value::Map(_) => {
-            return Err(ExprError::Uncaught("KeyError: slice".into()));
+            let unhashable = [&lower, &upper, &step]
+                .into_iter()
+                .any(|b| matches!(b, Some(Value::List(_) | Value::Map(_))));
+            return Err(if unhashable {
+                ExprError::Eval("unhashable type in slice".into())
+            } else {
+                ExprError::Uncaught("KeyError: slice".into())
+            });
         }
         other => {
             return Err(ExprError::Eval(format!(

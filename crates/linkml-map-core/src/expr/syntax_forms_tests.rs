@@ -589,6 +589,7 @@ const CASES: &[(&str, &str, &str)] = &[
         r####""l[None:None]""####,
         r####"{"ok": [1, 2, 3]}"####,
     ),
+    ("slice", r####""m[a]""####, r####"{"err": "TypeError"}"####),
     ("slice", r####""s[::-1]""####, r####"{"ok": "olleh"}"####),
     ("slice", r####""x[:]""####, r####"{"err": "TypeError"}"####),
     (

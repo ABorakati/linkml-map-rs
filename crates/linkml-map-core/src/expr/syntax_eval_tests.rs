@@ -141,14 +141,14 @@ fn a_bound_method_or_function_has_no_value() {
 
 #[test]
 fn fstrings_ignore_conversions_under_simpleeval_but_not_asteval() {
-    let vars = json!({"s": "hi", "x": 3.14159});
+    let vars = json!({"s": "hi", "x": 1.23456});
     // PARITY: simpleeval's `_eval_formattedvalue` drops `!r`.
     expect("f'{s!r}'", vars.clone(), json!("hi"));
     expect("f'{s=}'", vars.clone(), json!("s=hi"));
     expect(
         "f'{x:.2f}|{s:>5}|{x:{5}.{3}}'",
         vars.clone(),
-        json!("3.14|   hi| 3.14"),
+        json!("1.23|   hi| 1.23"),
     );
     expect_block("target = f'{src.s!r}'", vars, json!("'hi'"));
 }
