@@ -7,6 +7,8 @@
 //! - `validate` — read-only pre-flight check of a spec against its source/target
 //!   schemas (no transform is run).
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use linkml_map_cli::{
@@ -14,6 +16,7 @@ use linkml_map_cli::{
     run_validate_config,
 };
 use linkml_map_core::inference::SchemaMapper;
+use linkml_map_io::WriteOptions;
 use linkml_map_pipeline::load_transform_spec;
 use linkml_map_schemaview::SchemaViewProvider;
 
@@ -112,13 +115,19 @@ struct MapDataArgs {
     #[arg(long = "target-schema", value_name = "TARGET_YAML")]
     target_schema: Option<String>,
 
-    /// Output file path.  Pass `-` to write to stdout (requires --output-format).
+    /// Output file. Omit it, or pass `-`, to write to stdout (YAML unless
+    /// --output-format says otherwise).
     #[arg(short = 'o', long = "output", value_name = "OUT_FILE")]
-    output: String,
+    output: Option<String>,
 
-    /// Source class name hint.
-    /// When omitted, the engine resolves from the first class_derivation.
-    #[arg(long = "source-class", value_name = "CLASS")]
+    /// Source type/class name for the input data.
+    /// When omitted, the engine resolves it from the first class_derivation.
+    /// `--source-class` is the earlier Rust name for this flag.
+    #[arg(
+        long = "source-type",
+        visible_alias = "source-class",
+        value_name = "CLASS"
+    )]
     source_class: Option<String>,
 
     /// Input format override.
@@ -127,11 +136,24 @@ struct MapDataArgs {
     #[arg(long = "input-format", value_name = "FMT", default_value = "auto")]
     input_format: String,
 
-    /// Output format override.
+    /// Output format. Defaults to YAML, or is inferred from the output file extension.
     /// One of: auto, csv, tsv, json, jsonl, yaml.
-    /// Defaults to auto-detection from the output file extension.
-    #[arg(long = "output-format", value_name = "FMT", default_value = "auto")]
+    #[arg(
+        short = 'f',
+        long = "output-format",
+        value_name = "FMT",
+        default_value = "auto"
+    )]
     output_format: String,
+
+    /// Number of records to process per chunk (for streaming output).
+    #[arg(long = "chunk-size", value_name = "N", default_value_t = 1000)]
+    chunk_size: usize,
+
+    /// Additional output files. Format inferred from extension. Can be repeated.
+    /// Ignored for single YAML/JSON object input, as upstream.
+    #[arg(short = 'O', long = "additional-output", value_name = "FILE")]
+    additional_output: Vec<String>,
 
     /// Number of rayon worker threads.
     /// 0 (default) uses the rayon global pool size (≈ number of logical CPUs).
@@ -211,14 +233,18 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
         spec: args.spec,
         source_schema: args.source_schema,
         target_schema: args.target_schema,
-        output: args.output,
+        output: args.output.unwrap_or_else(|| "-".to_owned()),
         source_class: args.source_class,
         input_format: args.input_format,
         output_format: args.output_format,
         workers: args.workers,
         unordered: args.unordered,
         input: args.input,
-        write_options: Default::default(),
+        write_options: WriteOptions {
+            chunk_size: Some(args.chunk_size),
+            additional_outputs: args.additional_output.iter().map(PathBuf::from).collect(),
+            ..WriteOptions::default()
+        },
     };
 
     run_map_data_config_with_options(cfg, args.continue_on_error).await?;
@@ -392,5 +418,56 @@ mod tests {
         // Quiet wins over verbose when both are passed (upstream applies the
         // quiet override after the verbose ladder).
         assert_eq!(resolve_log_level(2, true), LevelFilter::Error);
+    }
+
+    fn parse_map_data(extra: &[&str]) -> MapDataArgs {
+        let mut argv = vec!["linkml-tr-rs", "map-data", "-T", "t.yaml", "-s", "s.yaml"];
+        argv.extend_from_slice(extra);
+        argv.push("input.tsv");
+        match Cli::try_parse_from(argv)
+            .expect("map-data args should parse")
+            .command
+        {
+            Commands::MapData(args) => args,
+            other => panic!("expected MapData, got {other:?}"),
+        }
+    }
+
+    /// Upstream names the flag `--source-type`; `--source-class` stays as an alias.
+    /// Port of the flag used throughout upstream `tests/test_cli/test_cli_tabular.py`.
+    #[test]
+    fn test_source_type_and_source_class_both_parse() {
+        for flag in ["--source-type", "--source-class"] {
+            let args = parse_map_data(&[flag, "Person"]);
+            assert_eq!(args.source_class.as_deref(), Some("Person"), "{flag}");
+        }
+        assert_eq!(parse_map_data(&[]).source_class, None);
+    }
+
+    /// Upstream `map-data` options: `-o` optional, `-f`, `--chunk-size`, repeatable `-O`.
+    #[test]
+    fn test_output_options_match_upstream() {
+        let args = parse_map_data(&[]);
+        assert_eq!(args.output, None, "-o is optional (stdout)");
+        assert_eq!(args.chunk_size, 1000);
+        assert_eq!(args.output_format, "auto");
+        assert!(args.additional_output.is_empty());
+
+        let args = parse_map_data(&[
+            "-o",
+            "out.jsonl",
+            "-f",
+            "csv",
+            "--chunk-size",
+            "7",
+            "-O",
+            "a.tsv",
+            "-O",
+            "b.json",
+        ]);
+        assert_eq!(args.output.as_deref(), Some("out.jsonl"));
+        assert_eq!(args.output_format, "csv");
+        assert_eq!(args.chunk_size, 7);
+        assert_eq!(args.additional_output, ["a.tsv", "b.json"]);
     }
 }

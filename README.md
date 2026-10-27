@@ -117,10 +117,18 @@ linkml-map-core = { git = "https://github.com/ABorakati/linkml-map-rs.git" }
 Once the CLI is installed, you can run transformations directly:
 
 ```bash
-linkml-map map-data \
-  --source-schema source.yaml --spec transform.yaml \
-  --source data.jsonl --out out.jsonl --source-class Person
+linkml-tr-rs map-data \
+  -s source.yaml -T transform.yaml \
+  --source-type Person -o out.jsonl data.jsonl
 ```
+
+Output follows upstream `linkml-map` byte for byte where it can: JSON, JSONL and
+YAML drop `null` slots, stream YAML is a key-sorted multi-document stream, and
+CSV/TSV flatten nested objects with `__`. `-f/--output-format` overrides the
+format inferred from the output extension (YAML when there is neither), `-O FILE`
+(repeatable) writes further copies in other formats, and `--chunk-size N` sets the
+records written per chunk. `--source-class` is accepted as an alias of
+`--source-type`.
 
 ### Python (Recommended Drop-in API)
 
