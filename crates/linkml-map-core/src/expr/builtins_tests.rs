@@ -639,7 +639,13 @@ fn python_whitespace_set() {
         json!({"x": "\u{200b}a\u{feff}"}),
         json!("\u{200b}a\u{feff}"),
     );
-    expect("is_numeric(x)", json!({"x": "\u{1c}5\u{1f}"}), json!(true));
+    // ... but `float()` strips only `Py_ISSPACE`, which lacks U+001C..U+001F.
+    expect("is_numeric(x)", json!({"x": "\u{1c}5\u{1f}"}), json!(false));
+    expect(
+        "is_numeric(x)",
+        json!({"x": "\u{85}5\u{2003}"}),
+        json!(true),
+    );
 }
 
 #[test]

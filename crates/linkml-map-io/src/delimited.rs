@@ -316,69 +316,29 @@ impl DictReader {
     }
 }
 
-/// Python's whitespace for `str.strip()` / `int()` / `float()`.
-fn is_py_space(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}')
-}
-
-/// Remove the underscores `int()` / `float()` allow between digits; `None`
-/// when one is misplaced (leading, trailing, doubled, or next to `.`/`e`/sign).
-fn strip_digit_underscores(text: &str) -> Option<String> {
-    if !text.contains('_') {
-        return Some(text.to_owned());
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '_' {
-            let digit_before = i > 0 && chars[i - 1].is_ascii_digit();
-            let digit_after = chars.get(i + 1).is_some_and(char::is_ascii_digit);
-            if !(digit_before && digit_after) {
-                return None;
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
-}
-
-/// `int(text)`: surrounding whitespace, an optional sign, decimal digits with
-/// single underscores between them. Integers beyond `i64` become an exact
-/// [`Value::Decimal`] (Python's `int` is unbounded and [`Value`] has no big
+/// `int(text)`: surrounding whitespace, an optional sign, decimal digits (Unicode
+/// ones too) with single underscores between them. Integers beyond `i64` become an
+/// exact [`Value::Decimal`] (Python's `int` is unbounded and [`Value`] has no big
 /// integer; a decimal with exponent zero prints identically).
 fn py_int(text: &str) -> Option<Value> {
-    let trimmed = text.trim_matches(is_py_space);
-    let digits = strip_digit_underscores(trimmed)?;
-    let body = digits.strip_prefix(['+', '-']).unwrap_or(&digits);
-    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
+    let digits = linkml_map_core::expr::python_int_literal(text)?;
     match digits.parse::<i64>() {
         Ok(i) => Some(Value::Int(i)),
-        Err(_) => {
-            let normalised = digits.strip_prefix('+').unwrap_or(&digits);
-            Decimal::parse_python(normalised).ok().map(Value::Decimal)
-        }
+        Err(_) => Decimal::parse_python(&digits).ok().map(Value::Decimal),
     }
 }
 
-/// `float(text)`: surrounding whitespace, optional sign, digits with `.` and an
-/// exponent, underscores between digits; `inf`/`nan` spellings are accepted too
-/// (but never reach here, see [`parse_numeric`]).
+/// `float(text)` (see [`linkml_map_core::value::parse_python_float`]); `inf` and
+/// `nan` spellings are accepted too (but never reach here, see [`parse_numeric`]).
 fn py_float(text: &str) -> Option<f64> {
-    let trimmed = text.trim_matches(is_py_space);
-    let cleaned = strip_digit_underscores(trimmed)?;
-    // Rust's parser also takes `inf`, `infinity` and `nan` (any case), like
-    // Python's, and rejects hexadecimal and other spellings Python rejects.
-    cleaned.parse::<f64>().ok()
+    linkml_map_core::value::parse_python_float(text)
 }
 
 /// `_parse_numeric` from linkml's `delimited_file_loader.py`: a value with no
 /// ASCII digit stays text; otherwise `int(value)`, then `float(value)`, then the
 /// text unchanged. The declared range does not matter: an integer-looking cell
 /// in a `float` slot stays an `int`, and `2.5` in an `integer` slot is a float.
-pub(crate) fn parse_numeric(text: &str) -> Value {
+pub fn parse_numeric(text: &str) -> Value {
     if !text.bytes().any(|b| b.is_ascii_digit()) {
         return Value::Str(text.to_owned());
     }

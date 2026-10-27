@@ -772,11 +772,7 @@ const CASES: &[(&str, &str, &str)] = &[
         r####""l[0](1)""####,
         r####"{"err": "FeatureNotAvailable"}"####,
     ),
-    (
-        "syntax",
-        r####""m.get""####,
-        r####"{"err": "AttributeError"}"####,
-    ),
+    ("syntax", r####""m.get""####, r####"{"ok": null}"####),
     (
         "syntax",
         r####""max(**m)""####,

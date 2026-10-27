@@ -10,8 +10,17 @@
 //! PARITY: python-slugify transliterates with `text-unidecode` (Unidecode when
 //! installed; the upstream lock has only `text-unidecode`). The `deunicode` crate
 //! stands in for it. Both descend from Perl's Text::Unidecode, so Latin, Greek
-//! and Cyrillic text agree in practice, but a rare character may transliterate
-//! differently.
+//! and Cyrillic text agree in practice, but `text-unidecode` maps far fewer
+//! characters (no emoji, nothing added to Unicode after about version 5):
+//! `slugify('😀')` is `None` upstream and `grinning` here, and about 30 000 code
+//! points differ in all (`tests/differential/expr/chars.py slugify`).
+//!
+//! `text-unidecode`'s tables are licensed Artistic License / GPL (dual), which
+//! cannot be vendored into this Apache-2.0 crate (the Artistic License 1.0 puts
+//! conditions on redistributing modified copies of the data, and the GPL is
+//! copyleft), so a port of its data table is deliberately not included.
+//! Regenerating a table is possible for anyone who accepts those terms, but it
+//! would make the crate's own licence conditional on them.
 
 use unicode_normalization::UnicodeNormalization;
 
@@ -43,7 +52,7 @@ fn slugify_lib(text: &str, separator: &str) -> String {
     let text = decode_entities(&text);
     // Re-normalise, lowercase, drop the quotes decoding may have produced.
     let text: String = text.nfkd().collect();
-    let text = text.to_lowercase();
+    let text = super::pystr::lower(&text);
     let text = replace_quote_runs(&text, "");
     // NUMBERS_PATTERN `(?<=\d),(?=\d)` -> "".
     let text = remove_digit_commas(&text);

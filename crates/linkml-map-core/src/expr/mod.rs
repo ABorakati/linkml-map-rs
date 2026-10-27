@@ -15,9 +15,9 @@ pub mod lexer;
 pub mod parser;
 mod pyformat;
 mod pymethods;
-mod pystr;
-#[rustfmt::skip]
-mod pyunicode;
+pub(crate) mod pystr;
+#[cfg(test)]
+mod semantics_tests;
 #[cfg(test)]
 mod syntax_eval_tests;
 #[cfg(test)]
@@ -25,7 +25,7 @@ mod syntax_forms_tests;
 #[cfg(test)]
 mod syntax_tests;
 #[rustfmt::skip]
-mod pytables;
+pub(crate) mod pytables;
 mod slugify;
 pub mod stmt;
 mod syntax;
@@ -37,6 +37,7 @@ pub use eval::{
 };
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
+pub use pystr::int_literal as python_int_literal;
 
 #[cfg(test)]
 mod tests {

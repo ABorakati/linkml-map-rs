@@ -109,11 +109,37 @@ fn even_on_tie(f: f64, digits: &str, decpt: i32) -> String {
     }
 }
 
+/// `str.isprintable()` for one character: not in `Cc`, `Cf`, `Cs`, `Co`, `Cn`, `Zl`,
+/// `Zp` or `Zs` (the ASCII space aside). Taken from CPython 3.13's Unicode 15.1
+/// data, which is older than Rust's own (see `tools/gen_pytables.py`).
+fn is_printable(c: char) -> bool {
+    match c as u32 {
+        0x20..=0x7E => true,
+        0..=0x1F | 0x7F => false,
+        cp => !crate::expr::pystr::in_ranges(crate::expr::pytables::NON_PRINTABLE, cp),
+    }
+}
+
+/// `repr()`'s escape for a non-printable character: `\xhh`, `\uhhhh` or
+/// `\Uhhhhhhhh`, by magnitude.
+fn push_unicode_escape(out: &mut String, c: char) {
+    use std::fmt::Write as _;
+    let cp = c as u32;
+    let _ = if cp < 0x100 {
+        write!(out, "\\x{cp:02x}")
+    } else if cp < 0x1_0000 {
+        write!(out, "\\u{cp:04x}")
+    } else {
+        write!(out, "\\U{cp:08x}")
+    };
+}
+
 /// Python `repr(str)`: single quotes, switching to double quotes when the
 /// string contains a single quote and no double quote; backslash, the active
-/// quote and control characters are escaped.
+/// quote and every non-printable character (`str.isprintable()` is false) are
+/// escaped.
 ///
-/// `abc` → `'abc'`, `it's` → `"it's"`, a newline → `\n`.
+/// `abc` → `'abc'`, `it's` → `"it's"`, a newline → `\n`, U+00A0 → `\xa0`.
 pub fn py_repr_str(s: &str) -> String {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
@@ -132,10 +158,8 @@ pub fn py_repr_str(s: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
-            }
-            c => out.push(c),
+            c if is_printable(c) => out.push(c),
+            c => push_unicode_escape(&mut out, c),
         }
     }
     out.push(quote);
@@ -201,5 +225,29 @@ mod tests {
         assert_eq!(py_repr_str("both ' and \""), "'both \\' and \"'");
         assert_eq!(py_repr_str("back\\slash"), "'back\\\\slash'");
         assert_eq!(py_repr_str("tab\there"), "'tab\\there'");
+    }
+
+    // Values from CPython 3.13 (Unicode 15.1).
+    #[test]
+    fn str_repr_escapes_every_non_printable_character() {
+        let cases = [
+            ("\u{80}", "'\\x80'"),
+            ("\u{a0}", "'\\xa0'"),
+            ("\u{ad}", "'\\xad'"),
+            ("\u{7f}", "'\\x7f'"),
+            ("\u{200b}a", "'\\u200ba'"),
+            ("\u{2028}", "'\\u2028'"),
+            ("\u{3000}", "'\\u3000'"),
+            ("\u{e000}", "'\\ue000'"),
+            ("\u{378}", "'\\u0378'"),
+            ("\u{1bef9}", "'\\U0001bef9'"),
+            ("\u{e0001}", "'\\U000e0001'"),
+            ("\u{10ffff}", "'\\U0010ffff'"),
+            ("é中😀 ", "'é中😀 '"),
+            ("\u{2066}", "'\\u2066'"),
+        ];
+        for (text, want) in cases {
+            assert_eq!(py_repr_str(text), want, "repr({text:?})");
+        }
     }
 }

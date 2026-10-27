@@ -73,7 +73,7 @@ impl Decimal {
     ///
     /// Surrounding whitespace is stripped; an optional sign, digits with an
     /// optional `.` (`5.` and `.5` are valid) and an optional `e|E[+-]digits`
-    /// exponent are accepted; a single `_` is allowed between digits.
+    /// exponent are accepted.
     /// `nan`/`snan`/`inf`/`infinity` (any case, optionally signed) are valid
     /// Python literals but not finite, so they report
     /// [`DecimalError::NotFinite`].
@@ -82,10 +82,13 @@ impl Decimal {
     /// context, so `Decimal("1e999999999999999999")` is valid and one more digit
     /// of exponent is `InvalidOperation` ([`DecimalError::Invalid`]).
     ///
-    /// PARITY: Python also accepts Unicode decimal digits (`Decimal("١٢")`);
-    /// only ASCII digits are accepted here.
+    /// Like `Decimal(str)` (`numeric_as_ascii` in `_decimal.c`), the text is
+    /// stripped of `str.isspace()` whitespace (U+001C to U+001F included), every
+    /// `_` is dropped wherever it stands (`Decimal("1_")` is 1) and Unicode
+    /// decimal digits are read as ASCII ones (`Decimal("١٢")` is 12).
     pub fn parse_python(text: &str) -> Result<Self, DecimalError> {
-        let t = text.trim();
+        let normalised = crate::expr::pystr::decimal_text(text);
+        let t = normalised.as_ref();
         let (negative, body) = match t.strip_prefix('-') {
             Some(rest) => (true, rest),
             None => (false, t.strip_prefix('+').unwrap_or(t)),
@@ -112,8 +115,8 @@ impl Decimal {
             Some((i, f)) => (i, f),
             None => (mantissa, ""),
         };
-        let int_digits = strip_underscores(int_part)?;
-        let frac_digits = strip_underscores(frac_part)?;
+        let int_digits = ascii_digits_only(int_part)?;
+        let frac_digits = ascii_digits_only(frac_part)?;
         if int_digits.is_empty() && frac_digits.is_empty() {
             return Err(DecimalError::Invalid);
         }
@@ -124,7 +127,7 @@ impl Decimal {
                     Some(rest) => (true, rest),
                     None => (false, e.strip_prefix('+').unwrap_or(e)),
                 };
-                let edigits = strip_underscores(edigits)?;
+                let edigits = ascii_digits_only(edigits)?;
                 if edigits.is_empty() {
                     return Err(DecimalError::Invalid);
                 }
@@ -393,24 +396,13 @@ fn round_half_even(coeff: Vec<u8>, exp: i64, drop: i64) -> (Vec<u8>, i64) {
     (digits, new_exp)
 }
 
-fn strip_underscores(s: &str) -> Result<String, DecimalError> {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'0'..=b'9' => out.push(b as char),
-            b'_' => {
-                let between_digits = i > 0
-                    && bytes[i - 1].is_ascii_digit()
-                    && bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
-                if !between_digits {
-                    return Err(DecimalError::Invalid);
-                }
-            }
-            _ => return Err(DecimalError::Invalid),
-        }
+/// `s` itself when it is all ASCII digits (possibly none).
+fn ascii_digits_only(s: &str) -> Result<String, DecimalError> {
+    if s.bytes().all(|b| b.is_ascii_digit()) {
+        Ok(s.to_owned())
+    } else {
+        Err(DecimalError::Invalid)
     }
-    Ok(out)
 }
 
 impl fmt::Display for Decimal {
@@ -536,7 +528,20 @@ mod tests {
     #[test]
     fn invalid_and_non_finite() {
         for bad in [
-            "abc", "", "  ", "0x10", "True", "None", "1e", "e5", ".", "1__0", "_1", "1_",
+            "abc",
+            "",
+            "  ",
+            "0x10",
+            "True",
+            "None",
+            "1e",
+            "e5",
+            ".",
+            "_",
+            "1 _",
+            "_ 1",
+            "1\u{0}",
+            "\u{a0}1\u{b2}",
         ] {
             assert_eq!(
                 Decimal::parse_python(bad),
@@ -544,6 +549,25 @@ mod tests {
                 "{bad:?}"
             );
         }
+        // `numeric_as_ascii` drops every underscore, strips `str.isspace()` padding
+        // (U+001C to U+001F too) and reads Unicode decimal digits.
+        for (text, want) in [
+            ("1__0", "10"),
+            ("_1", "1"),
+            ("1_", "1"),
+            ("\u{1c}3816.78\u{1f}", "3816.78"),
+            ("\t-_009.829e1", "-98.29"),
+            ("\u{663}", "3"),
+            ("-\u{ff16}.\u{661}", "-6.1"),
+            ("1_e5", "1E+5"),
+        ] {
+            assert_eq!(
+                Decimal::parse_python(text).unwrap().to_sci_string(),
+                want,
+                "{text:?}"
+            );
+        }
+        assert_eq!(Decimal::parse_python("i_nf"), Err(DecimalError::NotFinite));
         for nf in ["NaN", "Infinity", "-inf", "+INF", "sNaN", "nan12"] {
             assert_eq!(
                 Decimal::parse_python(nf),
