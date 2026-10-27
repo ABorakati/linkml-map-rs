@@ -79,8 +79,9 @@ pub struct PipelineConfig {
     /// table referenced by a synthesized/explicit `joins:` block is loaded into an
     /// in-memory [`LookupIndex`] for that block, so `{Table.col}` join references
     /// resolve at runtime instead of collapsing to null; a join whose table has no
-    /// file is skipped (its reference resolves to null), matching upstream
-    /// `transform_spec`.
+    /// file is skipped, as upstream `transform_spec` does (a reference then fails for a
+    /// row with a key value, as DuckDB does there), and a YAML join table is an error
+    /// (`LookupIndex does not yet support 'yaml' files`).
     ///
     /// **Any other file** (YAML, JSON, JSONL): one source object class
     /// (`source_class`, else the first row block's table), as upstream's

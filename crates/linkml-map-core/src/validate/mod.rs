@@ -50,6 +50,7 @@
 mod enum_literals;
 pub mod expr_refs;
 mod identifiers;
+mod scan;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -59,6 +60,9 @@ use crate::normalize::join_utils::{find_common_columns, pick_join_key};
 use crate::schema::{LINKML_BUILTIN_TYPES, SchemaProvider, coercible_datatype};
 
 use expr_refs::{extract_expr_attribute_references, extract_expr_slot_references};
+
+pub use scan::check_deprecated_fields;
+pub(crate) use scan::py_truthy;
 
 // ── ValidationMessage ─────────────────────────────────────────────────────────
 
@@ -95,7 +99,7 @@ pub struct ValidationMessage {
 }
 
 impl ValidationMessage {
-    fn new(severity: Severity, path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(severity: Severity, path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             severity,
             path: path.into(),
@@ -105,7 +109,7 @@ impl ValidationMessage {
     }
 
     /// Tag this message with a `category` downstream consumers can group on.
-    fn with_category(mut self, category: &str) -> Self {
+    pub fn with_category(mut self, category: &str) -> Self {
         self.category = Some(category.to_owned());
         self
     }
@@ -251,7 +255,7 @@ fn slot_derivations(cd: &ClassDerivation) -> Vec<&SlotDerivation> {
 
 /// Nested class derivations declared under a slot derivation, in order.
 fn nested_class_derivations(sd: &SlotDerivation) -> impl Iterator<Item = &ClassDerivation> {
-    sd.class_derivations.iter().flatten().map(|(_, v)| v)
+    sd.class_derivations.iter().flatten()
 }
 
 /// The effective source class of a class derivation: `populated_from`, falling

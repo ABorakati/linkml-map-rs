@@ -256,7 +256,18 @@ fn roundtrip_rename_through_engine() {
     let inv = TransformationSpecificationInverter::new(&schema)
         .invert(&fwd)
         .unwrap();
-    let inv_engine = ObjectTransformer::new(inv, Some(&schema), None);
+    // The inverse reads the forward target's objects, so its source schema is the
+    // target schema (upstream looks every `populated_from` slot up on the source class).
+    let target_schema = InMemorySchemaBuilder::new()
+        .add_class(ClassDef {
+            name: "Person".into(),
+            tree_root: true,
+            is_a: None,
+            mixins: vec![],
+        })
+        .add_slot("Person", slot("label"))
+        .build();
+    let inv_engine = ObjectTransformer::new(inv, Some(&target_schema), None);
     let roundtrip = inv_engine.map_object(&target, Some("Person")).unwrap();
     assert_eq!(roundtrip, src);
 }

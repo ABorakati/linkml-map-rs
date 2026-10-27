@@ -59,7 +59,8 @@ classes:
       name:
 ";
 
-/// `test_constant_blocks.py::TARGET`.
+/// `test_constant_blocks.py::TARGET`, plus the `Before` / `After` classes of the local bracket test
+/// (upstream looks every derived slot up on the target class, so each block's class must exist).
 const CONSTANT_TARGET: &str = "\
 id: https://example.org/t
 name: t
@@ -93,6 +94,12 @@ classes:
     attributes:
       name:
       tag:
+  Before:
+    attributes:
+      id:
+  After:
+    attributes:
+      id:
 ";
 
 const STUDY: &str = r#"  ResearchStudy:
@@ -1648,4 +1655,66 @@ async fn directory_without_data_fails_naming_what_was_expected() {
         format!("{err:#}").contains("expected one of ['samples'], found []"),
         "{err:#}"
     );
+}
+
+// ── Joins that upstream cannot resolve ──────────────────────────────────────
+
+/// `LookupIndex._duckdb_read_expr` reads CSV, TSV and JSON only: a join over a YAML
+/// table raises `NotImplementedError` when the block registers its joins, so it fails
+/// even with no row to look up (corpus case c80d7ec3435d).
+#[tokio::test]
+async fn join_over_a_yaml_table_is_not_supported() {
+    for samples in [
+        "sample_id\tname\tsite_code\nS001\tAlpha\tSITE_A\n",
+        "sample_id\tname\tsite_code\n",
+    ] {
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data("samples.tsv", samples);
+        case.write_data("sites.yaml", "- site_code: SITE_A\n  site_name: Boston\n");
+        let err = case
+            .run(FLAT_SAMPLE_BLOCK, &Run::default())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("LookupIndex does not yet support 'yaml' files"),
+            "{err:#}"
+        );
+    }
+}
+
+const POPULATED_FROM_JOIN_BLOCK: &str = r#"  FlatSample:
+    populated_from: samples
+    joins:
+      sites:
+        join_on: site_code
+    slot_derivations:
+      sample_id:
+        populated_from: sample_id
+      site_name:
+        populated_from: sites.site_name
+"#;
+
+/// `_resolve_joined_row`: a row whose join key has a value, joined to a table with no
+/// file, fails (DuckDB: the table does not exist); a row with no key value is a miss.
+#[tokio::test]
+async fn populated_from_join_without_its_table_fails_only_for_a_key() {
+    let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+    case.write_data(
+        "samples.tsv",
+        "sample_id\tname\tsite_code\nS001\tAlpha\tSITE_A\n",
+    );
+    let err = case
+        .run(POPULATED_FROM_JOIN_BLOCK, &Run::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("sites"), "{err:#}");
+
+    let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+    case.write_data("samples.tsv", "sample_id\tname\tsite_code\nS001\tAlpha\t\n");
+    let rows = case
+        .run(POPULATED_FROM_JOIN_BLOCK, &Run::default())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["sample_id"], "S001");
 }

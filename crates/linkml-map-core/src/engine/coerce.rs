@@ -155,7 +155,7 @@ impl TargetCoercions {
                 ));
             }
             // The nested derivation's own name is the target class for its slots.
-            for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+            for nested in sd.class_derivations.iter().flatten() {
                 self.add_class_derivation(nested, target);
             }
         }

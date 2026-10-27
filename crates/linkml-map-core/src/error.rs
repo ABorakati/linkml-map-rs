@@ -77,6 +77,12 @@ pub enum Error {
     #[error("{0}")]
     JoinSynthesis(String),
 
+    /// A bare Python exception (`TypeError`, `ValueError`, ...) upstream's engine
+    /// lets escape from the arithmetic or string operation it performs; the text
+    /// is `Type: message` as Python would print it.
+    #[error("{0}")]
+    Python(String),
+
     /// Wrap any other error with context.
     #[error("transformation error in '{class}.{slot}': {cause}")]
     SlotTransform {
