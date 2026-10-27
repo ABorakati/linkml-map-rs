@@ -24,7 +24,7 @@ use indexmap::IndexMap;
 
 use self::ast::{Expr, Module, Stmt};
 use self::interp::Interp;
-pub(crate) use self::parse::Parsed;
+pub(crate) use self::parse::{Parsed, parses_as_expression};
 pub(crate) type PySrc = Py;
 use self::value::{Py, from_value, rf, to_value};
 use crate::value::Value;

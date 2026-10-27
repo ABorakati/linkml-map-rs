@@ -155,6 +155,15 @@ fn lookup(name: &str) -> Option<(Wrap, Builtin)> {
     })
 }
 
+/// `LinkMLEvaluator._eval_call`'s pre-check: a call to a name outside the
+/// function table fails before any argument is evaluated.
+pub(super) fn ensure_known_function(name: &str) -> ExprResult<()> {
+    if lookup(name).is_none() {
+        return Err(unknown_function(name));
+    }
+    Ok(())
+}
+
 /// Call the built-in `name` with already-evaluated positional `args` and
 /// keyword arguments (`name(a, k=v)`).
 ///

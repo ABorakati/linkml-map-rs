@@ -12,6 +12,8 @@ use std::sync::Arc;
 use super::ast::*;
 use super::lex::{Num, PResult, StrTok, Tok, Token, tokenize, translate_newlines};
 
+const STACK_OVERFLOW: &str = "parser stack overflow";
+
 /// Nesting limit of the recursive-descent parser, standing in for CPython's
 /// `MAXSTACK` ("parser stack overflow") and recursion limit.
 const MAX_DEPTH: usize = 400;
@@ -74,6 +76,44 @@ pub(crate) fn parse_module(text: &str) -> PResult<Parsed> {
         expr_spans: spans,
         first,
     })
+}
+
+/// `ast.parse(text, mode="eval")` succeeds: `expressions NEWLINE* ENDMARKER`.
+pub(crate) fn parses_as_expression(text: &str) -> bool {
+    let source = translate_newlines(text);
+    let Ok(toks) = tokenize(&source) else {
+        return false;
+    };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        src: &source,
+        depth: 0,
+        spans: Vec::new(),
+        last_value_span: None,
+        first: None,
+    };
+    let r = (|| -> PResult<()> {
+        p.expression()?;
+        while p.eat_op(",") {
+            if matches!(p.peek(), Tok::Newline | Tok::End) {
+                break;
+            }
+            p.expression()?;
+        }
+        p.eat_newline_opt();
+        if matches!(p.peek(), Tok::End) {
+            Ok(())
+        } else {
+            err("invalid syntax")
+        }
+    })();
+    // Past the nesting limit this parser gives up where CPython still parses:
+    // let the caller's own parser decide.
+    match r {
+        Ok(()) => true,
+        Err(e) => e == STACK_OVERFLOW,
+    }
 }
 
 /// Parse a lone expression list (an f-string replacement field's text).
@@ -216,7 +256,7 @@ impl Parser<'_> {
     fn enter(&mut self) -> PResult<()> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return err("parser stack overflow");
+            return err(STACK_OVERFLOW);
         }
         Ok(())
     }

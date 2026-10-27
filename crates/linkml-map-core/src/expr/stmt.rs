@@ -343,6 +343,18 @@ pub fn is_statement_block(expr: &str) -> bool {
 /// brackets (or after a trailing backslash) does not end the line and blank or
 /// comment-only lines are ignored.
 fn parse_single_expression(expr: &str) -> ExprResult<Ast> {
+    let restricted = parse_with_restricted_parser(expr);
+    // CPython decides what is an expression; the restricted parser then builds
+    // the tree (it may know less than Python, never more).
+    if !asteval::parses_as_expression(expr.trim_matches(super::pystr::is_py_space)) {
+        return Err(restricted
+            .err()
+            .unwrap_or_else(|| ExprError::Parse("invalid syntax".into())));
+    }
+    restricted
+}
+
+fn parse_with_restricted_parser(expr: &str) -> ExprResult<Ast> {
     let lines = raw_lines(expr.trim());
     match lines.as_slice() {
         [line] => parse(&line.text),
@@ -352,7 +364,6 @@ fn parse_single_expression(expr: &str) -> ExprResult<Ast> {
         )),
     }
 }
-
 
 /// Parse `expr` as one expression when it is one, else as a statement block.
 ///

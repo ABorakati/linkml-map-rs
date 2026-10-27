@@ -499,6 +499,12 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             args,
             keywords,
         } => {
+            // PARITY: upstream rejects an unknown function before it evaluates
+            // any argument (`LinkMLEvaluator._eval_call`), so an error in an
+            // argument of an unknown call never surfaces.
+            if func != "slot" {
+                builtins::ensure_known_function(func)?;
+            }
             // case() arguments are (cond, val) pairs that must be evaluated;
             // they go through the generic arg evaluation below.
             let mut evaled = Vec::with_capacity(args.len());
