@@ -242,6 +242,14 @@ aggregation / pivot (melt/unmelt)**, target-schema derivation, and the inverse
 > slot-level `class_derivations`. `source_schema`/`target_schema` are structured
 > `SchemaReference` objects (a bare string still parses as the schema name).
 
+**Streaming tabular input** (`.tsv`/`.csv` or a directory of tables) applies
+`is_a`/`mixins` inheritance to every field of a class derivation, including
+inherited `joins`. A class derivation built only from constant `value:`s (no
+`populated_from`, `joins`, `copy_directives`, `expr` or row-reading slot, and not
+named after a source class) is emitted **once** and reads no input; a spec made
+only of such blocks needs no data. The pipeline streams one primary table, so a
+spec with several row blocks emits only the first (upstream streams each block).
+
 **Not implemented** (out of scope): spec→Python/SQL compilation and JSON-schema
 validation of output.
 

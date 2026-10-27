@@ -981,7 +981,21 @@ fn normalise_slot_derivations(sdm: &mut serde_json::Map<String, serde_json::Valu
             normalise_keyval_mapping(so, "value_mappings");
             normalise_keyval_mapping(so, "expression_mappings");
             // Slot-level nested class_derivations stay a mapping (IndexMap);
-            // inject each class name from its key and recurse.
+            // inject each class name from its key and recurse. The list form
+            // (`- name: Project ...`, which upstream's loader also accepts) is
+            // first re-keyed by each entry's `name`.
+            if let Some(cd) = so.get_mut("class_derivations")
+                && let Some(items) = cd.as_array_mut()
+            {
+                let keyed: serde_json::Map<String, serde_json::Value> = items
+                    .drain(..)
+                    .filter_map(|item| {
+                        let name = item.get("name")?.as_str()?.to_owned();
+                        Some((name, item))
+                    })
+                    .collect();
+                *cd = serde_json::Value::Object(keyed);
+            }
             if let Some(cd) = so.get_mut("class_derivations")
                 && let Some(cdm) = cd.as_object_mut()
             {

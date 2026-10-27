@@ -15,6 +15,11 @@ pub enum Error {
     #[error("no class derivation for source type '{source_type}' (found {count} candidates)")]
     NoClassDerivation { source_type: String, count: usize },
 
+    /// An `is_a` / `mixins` chain between class derivations loops back on itself
+    /// (upstream raises `RecursionError`).
+    #[error("class derivation '{0}' inherits from itself via is_a/mixins")]
+    CyclicInheritance(String),
+
     /// No matching EnumDerivation was found.
     #[error("no enum derivation for source enum '{0}'")]
     NoEnumDerivation(String),
