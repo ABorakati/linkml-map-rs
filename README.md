@@ -226,8 +226,12 @@ unit conversion); expected values are Python's own. See
 
 **Implemented:** type coercion, list↔dict collections, the expression language
 (incl. safe string builtins — `lower`/`upper`/`title`/`capitalize`/`slugify` —
-and an opt-in **strict mode** that errors on unbound names instead of yielding
-null), foreign-key joins, enum/permissible-value mapping (incl. list-form
+and an opt-in **strict mode** that errors on unbound names, and on enum
+values matching no permissible value of the target enum, instead of yielding
+null / warning), target-schema-driven type coercion (a `--target-schema` types
+slots the spec gives no `range`; `range: decimal` is an exact decimal kept
+exact in every output) and enum values resolved to the target enum's
+permissible value keys (by key, `meaning`, `title` or alias), foreign-key joins, enum/permissible-value mapping (incl. list-form
 `populated_from` mapping several source PVs to one target), inheritance
 (is_a/mixins), stringification (delimiter + JSON/YAML), unit conversion
 (scheme-aware, with a medically-extended table incl. molar↔mass via

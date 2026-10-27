@@ -718,6 +718,7 @@ fn range_target_schema() -> InMemorySchema {
         .add_enum(EnumDef {
             name: "Relationship".into(),
             permissible_values: vec![],
+            ..Default::default()
         })
         .add_type_with_parent("Score", "decimal")
         .add_class(class("Site"))
@@ -1027,6 +1028,7 @@ fn enum_schema() -> InMemorySchema {
         .add_enum(EnumDef {
             name: "VitalStatus".into(),
             permissible_values: vec![],
+            ..Default::default()
         })
         .build()
 }

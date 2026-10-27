@@ -11,11 +11,14 @@
 //! [`TargetCoercions`]: a read-only table built once from the spec and target
 //! schema (the pipeline shares one per plan) and consulted per slot.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use crate::{
-    datamodel::{ClassDerivation, TransformationSpecification},
+    datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification},
     decimal::{Decimal, DecimalError},
+    enum_index::{EnumIndex, enum_index},
     error::{Error, Result},
     expr::{
         ExprError,
@@ -47,8 +50,36 @@ fn resolve_target_slot_datatype(
     coercible_datatype(sv, Some(&range))
 }
 
+/// Mirror of `Transformer._target_enum_index`'s resolution: the index of the
+/// target enum a slot's values must resolve to, or `None` when the range is not
+/// an enum or the enum has no closed list of permissible values.
+///
+/// The spec's `range` wins over the target schema's, as for datatypes.
+fn resolve_target_enum_index(
+    sv: &dyn SchemaProvider,
+    class_name: &str,
+    sd: &SlotDerivation,
+) -> Option<EnumIndex> {
+    let range = match sd.range.as_deref().filter(|r| !r.is_empty()) {
+        Some(range) => range.to_owned(),
+        None => {
+            // PARITY: Python's `induced_slot` raises for a slot absent from the
+            // target class; the Rust engine skips it (as for datatypes).
+            let slot = sv.induced_slot(&sd.name, class_name).ok()?;
+            match slot.range.name() {
+                Some(name) => name.to_owned(),
+                None => sv.default_range()?,
+            }
+        }
+    };
+    if !sv.all_enum_names().contains(&range) {
+        return None;
+    }
+    enum_index(sv, &range)
+}
+
 /// Read-only, shareable table of target-schema lookups, keyed by
-/// `(target class, slot)`.
+/// `(target class, slot)`, plus the warn-once state of enum resolution.
 ///
 /// Built once (see [`TargetCoercions::build`]) and borrowed by every engine, so
 /// a pipeline that builds an engine per row/chunk does no repeated schema work.
@@ -57,6 +88,12 @@ fn resolve_target_slot_datatype(
 #[derive(Debug, Default)]
 pub struct TargetCoercions {
     datatypes: HashMap<(String, String), Option<&'static str>>,
+    /// Upstream `_target_enum_cache`, keyed `(class, slot, spec range)`.
+    enums: HashMap<(String, String, Option<String>), Option<EnumIndex>>,
+    /// Upstream `_warned_unresolved_enum_values`: `(enum, value)` pairs already
+    /// warned about in non-strict mode, so each logs once per run. Shared
+    /// across worker threads through the plan.
+    warned_enum_values: Mutex<HashSet<(String, String)>>,
 }
 
 impl TargetCoercions {
@@ -75,6 +112,9 @@ impl TargetCoercions {
             self.datatypes
                 .entry((cd.name.clone(), sd.name.clone()))
                 .or_insert_with(|| resolve_target_slot_datatype(target, &cd.name, &sd.name));
+            self.enums
+                .entry((cd.name.clone(), sd.name.clone(), sd.range.clone()))
+                .or_insert_with(|| resolve_target_enum_index(target, &cd.name, sd));
             // The nested derivation's own name is the target class for its slots.
             for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
                 self.add_class_derivation(nested, target);
@@ -96,6 +136,81 @@ impl TargetCoercions {
             Some(found) => *found,
             None => resolve_target_slot_datatype(target, class_name, slot_name),
         }
+    }
+}
+
+impl TargetCoercions {
+    /// Mirror of `Transformer._target_enum_index`.
+    pub fn enum_index(
+        &self,
+        target: &dyn SchemaProvider,
+        class_name: &str,
+        sd: &SlotDerivation,
+    ) -> Option<Cow<'_, EnumIndex>> {
+        let key = (class_name.to_owned(), sd.name.clone(), sd.range.clone());
+        match self.enums.get(&key) {
+            Some(found) => found.as_ref().map(Cow::Borrowed),
+            None => resolve_target_enum_index(target, class_name, sd).map(Cow::Owned),
+        }
+    }
+
+    /// Mirror of `Transformer._resolve_enum_value`: replace `v` with the key of
+    /// the permissible value it spells.
+    ///
+    /// A list is resolved element-wise and a dict value-wise (keys untouched).
+    /// A value matching no permissible value, or more than one, errors in
+    /// `strict` mode; otherwise it passes through with a warning, logged once
+    /// per `(enum, value)` for the whole run.
+    ///
+    /// # Errors
+    /// [`Error::EnumValue`] carrying the upstream problem text (strict only).
+    pub fn resolve_enum_value(
+        &self,
+        v: Value,
+        index: &EnumIndex,
+        target: &dyn SchemaProvider,
+        strict: bool,
+    ) -> Result<Value> {
+        match v {
+            Value::List(items) => items
+                .into_iter()
+                .map(|i| self.resolve_enum_value(i, index, target, strict))
+                .collect::<Result<Vec<_>>>()
+                .map(Value::List),
+            Value::Map(m) => m
+                .into_iter()
+                .map(|(k, i)| {
+                    self.resolve_enum_value(i, index, target, strict)
+                        .map(|r| (k, r))
+                })
+                .collect::<Result<_>>()
+                .map(Value::Map),
+            scalar => {
+                // Python `str(v)`: `True` is 'True', `1.5` is '1.5', `None` is 'None'.
+                let text = py_str(&scalar);
+                match index.resolve(&text, target) {
+                    Ok(key) => Ok(Value::Str(key)),
+                    Err(problem) if strict => Err(Error::EnumValue(problem)),
+                    Err(problem) => {
+                        let first_time = self
+                            .warned_enum_values
+                            .lock()
+                            .map(|mut seen| seen.insert((index.enum_name.clone(), text)))
+                            .unwrap_or(false);
+                        if first_time {
+                            log::warn!("{problem}");
+                        }
+                        Ok(scalar)
+                    }
+                }
+            }
+        }
+    }
+
+    /// How many distinct `(enum, value)` problems have been warned about
+    /// (non-strict mode). For tests and diagnostics.
+    pub fn warned_enum_value_count(&self) -> usize {
+        self.warned_enum_values.lock().map_or(0, |seen| seen.len())
     }
 }
 
@@ -583,6 +698,7 @@ mod tests {
             .add_enum(crate::schema::EnumDef {
                 name: "Color".into(),
                 permissible_values: vec![],
+                ..Default::default()
             });
         if let Some(r) = default_range {
             b = b.default_range(r);

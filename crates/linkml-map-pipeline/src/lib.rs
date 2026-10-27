@@ -93,6 +93,11 @@ pub struct PipelineConfig {
     pub ordered: bool,
     /// Depth of the tokio bounded channels (reader→workers and workers→writer).
     pub channel_depth: usize,
+    /// Strict mode (upstream `--strict`): an `expr:` that references an unbound
+    /// name, or a value for an enum-ranged target slot that matches no
+    /// permissible value (or more than one), fails the row instead of yielding
+    /// null / passing through with a warning. Default `false`.
+    pub strict: bool,
 }
 
 impl PipelineConfig {
@@ -116,6 +121,7 @@ impl PipelineConfig {
             workers: 4,
             ordered: true,
             channel_depth: 256,
+            strict: false,
         }
     }
 }
@@ -150,9 +156,12 @@ pub struct CompiledPlan {
     target_provider: Option<Box<dyn SchemaProvider>>,
     /// Pre-parsed `expr:` ASTs, shared (by borrow) into every per-row engine.
     compiled_exprs: CompiledExprs,
-    /// Target-schema lookups (slot datatypes), resolved once and shared (by
-    /// borrow) into every per-row engine. `None` without a target schema.
+    /// Target-schema lookups (slot datatypes, enum indices and the enum
+    /// warn-once state), resolved once and shared (by borrow) into every
+    /// per-row engine. `None` without a target schema.
     target_coercions: Option<TargetCoercions>,
+    /// Strict mode, applied to every per-row engine. See [`PipelineConfig::strict`].
+    strict: bool,
     /// Resolved source class name (empty string = let engine decide per row).
     source_class: Option<String>,
     /// Cross-table join lookup index, built once when the pipeline runs in
@@ -352,6 +361,7 @@ impl CompiledPlan {
             target_provider,
             compiled_exprs,
             target_coercions,
+            strict: false,
             source_class,
             lookup_index: None,
             blocks,
@@ -445,6 +455,7 @@ impl CompiledPlan {
         if let Some(coercions) = &self.target_coercions {
             engine = engine.with_target_coercions(coercions);
         }
+        engine = engine.with_strict_exprs(self.strict);
         if let Some(ids) = &self.content_ids {
             engine = engine.with_content_ids(ids);
         }
@@ -469,6 +480,11 @@ impl CompiledPlan {
     /// [`CompiledPlan::missing_identifiers`] (`--continue-on-error`).
     pub fn set_emit_without_identifiers(&mut self, emit: bool) {
         self.emit_without_identifiers = emit;
+    }
+
+    /// Set strict mode for every per-row engine (see [`PipelineConfig::strict`]).
+    pub fn set_strict(&mut self, strict: bool) {
+        self.strict = strict;
     }
 
     /// Attach a pre-built cross-table [`LookupIndex`] (directory mode).
@@ -752,6 +768,7 @@ pub async fn run_pipeline_with_options(
         config.source_class.as_deref(),
     )
     .context("compiling plan")?;
+    plan.set_strict(config.strict);
 
     // ── 1a. Identifier slots must be derived or minted (upstream
     // `cli._require_identifiers`), checked before any output is opened. Without
@@ -1660,6 +1677,7 @@ mod tests {
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            strict: false,
         };
 
         let stats = run_pipeline(cfg).await.expect("pipeline failed");
@@ -1893,6 +1911,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            strict: false,
         };
 
         let stats = run_pipeline(cfg)
@@ -1978,6 +1997,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            strict: false,
         };
 
         // No directory ⇒ no lookup index ⇒ the unbound join reference surfaces as
@@ -2046,6 +2066,7 @@ class_derivations:
             workers: 4,
             ordered: true,
             channel_depth: 256,
+            strict: false,
         };
 
         let stats = run_pipeline(cfg).await.expect("pipeline failed");
@@ -2144,6 +2165,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            strict: false,
         };
 
         // Verify the plan detects FK need.

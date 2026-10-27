@@ -48,6 +48,12 @@ pub enum Error {
         cause: String,
     },
 
+    /// A value for an enum-ranged target slot matches no permissible value, or
+    /// more than one (strict mode only; non-strict warns and passes through).
+    /// The text is upstream's `EnumIndex.resolve` problem string.
+    #[error("{0}")]
+    EnumValue(String),
+
     /// Cardinality constraint violated (e.g. multiple values when single expected).
     #[error("cardinality error for slot '{slot}': {msg}")]
     Cardinality { slot: String, msg: String },

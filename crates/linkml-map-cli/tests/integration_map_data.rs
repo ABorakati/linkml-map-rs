@@ -105,6 +105,7 @@ fn continue_on_error_config(
         output_format: "json".to_owned(),
         workers: 1,
         unordered: false,
+        strict: false,
         input: input.to_string_lossy().into_owned(),
     }
 }
@@ -147,6 +148,7 @@ async fn test_map_data_measurements_001_golden() {
             .to_str()
             .unwrap()
             .to_owned(),
+        strict: false,
     };
 
     // ── Run ───────────────────────────────────────────────────────────────────
@@ -240,6 +242,7 @@ async fn test_map_data_measurements_001_yaml_output_shape() {
             .to_str()
             .unwrap()
             .to_owned(),
+        strict: false,
     };
 
     let stats = run_map_data_config(cfg)
@@ -307,6 +310,7 @@ async fn test_map_data_measurements_002_two_rows() {
         workers: 2,
         unordered: false,
         input: data_file.to_str().unwrap().to_owned(),
+        strict: false,
     };
 
     let stats = run_map_data_config(cfg)
@@ -417,6 +421,7 @@ async fn test_map_data_stdout_with_explicit_format() {
             .to_str()
             .unwrap()
             .to_owned(),
+        strict: false,
     };
 
     let result = linkml_map_cli::run_map_data_config(cfg).await;
@@ -462,6 +467,7 @@ async fn test_map_data_stdout_missing_format_is_rejected() {
             .to_str()
             .unwrap()
             .to_owned(),
+        strict: false,
     };
 
     let result = linkml_map_cli::run_map_data_config(cfg).await;

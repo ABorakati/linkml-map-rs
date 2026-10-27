@@ -765,28 +765,35 @@ impl SchemaProvider for SchemaViewProvider {
         let pvs = pv_keys
             .iter()
             .map(|key| {
-                let (description, meaning) = enum_def_raw
+                let raw_pv = enum_def_raw
                     .as_ref()
                     .and_then(|ed| ed.permissible_values.as_ref())
-                    .and_then(|pvmap| pvmap.get(key.as_str()))
-                    .map(|pv| {
-                        let desc = pv.description.clone();
-                        let meaning = pv.meaning.clone();
-                        (desc, meaning)
-                    })
-                    .unwrap_or((None, None));
+                    .and_then(|pvmap| pvmap.get(key.as_str()));
 
                 PermissibleValue {
                     text: key.clone(),
-                    description,
-                    meaning,
+                    description: raw_pv.and_then(|pv| pv.description.clone()),
+                    meaning: raw_pv.and_then(|pv| pv.meaning.clone()),
+                    title: raw_pv.and_then(|pv| pv.title.clone()),
+                    aliases: raw_pv.and_then(|pv| pv.aliases.clone()).unwrap_or_default(),
                 }
             })
             .collect();
 
+        // Upstream `_DYNAMIC_ENUM_SLOTS`: any non-empty one makes the enum open.
+        let is_dynamic = enum_def_raw.as_ref().is_some_and(|ed| {
+            ed.reachable_from.is_some()
+                || ed.matches.is_some()
+                || ed.concepts.as_ref().is_some_and(|v| !v.is_empty())
+                || ed.include.as_ref().is_some_and(|v| !v.is_empty())
+                || ed.minus.as_ref().is_some_and(|v| !v.is_empty())
+                || ed.inherits.as_ref().is_some_and(|v| !v.is_empty())
+        });
+
         Ok(EnumDef {
             name: enum_name.to_owned(),
             permissible_values: pvs,
+            is_dynamic,
         })
     }
 

@@ -238,8 +238,11 @@ impl<'s> ObjectTransformer<'s> {
         self
     }
 
-    /// Enable strict expression evaluation: unbound names and unresolved
-    /// `slot()` references error instead of yielding null (#232). Default lax.
+    /// Enable strict mode: unbound names and unresolved `slot()` references in
+    /// `expr:` error instead of yielding null (#232), and a value for an
+    /// enum-ranged target slot that matches no permissible value of the target
+    /// enum, or more than one, errors instead of passing through with a
+    /// (once-per-value) warning. Default lax. Mirrors upstream `strict`.
     pub fn with_strict_exprs(mut self, strict: bool) -> Self {
         self.strict = strict;
         self
@@ -782,6 +785,24 @@ impl<'s> ObjectTransformer<'s> {
             .datatype(target, class_name, slot_name)
     }
 
+    /// Mirror of `_resolve_enum_value(v, _target_enum_index(...))`: resolve an
+    /// enum-ranged target slot's value to the target enum's permissible value
+    /// key. A no-op without a target schema or an enum range.
+    fn resolve_enum_value(
+        &self,
+        v: Value,
+        slot_deriv: &SlotDerivation,
+        class_deriv: &ClassDerivation,
+    ) -> Result<Value> {
+        let (Some(target), Some(coercions)) = (self.target_schema, self.target_coercions()) else {
+            return Ok(v);
+        };
+        match coercions.enum_index(target, &class_deriv.name, slot_deriv) {
+            Some(index) => coercions.resolve_enum_value(v, &index, target, self.strict),
+            None => Ok(v),
+        }
+    }
+
     /// The range values of `slot_deriv` are coerced to: the spec `range`, else
     /// (when the spec declares none) the target schema's datatype.
     fn coercion_datatype<'a>(
@@ -825,6 +846,7 @@ impl<'s> ObjectTransformer<'s> {
             if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
                 v = coerce_datatype(v, &datatype)?;
             }
+            v = self.resolve_enum_value(v, slot_deriv, class_deriv)?;
             v = self.reshape_collection(v, slot_deriv, ssd)?;
         } else if (slot_deriv.value.is_some()
             || slot_deriv.expr.as_deref().is_some_and(|e| !e.is_empty()))
@@ -843,6 +865,7 @@ impl<'s> ObjectTransformer<'s> {
             if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
                 v = coerce_datatype(v, &datatype)?;
             }
+            v = self.resolve_enum_value(v, slot_deriv, class_deriv)?;
         }
         Ok(v)
     }
@@ -2603,18 +2626,22 @@ mod tests {
                         text: "male".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                     PermissibleValue {
                         text: "female".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                     PermissibleValue {
                         text: "nonbinary man".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                 ],
+                ..Default::default()
             })
             .add_class(ClassDef {
                 name: "Person".into(),

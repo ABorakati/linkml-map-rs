@@ -45,7 +45,7 @@ impl RangeKind {
 }
 
 /// A single permissible value within an enum.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PermissibleValue {
     /// The text value (key in the permissible_values dict).
     pub text: String,
@@ -53,13 +53,22 @@ pub struct PermissibleValue {
     pub description: Option<String>,
     /// Optional meaning CURIE / URI.
     pub meaning: Option<String>,
+    /// Optional `title` (a spelling data may use for this value).
+    pub title: Option<String>,
+    /// `aliases` (further spellings data may use for this value).
+    pub aliases: Vec<String>,
 }
 
 /// Minimal projection of a LinkML `EnumDefinition` that the engine needs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EnumDef {
     pub name: String,
     pub permissible_values: Vec<PermissibleValue>,
+    /// True when the values are not (all) listed: the enum is defined partly or
+    /// wholly by a query or by other enums (`reachable_from`, `matches`,
+    /// `concepts`, `include`, `minus`, `inherits`). Mirrors upstream's
+    /// `any(getattr(enum, s) for s in _DYNAMIC_ENUM_SLOTS)`.
+    pub is_dynamic: bool,
 }
 
 /// Which unit metaslot a [`UnitRef`] came from. Mirrors the Python
@@ -611,13 +620,16 @@ mod tests {
                         text: "Active".into(),
                         description: Some("Currently active".into()),
                         meaning: Some("ex:Active".into()),
+                        ..Default::default()
                     },
                     PermissibleValue {
                         text: "Inactive".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                 ],
+                ..Default::default()
             })
             // classes
             .add_class(ClassDef {

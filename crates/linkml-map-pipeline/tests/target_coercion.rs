@@ -147,3 +147,95 @@ class_derivations:
         "{text}"
     );
 }
+
+// Upstream 209f794: `--strict` governs enum resolution; the default warns and
+// carries on, resolving spellings to permissible value keys.
+async fn run_enum_pipeline(strict: bool, sex: &str) -> anyhow::Result<String> {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    std::fs::write(
+        dir.join("source.yaml"),
+        r"
+id: https://example.org/enum-source
+name: enum_source
+prefixes: {linkml: 'https://w3id.org/linkml/'}
+default_prefix: enum_source
+default_range: string
+imports: [linkml:types]
+classes:
+  Row:
+    attributes:
+      id: {identifier: true}
+      sex: {}
+",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("target.yaml"),
+        r#"
+id: https://example.org/enum-target
+name: enum_target
+prefixes: {linkml: 'https://w3id.org/linkml/'}
+default_prefix: enum_target
+default_range: string
+imports: [linkml:types]
+enums:
+  SexEnum:
+    permissible_values:
+      "OMOP:8532": {title: FEMALE, aliases: [F]}
+      "OMOP:8507": {title: MALE, aliases: [M]}
+classes:
+  Agent:
+    attributes:
+      id: {identifier: true}
+      sex: {range: SexEnum}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("spec.yaml"),
+        r"
+id: enum-resolution
+class_derivations:
+  Agent:
+    populated_from: Row
+    slot_derivations:
+      id: {populated_from: id}
+      sex: {populated_from: sex}
+",
+    )
+    .unwrap();
+    std::fs::write(dir.join("Row.tsv"), format!("id\tsex\nr1\t{sex}\n")).unwrap();
+    let out = dir.join("out.jsonl");
+    let mut cfg = PipelineConfig::new(
+        dir.join("Row.tsv").to_str().unwrap(),
+        dir.join("source.yaml").to_str().unwrap(),
+        Some(dir.join("target.yaml").to_str().unwrap()),
+        dir.join("spec.yaml").to_str().unwrap(),
+        out.to_str().unwrap(),
+    );
+    cfg.out_format = Some(Format::Jsonl);
+    cfg.source_class = Some("Row".to_owned());
+    cfg.strict = strict;
+    run_pipeline(cfg).await?;
+    Ok(std::fs::read_to_string(&out)?)
+}
+
+#[tokio::test]
+async fn enum_spellings_resolve_to_keys_through_the_pipeline() {
+    for strict in [false, true] {
+        let text = run_enum_pipeline(strict, "F").await.unwrap();
+        assert!(text.contains(r#""sex":"OMOP:8532""#), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn unknown_enum_value_warns_by_default_and_fails_when_strict() {
+    let lax = run_enum_pipeline(false, "other").await.unwrap();
+    assert!(lax.contains(r#""sex":"other""#), "{lax}");
+    let err = run_enum_pipeline(true, "other").await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("'other' is not a permissible value of enum SexEnum"),
+        "{err:#}"
+    );
+}
