@@ -18,10 +18,11 @@ Use `-a` (debug assertions) so arithmetic overflow is caught. Give each worktree
 |--------|-------------------|
 | `expr_parse_eval` | expression lexer, parser, statement parser and evaluator (lax and strict) |
 | `spec_load_compile` | spec YAML, normalisation, join synthesis, expression compilation, validation, the engine |
+| `yaml_safe_load` | `yaml_load::safe_load_all`: PyYAML `safe_load` semantics over libyaml (`libyaml.rs`, the only `unsafe`; runs under AddressSanitizer); what loads re-emits and re-loads equal |
 | `loader_yaml`, `loader_jsonl`, `loader_tsv` | the file loaders (`loader_tsv` also drives the CSV reader) |
 | `decimal_parse` | `Decimal::parse_python` and its spellings, ordering and normalisation |
 | `writers_tabular` | TSV/CSV/JSON/JSONL/YAML stream writers and `dump_output` over arbitrary values |
-| `pyyaml_emit` | the PyYAML-compatible emitter: no panics, and a lossless round trip for values that are not YAML 1.1/1.2 ambiguous |
+| `pyyaml_emit` | the PyYAML-compatible emitter: no panics, and a lossless round trip through `safe_load_all` |
 
 The fuzzers skip inputs that hit crashes already reported by the property tests (see the
 `#[ignore = "bug: ..."]` tests in `crates/*/tests/proptest_*.rs`). Build with

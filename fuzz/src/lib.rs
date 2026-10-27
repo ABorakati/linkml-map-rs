@@ -6,7 +6,7 @@ use linkml_map_core::decimal::Decimal;
 use linkml_map_core::schema::{
     ClassDef, EnumDef, InMemorySchema, InMemorySchemaBuilder, PermissibleValue, RangeKind, SlotDef,
 };
-use linkml_map_core::value::Value;
+use linkml_map_core::value::{Temporal, Value};
 use linkml_map_io::Format;
 
 /// An arbitrary [`Value`] (no `Value: Arbitrary` in the library).
@@ -17,6 +17,8 @@ pub enum FuzzValue {
     Int(i64),
     Float(f64),
     Decimal(String),
+    /// A `datetime.date` / `datetime.datetime` from timestamp text (a fixed date if invalid).
+    Temporal(String),
     Str(String),
     List(Vec<FuzzValue>),
     Map(Vec<(String, FuzzValue)>),
@@ -30,8 +32,16 @@ impl FuzzValue {
             FuzzValue::Int(i) => Value::Int(i),
             FuzzValue::Float(f) => Value::Float(f),
             FuzzValue::Decimal(s) => {
-                Value::Decimal(Decimal::parse_python(&s).unwrap_or_else(|_| Decimal::from_i64(0)))
+                let d = Decimal::parse_python(&s).unwrap_or_else(|_| Decimal::from_i64(0));
+                // `1e300000000` is written out digit by digit (`format(d, 'f')`, as upstream
+                // does too): 300 MB of output from a 12-byte input. Not a finding.
+                let huge = sci_exponent(&d.to_sci_string()).is_some_and(|e| e.unsigned_abs() > 5_000);
+                Value::Decimal(if huge && !UNGUARDED { Decimal::from_i64(0) } else { d })
             }
+            FuzzValue::Temporal(s) => Value::Temporal(
+                Temporal::from_yaml_timestamp(&s)
+                    .unwrap_or_else(|_| Temporal::from_yaml_timestamp("2000-01-01").expect("date")),
+            ),
             FuzzValue::Str(s) => Value::Str(s),
             FuzzValue::List(items) => Value::List(items.into_iter().map(Self::into_value).collect()),
             FuzzValue::Map(pairs) => Value::Map(
@@ -148,29 +158,14 @@ pub fn load_bytes(format: Format, bytes: &[u8]) -> Result<usize, String> {
     out
 }
 
-/// Whether a YAML 1.2 core-schema parser would read the plain scalar `s` as something
-/// other than a string although PyYAML's 1.1 resolver reads it as a string (PyYAML writes
-/// `1e3` plain), plus U+0085, which PyYAML itself cannot round-trip.
-pub fn yaml_round_trip_ambiguous(s: &str) -> bool {
-    if s.contains('\u{85}') {
-        return true;
-    }
-    let t = s.trim();
-    let unsigned = t.trim_start_matches(['+', '-']);
-    t.parse::<f64>().is_ok()
-        || unsigned.starts_with("0o")
-        || unsigned.starts_with("0x")
-        || unsigned.starts_with("0b")
-}
-
-/// Whether any string or key in `v` is round-trip ambiguous.
-pub fn value_has_ambiguous_string(v: &Value) -> bool {
+/// Whether any string or key in `v` contains U+0085 (NEL): a YAML 1.1 line break that
+/// PyYAML writes inside a quoted scalar and reads back as a space, so it cannot round-trip
+/// (the port is byte-identical to PyYAML's emitter).
+pub fn value_has_nel(v: &Value) -> bool {
     match v {
-        Value::Str(s) => yaml_round_trip_ambiguous(s),
-        Value::List(items) => items.iter().any(value_has_ambiguous_string),
-        Value::Map(m) => m
-            .iter()
-            .any(|(k, v)| yaml_round_trip_ambiguous(k) || value_has_ambiguous_string(v)),
+        Value::Str(s) => s.contains('\u{85}'),
+        Value::List(items) => items.iter().any(value_has_nel),
+        Value::Map(m) => m.iter().any(|(k, v)| k.contains('\u{85}') || value_has_nel(v)),
         _ => false,
     }
 }

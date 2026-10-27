@@ -4,7 +4,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(dirname "$here")"
 corpus="$here/corpus"
-mkdir -p "$corpus"/{expr_parse_eval,spec_load_compile,loader_yaml,loader_jsonl,loader_tsv,decimal_parse}
+mkdir -p "$corpus"/{expr_parse_eval,spec_load_compile,loader_yaml,yaml_safe_load,loader_jsonl,loader_tsv,decimal_parse}
 
 # Specifications: every transform spec under tests/.
 i=0
@@ -23,6 +23,8 @@ i=0
 while IFS= read -r f; do
   i=$((i + 1)); cp "$f" "$corpus/loader_yaml/fixture-$i.yaml"
 done < <(find "$repo/tests" \( -path '*/data/*' -o -path '*/output/*' \) -name '*.yaml' | sort)
+cp "$here"/seeds/yaml/* "$corpus/loader_yaml/"
+cp "$corpus"/loader_yaml/* "$corpus/yaml_safe_load/"
 cp "$here"/seeds/jsonl/* "$corpus/loader_jsonl/"
 for f in "$repo"/tests/examples/tabular/data/*.tsv "$repo"/tests/examples/tabular/data/*.csv; do
   [ -f "$f" ] && cp "$f" "$corpus/loader_tsv/$(basename "$f")"

@@ -1,0 +1,24 @@
+d: 2001-12-14
+dt: 2001-12-14t21:59:43.10-05:00
+sp: 2001-12-14 21:59:43.10 -5
+yes_no: [yes, No, ON, off, y, n]
+octal: 017
+sexagesimal: 1:30:45
+under: 1_000
+sci: 1e3
+nan: .nan
+inf: [.inf, -.INF]
+null_forms: [~, null, Null, ]
+merge: &a {x: 1}
+use:
+  <<: *a
+  y: 2
+multi: |
+  line1
+  line2
+folded: >-
+  a
+  b
+quoted: "tab\there é \x41"
+? complex key
+: value

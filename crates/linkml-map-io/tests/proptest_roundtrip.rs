@@ -8,6 +8,8 @@ use common::*;
 use indexmap::IndexMap;
 use linkml_map_core::value::Value;
 use linkml_map_io::pycompat::{sort_keys, strip_nulls, tabular_cell};
+use linkml_map_io::pyyaml::{DumpOptions, dump_yaml};
+use linkml_map_io::yaml_load::safe_load_all;
 use linkml_map_io::{Format, dump_output, load_all, write_vec};
 use proptest::prelude::*;
 use std::path::Path;
@@ -82,35 +84,75 @@ proptest! {
         prop_assert!(no_null_map_values(&parsed), "null in {text}");
     }
 
-    /// YAML writer (one document per record, keys sorted) -> loader.
+    /// YAML writer (one document per record, keys sorted) -> loader. The loader has PyYAML
+    /// `safe_load` semantics, so no string is ambiguous: `yes`, `1e3` and `017` all come back
+    /// as the strings that were written.
     #[test]
-    fn yaml_round_trip(
-        records in arb_records(
-            arb_lossless()
-                .prop_filter("1.1/1.2 ambiguity", |v| !has_ambiguous_string(v))
-                .boxed()
-        ),
-    ) {
+    fn yaml_round_trip(records in arb_records(arb_lossless())) {
         // An empty YAML stream loads as one null record (like `yaml.safe_load("")`).
         prop_assume!(!records.is_empty());
         let dir = tempfile::tempdir().unwrap();
         let (text, loaded) = write_and_load(dir.path(), "yaml", Format::Yaml, records.clone());
         let expected: Vec<Value> = records.iter().map(|r| sort_keys(&strip_nulls(r))).collect();
         let loaded = loaded.unwrap_or_else(|e| panic!("does not load ({e:#}):\n{text}"));
-        // A single record loads as one item and several as several: same as `expected`.
         prop_assert_eq!(&loaded, &expected, "text:\n{}", text);
-        prop_assert!(no_null_map_values(&Value::List(loaded)), "null in {text}");
+        prop_assert!(no_null_map_values(&Value::List(loaded)), "null in {}", text);
     }
 
-    /// TSV and CSV: flat string-ish records round-trip as strings (what the loader yields
-    /// without schema hints), including cells holding the separator, quotes and newlines.
+    /// The PyYAML-compatible emitter and the PyYAML-compatible loader are inverse on
+    /// everything PyYAML itself round-trips: any string (including `yes`, `1e3`, `017`,
+    /// `2001-12-14`), ints, floats (NaN and infinities too), booleans, null, dates and
+    /// datetimes, nested containers, any option combination.
+    #[test]
+    fn emit_then_safe_load_is_the_identity(
+        v in arb_yaml_value(),
+        default_flow_style in any::<bool>(),
+        allow_unicode in any::<bool>(),
+        sort_keys in any::<bool>(),
+    ) {
+        let text = dump_yaml(&v, DumpOptions { default_flow_style, allow_unicode, sort_keys });
+        // A double-quoted scalar folded over lines (`\` at a line end) is read back wrongly by
+        // PyYAML itself (upstream emitter bug); the port is byte-identical to it.
+        prop_assume!(!text.contains("\\\n"));
+        let docs = safe_load_all(&text).unwrap_or_else(|e| panic!("does not load ({e}):\n{text}"));
+        prop_assert_eq!(docs.len(), 1, "text:\n{}", text);
+        prop_assert!(same(&v, &docs[0]), "text:\n{}\nloaded: {:?}", text, docs[0]);
+    }
+
+    /// `safe_load_all` (libyaml underneath, the only `unsafe` in the crate) returns `Ok` or
+    /// `Err` for arbitrary text, never panics; and what loads re-emits and re-loads equal.
+    #[test]
+    fn safe_load_never_panics_and_is_stable(
+        text in prop_oneof![
+            any::<String>(),
+            "\\PC{0,200}",
+            "[a-z0-9:,\\-\\[\\]{}!&*|>'\" #?%@`\\n\\t\\\\]{0,120}",
+            arb_yaml_value().prop_map(|v| dump_yaml(&v, DumpOptions::default())),
+        ],
+    ) {
+        let Ok(docs) = safe_load_all(&text) else { return Ok(()) };
+        for doc in &docs {
+            if contains_decimal(doc) { continue; }
+            let again = dump_yaml(doc, DumpOptions::default());
+            if again.contains("\\\n") { continue; }
+            let reloaded = safe_load_all(&again)
+                .unwrap_or_else(|e| panic!("re-emitted text does not load ({e}):\n{again}"));
+            prop_assert_eq!(reloaded.len(), 1);
+            prop_assert!(same(doc, &reloaded[0]), "doc {:?}\nre-emitted:\n{}\nreloaded {:?}", doc, again, reloaded[0]);
+        }
+    }
+
+    /// TSV and CSV: flat records of words round-trip. The loader mirrors upstream's
+    /// `_DelimitedFileLoader._rows`, so a cell equal to `""` is dropped (its key is absent)
+    /// and a row whose cells are all empty is dropped; cells holding the separator, quotes
+    /// and newlines survive through quoting.
     #[test]
     fn delimited_round_trip(
         keys in prop::collection::btree_set("[a-z_]{1,6}", 2..5),
         rows in prop::collection::vec(prop::collection::vec(
             prop_oneof![
-                3 => "[^\\r]{0,12}",
-                1 => prop::sample::select(vec!["a\tb", "a,b", "say \"hi\"", "two\nlines", " ", "", "\"", ",", "\t", "x\ty,z"]).prop_map(str::to_string),
+                3 => "[a-zA-Z][^\\r]{0,11}",
+                1 => prop::sample::select(vec!["a\tb", "a,b", "say \"hi\"", "two\nlines", "\"", ",", "\t", "x\ty,z", ""]).prop_map(str::to_string),
             ],
             5), 0..6),
         csv in any::<bool>(),
@@ -127,30 +169,74 @@ proptest! {
                 )
             })
             .collect();
+        // The loader's view: empty cells dropped, all-empty rows dropped.
+        let expected: Vec<Value> = rows
+            .iter()
+            .filter(|cells| keys.iter().zip(*cells).any(|(_, c)| !c.is_empty()))
+            .map(|cells| {
+                Value::Map(
+                    keys.iter()
+                        .zip(cells)
+                        .filter(|(_, c)| !c.is_empty())
+                        .map(|(k, c)| (k.clone(), Value::Str(c.clone())))
+                        .collect::<IndexMap<_, _>>(),
+                )
+            })
+            .collect();
         let (format, ext) = if csv { (Format::Csv, "csv") } else { (Format::Tsv, "tsv") };
         let dir = tempfile::tempdir().unwrap();
-        let (text, loaded) = write_and_load(dir.path(), ext, format, records.clone());
-        prop_assert_eq!(loaded.unwrap(), records, "text:\n{}", text);
+        let (text, loaded) = write_and_load(dir.path(), ext, format, records);
+        prop_assert_eq!(loaded.unwrap(), expected, "text:\n{}", text);
     }
 
-    /// Scalars of every type written to TSV come back as the text `str()` gives them.
+    /// Scalars of every type written to TSV come back as what Python's `csv` + `_parse_numeric`
+    /// make of their `str()` text: numbers for numeric text, strings otherwise, nothing for `""`.
     #[test]
-    fn tsv_scalars_come_back_as_text(
+    fn tsv_scalars_come_back_as_their_text(
         cells in prop::collection::vec(arb_scalar(false, false), 2..5),
     ) {
+        // A bare carriage return is not representable in a cell.
+        prop_assume!(!cells.iter().any(|v| matches!(v, Value::Str(s) if s.contains('\r'))));
         let record = Value::Map(
             cells.iter().enumerate().map(|(i, v)| (format!("c{i}"), v.clone())).collect::<IndexMap<_, _>>(),
         );
-        let expected = Value::Map(
-            cells.iter().enumerate()
-                .map(|(i, v)| (format!("c{i}"), Value::Str(tabular_cell(v))))
-                .collect::<IndexMap<_, _>>(),
-        );
-        // Cells with a bare carriage return or a lone-empty first column are not representable.
-        prop_assume!(!cells.iter().any(|v| matches!(v, Value::Str(s) if s.contains('\r'))));
         let dir = tempfile::tempdir().unwrap();
         let (text, loaded) = write_and_load(dir.path(), "tsv", Format::Tsv, vec![record]);
-        prop_assert_eq!(loaded.unwrap(), vec![expected], "text:\n{}", text);
+        let loaded = loaded.unwrap();
+        // `skipinitialspace=True`: an unquoted cell of spaces reads back as `""` (dropped).
+        let effectively_empty = |t: &str| {
+            t.trim_start_matches(' ').is_empty() && !t.contains(['\t', '"', '\n'])
+        };
+        if cells.iter().all(|v| effectively_empty(&tabular_cell(v))) {
+            prop_assert!(loaded.is_empty(), "an all-empty row is dropped; text:\n{}", text);
+            return Ok(());
+        }
+        let Some(Value::Map(row)) = loaded.first() else {
+            return Err(TestCaseError::fail(format!("no row loaded; text:\n{text}")));
+        };
+        for (i, v) in cells.iter().enumerate() {
+            let got = row.get(&format!("c{i}"));
+            let want_text = tabular_cell(v);
+            if effectively_empty(&want_text) {
+                prop_assert!(got.is_none(), "empty cell c{i} should be absent, got {got:?}");
+                continue;
+            }
+            match (v, got) {
+                (Value::Int(a), Some(Value::Int(b))) => prop_assert_eq!(a, b),
+                (Value::Float(a), Some(b)) if a.is_finite() => {
+                    prop_assert_eq!(Some(*a), b.try_numeric(), "float c{} text {:?}", i, want_text)
+                }
+                (Value::Bool(_), Some(b)) => prop_assert_eq!(b, &Value::Str(want_text)),
+                // Text that looks numeric becomes a number; anything else stays text.
+                (Value::Str(s), Some(Value::Str(t))) => {
+                    // Quoted cells keep leading spaces; unquoted ones lose them.
+                    let want = if s.contains(['\t', '"', '\n']) { s.as_str() } else { s.trim_start_matches(' ') };
+                    prop_assert_eq!(want, t.as_str())
+                }
+                (_, Some(_)) => {}
+                (_, None) => prop_assert!(false, "cell c{i} ({v:?}) lost; text:\n{text}"),
+            }
+        }
     }
 
     /// The writers never panic on arbitrary values (including NaN, decimals and nested
@@ -192,11 +278,51 @@ proptest! {
     }
 }
 
-fn has_ambiguous_string(v: &Value) -> bool {
+fn contains_decimal(v: &Value) -> bool {
     match v {
-        Value::Str(s) => ambiguous_between_1_1_and_1_2(s),
-        Value::List(items) => items.iter().any(has_ambiguous_string),
-        Value::Map(m) => m.values().any(has_ambiguous_string),
+        Value::Decimal(_) => true,
+        Value::List(items) => items.iter().any(contains_decimal),
+        Value::Map(m) => m.values().any(contains_decimal),
         _ => false,
     }
+}
+
+/// Equality that treats NaN as equal to itself and ignores map key order.
+fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Float(x), Value::Float(y)) => x == y || (x.is_nan() && y.is_nan()),
+        (Value::List(x), Value::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| same(p, q))
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))
+        }
+        _ => a == b,
+    }
+}
+
+/// Values YAML can carry exactly (no decimals): awkward strings, special floats, temporals.
+fn arb_yaml_value() -> BoxedStrategy<Value> {
+    let leaf = prop_oneof![
+        2 => Just(Value::Null),
+        2 => any::<bool>().prop_map(Value::Bool),
+        3 => any::<i64>().prop_map(Value::Int),
+        3 => prop_oneof![any::<f64>(), Just(f64::INFINITY), Just(f64::NEG_INFINITY), Just(f64::NAN), Just(1e20), Just(1e-7), Just(-0.0)].prop_map(Value::Float),
+        2 => arb_temporal().prop_map(Value::Temporal),
+        6 => arb_pyyaml_string().prop_map(Value::Str),
+    ];
+    leaf.prop_recursive(4, 40, 5, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..5).prop_map(Value::List),
+            prop::collection::vec((arb_pyyaml_string(), inner), 0..5)
+                .prop_map(|pairs| Value::Map(pairs.into_iter().collect())),
+        ]
+    })
+    .boxed()
+}
+
+/// Any awkward string except those PyYAML itself cannot round-trip: U+0085 (NEL, a YAML 1.1
+/// line break it writes inside a quoted scalar and reads back as a space).
+fn arb_pyyaml_string() -> impl Strategy<Value = String> {
+    arb_any_tricky_string().prop_filter("NEL", |s| !s.contains('\u{85}'))
 }

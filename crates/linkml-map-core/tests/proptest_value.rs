@@ -272,7 +272,13 @@ proptest! {
     /// Upstream sorts map keys and (unordered) list items, so neither order matters.
     #[test]
     fn canonical_json_ignores_key_and_list_order(v in arb_value()) {
-        prop_assert_eq!(canonical_json(&v), canonical_json(&reorder(&v)));
+        // An unsupported value (a temporal) is an error whose text names the first offender,
+        // so under reordering only success vs failure and the Ok text are comparable.
+        let (a, b) = (canonical_json(&v), canonical_json(&reorder(&v)));
+        prop_assert_eq!(a.is_ok(), b.is_ok());
+        if a.is_ok() {
+            prop_assert_eq!(a, b);
+        }
     }
 
     /// Null entries, empty lists and empty maps are dropped from objects.
@@ -313,7 +319,10 @@ proptest! {
         let first = ids.content_id(&record, class);
         prop_assert_eq!(&first, &ids.content_id(&record, class));
         // Key order is irrelevant (upstream sorts keys).
-        prop_assert_eq!(&first, &ids.content_id(&reversed, class));
+        prop_assert_eq!(first.is_ok(), ids.content_id(&reversed, class).is_ok());
+        if first.is_ok() {
+            prop_assert_eq!(&first, &ids.content_id(&reversed, class));
+        }
         if let Ok(id) = first {
             let uuid = Uuid::parse_str(&id).expect("a UUID string");
             prop_assert_eq!(uuid.get_version_num(), 5);
@@ -347,4 +356,19 @@ proptest! {
 fn decimal_sci_string_of_extreme_exponent_parses_back() {
     let d = Decimal::parse_python("10e2147483647").unwrap();
     Decimal::parse_python(&d.to_sci_string()).expect("str(Decimal) parses");
+}
+
+/// Upstream `_canonical` raises `TypeError("Cannot synthesize an identifier from a value of
+/// type {type(value).__name__}: {value!r}")`; for a `datetime.date` that is `type date:
+/// datetime.date(2000, 1, 1)`. The port prints `type unsupported: Temporal(Date(..))`.
+#[test]
+#[ignore = "divergence: content-id error text for a Temporal says `unsupported` and Debug-prints the value (upstream: `type date: datetime.date(2000, 1, 1)`); use Temporal::type_name()/repr() in content_id.rs::variant_name"]
+fn content_id_error_for_a_date_matches_upstream_text() {
+    use linkml_map_core::value::Temporal;
+    let date = Temporal::from_yaml_timestamp("2000-01-01").unwrap();
+    let err = canonical_json(&Value::Temporal(date)).unwrap_err();
+    assert_eq!(
+        err,
+        "Cannot synthesize an identifier from a value of type date: datetime.date(2000, 1, 1)"
+    );
 }

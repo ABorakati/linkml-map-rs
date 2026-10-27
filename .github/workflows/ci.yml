@@ -225,6 +225,7 @@ jobs:
         target:
           - expr_parse_eval
           - spec_load_compile
+          - yaml_safe_load
           - loader_yaml
           - loader_jsonl
           - loader_tsv

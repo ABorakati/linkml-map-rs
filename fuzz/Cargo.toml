@@ -90,3 +90,10 @@ path = "fuzz_targets/pyyaml_emit.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "yaml_safe_load"
+path = "fuzz_targets/yaml_safe_load.rs"
+test = false
+doc = false
+bench = false

@@ -1,10 +1,11 @@
 #![no_main]
-//! The PyYAML-compatible emitter: never panics, and for values with no YAML 1.1/1.2
-//! ambiguity the text parses back to the same value.
+//! The PyYAML-compatible emitter: never panics, and its text loads back (through the
+//! PyYAML-compatible `safe_load_all`, libyaml underneath) to the same value.
 
-use fuzz_support::{FuzzValue, UNGUARDED, same, value_has_ambiguous_string};
+use fuzz_support::{FuzzValue, UNGUARDED, same, value_has_nel};
 use libfuzzer_sys::{arbitrary::Arbitrary, fuzz_target};
 use linkml_map_core::pyyaml::{DumpOptions, dump_yaml};
+use linkml_map_io::yaml_load::safe_load_all;
 use linkml_map_core::value::Value;
 
 #[derive(Debug, Arbitrary)]
@@ -34,7 +35,7 @@ fuzz_target!(|input: Input| {
     let text = dump_yaml(&value, opts);
     assert_eq!(text, dump_yaml(&value, opts), "emitter is not deterministic");
     // Decimals are plain numeric scalars, not strings: not comparable.
-    if has_decimal(&value) || value_has_ambiguous_string(&value) {
+    if has_decimal(&value) || (!UNGUARDED && value_has_nel(&value)) {
         return;
     }
     // A double-quoted scalar folded over several lines (`\` at a line end): PyYAML's own
@@ -44,8 +45,11 @@ fuzz_target!(|input: Input| {
     if !UNGUARDED && text.contains("\\\n") {
         return;
     }
-    match serde_yaml_ng::from_str::<Value>(&text) {
-        Ok(back) => assert!(same(&value, &back), "round trip differs\n{text}\nparsed: {back:?}\noriginal: {value:?}"),
-        Err(e) => panic!("emitted YAML does not parse ({e}):\n{text}"),
+    match safe_load_all(&text) {
+        Ok(docs) if docs.len() == 1 => {
+            assert!(same(&value, &docs[0]), "round trip differs\n{text}\nloaded: {:?}\noriginal: {value:?}", docs[0])
+        }
+        Ok(docs) => panic!("{} documents from one emit:\n{text}", docs.len()),
+        Err(e) => panic!("emitted YAML does not load ({e}):\n{text}"),
     }
 });

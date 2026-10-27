@@ -6,6 +6,7 @@
 use indexmap::IndexMap;
 use linkml_map_core::decimal::Decimal;
 use linkml_map_core::expr::Bindings;
+use linkml_map_core::value::Temporal;
 use linkml_map_core::value::Value;
 use proptest::prelude::*;
 
@@ -46,6 +47,21 @@ fn arb_text() -> impl Strategy<Value = String> {
 fn arb_decimal() -> impl Strategy<Value = Decimal> {
     "-?[0-9]{1,24}(\\.[0-9]{0,12})?([eE][+-]?[0-9]{1,3})?"
         .prop_map(|s| Decimal::parse_python(&s).unwrap_or_else(|_| Decimal::from_i64(0)))
+}
+
+/// A `datetime.date` / `datetime.datetime` built the way PyYAML builds one from a timestamp
+/// scalar; out-of-range fields (month 13, hour 25) are an `Err` and fall back to a fixed date.
+pub fn arb_temporal() -> impl Strategy<Value = Temporal> {
+    prop_oneof![
+        "[0-9]{4}-[01][0-9]-[0-3][0-9]",
+        "[0-9]{4}-[01]?[0-9]-[0-3]?[0-9][Tt ]+[0-2]?[0-9]:[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?( ?(Z|[+-][0-1][0-9](:[0-5][0-9])?))?",
+        Just("2024-02-29".to_string()),
+        Just("2001-12-14t21:59:43.10-05:00".to_string()),
+    ]
+    .prop_map(|t| {
+        Temporal::from_yaml_timestamp(&t)
+            .unwrap_or_else(|_| Temporal::from_yaml_timestamp("2000-01-01").expect("valid date"))
+    })
 }
 
 fn arb_key() -> impl Strategy<Value = String> {
@@ -89,6 +105,7 @@ pub fn arb_scalar(finite_only: bool, small_ints: bool) -> BoxedStrategy<Value> {
         4 => int.prop_map(Value::Int),
         3 => float.prop_map(Value::Float),
         2 => arb_decimal().prop_map(Value::Decimal),
+        1 => arb_temporal().prop_map(Value::Temporal),
         5 => arb_text().prop_map(Value::Str),
     ]
     .boxed()
@@ -99,12 +116,12 @@ pub fn arb_value() -> BoxedStrategy<Value> {
     arb_value_with(false, true, false)
 }
 
-/// Arbitrary nested [`Value`] that JSON/YAML/TSV can carry (finite floats; no decimals
-/// unless `decimals`).
+/// Arbitrary nested [`Value`] that JSON/YAML/TSV can carry (finite floats; no decimals or
+/// temporals unless `decimals`).
 pub fn arb_value_with(finite_only: bool, decimals: bool, small_ints: bool) -> BoxedStrategy<Value> {
     arb_scalar(finite_only, small_ints)
         .prop_filter("decimal allowed", move |v| {
-            decimals || !matches!(v, Value::Decimal(_))
+            decimals || !matches!(v, Value::Decimal(_) | Value::Temporal(_))
         })
         .prop_recursive(4, 48, 6, |inner| {
             prop_oneof![
