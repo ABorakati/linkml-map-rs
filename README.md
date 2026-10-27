@@ -130,6 +130,13 @@ format inferred from the output extension (YAML when there is neither), `-O FILE
 records written per chunk. `--source-class` is accepted as an alias of
 `--source-type`.
 
+Parquet and DuckDB output (`-f parquet`, `-f duckdb`, or a `.parquet`/`.duckdb`
+output extension) is built by DuckDB from the staged JSONL, so nested objects
+become `STRUCT` columns and lists of them `STRUCT[]`. It needs an output file,
+`--table-name NAME` sets the DuckDB table (default: the file stem), and it is
+behind the off-by-default `columnar` cargo feature because it compiles DuckDB:
+`cargo build --release -p linkml-map-cli --features columnar`.
+
 ### Python (Recommended Drop-in API)
 
 Once installed, use it as you would standard `linkml-map`:

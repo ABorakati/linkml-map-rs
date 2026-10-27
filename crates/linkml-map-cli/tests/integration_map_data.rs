@@ -375,8 +375,8 @@ async fn test_default_map_data_api_stays_fail_fast() {
 /// Verify that an unknown --input-format string is rejected before the pipeline runs.
 #[test]
 fn test_parse_format_str_rejects_unknown() {
-    let result = linkml_map_cli::parse_format_str("parquet");
-    assert!(result.is_err(), "parquet should not be a supported format");
+    let result = linkml_map_cli::parse_format_str("xlsx");
+    assert!(result.is_err(), "xlsx should not be a supported format");
 }
 
 /// Verify that "auto" returns None (meaning: detect from path).
@@ -574,4 +574,165 @@ async fn test_single_object_yaml_has_no_document_marker() {
         std::fs::read_to_string(&out).unwrap(),
         "id: P:1\nheight_in_cm: 172.0\n"
     );
+}
+
+// ── Parquet / DuckDB output (upstream 04dc4c8, tests/test_cli/test_cli_columnar.py) ──
+
+/// Fixtures for the columnar tests: the shared tabular example.
+fn tabular_config(output: &std::path::Path) -> MapDataConfig {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let fix = PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/examples/tabular");
+    let mut cfg = MapDataConfig::new(
+        fix.join("transform/person_to_agent.transform.yaml")
+            .to_str()
+            .unwrap(),
+        fix.join("source/person_flat.yaml").to_str().unwrap(),
+        fix.join("data/Person.tsv").to_str().unwrap(),
+        output.to_str().unwrap(),
+    );
+    cfg.source_class = Some("Person".to_owned());
+    cfg.workers = 2;
+    cfg
+}
+
+/// A default build has no DuckDB: asking for Parquet fails with a rebuild hint.
+#[cfg(not(feature = "columnar"))]
+#[tokio::test]
+async fn test_parquet_without_columnar_feature_fails_with_hint() {
+    let tmp = tempdir().expect("tempdir");
+    let target = tmp.path().join("agent.parquet");
+    let err = run_map_data_config(tabular_config(&target))
+        .await
+        .expect_err("parquet needs the columnar feature");
+    assert!(
+        format!("{err:#}").contains("--features columnar"),
+        "{err:#}"
+    );
+}
+
+/// `parquet`/`duckdb` cannot go to stdout, with or without the feature
+/// (upstream: "{fmt} output requires an output file; pass -o/--output FILE").
+#[tokio::test]
+async fn test_columnar_to_stdout_is_rejected() {
+    for format in ["parquet", "duckdb"] {
+        let tmp = tempdir().expect("tempdir");
+        let mut cfg = tabular_config(&tmp.path().join("unused"));
+        cfg.output = "-".to_owned();
+        cfg.output_format = format.to_owned();
+        let err = run_map_data_config(cfg).await.expect_err("must fail");
+        assert!(
+            format!("{err:#}").contains(&format!(
+                "{format} output requires an output file; pass -o/--output FILE"
+            )),
+            "{err:#}"
+        );
+    }
+}
+
+#[cfg(feature = "columnar")]
+mod columnar {
+    use super::*;
+    use linkml_map_duckdb::columnar::duckdb::Connection;
+
+    fn strings(con: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = con.prepare(sql).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// Port of `test_table_name_applies_to_additional_duckdb_outputs`.
+    #[tokio::test]
+    async fn test_table_name_applies_to_additional_duckdb_outputs() {
+        let tmp = tempdir().expect("tempdir");
+        let primary = tmp.path().join("primary.duckdb");
+        let extra = tmp.path().join("extra.duckdb");
+        let mut cfg = tabular_config(&primary);
+        cfg.write_options.table_name = Some("agent".to_owned());
+        cfg.write_options.additional_outputs = vec![extra.clone()];
+        run_map_data_config(cfg).await.expect("map-data failed");
+        for path in [primary, extra] {
+            let con = Connection::open(&path).unwrap();
+            assert_eq!(strings(&con, "SHOW TABLES"), ["agent"]);
+        }
+    }
+
+    /// Port of `test_single_object_input_writes_parquet`.
+    #[tokio::test]
+    async fn test_single_object_input_writes_parquet() {
+        let tmp = tempdir().expect("tempdir");
+        let data = tmp.path().join("person.yaml");
+        std::fs::write(
+            &data,
+            "id: P:001\nname: fred bloggs\nprimary_email: fred@example.com\nage_in_years: 33\ngender: nonbinary man\n",
+        )
+        .unwrap();
+        let target = tmp.path().join("agent.parquet");
+        let mut cfg = tabular_config(&target);
+        cfg.input = data.to_str().unwrap().to_owned();
+        run_map_data_config(cfg).await.expect("map-data failed");
+
+        let con = Connection::open_in_memory().unwrap();
+        let rows = strings(
+            &con,
+            &format!(
+                "SELECT id || '|' || label FROM read_parquet('{}')",
+                target.display()
+            ),
+        );
+        assert_eq!(rows, ["P:001|fred bloggs"]);
+        // Only the artifact remains: the staging file is gone.
+        let mut names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["agent.parquet", "person.yaml"]);
+    }
+
+    /// Port of `test_single_object_input_writes_duckdb_with_table_name`.
+    #[tokio::test]
+    async fn test_single_object_input_writes_duckdb_with_table_name() {
+        let tmp = tempdir().expect("tempdir");
+        let data = tmp.path().join("person.yaml");
+        std::fs::write(
+            &data,
+            "id: P:002\nname: jane doe\nprimary_email: jane@example.com\nage_in_years: 28\ngender: cisgender woman\n",
+        )
+        .unwrap();
+        let target = tmp.path().join("study.duckdb");
+        let mut cfg = tabular_config(&target);
+        cfg.input = data.to_str().unwrap().to_owned();
+        cfg.write_options.table_name = Some("agent".to_owned());
+        run_map_data_config(cfg).await.expect("map-data failed");
+
+        let con = Connection::open(&target).unwrap();
+        assert_eq!(strings(&con, "SHOW TABLES"), ["agent"]);
+        assert_eq!(strings(&con, "SELECT id FROM agent"), ["P:002"]);
+    }
+
+    /// Tabular (streaming) input to Parquet infers the format from the extension.
+    #[tokio::test]
+    async fn test_streaming_input_writes_parquet() {
+        let tmp = tempdir().expect("tempdir");
+        let target = tmp.path().join("agents.PARQUET");
+        run_map_data_config(tabular_config(&target))
+            .await
+            .expect("map-data failed");
+        let con = Connection::open_in_memory().unwrap();
+        let ids = strings(
+            &con,
+            &format!(
+                "SELECT id FROM read_parquet('{}') ORDER BY id",
+                target.display()
+            ),
+        );
+        assert_eq!(ids, ["P:001", "P:002", "P:003"]);
+    }
 }

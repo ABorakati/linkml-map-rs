@@ -24,6 +24,8 @@
 //! # }
 //! ```
 
+#[cfg(feature = "columnar")]
+pub mod columnar;
 pub mod format;
 pub mod loaders;
 pub mod pycompat;
@@ -36,9 +38,9 @@ pub use loaders::{
     load_stream_auto, load_stream_with_numeric_hints,
 };
 pub use writers::{
-    DEFAULT_CHUNK_SIZE, MultiStreamWriter, StreamWriter, Target, WriteOptions, dump_output,
-    jsonl_line, make_stream_writer, validate_additional_outputs, value_to_json, write_all,
-    write_all_auto, write_all_with, write_all_writer, write_all_writer_with, write_vec,
+    DEFAULT_CHUNK_SIZE, MultiStreamWriter, StreamWriter, Target, WriteOptions, columnar_needs_file,
+    dump_output, jsonl_line, make_stream_writer, validate_additional_outputs, value_to_json,
+    write_all, write_all_auto, write_all_with, write_all_writer, write_all_writer_with, write_vec,
 };
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -455,7 +457,9 @@ mod tests {
         assert_eq!(Format::from_path("foo.ndjson").unwrap(), Format::Jsonl);
         assert_eq!(Format::from_path("foo.yaml").unwrap(), Format::Yaml);
         assert_eq!(Format::from_path("foo.yml").unwrap(), Format::Yaml);
-        assert!(Format::from_path("foo.parquet").is_err());
+        assert_eq!(Format::from_path("foo.parquet").unwrap(), Format::Parquet);
+        assert_eq!(Format::from_path("foo.duckdb").unwrap(), Format::DuckDb);
+        assert!(Format::from_path("foo.xlsx").is_err());
     }
 
     // ── Streaming CSV parse ─────────────────────────────────────────────────

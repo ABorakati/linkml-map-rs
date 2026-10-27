@@ -15,6 +15,10 @@ engine = ["dep:duckdb", "dep:tempfile"]
 # Static link DuckDB — no system install required.  Pass with engine:
 #   cargo build -p linkml-map-duckdb --features engine,bundled
 bundled = ["duckdb/bundled"]
+# "columnar" adds the JSONL -> Parquet / DuckDB-file converters used by the
+# `linkml-map-io` columnar output writers. It compiles DuckDB (with its JSON and
+# Parquet extensions) into the binary so no extension is fetched at run time.
+columnar = ["engine", "bundled", "duckdb/json", "duckdb/parquet"]
 
 [dependencies]
 linkml-map-core = { path = "../linkml-map-core" }

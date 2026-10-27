@@ -7,6 +7,7 @@
 //! _(none)_    | [`SqlCompiler`] — pure-Rust SQL generation, no heavy deps |
 //! | `engine`  | [`DuckDBTransformer`] — requires `duckdb` crate  |
 //! | `bundled` | Statically links DuckDB (use with `engine`)      |
+//! | `columnar`| [`columnar`] JSONL -> Parquet / DuckDB-file converters (implies `engine`, `bundled`, DuckDB `json` + `parquet`) |
 //!
 //! The `engine` feature is **off by default** to keep `cargo test` fast
 //! (DuckDB's bundled C++ build takes several minutes on first compile).
@@ -18,6 +19,8 @@
 
 pub mod compiler;
 
+#[cfg(feature = "columnar")]
+pub mod columnar;
 #[cfg(feature = "engine")]
 pub mod transformer;
 

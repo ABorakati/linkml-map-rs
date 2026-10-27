@@ -28,8 +28,10 @@ pub fn parse_format_str(s: &str) -> Result<Option<Format>> {
         "json" => Ok(Some(Format::Json)),
         "jsonl" | "ndjson" => Ok(Some(Format::Jsonl)),
         "yaml" | "yml" => Ok(Some(Format::Yaml)),
+        "parquet" => Ok(Some(Format::Parquet)),
+        "duckdb" => Ok(Some(Format::DuckDb)),
         other => anyhow::bail!(
-            "unknown format {:?}; expected one of: auto, csv, tsv, json, jsonl, yaml",
+            "unknown format {:?}; expected one of: auto, csv, tsv, json, jsonl, yaml, parquet, duckdb",
             other
         ),
     }

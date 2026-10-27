@@ -551,6 +551,12 @@ pub async fn run_pipeline_with_options(
         }
     });
 
+    // PARITY: cli.py::map_data — Parquet/DuckDB are binary artifacts built from a
+    // staged file, so they cannot go to stdout.
+    if out_format.is_columnar() && config.out_path == "-" {
+        anyhow::bail!(linkml_map_io::columnar_needs_file(out_format));
+    }
+
     // PARITY: cli.py::map_data — only tabular (.tsv/.csv) or directory input streams;
     // any other input is "single object" input and is written by `dump_output`
     // (`_map_data_single`), which also ignores `-O`.  JSONL input is a Rust extension

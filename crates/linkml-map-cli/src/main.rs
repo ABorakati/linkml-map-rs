@@ -137,7 +137,8 @@ struct MapDataArgs {
     input_format: String,
 
     /// Output format. Defaults to YAML, or is inferred from the output file extension.
-    /// One of: auto, csv, tsv, json, jsonl, yaml.
+    /// One of: auto, csv, tsv, json, jsonl, yaml, parquet, duckdb (the last two need a
+    /// build with `--features columnar` and an output file).
     #[arg(
         short = 'f',
         long = "output-format",
@@ -149,6 +150,10 @@ struct MapDataArgs {
     /// Number of records to process per chunk (for streaming output).
     #[arg(long = "chunk-size", value_name = "N", default_value_t = 1000)]
     chunk_size: usize,
+
+    /// Table name for DuckDB output. Defaults to the output file's stem.
+    #[arg(long = "table-name", value_name = "NAME")]
+    table_name: Option<String>,
 
     /// Additional output files. Format inferred from extension. Can be repeated.
     /// Ignored for single YAML/JSON object input, as upstream.
@@ -241,6 +246,7 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
         unordered: args.unordered,
         input: args.input,
         write_options: WriteOptions {
+            table_name: args.table_name,
             chunk_size: Some(args.chunk_size),
             additional_outputs: args.additional_output.iter().map(PathBuf::from).collect(),
             ..WriteOptions::default()

@@ -103,14 +103,25 @@ pub fn make_stream_writer(
     format: Format,
     table_name: Option<&str>,
 ) -> Result<Box<dyn StreamWriter>> {
-    // `table_name` only matters for DuckDB output; every other format ignores it.
-    let _ = table_name;
     Ok(match format {
         Format::Json => Box::new(JsonStreamWriter::new()),
         Format::Jsonl => Box::new(JsonlStreamWriter),
         Format::Yaml => Box::new(YamlStreamWriter),
         Format::Tsv => Box::new(TabularStreamWriter::new('\t')),
         Format::Csv => Box::new(TabularStreamWriter::new(',')),
+        // `table_name` only matters for DuckDB output; every other format ignores it.
+        #[cfg(feature = "columnar")]
+        Format::Parquet | Format::DuckDb => Box::new(crate::columnar::ColumnarStreamWriter::new(
+            format, table_name,
+        )),
+        #[cfg(not(feature = "columnar"))]
+        Format::Parquet | Format::DuckDb => {
+            let _ = table_name;
+            bail!(
+                "{} output needs DuckDB; rebuild with `--features columnar`",
+                format.extension()
+            )
+        }
     })
 }
 
@@ -467,7 +478,7 @@ impl<'a> MultiStreamWriter<'a> {
 
     /// Consume *stream* once, writing records to every output in chunks of
     /// *chunk_size*.
-    pub async fn write_all<S>(self, chunk_size: usize, mut stream: S) -> Result<()>
+    pub async fn write_all<S>(self, chunk_size: usize, stream: S) -> Result<()>
     where
         S: Stream<Item = Result<Value>> + Unpin,
     {
@@ -503,6 +514,31 @@ impl<'a> MultiStreamWriter<'a> {
             writers.push(writer);
         }
 
+        let staged_files: Vec<PathBuf> = finish
+            .iter()
+            .flatten()
+            .filter_map(|(_, staged)| staged.clone())
+            .collect();
+        let result = Self::run(chunk_size, stream, writers, sinks, finish).await;
+        if result.is_err() {
+            // A failed run must not leave staging files behind.
+            for staged in staged_files {
+                let _ = std::fs::remove_file(staged);
+            }
+        }
+        result
+    }
+
+    async fn run<S>(
+        chunk_size: usize,
+        mut stream: S,
+        mut writers: Vec<Box<dyn StreamWriter>>,
+        mut sinks: Vec<BufWriter<BoxedSink<'a>>>,
+        finish: Vec<Option<(PathBuf, Option<PathBuf>)>>,
+    ) -> Result<()>
+    where
+        S: Stream<Item = Result<Value>> + Unpin,
+    {
         let mut chunk: Vec<Value> = Vec::with_capacity(chunk_size.min(DEFAULT_CHUNK_SIZE));
         while let Some(item) = stream.next().await {
             chunk.push(item?);
@@ -572,6 +608,12 @@ pub fn dump_output(data: &Value, format: Format) -> Result<String> {
         },
         Format::Csv => dump_delimited(data, ",")?,
         Format::Tsv => dump_delimited(data, "\t")?,
+        Format::Parquet | Format::DuckDb => {
+            bail!(
+                "{} output is written by a columnar stream writer",
+                format.extension()
+            )
+        }
     })
 }
 
@@ -649,6 +691,22 @@ where
     S: Stream<Item = Result<Value>> + Unpin,
 {
     let path = path.as_ref();
+    if options.single_object && format.is_columnar() {
+        // PARITY: cli.py::_dump_columnar — the object (or list of objects) goes
+        // through the same writer as one chunk.
+        let rows = match collect_single_object(stream).await? {
+            Value::List(rows) => rows,
+            row => vec![row],
+        };
+        let outputs = vec![(
+            make_stream_writer(format, options.table_name.as_deref())?,
+            Target::Path(path.to_owned()),
+        )];
+        let rows = futures::stream::iter(rows.into_iter().map(Ok::<Value, anyhow::Error>));
+        return MultiStreamWriter::new(outputs)
+            .write_all(usize::MAX, rows)
+            .await;
+    }
     if options.single_object {
         let file = File::create(path)
             .await
@@ -692,6 +750,9 @@ where
     W: AsyncWrite + Send + Unpin,
     S: Stream<Item = Result<Value>> + Unpin,
 {
+    if format.is_columnar() {
+        bail!(columnar_needs_file(format));
+    }
     if options.single_object {
         let mut sink: BoxedSink<'_> = Box::new(writer);
         return write_single_object(&mut sink, format, stream).await;
@@ -704,6 +765,14 @@ where
     MultiStreamWriter::new(outputs)
         .write_all(options.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE), stream)
         .await
+}
+
+/// The error for a columnar format with no output file (upstream `map_data`).
+pub fn columnar_needs_file(format: Format) -> String {
+    format!(
+        "{} output requires an output file; pass -o/--output FILE",
+        format.extension()
+    )
 }
 
 /// Convenience: detect format from extension then call [`write_all`].
@@ -785,11 +854,7 @@ fn resolve(path: &Path) -> PathBuf {
     }
 }
 
-async fn write_single_object<S>(
-    sink: &mut BoxedSink<'_>,
-    format: Format,
-    mut stream: S,
-) -> Result<()>
+async fn collect_single_object<S>(mut stream: S) -> Result<Value>
 where
     S: Stream<Item = Result<Value>> + Unpin,
 {
@@ -797,7 +862,14 @@ where
     while let Some(item) = stream.next().await {
         items.push(item?);
     }
-    let text = dump_output(&single_object_value(items), format)?;
+    Ok(single_object_value(items))
+}
+
+async fn write_single_object<S>(sink: &mut BoxedSink<'_>, format: Format, stream: S) -> Result<()>
+where
+    S: Stream<Item = Result<Value>> + Unpin,
+{
+    let text = dump_output(&collect_single_object(stream).await?, format)?;
     sink.write_all(text.as_bytes()).await?;
     sink.flush().await.context("flushing output")?;
     Ok(())
@@ -1115,6 +1187,29 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "a\tb\tc\n\"x\ny\"\tz\t\nonly\t\t\n"
+        );
+    }
+
+    /// Without the `columnar` feature, Parquet/DuckDB output fails with a rebuild hint.
+    #[cfg(not(feature = "columnar"))]
+    #[tokio::test]
+    async fn columnar_without_feature_names_the_feature() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = write_vec(dir.path().join("o.parquet"), Format::Parquet, vec![])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("--features columnar"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn columnar_to_a_writer_is_rejected_with_upstream_text() {
+        let mut buf: Vec<u8> = Vec::new();
+        let err = write_all_writer(&mut buf, Format::DuckDb, stream_of(vec![]))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "duckdb output requires an output file; pass -o/--output FILE"
         );
     }
 }

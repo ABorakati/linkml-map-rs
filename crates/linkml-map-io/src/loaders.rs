@@ -46,6 +46,9 @@ pub async fn load_stream(
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
+        Format::Parquet | Format::DuckDb => {
+            anyhow::bail!("{} is an output-only format", format.extension())
+        }
     }
 }
 
@@ -79,6 +82,9 @@ pub async fn load_stream_with_numeric_hints(
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
+        Format::Parquet | Format::DuckDb => {
+            anyhow::bail!("{} is an output-only format", format.extension())
+        }
     }
 }
 
