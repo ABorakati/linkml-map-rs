@@ -1,0 +1,43 @@
+id: https://example.org/yaml-e2e
+name: yaml_e2e
+default_range: string
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+  - linkml:types
+classes:
+  Record:
+    attributes:
+      id:
+        identifier: true
+      name:
+      bio:
+      status:
+      tags:
+        multivalued: true
+      codes:
+        multivalued: true
+      age:
+        range: integer
+      weight:
+        range: float
+      active:
+        range: boolean
+      amount:
+        range: decimal
+      address:
+        range: Address
+      notes:
+        multivalued: true
+        range: Note
+  Address:
+    attributes:
+      city:
+      lines:
+        multivalued: true
+  Note:
+    attributes:
+      title:
+      body:

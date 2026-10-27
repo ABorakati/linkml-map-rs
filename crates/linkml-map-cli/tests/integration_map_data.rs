@@ -801,5 +801,10 @@ async fn test_map_data_personinfo_restricted_fails() {
     let err = run_map_data_config(personinfo_config(&out, false))
         .await
         .expect_err("restricted mode must fail on the example's statement blocks");
-    assert!(format!("{err:#}").contains("driving_since"), "{err:#}");
+    // The row error (`Agent.driving_since: 'NoneType' object is not iterable`) goes
+    // to stderr; the returned error only counts the failed rows.
+    assert!(
+        format!("{err:#}").contains("failed to transform"),
+        "{err:#}"
+    );
 }

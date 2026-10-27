@@ -292,7 +292,16 @@ fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> Result<()> {
         spec.source_schema_patches.as_ref(),
     )?;
     let schema_doc = SchemaMapper::new(&source).derive_schema(&spec);
-    let yaml = serde_yaml_ng::to_string(&schema_doc)?;
+    // PARITY: cli.py `derive-schema` writes `yaml_dumper.dumps(schema)`, i.e.
+    // `yaml.dump(..., Dumper=SafeDumper, sort_keys=False, allow_unicode=True)`.
+    let schema_doc: linkml_map_core::value::Value = serde_json::from_value(schema_doc)?;
+    let yaml = linkml_map_io::pyyaml::dump_yaml(
+        &schema_doc,
+        linkml_map_io::pyyaml::DumpOptions {
+            sort_keys: false,
+            ..Default::default()
+        },
+    );
 
     if let Some(output) = &args.output {
         std::fs::write(output, yaml)?;

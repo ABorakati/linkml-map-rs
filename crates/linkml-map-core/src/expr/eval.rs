@@ -19,6 +19,7 @@ use indexmap::IndexMap;
 use log::warn;
 
 use super::builtins;
+use super::compound;
 use super::error::{ExprError, ExprResult};
 use super::gate::{self, EvalMode, eval_parsed_gated};
 use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
@@ -39,8 +40,8 @@ pub const INJECTED_EVAL_NAMES: &[&str] = &["src", "target", "uuid5"];
 /// Names of the built-in expression functions. A qualified `{func.x}` root
 /// resolves to a function (not an unknown name), so it must not fail loud;
 /// normalization-time reference checking treats these as known too. Mirrors the
-/// keys of Python `eval_utils.FUNCTIONS` (plus the `list`/`tuple` constructors
-/// simpleeval adds, and the injected `slot`); `builtins::function_names` is the
+/// keys of Python `eval_utils.FUNCTIONS` (plus the `list`/`tuple`/`dict`/`set`
+/// constructors simpleeval adds, and the injected `slot`); `builtins::function_names` is the
 /// table the evaluator dispatches on and a unit test keeps the two in step.
 pub const FUNCTION_NAMES: &[&str] = &[
     "max",
@@ -91,6 +92,8 @@ pub const FUNCTION_NAMES: &[&str] = &[
     "is_numeric",
     "list",
     "tuple",
+    "dict",
+    "set",
     "slot",
 ];
 
@@ -338,7 +341,7 @@ pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
     })
 }
 
-fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
+pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
     match node {
         Ast::Int(i) => Ok(Value::Int(*i)),
         Ast::Float(f) => Ok(Value::Float(*f)),
@@ -348,8 +351,28 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         Ast::Name(name) => resolve_name(name, vars),
 
-        // {x} resolves identically to bare x.
-        Ast::Brace(inner) => eval_ast(inner, vars),
+        // {x} resolves identically to bare x (`LinkMLEvaluator._eval_set`) ...
+        // PARITY: ... except in a statement block, which runs under `asteval`,
+        // where `{x}` is an ordinary one-element set display.
+        Ast::Brace(inner) => {
+            if object_attr_mode_enabled() {
+                compound::eval_brace_as_set(inner, vars)
+            } else {
+                eval_ast(inner, vars)
+            }
+        }
+        Ast::Set(elts) => compound::eval_set_display(elts, vars),
+        Ast::Dict(pairs) => compound::eval_dict_display(pairs, vars),
+        Ast::Comp(c) => compound::eval_comprehension(c, vars),
+
+        // Lazy: only the branch taken is evaluated; truthiness is Python's.
+        Ast::IfExp { test, body, orelse } => {
+            if eval_ast(test, vars)?.is_truthy() {
+                eval_ast(body, vars)
+            } else {
+                eval_ast(orelse, vars)
+            }
+        }
 
         Ast::Attribute { value, attr } => {
             // A qualified `{Name.attr}` whose root Name is genuinely unbound —
@@ -424,53 +447,6 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             eval_subscript(&obj, &idx)
         }
 
-        Ast::ListComp {
-            elt,
-            var,
-            iter,
-            cond,
-        } => {
-            // Record the loop variable for the restricted-mode attribute check
-            // (see `Ast::Attribute`); the guard unwinds it when the
-            // comprehension ends, however it ends.
-            let _scope = gate::enter_comprehension(var, vars);
-            let iterable = eval_ast(iter, vars)?;
-            // Python iterates lists by element, dicts by *keys*, None → empty.
-            let items: Vec<Value> = match iterable {
-                Value::List(items) => items,
-                Value::Map(m) => m.into_iter().map(|(k, _)| Value::Str(k)).collect(),
-                // PARITY: asteval (a statement block) iterates nothing for a
-                // missing value; the restricted evaluator's `for i in None`
-                // is a `TypeError`.
-                Value::Null if object_attr_mode_enabled() => Vec::new(),
-                Value::Null => {
-                    return Err(ExprError::Eval("'NoneType' object is not iterable".into()));
-                }
-                other => {
-                    return Err(ExprError::Eval(format!(
-                        "'{}' object is not iterable",
-                        type_name(&other)
-                    )));
-                }
-            };
-            // Evaluate against a child scope that shadows the loop variable.
-            // The loop var binds a single element, so attribute access on it is
-            // per-element (a scalar field read on a single Map), not the list
-            // auto-distribution used in plain exprs.
-            let mut scope = vars.clone();
-            let mut out = Vec::new();
-            for item in items {
-                scope.insert(var.clone(), item);
-                if let Some(c) = cond
-                    && !eval_ast(c, &scope)?.is_truthy()
-                {
-                    continue;
-                }
-                out.push(eval_ast(elt, &scope)?);
-            }
-            Ok(Value::List(out))
-        }
-
         Ast::Tuple(elts) => {
             // Tuples are only meaningful as case() pair arguments; represent as
             // a list so the evaluator can index into them.
@@ -500,7 +476,11 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         Ast::BoolOp { op, values } => eval_boolop(*op, values, vars),
 
-        Ast::Call { func, args } => {
+        Ast::Call {
+            func,
+            args,
+            keywords,
+        } => {
             // case() arguments are (cond, val) pairs that must be evaluated;
             // they go through the generic arg evaluation below.
             let mut evaled = Vec::with_capacity(args.len());
@@ -508,9 +488,21 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                 evaled.push(eval_ast(a, vars)?);
             }
             if func == "slot" {
+                if let Some((name, _)) = keywords.first() {
+                    return Err(ExprError::Eval(format!(
+                        "slot() got an unexpected keyword argument '{name}'"
+                    )));
+                }
                 return call_slot_function(evaled, vars);
             }
-            builtins::call_function(func, evaled)
+            if keywords.is_empty() {
+                return builtins::call_function(func, evaled);
+            }
+            let mut kwargs = Vec::with_capacity(keywords.len());
+            for (name, value) in keywords {
+                kwargs.push((name.clone(), eval_ast(value, vars)?));
+            }
+            builtins::call_function_kw(func, evaled, kwargs)
         }
     }
 }
@@ -690,7 +682,7 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     }
 }
 
-fn type_name(v: &Value) -> &'static str {
+pub(super) fn type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "None",
         Value::Bool(_) => "bool",

@@ -351,7 +351,7 @@ concurrency lives in the pipeline, which parses the spec once into an
 
 ## Dependencies
 
-Runtime: `serde` / `serde_json` / `serde_yaml_ng`, `indexmap`, `anyhow` /
+Runtime: `serde` / `serde_json` / `serde_yaml_ng` (YAML input; YAML output is the PyYAML-compatible emitter in `linkml-map-core`), `indexmap`, `anyhow` /
 `thiserror`, `tokio` + `futures` (async I/O), `rayon` (data parallelism),
 `walkdir`. Python bindings: `pyo3` (built with `maturin`); the shim needs
 `linkml-runtime` + `pyyaml`. Schema introspection uses the LinkML metamodel and

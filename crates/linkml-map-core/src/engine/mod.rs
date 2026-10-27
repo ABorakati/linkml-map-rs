@@ -2596,29 +2596,18 @@ fn py_json(v: &Value) -> String {
 }
 
 /// Serialise a [`Value`] to a YAML *flow* string (`[a, b]`), matching the
-/// upstream `stringification: {syntax: YAML}` cases. Scalars are emitted bare.
+/// upstream `stringification: {syntax: YAML}` cases.
+///
+/// Mirrors `dump_yaml(vs, default_flow_style=True, allow_unicode=False).strip()`
+/// (`object_transformer.py::_multivalued_to_singlevalued`) with PyYAML's own
+/// quoting, folding and (default) key sorting, via [`crate::pyyaml`].
 fn yaml_flow(v: &Value) -> String {
-    match v {
-        Value::Null => "null".to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        // PARITY: utils/serialization.py::dump_yaml writes a Decimal as a plain
-        // scalar with `format(d, 'f')`.
-        Value::Decimal(d) => d.to_fixed_string(),
-        Value::Str(s) => s.clone(),
-        Value::List(items) => {
-            let inner: Vec<String> = items.iter().map(yaml_flow).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        Value::Map(m) => {
-            let inner: Vec<String> = m
-                .iter()
-                .map(|(k, val)| format!("{k}: {}", yaml_flow(val)))
-                .collect();
-            format!("{{{}}}", inner.join(", "))
-        }
-    }
+    let opts = crate::pyyaml::DumpOptions {
+        default_flow_style: true,
+        allow_unicode: false,
+        sort_keys: true,
+    };
+    crate::pyyaml::dump_yaml(v, opts).trim().to_owned()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

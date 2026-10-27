@@ -1111,6 +1111,14 @@ fn slot_reference_extraction_cases() {
         ("NULL", &[]),
         ("str(x)", &["x"]),
         ("strlen(name)", &["name"]),
+        // Conditional expressions, dict displays, keyword arguments and
+        // comprehensions (targets, tuple targets included, are bound).
+        ("'a' if flag else other", &["flag", "other"]),
+        ("{'k': v}", &["v"]),
+        ("{k: v for k, v in pairs}", &["pairs"]),
+        ("{a: b for a in xs}", &["b", "xs"]),
+        ("sum(a for a in xs)", &["xs"]),
+        ("[a for a in xs if a if cond]", &["cond", "xs"]),
         // `lookup` is not a registered function, so the call target survives.
         ("lookup(predicate)", &["lookup", "predicate"]),
     ];

@@ -222,6 +222,16 @@ class GoldenCase:
     def __repr__(self) -> str:  # pytest id readability
         return self.name
 
+    @property
+    def unrestricted_eval(self) -> bool:
+        """Whether upstream runs this fixture with ``unrestricted_eval`` on.
+
+        Only ``personinfo_basic``: its spec's ``src.`` accessors, statement
+        blocks and comprehensions need the flag (upstream ``test_map_data`` passes
+        ``--unrestricted-eval``); every other fixture runs restricted.
+        """
+        return self.name.split("/")[1] == "personinfo_basic"
+
     def load_input(self) -> Any:
         with open(self.input_path, encoding="utf-8") as f:
             if self.input_path.suffix == ".json":
@@ -346,6 +356,7 @@ def test_golden_native_transformer_matches_expected(case: GoldenCase) -> None:
         source_schema=str(case.source_schema_path),
         spec=str(case.transform_path),
         source_class=source_type,
+        unrestricted_eval=case.unrestricted_eval,
     )
     input_obj = case.load_input()
     actual = transformer.map_object(input_obj, source_type)
@@ -376,6 +387,7 @@ def test_golden_shim_object_transformer_matches_expected(case: GoldenCase) -> No
     ot = ObjectTransformer(
         source_schemaview=str(case.source_schema_path),
         specification=str(case.transform_path),
+        unrestricted_eval=case.unrestricted_eval,
     )
     input_obj = case.load_input()
     actual = ot.map_object(input_obj, source_type)
@@ -402,7 +414,7 @@ def test_golden_shim_specification_as_dict_matches_expected(case: GoldenCase) ->
     spec_dict = yaml.safe_load(case.transform_path.read_text(encoding="utf-8"))
     source_type = case.resolve_source_type(spec_dict)
 
-    ot = ObjectTransformer(source_schemaview=str(case.source_schema_path))
+    ot = ObjectTransformer(source_schemaview=str(case.source_schema_path), unrestricted_eval=case.unrestricted_eval)
     ot.create_transformer_specification(spec_dict)
 
     input_obj = case.load_input()
@@ -1037,6 +1049,7 @@ class TestConstructorInputForms:
             specification=PERSONINFO_TR,
             source_schemaview=PERSONINFO_SRC_SCHEMA,
             target_schemaview=str(PERSONINFO_TGT_SCHEMA),
+            unrestricted_eval=True,
         )
         assert tr.specification == linkml_map.load_specification(PERSONINFO_TR)
         assert isinstance(tr.source_schemaview, SchemaView)
@@ -1053,7 +1066,7 @@ class TestConstructorInputForms:
 
     def test_positional_order_is_specification_then_source_schemaview(self) -> None:
         """Upstream's first two dataclass fields; the shim used to take them the other way round."""
-        tr = ObjectTransformer(str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA))
+        tr = ObjectTransformer(str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA), unrestricted_eval=True)
         assert _mapped_person(tr) == _expected_person()
         with pytest.raises(TypeError):  # target_schemaview is keyword-only
             ObjectTransformer(str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA), str(PERSONINFO_TGT_SCHEMA))
@@ -1075,20 +1088,30 @@ class TestConstructorInputForms:
         tr = ObjectTransformer(
             specification=PERSONINFO_TR.read_text(encoding="utf-8"),
             source_schemaview=PERSONINFO_SRC_SCHEMA.read_text(encoding="utf-8"),
+            unrestricted_eval=True,
         )
         assert _mapped_person(tr) == _expected_person()
 
     def test_load_methods_replace_the_loaded_objects(self) -> None:
-        tr = ObjectTransformer()
+        tr = ObjectTransformer(unrestricted_eval=True)
         tr.load_source_schema(PERSONINFO_SRC_SCHEMA)
         tr.load_transformer_specification(str(PERSONINFO_TR))
         assert tr.source_schemaview.schema.name == "personinfo"
         assert _mapped_person(tr) == _expected_person()
 
-    def test_unrestricted_eval_is_accepted_and_stored(self) -> None:
+    def test_unrestricted_eval_is_stored(self) -> None:
         tr = ObjectTransformer(specification=PERSONINFO_TR, unrestricted_eval=True)
         assert tr.unrestricted_eval is True
         assert ObjectTransformer().unrestricted_eval is False
+
+    def test_personinfo_needs_unrestricted_eval(self) -> None:
+        """Upstream `test_map_data_without_unrestricted_eval_fails`: safe mode must not emit partial data."""
+        tr = ObjectTransformer(specification=PERSONINFO_TR, source_schemaview=PERSONINFO_SRC_SCHEMA)
+        assert tr.unrestricted_eval is False
+        with pytest.raises(ValueError, match="driving_since"):
+            _mapped_person(tr)
+        tr.unrestricted_eval = True  # a later change rebuilds the engine
+        assert _mapped_person(tr) == _expected_person()
 
 
 def _schemaview(path: pathlib.Path) -> Any:
@@ -1149,14 +1172,23 @@ class TestNativePathArguments:
 
     def test_transformer_accepts_paths(self) -> None:
         t = Transformer(
-            PERSONINFO_SRC_SCHEMA, PERSONINFO_TR, target_schema=PERSONINFO_TGT_SCHEMA, source_class="Person"
+            PERSONINFO_SRC_SCHEMA,
+            PERSONINFO_TR,
+            target_schema=PERSONINFO_TGT_SCHEMA,
+            source_class="Person",
+            unrestricted_eval=True,
         )
         assert t.transform(_read_yaml(PERSONINFO_DATA)) == _expected_person()
 
     def test_free_functions_accept_paths(self) -> None:
         obj = _read_yaml(PERSONINFO_DATA)
         expected = _expected_person()
-        kwargs = {"source_schema": PERSONINFO_SRC_SCHEMA, "spec": PERSONINFO_TR, "source_class": "Person"}
+        kwargs = {
+            "source_schema": PERSONINFO_SRC_SCHEMA,
+            "spec": PERSONINFO_TR,
+            "source_class": "Person",
+            "unrestricted_eval": True,
+        }
         assert transform_object(obj, **kwargs) == expected
         assert transform_objects([obj], **kwargs) == [expected]
 
@@ -1172,7 +1204,9 @@ class TestNativePathArguments:
         assert [str(m) for m in by_path] == [str(m) for m in by_str]
 
     def test_from_python_accepts_paths(self) -> None:
-        t = Transformer.from_python(PERSONINFO_SRC_SCHEMA, PERSONINFO_TR, PERSONINFO_TGT_SCHEMA)
+        t = Transformer.from_python(
+            PERSONINFO_SRC_SCHEMA, PERSONINFO_TR, PERSONINFO_TGT_SCHEMA, unrestricted_eval=True
+        )
         assert t.map_object(_read_yaml(PERSONINFO_DATA), "Person") == _expected_person()
 
     def test_missing_path_raises_path_not_found(self) -> None:

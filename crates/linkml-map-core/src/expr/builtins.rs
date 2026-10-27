@@ -35,7 +35,7 @@ use std::cmp::Ordering;
 
 use super::error::{ExprError, ExprResult};
 use super::eval::{eval_subscript, membership, py_str};
-use super::{pystr, slugify};
+use super::{compound, pystr, slugify};
 use crate::decimal::Decimal;
 use crate::pyfmt::py_repr_str;
 use crate::value::Value;
@@ -112,10 +112,15 @@ const PLAIN_FUNCTIONS: &[(&str, Builtin)] = &[
 ];
 
 /// Constructors simpleeval's `EvalWithCompoundTypes` adds to the namespace
-/// (upstream `_COMPOUND_TYPE_FUNCTIONS`). `dict` and `set` are not implemented:
-/// [`Value`] has no set, and `dict` builds from keyword arguments or key/value
-/// pairs with non-string keys.
-const COMPOUND_FUNCTIONS: &[(&str, Builtin)] = &[("list", list), ("tuple", list)];
+/// (upstream `_COMPOUND_TYPE_FUNCTIONS`). `dict` also takes keyword arguments
+/// (see [`call_function_kw`]); `set` builds a de-duplicated list (see
+/// [`compound`]).
+const COMPOUND_FUNCTIONS: &[(&str, Builtin)] = &[
+    ("list", list),
+    ("tuple", list),
+    ("dict", |args| compound::dict(args, Vec::new())),
+    ("set", compound::set),
+];
 
 /// How upstream wraps an entry.
 #[derive(Clone, Copy)]
@@ -148,6 +153,31 @@ fn lookup(name: &str) -> Option<(Wrap, Builtin)> {
             .find(|&&(n, _)| n == name)
             .map(|&(_, f)| (wrap, f))
     })
+}
+
+/// Call the built-in `name` with already-evaluated positional `args` and
+/// keyword arguments (`name(a, k=v)`).
+///
+/// Upstream wraps its functions in `*args`-only closures, so only the
+/// constructors take keywords: `dict(a=1)` builds a dict, while the others raise
+/// the `TypeError` Python gives for an unexpected keyword.
+pub(super) fn call_function_kw(
+    name: &str,
+    args: Vec<Value>,
+    keywords: Vec<(String, Value)>,
+) -> ExprResult<Value> {
+    let Some((first, _)) = keywords.first() else {
+        return call_function(name, args);
+    };
+    match name {
+        "dict" => compound::dict(&args, keywords),
+        "list" | "tuple" | "set" => err(format!("{name}() takes no keyword arguments")),
+        _ if lookup(name).is_none() => Err(unknown_function(name)),
+        _ => err(format!(
+            "{name}() got an unexpected keyword argument {}",
+            py_repr_str(first)
+        )),
+    }
 }
 
 /// Call the built-in `name` with already-evaluated `args`.
@@ -266,7 +296,7 @@ fn int_arg(v: &Value) -> ExprResult<i64> {
 
 /// Python iteration over a value: lists by element, strings by character and
 /// dicts by key.
-fn py_iter(v: &Value) -> ExprResult<Cow<'_, [Value]>> {
+pub(super) fn py_iter(v: &Value) -> ExprResult<Cow<'_, [Value]>> {
     match v {
         Value::List(items) => Ok(Cow::Borrowed(items)),
         Value::Str(s) => Ok(Cow::Owned(

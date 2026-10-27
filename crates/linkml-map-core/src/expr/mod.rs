@@ -6,12 +6,15 @@
 mod builtins;
 #[cfg(test)]
 mod builtins_tests;
+mod compound;
 pub mod error;
 pub mod eval;
 pub mod gate;
 pub mod lexer;
 pub mod parser;
 mod pystr;
+#[cfg(test)]
+mod syntax_tests;
 #[rustfmt::skip]
 mod pytables;
 mod slugify;
@@ -350,7 +353,10 @@ mod tests {
     #[test]
     fn parse_expr_propagates_parse_errors() {
         // A syntactically invalid expr must error at parse time.
-        assert!(parse_expr("{1 + 2}").is_err());
+        assert!(parse_expr("{1 + }").is_err());
+        // `{1 + 2}` is a valid set display: Python parses it, and only the
+        // restricted evaluator rejects it, at evaluation time.
+        assert!(parse_expr("{1 + 2}").is_ok());
     }
 
     #[test]
@@ -444,11 +450,22 @@ mod tests {
 
     #[test]
     fn brace_must_enclose_single_variable() {
+        // Restricted syntax (upstream `LinkMLEvaluator._eval_set`): a set display
+        // is only the `{x}` reference form.
         let vars: Bindings = IndexMap::new();
-        // {1 + 2} is not a Name/Attribute -> error
-        assert!(eval_expr_with_mapping("{1 + 2}", &vars).is_err());
-        // {x, y} encloses two -> error
-        assert!(eval_expr_with_mapping("{x, y}", &vars).is_err());
+        let restricted = |expr: &str| eval_expr_with_mapping(expr, &vars).unwrap_err();
+        // {1 + 2} is not a Name/Attribute -> TypeError upstream
+        assert!(
+            restricted("{1 + 2}")
+                .to_string()
+                .contains("The {} must enclose a variable")
+        );
+        // {x, y} encloses two -> ValueError upstream
+        assert!(
+            restricted("{x, y}")
+                .to_string()
+                .contains("The {} must enclose a single variable")
+        );
         // {x.y} attribute is allowed
         let mut binds: Bindings = IndexMap::new();
         let mut m = IndexMap::new();

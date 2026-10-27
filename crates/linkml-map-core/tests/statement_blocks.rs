@@ -295,3 +295,36 @@ fn single_expressions_are_unaffected_by_the_mode() {
         assert_eq!(mode("{age} * 2").unwrap(), Value::Int(20));
     }
 }
+
+// Upstream tests/test_transformer/test_range_override.py
+// `test_parse_expr_malformed_input_raises` (restricted) and its unrestricted
+// counterpart, whose docstring "malformed parse inputs yield None" is the
+// asteval fallback at work. Upstream's expression calls the `str.split` method,
+// which this evaluator has no syntax for, so the `split()` function stands in.
+const PARSE_DEPTH: &str =
+    r#"{"has_numeric_value": float(split(depth, " ")[0]), "has_unit": split(depth, " ")[1]}"#;
+
+#[test]
+fn malformed_parse_input_raises_when_restricted_and_is_null_when_unrestricted() {
+    for depth in ["", "five m"] {
+        let person = serde_json::json!({ "depth": depth });
+        assert!(
+            derive_in_mode(PARSE_DEPTH, person.clone(), false).is_err(),
+            "{depth:?}"
+        );
+        assert_eq!(
+            derive_in_mode(PARSE_DEPTH, person, true).unwrap(),
+            Value::Null,
+            "{depth:?}"
+        );
+    }
+    // `"5".split(" ")[1]` is an IndexError, which `_eval_expr` never catches.
+    let person = serde_json::json!({ "depth": "5" });
+    assert!(derive_in_mode(PARSE_DEPTH, person.clone(), false).is_err());
+    assert!(derive_in_mode(PARSE_DEPTH, person, true).is_err());
+    let ok = derive_in_mode(PARSE_DEPTH, serde_json::json!({"depth": "5 m"}), false).unwrap();
+    assert_eq!(
+        ok,
+        Value::from(&serde_json::json!({"has_numeric_value": 5.0, "has_unit": "m"}))
+    );
+}
