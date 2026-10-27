@@ -24,8 +24,11 @@
 //! # }
 //! ```
 
+#[cfg(feature = "columnar")]
+pub mod columnar;
 pub mod format;
 pub mod loaders;
+pub mod pycompat;
 pub mod serialization;
 pub mod writers;
 
@@ -35,7 +38,11 @@ pub use loaders::{
     NumericColumnHints, NumericColumnKind, load_all, load_all_with_numeric_hints, load_stream,
     load_stream_auto, load_stream_with_numeric_hints,
 };
-pub use writers::{value_to_json, write_all, write_all_auto, write_all_writer, write_vec};
+pub use writers::{
+    DEFAULT_CHUNK_SIZE, MultiStreamWriter, StreamWriter, Target, WriteOptions, columnar_needs_file,
+    dump_output, jsonl_line, make_stream_writer, validate_additional_outputs, value_to_json,
+    write_all, write_all_auto, write_all_with, write_all_writer, write_all_writer_with, write_vec,
+};
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -365,7 +372,14 @@ mod tests {
             ("label", Value::Str("test".into())),
         ])];
 
-        write_vec(&path, Format::Yaml, original.clone())
+        // Single-object mode: upstream `dump_output` writes one plain document.
+        let options = WriteOptions {
+            single_object: true,
+            ..WriteOptions::default()
+        };
+        let stream =
+            futures::stream::iter(original.clone().into_iter().map(Ok::<_, anyhow::Error>));
+        write_all_with(&path, Format::Yaml, &options, stream)
             .await
             .unwrap();
         let loaded = load_all(&path, Format::Yaml).await.unwrap();
@@ -380,6 +394,7 @@ mod tests {
         );
     }
 
+    /// Single-object mode (upstream `dump_output`): several records are one YAML list.
     #[tokio::test]
     async fn test_yaml_multi_record_writes_sequence() {
         let dir = tempfile::tempdir().unwrap();
@@ -390,7 +405,13 @@ mod tests {
             make_map_mixed(&[("id", Value::Str("P:2".into()))]),
         ];
 
-        write_vec(&path, Format::Yaml, original.clone())
+        let options = WriteOptions {
+            single_object: true,
+            ..WriteOptions::default()
+        };
+        let stream =
+            futures::stream::iter(original.clone().into_iter().map(Ok::<_, anyhow::Error>));
+        write_all_with(&path, Format::Yaml, &options, stream)
             .await
             .unwrap();
 
@@ -405,6 +426,27 @@ mod tests {
         assert_eq!(items.len(), 2, "expected 2 YAML sequence items");
     }
 
+    /// Streaming YAML (upstream `YAMLStreamWriter`): one document per record, and
+    /// the loader reads that multi-document stream back.
+    #[tokio::test]
+    async fn test_yaml_stream_multi_document_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("records.yaml");
+
+        let original = vec![
+            make_map_mixed(&[("id", Value::Str("P:1".into()))]),
+            make_map_mixed(&[("id", Value::Str("P:2".into()))]),
+        ];
+        write_vec(&path, Format::Yaml, original.clone())
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, "id: P:1\n---\nid: P:2\n---\n");
+        let loaded = load_all(&path, Format::Yaml).await.unwrap();
+        assert_eq!(loaded, original, "YAML stream round-trip mismatch");
+    }
+
     // ── Format auto-detection ───────────────────────────────────────────────
 
     #[tokio::test]
@@ -416,7 +458,9 @@ mod tests {
         assert_eq!(Format::from_path("foo.ndjson").unwrap(), Format::Jsonl);
         assert_eq!(Format::from_path("foo.yaml").unwrap(), Format::Yaml);
         assert_eq!(Format::from_path("foo.yml").unwrap(), Format::Yaml);
-        assert!(Format::from_path("foo.parquet").is_err());
+        assert_eq!(Format::from_path("foo.parquet").unwrap(), Format::Parquet);
+        assert_eq!(Format::from_path("foo.duckdb").unwrap(), Format::DuckDb);
+        assert!(Format::from_path("foo.xlsx").is_err());
     }
 
     // ── Streaming CSV parse ─────────────────────────────────────────────────
@@ -524,7 +568,7 @@ mod tests {
             .unwrap();
 
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("\"id\":\"1\""));
-        assert!(out.contains("\"name\":\"Alice\""));
+        // Python `json.dumps` spacing, as upstream's JSONL writer emits.
+        assert_eq!(out, "{\"id\": \"1\", \"name\": \"Alice\"}\n");
     }
 }

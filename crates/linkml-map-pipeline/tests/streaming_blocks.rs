@@ -210,6 +210,7 @@ impl Case {
             ordered: run.ordered,
             channel_depth: run.channel_depth,
             strict: false,
+            write_options: Default::default(),
         };
         let stats = run_pipeline_with_options(config, run.continue_on_error).await?;
         let text = std::fs::read_to_string(&out).unwrap_or_default();

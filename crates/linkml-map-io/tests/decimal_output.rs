@@ -62,8 +62,9 @@ async fn jsonl_uses_str_decimal() {
     assert_eq!(
         lines,
         [
-            r#"{"id":"a","v":52.30,"q":{"unit":"mg","val":0.123456789012345678901},"vs":[1,2.5]}"#,
-            r#"{"id":"b","v":7,"q":{"unit":"g","val":1E-7},"vs":[-3.25]}"#,
+            // Python `json.dumps` spacing, as upstream's JSONL writer emits.
+            r#"{"id": "a", "v": 52.30, "q": {"unit": "mg", "val": 0.123456789012345678901}, "vs": [1, 2.5]}"#,
+            r#"{"id": "b", "v": 7, "q": {"unit": "g", "val": 1E-7}, "vs": [-3.25]}"#,
         ]
     );
     // Each line is still valid JSON.
@@ -96,9 +97,15 @@ async fn yaml_uses_fixed_plain_scalars() {
     assert!(text.contains("- -3.25\n"), "{text}");
     assert!(!text.contains('E'), "{text}");
     // Plain scalars: YAML reads them back as numbers.
-    let back: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).unwrap();
+    // The stream is one document per record (`---` after each).
+    let docs: Vec<serde_yaml_ng::Value> = text
+        .split("---\n")
+        .filter(|d| !d.is_empty())
+        .map(|d| serde_yaml_ng::from_str(d).unwrap())
+        .collect();
+    assert_eq!(docs.len(), 2, "{text}");
     assert!(
-        back[0]["v"].is_number() && back[1]["v"].is_number(),
+        docs[0]["v"].is_number() && docs[1]["v"].is_number(),
         "{text}"
     );
 }
@@ -106,13 +113,27 @@ async fn yaml_uses_fixed_plain_scalars() {
 #[tokio::test]
 async fn single_object_yaml_matches_upstream_doctest() {
     // dump_yaml({"v": Decimal("52.30"), "n": Decimal("52")}) -> "n: 52\nv: 52.30\n"
-    // (PyYAML sorts keys; the Rust writer keeps insertion order.)
+    // Single-object output (upstream `dump_output`) is one plain document.
+    let mut buf: Vec<u8> = Vec::new();
+    let options = linkml_map_io::WriteOptions {
+        single_object: true,
+        ..Default::default()
+    };
+    let items = stream::iter(vec![Ok::<Value, anyhow::Error>(map(vec![
+        ("n", dec("52")),
+        ("v", dec("52.30")),
+    ]))]);
+    linkml_map_io::write_all_writer_with(&mut buf, Format::Yaml, &options, items)
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(buf).unwrap(), "n: 52\nv: 52.30\n");
+    // Stream output (YAMLStreamWriter) sorts keys, like `dump_yaml`'s default.
     let text = write(
         Format::Yaml,
-        vec![map(vec![("n", dec("52")), ("v", dec("52.30"))])],
+        vec![map(vec![("v", dec("52.30")), ("n", dec("52"))])],
     )
     .await;
-    assert_eq!(text, "n: 52\nv: 52.30\n");
+    assert_eq!(text, "n: 52\nv: 52.30\n---\n");
 }
 
 #[tokio::test]
@@ -123,10 +144,11 @@ async fn tsv_and_csv_cells() {
         let first: Vec<&str> = lines[1].split(sep).collect();
         // Scalar cell: `format_decimal`.
         assert_eq!(first[1], "52.30", "{text}");
-        // Nested containers are JSON cells with `str(Decimal)` literals.
+        // Nested objects are flattened (`q__val`), so their decimals are scalar cells
+        // too (`format_decimal`: no exponent); lists are JSON cells with `str(Decimal)`.
         assert!(lines[1].contains("0.123456789012345678901"), "{text}");
-        assert!(lines[1].contains("[1,2.5]"), "{text}");
-        assert!(lines[2].contains("1E-7"), "{text}");
+        assert!(lines[1].contains("[1, 2.5]"), "{text}");
+        assert!(lines[2].contains("0.0000001"), "{text}");
         assert!(lines[2].contains("[-3.25]"), "{text}");
         assert!(lines[2].starts_with(&format!("b{sep}7{sep}")), "{text}");
     }

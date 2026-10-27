@@ -50,6 +50,7 @@ async fn run_once(src: &str, out: &str, workers: usize, label: &str) -> Result<(
         workers,
         ordered: false,
         channel_depth: 512,
+        write_options: Default::default(),
         strict: false,
     };
     // Wall-clock the whole call: plan load + stream read + transform + write.

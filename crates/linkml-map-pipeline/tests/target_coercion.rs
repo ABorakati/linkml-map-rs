@@ -225,14 +225,14 @@ class_derivations:
 async fn enum_spellings_resolve_to_keys_through_the_pipeline() {
     for strict in [false, true] {
         let text = run_enum_pipeline(strict, "F").await.unwrap();
-        assert!(text.contains(r#""sex":"OMOP:8532""#), "{text}");
+        assert!(text.contains(r#""sex": "OMOP:8532""#), "{text}");
     }
 }
 
 #[tokio::test]
 async fn unknown_enum_value_warns_by_default_and_fails_when_strict() {
     let lax = run_enum_pipeline(false, "other").await.unwrap();
-    assert!(lax.contains(r#""sex":"other""#), "{lax}");
+    assert!(lax.contains(r#""sex": "other""#), "{lax}");
     let err = run_enum_pipeline(true, "other").await.unwrap_err();
     assert!(
         format!("{err:#}").contains("'other' is not a permissible value of enum SexEnum"),

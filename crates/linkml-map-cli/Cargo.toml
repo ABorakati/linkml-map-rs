@@ -8,6 +8,10 @@ license.workspace = true
 name = "linkml-tr-rs"
 path = "src/main.rs"
 
+[features]
+# Parquet and DuckDB output (compiles DuckDB; off by default). Forwarded to linkml-map-io.
+columnar = ["linkml-map-io/columnar", "dep:linkml-map-duckdb", "linkml-map-duckdb/columnar"]
+
 [dependencies]
 linkml-map-core      = { path = "../linkml-map-core" }
 linkml-map-io        = { path = "../linkml-map-io" }
@@ -18,6 +22,8 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 serde_yaml_ng = { workspace = true }
 log = { workspace = true }
+# Only for reading Parquet/DuckDB output back in the `columnar` tests.
+linkml-map-duckdb = { path = "../linkml-map-duckdb", optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use csv_async::AsyncReaderBuilder;
 use futures::stream::{self, BoxStream, StreamExt};
 use linkml_map_core::value::Value;
+use serde::Deserialize;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -45,6 +46,9 @@ pub async fn load_stream(
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
+        Format::Parquet | Format::DuckDb => {
+            anyhow::bail!("{} is an output-only format", format.extension())
+        }
     }
 }
 
@@ -78,6 +82,9 @@ pub async fn load_stream_with_numeric_hints(
         Format::Jsonl => jsonl_stream(path).await,
         Format::Json => json_stream(path).await,
         Format::Yaml => yaml_stream(path).await,
+        Format::Parquet | Format::DuckDb => {
+            anyhow::bail!("{} is an output-only format", format.extension())
+        }
     }
 }
 
@@ -315,9 +322,23 @@ async fn yaml_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result
         .await
         .with_context(|| format!("opening {:?}", path.as_ref()))?;
 
-    let val: serde_json::Value = serde_yaml_ng::from_slice(&bytes).context("YAML parse error")?;
-
-    let items = serde_json_value_to_values(val);
+    // A multi-document stream (what `YamlStreamWriter` emits: one document per
+    // record, each followed by `---`) yields every document in turn; the empty
+    // document after a trailing `---` is not a record.
+    let mut docs: Vec<serde_json::Value> = Vec::new();
+    for doc in serde_yaml_ng::Deserializer::from_slice(&bytes) {
+        docs.push(serde_json::Value::deserialize(doc).context("YAML parse error")?);
+    }
+    if docs.len() > 1 {
+        while docs.len() > 1 && docs.last().is_some_and(serde_json::Value::is_null) {
+            docs.pop();
+        }
+    }
+    let items: Vec<Value> = match docs.len() {
+        0 => serde_json_value_to_values(serde_json::Value::Null),
+        1 => serde_json_value_to_values(docs.remove(0)),
+        _ => docs.into_iter().map(json_to_value).collect(),
+    };
     Ok(stream::iter(items.into_iter().map(Ok)).boxed())
 }
 

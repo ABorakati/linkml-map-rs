@@ -160,7 +160,7 @@ fn mint_ids_true_mints_stable_ids_in_parallel() {
     let first = rows(&output);
     let text = std::fs::read_to_string(&output).unwrap();
     assert!(
-        text.lines().next().unwrap().starts_with("{\"id\":\""),
+        text.lines().next().unwrap().starts_with("{\"id\": \""),
         "{text}"
     );
     let ids: Vec<_> = first

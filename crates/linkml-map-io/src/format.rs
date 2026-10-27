@@ -17,6 +17,11 @@ pub enum Format {
     Jsonl,
     /// YAML document (loaded whole).
     Yaml,
+    /// Parquet file built by DuckDB from the staged JSONL (output only; needs the
+    /// `columnar` feature).
+    Parquet,
+    /// Table in a DuckDB database file (output only; needs the `columnar` feature).
+    DuckDb,
 }
 
 impl Format {
@@ -41,6 +46,8 @@ impl Format {
             "json" => Ok(Format::Json),
             "jsonl" | "ndjson" => Ok(Format::Jsonl),
             "yaml" | "yml" => Ok(Format::Yaml),
+            "parquet" => Ok(Format::Parquet),
+            "duckdb" => Ok(Format::DuckDb),
             other => bail!("unsupported file extension: {:?}", other),
         }
     }
@@ -53,6 +60,14 @@ impl Format {
             Format::Json => "json",
             Format::Jsonl => "jsonl",
             Format::Yaml => "yaml",
+            Format::Parquet => "parquet",
+            Format::DuckDb => "duckdb",
         }
+    }
+
+    /// Whether this is a binary columnar output format (Parquet or DuckDB), which
+    /// cannot be written to stdout and cannot be read back as input.
+    pub fn is_columnar(self) -> bool {
+        matches!(self, Format::Parquet | Format::DuckDb)
     }
 }

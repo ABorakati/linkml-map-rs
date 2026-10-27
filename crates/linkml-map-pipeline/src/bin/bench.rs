@@ -106,6 +106,7 @@ async fn main() -> Result<()> {
             workers,
             ordered: false, // unordered for maximum throughput in bench
             channel_depth: 512,
+            write_options: Default::default(),
             strict: false,
         };
 

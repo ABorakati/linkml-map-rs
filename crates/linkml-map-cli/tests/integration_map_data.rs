@@ -96,6 +96,7 @@ fn continue_on_error_config(
     output: &std::path::Path,
 ) -> MapDataConfig {
     MapDataConfig {
+        write_options: Default::default(),
         spec: spec.to_string_lossy().into_owned(),
         source_schema: schema.to_string_lossy().into_owned(),
         target_schema: Some(schema.to_string_lossy().into_owned()),
@@ -121,6 +122,7 @@ async fn test_map_data_measurements_001_golden() {
     let out_str = out_path.to_str().unwrap().to_owned();
 
     let cfg = MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -215,6 +217,7 @@ async fn test_map_data_measurements_001_yaml_output_shape() {
     let out_path = tmp.path().join("out.yaml");
 
     let cfg = MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -287,6 +290,7 @@ async fn test_map_data_measurements_002_two_rows() {
     let out_path = tmp.path().join("out.jsonl");
 
     let cfg = MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -375,8 +379,8 @@ async fn test_default_map_data_api_stays_fail_fast() {
 /// Verify that an unknown --input-format string is rejected before the pipeline runs.
 #[test]
 fn test_parse_format_str_rejects_unknown() {
-    let result = linkml_map_cli::parse_format_str("parquet");
-    assert!(result.is_err(), "parquet should not be a supported format");
+    let result = linkml_map_cli::parse_format_str("xlsx");
+    assert!(result.is_err(), "xlsx should not be a supported format");
 }
 
 /// Verify that "auto" returns None (meaning: detect from path).
@@ -394,6 +398,7 @@ async fn test_map_data_stdout_with_explicit_format() {
     let fix = measurements_dir();
 
     let cfg = linkml_map_cli::MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -434,12 +439,14 @@ async fn test_map_data_stdout_with_explicit_format() {
     assert!(stats.rows_out > 0, "should produce at least one output row");
 }
 
-/// `-o -` WITHOUT `--output-format` must fail with a clear message.
+/// `-o -` WITHOUT `--output-format` defaults to YAML, as upstream's `map-data` does
+/// when no output file (and so no extension) is given.
 #[tokio::test]
-async fn test_map_data_stdout_missing_format_is_rejected() {
+async fn test_map_data_stdout_without_format_defaults_to_yaml() {
     let fix = measurements_dir();
 
     let cfg = linkml_map_cli::MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -459,7 +466,7 @@ async fn test_map_data_stdout_missing_format_is_rejected() {
         output: "-".to_string(),
         source_class: Some("Person".to_owned()),
         input_format: "auto".to_owned(),
-        output_format: "auto".to_owned(), // "auto" maps to None → error
+        output_format: "auto".to_owned(), // "auto" maps to None → YAML on stdout
         workers: 2,
         unordered: false,
         input: fix
@@ -471,10 +478,267 @@ async fn test_map_data_stdout_missing_format_is_rejected() {
     };
 
     let result = linkml_map_cli::run_map_data_config(cfg).await;
-    assert!(result.is_err(), "stdout without format must fail");
-    let msg = format!("{}", result.unwrap_err());
-    assert!(
-        msg.contains("output format is required when writing to stdout"),
-        "error must mention --output-format, got: {msg}"
+    let stats = result.expect("stdout without a format should default to YAML");
+    assert_eq!(stats.rows_out, 1);
+}
+
+// ── Output writers: null stripping and layout (upstream output_streams.py) ──
+
+/// Measurements fixture whose row (`PersonQuantityValue-002`) makes the engine emit a
+/// null-valued slot (`height_in_cm: null`).  The row is fed as JSONL so the streaming
+/// writers (not upstream's single-object `dump_output`) are used.
+fn null_slot_config(output: &str, output_format: &str) -> (MapDataConfig, tempfile::TempDir) {
+    let fix = measurements_dir();
+    let tmp = tempdir().expect("tempdir");
+    let input = tmp.path().join("Person.jsonl");
+    std::fs::write(
+        &input,
+        "{\"id\": \"P:2\", \"height\": {\"value\": 1.72, \"unit\": \"m\"}}\n",
+    )
+    .expect("writing JSONL");
+    let mut cfg = MapDataConfig::new(
+        fix.join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap(),
+        fix.join("source/quantity_value.yaml").to_str().unwrap(),
+        input.to_str().unwrap(),
+        tmp.path().join(output).to_str().unwrap(),
     );
+    cfg.target_schema = Some(
+        fix.join("target/quantity_value_flat.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
+    cfg.source_class = Some("Person".to_owned());
+    cfg.output_format = output_format.to_owned();
+    cfg.workers = 2;
+    (cfg, tmp)
+}
+
+/// Streaming output drops null slots in JSON, JSONL and YAML, and writes stream YAML
+/// as a `---`-terminated document.  Port of upstream `test_writers_drop_null_slots`.
+#[tokio::test]
+async fn test_stream_outputs_drop_null_slots() {
+    for (file, format, want) in [
+        ("out.jsonl", "jsonl", "{\"id\": \"P:2\"}\n"),
+        ("out.json", "json", "[\n{\n  \"id\": \"P:2\"\n}\n]\n"),
+        ("out.yaml", "yaml", "id: P:2\n---\n"),
+    ] {
+        let (cfg, tmp) = null_slot_config(file, format);
+        run_map_data_config(cfg).await.expect("map-data failed");
+        let text = std::fs::read_to_string(tmp.path().join(file)).unwrap();
+        assert_eq!(text, want, "{format}");
+    }
+}
+
+/// `-O` fans the same records out to further files, format inferred per file.
+#[tokio::test]
+async fn test_additional_outputs_fan_out() {
+    let (mut cfg, tmp) = null_slot_config("out.jsonl", "auto");
+    let extra = tmp.path().join("extra.tsv");
+    cfg.write_options.additional_outputs = vec![extra.clone()];
+    run_map_data_config(cfg).await.expect("map-data failed");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("out.jsonl")).unwrap(),
+        "{\"id\": \"P:2\"}\n"
+    );
+    // CSV/TSV keep null slots as empty cells (only JSON/JSONL/YAML strip them).
+    assert_eq!(
+        std::fs::read_to_string(extra).unwrap(),
+        "id\theight_in_cm\nP:2\t\n"
+    );
+}
+
+/// A single YAML object goes through upstream's `dump_output`: one plain document,
+/// insertion order, no `---`.
+#[tokio::test]
+async fn test_single_object_yaml_has_no_document_marker() {
+    let fix = measurements_dir();
+    let tmp = tempdir().expect("tempdir");
+    let out = tmp.path().join("out.yaml");
+    let mut cfg = MapDataConfig::new(
+        fix.join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap(),
+        fix.join("source/quantity_value.yaml").to_str().unwrap(),
+        fix.join("data/PersonQuantityValue-001.yaml")
+            .to_str()
+            .unwrap(),
+        out.to_str().unwrap(),
+    );
+    cfg.target_schema = Some(
+        fix.join("target/quantity_value_flat.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
+    cfg.source_class = Some("Person".to_owned());
+    cfg.workers = 2;
+    run_map_data_config(cfg).await.expect("map-data failed");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "id: P:1\nheight_in_cm: 172.0\n"
+    );
+}
+
+// ── Parquet / DuckDB output (upstream 04dc4c8, tests/test_cli/test_cli_columnar.py) ──
+
+/// Fixtures for the columnar tests: the shared tabular example.
+fn tabular_config(output: &std::path::Path) -> MapDataConfig {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let fix = PathBuf::from(manifest)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/examples/tabular");
+    let mut cfg = MapDataConfig::new(
+        fix.join("transform/person_to_agent.transform.yaml")
+            .to_str()
+            .unwrap(),
+        fix.join("source/person_flat.yaml").to_str().unwrap(),
+        fix.join("data/Person.tsv").to_str().unwrap(),
+        output.to_str().unwrap(),
+    );
+    cfg.source_class = Some("Person".to_owned());
+    cfg.workers = 2;
+    cfg
+}
+
+/// A default build has no DuckDB: asking for Parquet fails with a rebuild hint.
+#[cfg(not(feature = "columnar"))]
+#[tokio::test]
+async fn test_parquet_without_columnar_feature_fails_with_hint() {
+    let tmp = tempdir().expect("tempdir");
+    let target = tmp.path().join("agent.parquet");
+    let err = run_map_data_config(tabular_config(&target))
+        .await
+        .expect_err("parquet needs the columnar feature");
+    assert!(
+        format!("{err:#}").contains("--features columnar"),
+        "{err:#}"
+    );
+}
+
+/// `parquet`/`duckdb` cannot go to stdout, with or without the feature
+/// (upstream: "{fmt} output requires an output file; pass -o/--output FILE").
+#[tokio::test]
+async fn test_columnar_to_stdout_is_rejected() {
+    for format in ["parquet", "duckdb"] {
+        let tmp = tempdir().expect("tempdir");
+        let mut cfg = tabular_config(&tmp.path().join("unused"));
+        cfg.output = "-".to_owned();
+        cfg.output_format = format.to_owned();
+        let err = run_map_data_config(cfg).await.expect_err("must fail");
+        assert!(
+            format!("{err:#}").contains(&format!(
+                "{format} output requires an output file; pass -o/--output FILE"
+            )),
+            "{err:#}"
+        );
+    }
+}
+
+#[cfg(feature = "columnar")]
+mod columnar {
+    use super::*;
+    use linkml_map_duckdb::columnar::duckdb::Connection;
+
+    fn strings(con: &Connection, sql: &str) -> Vec<String> {
+        let mut stmt = con.prepare(sql).unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// Port of `test_table_name_applies_to_additional_duckdb_outputs`.
+    #[tokio::test]
+    async fn test_table_name_applies_to_additional_duckdb_outputs() {
+        let tmp = tempdir().expect("tempdir");
+        let primary = tmp.path().join("primary.duckdb");
+        let extra = tmp.path().join("extra.duckdb");
+        let mut cfg = tabular_config(&primary);
+        cfg.write_options.table_name = Some("agent".to_owned());
+        cfg.write_options.additional_outputs = vec![extra.clone()];
+        run_map_data_config(cfg).await.expect("map-data failed");
+        for path in [primary, extra] {
+            let con = Connection::open(&path).unwrap();
+            assert_eq!(strings(&con, "SHOW TABLES"), ["agent"]);
+        }
+    }
+
+    /// Port of `test_single_object_input_writes_parquet`.
+    #[tokio::test]
+    async fn test_single_object_input_writes_parquet() {
+        let tmp = tempdir().expect("tempdir");
+        let data = tmp.path().join("person.yaml");
+        std::fs::write(
+            &data,
+            "id: P:001\nname: fred bloggs\nprimary_email: fred@example.com\nage_in_years: 33\ngender: nonbinary man\n",
+        )
+        .unwrap();
+        let target = tmp.path().join("agent.parquet");
+        let mut cfg = tabular_config(&target);
+        cfg.input = data.to_str().unwrap().to_owned();
+        run_map_data_config(cfg).await.expect("map-data failed");
+
+        let con = Connection::open_in_memory().unwrap();
+        let rows = strings(
+            &con,
+            &format!(
+                "SELECT id || '|' || label FROM read_parquet('{}')",
+                target.display()
+            ),
+        );
+        assert_eq!(rows, ["P:001|fred bloggs"]);
+        // Only the artifact remains: the staging file is gone.
+        let mut names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["agent.parquet", "person.yaml"]);
+    }
+
+    /// Port of `test_single_object_input_writes_duckdb_with_table_name`.
+    #[tokio::test]
+    async fn test_single_object_input_writes_duckdb_with_table_name() {
+        let tmp = tempdir().expect("tempdir");
+        let data = tmp.path().join("person.yaml");
+        std::fs::write(
+            &data,
+            "id: P:002\nname: jane doe\nprimary_email: jane@example.com\nage_in_years: 28\ngender: cisgender woman\n",
+        )
+        .unwrap();
+        let target = tmp.path().join("study.duckdb");
+        let mut cfg = tabular_config(&target);
+        cfg.input = data.to_str().unwrap().to_owned();
+        cfg.write_options.table_name = Some("agent".to_owned());
+        run_map_data_config(cfg).await.expect("map-data failed");
+
+        let con = Connection::open(&target).unwrap();
+        assert_eq!(strings(&con, "SHOW TABLES"), ["agent"]);
+        assert_eq!(strings(&con, "SELECT id FROM agent"), ["P:002"]);
+    }
+
+    /// Tabular (streaming) input to Parquet infers the format from the extension.
+    #[tokio::test]
+    async fn test_streaming_input_writes_parquet() {
+        let tmp = tempdir().expect("tempdir");
+        let target = tmp.path().join("agents.PARQUET");
+        run_map_data_config(tabular_config(&target))
+            .await
+            .expect("map-data failed");
+        let con = Connection::open_in_memory().unwrap();
+        let ids = strings(
+            &con,
+            &format!(
+                "SELECT id FROM read_parquet('{}') ORDER BY id",
+                target.display()
+            ),
+        );
+        assert_eq!(ids, ["P:001", "P:002", "P:003"]);
+    }
 }

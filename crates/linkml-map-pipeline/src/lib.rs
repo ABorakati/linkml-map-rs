@@ -43,8 +43,9 @@ use linkml_map_core::{
     value::Value,
 };
 use linkml_map_io::{
-    Format, NumericColumnHints, NumericColumnKind, load_all_with_numeric_hints,
-    load_stream_with_numeric_hints, write_all, write_all_writer,
+    Format, NumericColumnHints, NumericColumnKind, WriteOptions, jsonl_line,
+    load_all_with_numeric_hints, load_stream_with_numeric_hints, validate_additional_outputs,
+    write_all_with, write_all_writer_with,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
@@ -93,6 +94,10 @@ pub struct PipelineConfig {
     pub ordered: bool,
     /// Depth of the tokio bounded channels (reader→workers and workers→writer).
     pub channel_depth: usize,
+    /// Output-writer options: `--table-name`, `--chunk-size` and `-O` additional
+    /// outputs. `single_object` is decided by the pipeline from the input kind and
+    /// is overwritten here.
+    pub write_options: WriteOptions,
     /// Strict mode (upstream `--strict`): an `expr:` that references an unbound
     /// name, or a value for an enum-ranged target slot that matches no
     /// permissible value (or more than one), fails the row instead of yielding
@@ -121,6 +126,7 @@ impl PipelineConfig {
             workers: 4,
             ordered: true,
             channel_depth: 256,
+            write_options: WriteOptions::default(),
             strict: false,
         }
     }
@@ -677,13 +683,8 @@ fn is_tabular_path(path: &str) -> bool {
 fn jsonl_lines(values: &[Value]) -> String {
     let mut buf = String::new();
     for v in values {
-        match linkml_map_io::value_to_json(v).and_then(|j| Ok(serde_json::to_string(&j)?)) {
-            Ok(line) => {
-                buf.push_str(&line);
-                buf.push('\n');
-            }
-            Err(e) => eprintln!("serialise error: {e:#}"),
-        }
+        buf.push_str(&jsonl_line(v));
+        buf.push('\n');
     }
     buf
 }
@@ -804,17 +805,34 @@ pub async fn run_pipeline_with_options(
     // required, opened or format-detected.
     let reads_no_input = streaming_input && !plan.has_row_blocks();
 
-    let out_format = if config.out_path == "-" {
-        config.out_format.ok_or_else(|| anyhow::anyhow!(
-            "output format is required when writing to stdout; pass --output-format (jsonl|json|csv|tsv|yaml)"
-        ))?
-    } else {
-        config
-            .out_format
-            .map(Ok)
-            .unwrap_or_else(|| Format::from_path(&config.out_path))
-            .with_context(|| format!("detecting output format for {}", config.out_path))?
+    // PARITY: cli.py::map_data — with no `--output-format`, the format comes from the
+    // output extension and falls back to YAML for an unknown extension or for stdout
+    // (`EXTENSION_FORMAT_MAP.get(ext, OutputFormat.YAML)`).
+    let out_format = config.out_format.unwrap_or_else(|| {
+        if config.out_path == "-" {
+            Format::Yaml
+        } else {
+            Format::from_path(&config.out_path).unwrap_or(Format::Yaml)
+        }
+    });
+
+    // PARITY: cli.py::map_data — Parquet/DuckDB are binary artifacts built from a
+    // staged file, so they cannot go to stdout.
+    if out_format.is_columnar() && config.out_path == "-" {
+        anyhow::bail!(linkml_map_io::columnar_needs_file(out_format));
+    }
+
+    // Streaming input (tabular or directory) always uses the stream writers and
+    // honours `-O`; the single-object decision for other inputs is made once the
+    // source format is known (see `single_object` below).
+    let write_options = WriteOptions {
+        single_object: false,
+        ..config.write_options.clone()
     };
+    if streaming_input {
+        let primary = (config.out_path != "-").then(|| Path::new(&config.out_path));
+        validate_additional_outputs(primary, &write_options)?;
+    }
 
     if reads_no_input {
         let n_out = constants_ok;
@@ -825,7 +843,7 @@ pub async fn run_pipeline_with_options(
                 .chain(constants.epilogue)
                 .map(Ok::<_, anyhow::Error>),
         );
-        write_stream_to_output(&config.out_path, out_format, stream)
+        write_stream_to_output(&config.out_path, out_format, &write_options, stream)
             .await
             .with_context(|| format!("writing output to {}", config.out_path))?;
         if constants_failed > 0 {
@@ -878,6 +896,22 @@ pub async fn run_pipeline_with_options(
         .map(Ok)
         .unwrap_or_else(|| Format::from_path(&config.source_path))
         .with_context(|| format!("detecting source format for {}", config.source_path))?;
+
+    // PARITY: cli.py::map_data — only tabular (.tsv/.csv) or directory input streams
+    // (`streaming_input`); any other input is "single object" input and is written
+    // by `dump_output` (`_map_data_single`), which also ignores `-O`.  JSONL input
+    // is a Rust extension and keeps the streaming writers.
+    let single_object = !streaming_input && matches!(src_format, Format::Yaml | Format::Json);
+    let write_options = WriteOptions {
+        single_object,
+        ..config.write_options.clone()
+    };
+    if !streaming_input && !single_object {
+        let primary = (config.out_path != "-").then(|| Path::new(&config.out_path));
+        validate_additional_outputs(primary, &write_options)?;
+    }
+    // The JSONL fast paths bypass the stream writers, so they cannot fan out to `-O`.
+    let fast_paths_ok = single_object || write_options.additional_outputs.is_empty();
 
     let rows_in;
     let rows_out;
@@ -941,7 +975,7 @@ pub async fn run_pipeline_with_options(
         // tiny rows. `collect()` preserves input order, so output is ordered.
         let pool = build_rayon_pool(config.workers)?;
 
-        if matches!(out_format, Format::Jsonl) {
+        if matches!(out_format, Format::Jsonl) && fast_paths_ok {
             // JSONL: transform AND serialise in parallel into one buffer, then a
             // single bulk write (serial per-row serialise was the writer wall).
             use rayon::prelude::*;
@@ -956,9 +990,7 @@ pub async fn run_pipeline_with_options(
                     let outs: Vec<Option<String>> = all_rows
                         .par_iter()
                         .map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
-                            Ok(v) => linkml_map_io::value_to_json(&v).ok().and_then(|j| {
-                                linkml_map_io::serialization::json_to_string(&j).ok()
-                            }),
+                            Ok(v) => Some(jsonl_line(&v)),
                             Err(e) => {
                                 eprintln!("FK transform error: {e:#}");
                                 None
@@ -1024,11 +1056,11 @@ pub async fn run_pipeline_with_options(
                     .chain(constants.epilogue)
                     .map(Ok::<_, anyhow::Error>),
             );
-            write_stream_to_output(&config.out_path, out_format, stream)
+            write_stream_to_output(&config.out_path, out_format, &write_options, stream)
                 .await
                 .with_context(|| format!("writing FK output to {}", config.out_path))?;
         }
-    } else if src_format == Format::Jsonl && out_format == Format::Jsonl {
+    } else if src_format == Format::Jsonl && out_format == Format::Jsonl && fast_paths_ok {
         // ── Fully-parallel JSONL fast path ────────────────────────────────────
         //
         // The generic streaming path parses every record in the serial reader
@@ -1195,7 +1227,7 @@ pub async fn run_pipeline_with_options(
                 constants.epilogue.into_iter().map(Ok),
             ))
             .boxed();
-        write_stream_to_output(&config.out_path, out_format, out_stream)
+        write_stream_to_output(&config.out_path, out_format, &write_options, out_stream)
             .await
             .with_context(|| format!("writing output to {}", config.out_path))?;
 
@@ -1291,12 +1323,17 @@ async fn write_bytes_to_output(out_path: &str, buf: &[u8], label: &str) -> Resul
 ///
 /// When `out_path` is `"-"` the stream is written to stdout via
 /// [`write_all_writer`]; BrokenPipe is treated as normal termination.
-async fn write_stream_to_output<S>(out_path: &str, out_format: Format, stream: S) -> Result<()>
+async fn write_stream_to_output<S>(
+    out_path: &str,
+    out_format: Format,
+    options: &WriteOptions,
+    stream: S,
+) -> Result<()>
 where
     S: futures::Stream<Item = Result<Value>> + Unpin,
 {
     if out_path == "-" {
-        match write_all_writer(tokio::io::stdout(), out_format, stream).await {
+        match write_all_writer_with(tokio::io::stdout(), out_format, options, stream).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 if e.downcast_ref::<std::io::Error>()
@@ -1309,7 +1346,7 @@ where
             }
         }
     } else {
-        write_all(out_path, out_format, stream).await
+        write_all_with(out_path, out_format, options, stream).await
     }
 }
 
@@ -1407,15 +1444,7 @@ fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> 
             return None;
         }
     };
-    match linkml_map_io::value_to_json(&out)
-        .and_then(|j| Ok(linkml_map_io::serialization::json_to_string(&j)?))
-    {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("serialise error: {e:#}");
-            None
-        }
-    }
+    Some(jsonl_line(&out))
 }
 
 // ── Directory-source (multi-table) mode ──────────────────────────────────────
@@ -1677,6 +1706,7 @@ mod tests {
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
             strict: false,
         };
 
@@ -1911,6 +1941,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
             strict: false,
         };
 
@@ -1997,6 +2028,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
             strict: false,
         };
 
@@ -2066,6 +2098,7 @@ class_derivations:
             workers: 4,
             ordered: true,
             channel_depth: 256,
+            write_options: Default::default(),
             strict: false,
         };
 
@@ -2165,6 +2198,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
             strict: false,
         };
 

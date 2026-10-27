@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Result;
 use linkml_map_core::schema::SchemaProvider;
 use linkml_map_core::validate::validate_spec_semantics;
-use linkml_map_io::Format;
+use linkml_map_io::{Format, WriteOptions};
 use linkml_map_pipeline::{PipelineConfig, PipelineStats, load_transform_spec};
 use linkml_map_schemaview::SchemaViewProvider;
 
@@ -28,8 +28,10 @@ pub fn parse_format_str(s: &str) -> Result<Option<Format>> {
         "json" => Ok(Some(Format::Json)),
         "jsonl" | "ndjson" => Ok(Some(Format::Jsonl)),
         "yaml" | "yml" => Ok(Some(Format::Yaml)),
+        "parquet" => Ok(Some(Format::Parquet)),
+        "duckdb" => Ok(Some(Format::DuckDb)),
         other => anyhow::bail!(
-            "unknown format {:?}; expected one of: auto, csv, tsv, json, jsonl, yaml",
+            "unknown format {:?}; expected one of: auto, csv, tsv, json, jsonl, yaml, parquet, duckdb",
             other
         ),
     }
@@ -67,6 +69,8 @@ pub struct MapDataConfig {
     /// the primary table is streamed and joined tables feed a lookup index). See
     /// [`linkml_map_pipeline::PipelineConfig::source_path`].
     pub input: String,
+    /// Output-writer options: `--table-name`, `--chunk-size`, `-O/--additional-output`.
+    pub write_options: WriteOptions,
 }
 
 impl MapDataConfig {
@@ -89,6 +93,7 @@ impl MapDataConfig {
             unordered: false,
             strict: false,
             input: input.into(),
+            write_options: WriteOptions::default(),
         }
     }
 }
@@ -124,6 +129,7 @@ pub async fn run_map_data_config_with_options(
         workers: cfg.workers,
         ordered: !cfg.unordered,
         channel_depth: 256,
+        write_options: cfg.write_options.clone(),
         strict: cfg.strict,
     };
 
