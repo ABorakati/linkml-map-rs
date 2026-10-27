@@ -257,6 +257,33 @@ validation of output.
 pint's full universe — unknown units error loudly rather than silently
 diverging.
 
+## Identifiers
+
+When a **target schema** is supplied (`--target-schema`, or `target_schema=` in
+Python) and it gives a class an identifier slot (`identifier: true`), every
+class derivation of that class must either derive the slot or mint it:
+
+- **Derive it** like any other slot (a natural key a referring spec can recompute).
+- **Mint it** with `mint_ids: true`: the id becomes a UUID v5 hash of the record's
+  own content, `uuid5(uuid5(NAMESPACE_URL, "<target schema id>/<TargetClass>"),
+  canonical(record))`, and is written first. Minting is off by default and can be
+  set on the specification, per target class (`class_defaults: {Class: {mint_ids:
+  true}}`, or the compact `{Class: true}`) and per class derivation; the most
+  specific setting wins. Abstract and mixin target classes are skipped, and an id
+  derived by an `is_a`/`mixins` ancestor counts as derived.
+
+A derivation that does neither is an error: `map-data` refuses to run before it
+opens any output (with `--continue-on-error` it reports each problem once, writes
+the records without ids and exits non-zero), the engine raises, and `validate`
+reports it. Without a target schema nothing is checked or minted.
+
+The canonical form sorts keys, drops nulls and empty lists/objects, sorts list
+items unless the target slot is `list_elements_ordered`, and writes numbers in one
+fixed-point form (floats rounded to 15 significant digits). The same record gets
+the same id whatever the row order, chunking or parallelism, but these are
+content hashes, not stable identifiers: any change to an emitted value changes
+the id. Mirrors upstream linkml-map #342.
+
 ## Architecture
 
 ```

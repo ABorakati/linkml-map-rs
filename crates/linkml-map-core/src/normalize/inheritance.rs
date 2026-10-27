@@ -127,6 +127,7 @@ pub fn with_inherited_fields(
         fill_unset(&mut merged.is_a, &ancestor.is_a);
         fill_unset(&mut merged.mirror_source, &ancestor.mirror_source);
         fill_unset(&mut merged.description, &ancestor.description);
+        fill_unset(&mut merged.mint_ids, &ancestor.mint_ids);
     }
     Ok(merged)
 }

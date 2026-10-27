@@ -79,6 +79,17 @@ pub enum Error {
         cause: String,
     },
 
+    /// A class derivation neither derives nor mints its target class's
+    /// identifier slot (`mint_ids` is not true). Mirrors the Python
+    /// `TransformationError` raised by `ObjectTransformer._with_synthesized_id`
+    /// (upstream #342); `message` is `missing_identifier_message`.
+    #[error("{message}")]
+    MissingIdentifier {
+        message: String,
+        class_derivation_name: String,
+        class_populated_from: Option<String>,
+    },
+
     /// A `populated_from` dot-path that traverses inlined nested data hit an
     /// unsupported or malformed segment: a list segment (multivalued inline
     /// fan-out, not yet supported — upstream issue #265) or a non-dict value

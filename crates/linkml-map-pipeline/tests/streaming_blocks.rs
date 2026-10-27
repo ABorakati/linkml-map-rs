@@ -498,14 +498,21 @@ async fn constant_block_does_not_hide_missing_input() {
 /// its name it is skipped, so only the participant rows come out.
 #[tokio::test]
 async fn block_that_reads_a_row_is_not_emitted_once() {
+    // Upstream drives `transform_spec` directly, which has no identifier
+    // pre-check. The Rust pipeline mirrors the CLI, where
+    // `cli._require_identifiers` would refuse a `ResearchStudy` block that
+    // neither derives nor mints its `id`; `mint_ids: true` satisfies the check
+    // without changing what is emitted (the block is skipped either way).
     let cases = [
         // bare-slot
         "  ResearchStudy:
+    mint_ids: true
     slot_derivations:
       name:
 ",
         // expr
         "  ResearchStudy:
+    mint_ids: true
     slot_derivations:
       name:
         expr: name
@@ -678,7 +685,10 @@ async fn constant_block_once_on_the_jsonl_fast_path() {
 /// Non-JSONL output goes through the generic stream writer.
 #[tokio::test]
 async fn constant_block_once_in_tsv_output() {
-    let case = constant_case();
+    // No target schema: this case is about TSV framing, not identifiers (with
+    // the target schema, `ResearchStudy` would fail the identifier pre-check).
+    let case = Case::new(CONSTANT_SOURCE, None);
+    case.write_data("participants.tsv", PARTICIPANTS_TSV);
     let spec = "  ResearchStudy:
     slot_derivations:
       pid:

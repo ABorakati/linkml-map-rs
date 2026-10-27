@@ -678,6 +678,78 @@ pub struct EnumDerivation {
 // `ObjectDerivation` removed in v0.6.0 — nested object derivations now live
 // directly on `SlotDerivation.class_derivations` (one nesting level flatter).
 
+/// Settings applied to every class derivation that targets one class, unless
+/// the derivation sets its own. Mirrors Python `ClassDefault` (upstream #342).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ClassDefault {
+    /// Name of the class in the target schema.
+    #[serde(default)]
+    pub name: String,
+
+    /// Whether derivations of this class mint content-hash identifiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_ids: Option<bool>,
+}
+
+/// Deserialize `class_defaults`, accepting a mapping (`{Class: {mint_ids: b}}`,
+/// compact `{Class: b}`, or `{Class: null}` meaning unset) or a list of
+/// `{name, mint_ids}` entries. Mirrors the shapes upstream's
+/// `_class_default_mint_ids` and `ReferenceValidator` normalisation accept.
+fn deserialize_class_defaults_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<IndexMap<String, ClassDefault>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let mut out: IndexMap<String, ClassDefault> = IndexMap::new();
+    match value {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::Object(map)) => {
+            for (name, body) in map {
+                let mint_ids = match body {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::Bool(b) => Some(b),
+                    serde_json::Value::Object(o) => {
+                        match o
+                            .get("mint_ids")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null)
+                        {
+                            serde_json::Value::Null => None,
+                            serde_json::Value::Bool(b) => Some(b),
+                            other => {
+                                return Err(D::Error::custom(format!(
+                                    "class_defaults[{name}].mint_ids must be a boolean, got {other}"
+                                )));
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(D::Error::custom(format!(
+                            "class_defaults[{name}] must be a mapping or a boolean, got {other}"
+                        )));
+                    }
+                };
+                out.insert(name.clone(), ClassDefault { name, mint_ids });
+            }
+        }
+        Some(serde_json::Value::Array(items)) => {
+            for item in items {
+                let cd: ClassDefault = serde_json::from_value(item).map_err(D::Error::custom)?;
+                out.insert(cd.name.clone(), cd);
+            }
+        }
+        Some(other) => {
+            return Err(D::Error::custom(format!(
+                "class_defaults must be a mapping or a list, got {other}"
+            )));
+        }
+    }
+    Ok(Some(out))
+}
+
 /// A specification of how to derive a target class from source class(es).
 ///
 /// Mirrors Python `ClassDerivation`.
@@ -699,6 +771,11 @@ pub struct ClassDerivation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pivot_operation: Option<PivotOperation>,
+
+    /// Overrides the specification's `mint_ids`, and the target class's entry
+    /// in `class_defaults`, for this class derivation (upstream #342).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_ids: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub copy_directives: Option<IndexMap<String, CopyDirective>>,
@@ -801,6 +878,23 @@ pub struct TransformationSpecification {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_url: Option<String>,
+
+    /// Whether to synthesize an identifier from a hash of the record's content
+    /// when a target class has an identifier slot that the class derivation
+    /// does not derive (upstream #342). Off by default; an identifier that is
+    /// neither derived nor minted is an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_ids: Option<bool>,
+
+    /// Per-target-class settings (currently `mint_ids`), keyed by class name.
+    /// Accepts the mapping form (`{Class: {mint_ids: true}}`), the compact
+    /// `{Class: true}` form and the explicit list form.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_class_defaults_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub class_defaults: Option<IndexMap<String, ClassDefault>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub class_derivations: Option<Vec<ClassDerivation>>,
