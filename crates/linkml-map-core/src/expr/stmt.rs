@@ -1,9 +1,11 @@
-//! Multi-statement (`asteval`-style) interpreter for `expr:` blocks.
+//! Statement blocks: the `asteval` ("unrestricted") side of `expr:`.
 //!
 //! Native port of the linkml-map "unrestricted" expression path
 //! (`ObjectTransformer._unrestricted_eval`), reached only with
-//! `unrestricted_eval` on; see [`super::gate`] for the split. The restricted
-//! evaluator runs just a block's first statement (`Program::eval_first_statement`).
+//! `unrestricted_eval` on; see [`super::gate`] for the split. The interpreter
+//! itself is [`super::asteval`]: a port of `asteval` 1.0.x, so a block runs
+//! exactly the Python upstream runs, with the same symbol table, the same error
+//! policy and the same quirks.
 //!
 //! ```python
 //! aeval = Interpreter(usersyms={"src": ctxt_obj, "target": None, "uuid5": _uuid5})
@@ -12,170 +14,231 @@
 //! ```
 //!
 //! The whole source object is bound as `src`; `target` is pre-seeded to None;
-//! after running the block, the value of the `target` symbol is the result. If
-//! `target` is never assigned (e.g. an `if` guard did not fire), the result is
-//! [`Value::Null`] — matching Python returning the pre-seeded `None`.
+//! after running the block, the value of the `target` symbol is the result. A
+//! text that does not parse (`SyntaxError`, `IndentationError`) is swallowed by
+//! `asteval`: the block does nothing and the result is None.
 //!
-//! Since upstream f299f3a the block sees *only* that namespace: slots are read
-//! as `src.<slot>`, and a bare slot name or `{slot}` reference is a
-//! `NameError` that is re-raised (see [`Program::eval_with`]). Any other error stops
-//! the block, as asteval does, and the result is whatever `target` holds then.
-//!
-//! Supported constructs (exactly the set the personinfo_basic specs use):
-//!   * assignment: `name = expr`
-//!   * `if cond:` with a single-line trailing statement OR an indented block
-//!   * expression statements (evaluated, value discarded)
-//!   * list comprehension / subscript / `len` / `str` / attribute access /
-//!     string compare — all handled by the shared expression evaluator.
-//!
-//! This layer is additive: single-expression `expr:` strings never reach it
-//! (see [`parse_single_or_program`]'s dispatch), so the cached single-AST fast
-//! path is untouched.
+//! The restricted evaluator (`simpleeval`) runs only the first statement of a
+//! block; that statement is kept here ([`Program::eval_first_statement`]) as an
+//! expression parsed by the restricted evaluator's own parser.
 
+use std::sync::Arc;
+
+use super::asteval::{self, Parsed};
 use super::error::{ExprError, ExprResult};
-use super::eval::{Bindings, eval_ast_public, with_object_attr_mode};
+use super::eval::{Bindings, eval_ast_public};
 use super::parser::{Ast, parse};
 use crate::value::Value;
 
-/// A run of physical lines (zero-based, inclusive) that one statement spans.
-///
-/// Only used to render the source line asteval quotes in its `NameError`
-/// detail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    first: usize,
-    last: usize,
-}
-
-/// An evaluation failure together with the statement that raised it.
-struct Failure {
-    err: ExprError,
-    span: Span,
-}
-
-/// A parsed statement.
+/// What the restricted evaluator does with a block: it parses the whole text
+/// but evaluates only `body[0]`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stmt {
-    /// `name = <expr>`
-    Assign {
-        name: String,
-        value: Ast,
-        span: Span,
-    },
-    /// `if <cond>:` followed by a body of statements. `span` is the header.
-    If {
-        cond: Ast,
-        body: Vec<Stmt>,
-        span: Span,
-    },
-    /// A bare expression statement (evaluated for effect; value discarded).
-    Expr(Ast, Span),
+enum First {
+    /// `Expr`, `Assign` and `AugAssign` evaluate their value (`simpleeval`
+    /// ignores the target).
+    Value(Ast),
+    /// Any other statement: `FeatureNotAvailable`.
+    Unavailable(String),
+    /// Nothing to evaluate.
+    Empty,
+    /// The text does not parse: `ast.parse` raises `SyntaxError`.
+    Syntax(ExprError),
 }
 
-/// A parsed multi-statement program.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Program {
-    stmts: Vec<Stmt>,
-    /// The physical source lines, kept to quote the failing line in an
-    /// undefined-name error like asteval does.
-    lines: Vec<String>,
+#[derive(Debug, PartialEq)]
+struct Inner {
+    /// The text as given (asteval parses it unstripped).
+    text: String,
+    /// `ast.parse(text)`, or why it failed (asteval then does nothing).
+    compiled: Result<Arc<Parsed>, String>,
+    /// `src` attributes the block reads, when it only ever reads `src.<name>`.
+    src_attrs: Option<Vec<String>>,
+    first: First,
+    /// The expressions of the block, parsed by the restricted parser.
+    exprs: Vec<Ast>,
+    assigned: Vec<String>,
+    /// The error reported when the text does not parse.
+    syntax_error: Option<ExprError>,
 }
+
+/// A parsed statement block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Program(Arc<Inner>);
 
 impl Program {
-    /// Collect every expression [`Ast`] carried by the program — assignment
-    /// right-hand sides, `if` conditions, and bare expression statements —
-    /// recursing into nested `if` bodies. Used by expression-location scanning
-    /// (`crate::normalize::expression_locations`) to find cross-table
-    /// references inside multi-statement `expr:` blocks, mirroring upstream's
-    /// `ast.walk` over an exec-mode parse.
-    pub fn exprs(&self) -> Vec<&Ast> {
-        let mut out = Vec::new();
-        collect_stmt_exprs(&self.stmts, &mut out);
-        out
+    /// Parse `text` as a statement block. `single_err` is the error the text
+    /// gives as one expression; the block's own parse error is reported
+    /// instead when the text looks like statements.
+    fn new(text: &str, single_err: ExprError) -> Self {
+        let stripped = text.trim_matches(super::pystr::is_py_space);
+        let compiled = asteval::compile(text).map(Arc::new);
+        // simpleeval parses `expr.strip()`.
+        let stripped_parse = if stripped == text {
+            compiled.clone()
+        } else {
+            asteval::compile(stripped).map(Arc::new)
+        };
+        let syntax_error = match &stripped_parse {
+            Ok(_) => None,
+            Err(msg) => {
+                let program_err = ExprError::Parse(msg.clone());
+                Some(if looks_like_statements(text) {
+                    program_err
+                } else {
+                    single_err
+                })
+            }
+        };
+        let first = match &stripped_parse {
+            Err(_) => First::Syntax(syntax_error.clone().expect("set above")),
+            Ok(p) => match p.first {
+                None => First::Empty,
+                Some((kind @ ("Expr" | "Assign" | "AugAssign"), span)) => {
+                    let value = span.and_then(|(a, b)| p.source.get(a..b));
+                    match value.map(parse) {
+                        Some(Ok(ast)) => First::Value(ast),
+                        Some(Err(e)) => First::Syntax(e),
+                        None => First::Unavailable(kind.to_string()),
+                    }
+                }
+                Some(("Import", _)) => First::Syntax(ExprError::Eval(
+                    "Sorry, 'import' is not allowed.".into(),
+                )),
+                Some((kind, _)) => First::Unavailable(kind.to_string()),
+            },
+        };
+        let (src_attrs, exprs, assigned) = match &compiled {
+            Ok(p) => (
+                asteval::src_attributes(&p.module),
+                p.expr_spans
+                    .iter()
+                    .filter_map(|&(a, b)| p.source.get(a..b))
+                    .filter_map(|t| parse(t).ok())
+                    .collect(),
+                assigned_names(&p.module),
+            ),
+            Err(_) => (None, Vec::new(), Vec::new()),
+        };
+        Program(Arc::new(Inner {
+            text: text.to_string(),
+            compiled,
+            src_attrs,
+            first,
+            exprs,
+            assigned,
+            syntax_error,
+        }))
     }
 
-    /// Collect every name bound by an assignment in this program — the
-    /// left-hand side of each `name = <expr>` statement, recursing into `if`
-    /// bodies. These are the "locally bound" names that expression-reference
-    /// scanning (`crate::validate::expr_refs`) must exclude, mirroring how
-    /// upstream's `extract_expr_slot_references` drops `ast.Name` nodes in a
-    /// `Store` context. Assignment targets are not `Ast` nodes in this parser
-    /// (they live on [`Stmt::Assign`]), so they cannot be recovered by walking
-    /// [`exprs`](Self::exprs) alone.
+    /// The error the restricted evaluator reports for a text that does not
+    /// parse (`None` when it does).
+    pub(crate) fn syntax_error(&self) -> Option<&ExprError> {
+        self.0.syntax_error.as_ref()
+    }
+
+    /// Every expression carried by the program (assignment right-hand sides,
+    /// conditions, expression statements, iterables, ...), parsed by the
+    /// restricted parser; one that it cannot parse is left out. Used by
+    /// expression-location scanning (`crate::normalize::expression_locations`)
+    /// to find cross-table references inside multi-statement `expr:` blocks,
+    /// mirroring upstream's `ast.walk` over an exec-mode parse.
+    pub fn exprs(&self) -> Vec<&Ast> {
+        self.0.exprs.iter().collect()
+    }
+
+    /// Every name bound by a statement in this program (assignment, `for` and
+    /// `with` targets, augmented assignment): the `Store`-context names that
+    /// expression-reference scanning (`crate::validate::expr_refs`) must
+    /// exclude, mirroring how upstream's `extract_expr_slot_references` drops
+    /// them. Assignment targets are not `Ast` nodes in the restricted parser,
+    /// so they cannot be recovered by walking [`exprs`](Self::exprs).
     pub fn assigned_names(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        collect_assigned_names(&self.stmts, &mut out);
-        out
+        self.0.assigned.clone()
     }
 
     /// Evaluate the program against `vars` and return the `target` symbol.
     ///
     /// `vars["src"]` is the source object, or, when absent, the whole of `vars`
     /// (less the engine's own `NULL` / `__slot_values` entries). Equivalent to
-    /// [`Program::eval_with`] with `raise_undefined` set; the engine uses
-    /// `eval_with` directly so it never has to materialise a `src` binding for
-    /// the restricted path.
+    /// [`Program::eval_vars`] with `raise_undefined` set.
     ///
     /// # Errors
-    /// Only the undefined-name case described on [`Program::eval_with`].
+    /// Only the cases described on [`Program::eval_vars`].
     pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
-        let src = vars
-            .get("src")
-            .cloned()
-            .unwrap_or_else(|| source_object(vars));
-        self.eval_with(src, vars.get("__slot_values").cloned(), true)
+        match vars.get("src") {
+            Some(src) => self.eval_src(src, vars.get("__slot_values"), true),
+            None => self.eval_vars(vars, true),
+        }
     }
 
     /// Run the program the way upstream's `ObjectTransformer._unrestricted_eval`
     /// does and return the `target` symbol.
     ///
     /// The block runs in a fresh namespace holding only `src` (the source
-    /// object), `target` (pre-seeded to None) and the `slot()` lookup table
-    /// (`slot_values`), never the bare slot names, join aliases or `NULL` that
-    /// single expressions see.
+    /// object: every binding of `vars` but `NULL` and `__slot_values`),
+    /// `target` (pre-seeded to None), `uuid5`, the `slot()` lookup (when
+    /// `vars` carries `__slot_values`) and what `asteval` itself provides:
+    /// Python's built-in functions, types and exceptions, and the `math`
+    /// functions. Never the bare slot names, join aliases, `NULL` or the LinkML
+    /// built-ins of single expressions.
     ///
-    /// PARITY: asteval stops at the first error. With `raise_undefined`
-    /// (`_unrestricted_eval(.., raise_undefined=True)`, which `_eval_expr` sets
-    /// for statement blocks) a `NameError` (an undefined name, typically a bare
-    /// slot or a `{slot}` reference) is re-raised as `ValueError("Unrestricted
-    /// expression uses an undefined name: ...")`. Every other error (a missing
-    /// value iterated, an index out of range, ...), and a `NameError` without
-    /// `raise_undefined` (the enum-expression fallback), is swallowed and the
-    /// result is whatever `target` held at that point, None if it was never
-    /// assigned. See `_unrestricted_eval` in `transformer/object_transformer.py`.
+    /// PARITY: `asteval` stops at the first error and swallows it. With
+    /// `raise_undefined` (`_unrestricted_eval(.., raise_undefined=True)`, which
+    /// `_eval_expr` sets for statement blocks) a `NameError` at the head of the
+    /// error list (an undefined name, typically a bare slot or a `{slot}`
+    /// reference) is re-raised as `ValueError("Unrestricted expression uses an
+    /// undefined name: ...")`. Every other error, and a `NameError` without
+    /// `raise_undefined` (the enum-expression fallback), leaves `target` as it
+    /// was: None if never assigned. See `_unrestricted_eval` in
+    /// `transformer/object_transformer.py`.
     ///
     /// # Errors
-    /// Only the undefined-name case above. It is an [`ExprError::Eval`].
-    pub fn eval_with(
+    /// The undefined-name case above ([`ExprError::Eval`]); a block that
+    /// deletes `target` (`aeval.symtable["target"]` is a `KeyError`) or exceeds
+    /// the step limit ([`ExprError::Uncaught`]).
+    pub fn eval_vars(&self, vars: &Bindings, raise_undefined: bool) -> ExprResult<Value> {
+        let slot_values = match vars.get("__slot_values") {
+            Some(Value::Map(m)) => Some(m),
+            _ => None,
+        };
+        let src = asteval::build_src(vars.iter(), self.0.src_attrs.as_deref());
+        self.run(src, slot_values, raise_undefined)
+    }
+
+    /// As [`Program::eval_vars`] with the source object given as a value (the
+    /// enum-expression fallback, where `src` is whatever the source is).
+    pub fn eval_src(
         &self,
-        src: Value,
-        slot_values: Option<Value>,
+        src: &Value,
+        slot_values: Option<&Value>,
         raise_undefined: bool,
     ) -> ExprResult<Value> {
-        let mut env = Bindings::new();
-        // Pre-seed `target` to None, exactly like the asteval usersyms.
-        env.insert("target".to_string(), Value::Null);
-        env.insert("src".to_string(), src);
-        if let Some(slots) = slot_values {
-            env.insert("__slot_values".to_string(), slots);
-        }
-        let outcome = with_object_attr_mode(|| exec_block(&self.stmts, &mut env));
-        match outcome {
-            Ok(()) => {}
-            Err(Failure {
-                err: ExprError::Undefined { name, .. },
-                span,
-            }) if raise_undefined => {
-                return Err(ExprError::Eval(format!(
-                    "Unrestricted expression uses an undefined name: {}. \
-                     Statements read slots as src.<slot>.",
-                    self.undefined_name_detail(&name, span)
-                )));
+        let slots = match slot_values {
+            Some(Value::Map(m)) => Some(m),
+            _ => None,
+        };
+        // The enum path hands `src` over as the plain source object (a dict).
+        self.run(asteval::src_from_value(src), slots, raise_undefined)
+    }
+
+    fn run(
+        &self,
+        src: asteval::PySrc,
+        slot_values: Option<&indexmap::IndexMap<String, Value>>,
+        raise_undefined: bool,
+    ) -> ExprResult<Value> {
+        let Ok(parsed) = &self.0.compiled else {
+            // asteval swallows the SyntaxError: `target` stays None.
+            return Ok(Value::Null);
+        };
+        match asteval::execute(parsed, &self.0.text, src, slot_values, raise_undefined) {
+            Ok(v) => Ok(v),
+            Err(asteval::ExecError::Undefined { name, message }) => {
+                let _ = name;
+                Err(ExprError::Eval(message))
             }
-            // asteval records the error and stops; `target` keeps its value.
-            Err(_) => {}
+            Err(asteval::ExecError::Uncaught(m)) => Err(ExprError::Uncaught(m)),
         }
-        Ok(env.get("target").cloned().unwrap_or(Value::Null))
     }
 
     /// Evaluate the program the way upstream's restricted evaluator does.
@@ -185,169 +248,72 @@ impl Program {
     /// warning for the rest). An assignment evaluates its right-hand side and
     /// returns that value, ignoring the target (`_eval_assign`, with an
     /// `AssignmentAttempted` warning), so `x = {age} * 2\ntarget = x + 1`
-    /// yields `age * 2`. A statement the evaluator has no handler for, such as
-    /// `if`, is `FeatureNotAvailable`, an `InvalidExpression`.
+    /// yields `age * 2`; an augmented assignment likewise (`_eval_aug_assign`).
+    /// A statement the evaluator has no handler for, such as `if`, is
+    /// `FeatureNotAvailable`, an `InvalidExpression`; so is `import`. A text
+    /// that does not parse raises its `SyntaxError`.
     pub(super) fn eval_first_statement(&self, vars: &Bindings) -> ExprResult<Value> {
-        match self.stmts.first() {
-            Some(Stmt::Assign { value, .. }) | Some(Stmt::Expr(value, _)) => {
-                eval_ast_public(value, vars)
-            }
-            Some(Stmt::If { .. }) => Err(ExprError::Eval(
-                "Sorry, If is not available in this evaluator".into(),
-            )),
-            // `parse_single_or_program` never yields an empty program.
-            None => Err(ExprError::Eval(
+        match &self.0.first {
+            First::Value(ast) => eval_ast_public(ast, vars),
+            First::Unavailable(kind) => Err(ExprError::Eval(format!(
+                "Sorry, {kind} is not available in this evaluator"
+            ))),
+            First::Empty => Err(ExprError::Eval(
                 "Sorry, cannot evaluate empty string".into(),
             )),
+            First::Syntax(e) => Err(e.clone()),
         }
-    }
-
-    /// The text asteval's `ExceptionHolder.get_error()` gives for a `NameError`:
-    /// the source line, a caret line when the name is not in column 0, then
-    /// `NameError: name '<name>' is not defined`.
-    ///
-    /// The column is found by scanning the failing statement's lines for the
-    /// first use of `name` (this crate's AST carries no positions).
-    fn undefined_name_detail(&self, name: &str, span: Span) -> String {
-        let located = (span.first..=span.last).find_map(|idx| {
-            let line = self.lines.get(idx)?;
-            Some((idx, find_name_column(line, name)?))
-        });
-        let (idx, col) = located.unwrap_or((span.first, 0));
-        let mut out = String::new();
-        if let Some(line) = self.lines.get(idx) {
-            out.push_str(line);
-            out.push('\n');
-        }
-        if col > 0 {
-            out.push_str(&" ".repeat(col));
-            out.push_str("^^^^\n");
-        }
-        out.push_str(&format!("NameError: name '{name}' is not defined"));
-        out
     }
 }
 
-/// Byte offset of the first use of `name` as a variable (not an attribute, not
-/// inside a string or comment) in `line`: Python's `col_offset` for that
-/// `ast.Name` node.
-fn find_name_column(line: &str, name: &str) -> Option<usize> {
-    let mut in_str: Option<char> = None;
-    let mut escaped = false;
-    let mut prev_significant: Option<char> = None;
-    let mut chars = line.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if let Some(q) = in_str {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == q {
-                in_str = None;
-            }
-            continue;
+fn assigned_names(module: &asteval::ast::Module) -> Vec<String> {
+    use asteval::ast::{Expr, Stmt};
+    fn target(e: &Expr, out: &mut Vec<String>) {
+        match e {
+            Expr::Name(n, _) => out.push(n.clone()),
+            Expr::Tuple(v) | Expr::List(v) => v.iter().for_each(|x| target(x, out)),
+            Expr::Starred(inner) => target(inner, out),
+            _ => {}
         }
-        match c {
-            '#' => return None,
-            '\'' | '"' => {
-                in_str = Some(c);
-                prev_significant = Some(c);
-            }
-            c if c.is_alphabetic() || c == '_' => {
-                let mut end = i + c.len_utf8();
-                while let Some(&(j, d)) = chars.peek() {
-                    if d.is_alphanumeric() || d == '_' {
-                        end = j + d.len_utf8();
-                        chars.next();
-                    } else {
-                        break;
+    }
+    fn stmts(body: &[Stmt], out: &mut Vec<String>) {
+        for s in body {
+            match s {
+                Stmt::Assign(ts, _) => ts.iter().for_each(|t| target(t, out)),
+                Stmt::AugAssign(t, _, _) => target(t, out),
+                Stmt::For(t, _, b, o) => {
+                    target(t, out);
+                    stmts(b, out);
+                    stmts(o, out);
+                }
+                Stmt::With(items, b) => {
+                    for it in items {
+                        if let Some(v) = &it.optional_vars {
+                            target(v, out);
+                        }
                     }
+                    stmts(b, out);
                 }
-                if &line[i..end] == name && prev_significant != Some('.') {
-                    return Some(i);
+                Stmt::If(_, b, o) | Stmt::While(_, b, o) => {
+                    stmts(b, out);
+                    stmts(o, out);
                 }
-                prev_significant = Some('a');
-            }
-            c if c.is_whitespace() => {}
-            c if c.is_ascii_digit() => {
-                // Swallow a numeric literal so `1e5` does not read as a name.
-                while let Some(&(_, d)) = chars.peek() {
-                    if d.is_alphanumeric() || d == '_' || d == '.' {
-                        chars.next();
-                    } else {
-                        break;
+                Stmt::Try(b, hs, o, f) => {
+                    stmts(b, out);
+                    for h in hs {
+                        stmts(&h.body, out);
                     }
+                    stmts(o, out);
+                    stmts(f, out);
                 }
-                prev_significant = Some('0');
+                Stmt::FunctionDef(def) => stmts(&def.body, out),
+                _ => {}
             }
-            other => prev_significant = Some(other),
         }
     }
-    None
-}
-
-/// The source object a block sees as `src` when the caller binds none: every
-/// binding except the engine's own `NULL` and `__slot_values` entries.
-pub(super) fn source_object(vars: &Bindings) -> Value {
-    Value::Map(
-        vars.iter()
-            .filter(|(k, _)| !matches!(k.as_str(), "NULL" | "__slot_values"))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    )
-}
-
-fn collect_assigned_names(stmts: &[Stmt], out: &mut Vec<String>) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Assign { name, .. } => out.push(name.clone()),
-            Stmt::If { body, .. } => collect_assigned_names(body, out),
-            Stmt::Expr(..) => {}
-        }
-    }
-}
-
-fn collect_stmt_exprs<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Ast>) {
-    for stmt in stmts {
-        match stmt {
-            Stmt::Assign { value, .. } => out.push(value),
-            Stmt::If { cond, body, .. } => {
-                out.push(cond);
-                collect_stmt_exprs(body, out);
-            }
-            Stmt::Expr(ast, _) => out.push(ast),
-        }
-    }
-}
-
-fn exec_block(stmts: &[Stmt], env: &mut Bindings) -> Result<(), Failure> {
-    for stmt in stmts {
-        exec_stmt(stmt, env)?;
-    }
-    Ok(())
-}
-
-fn exec_stmt(stmt: &Stmt, env: &mut Bindings) -> Result<(), Failure> {
-    match stmt {
-        Stmt::Assign { name, value, span } => {
-            let v = eval_ast_public(value, env).map_err(|err| Failure { err, span: *span })?;
-            env.insert(name.clone(), v);
-            Ok(())
-        }
-        Stmt::If { cond, body, span } => {
-            let c = eval_ast_public(cond, env).map_err(|err| Failure { err, span: *span })?;
-            if c.is_truthy() {
-                exec_block(body, env)?;
-            }
-            Ok(())
-        }
-        Stmt::Expr(ast, span) => {
-            // Evaluate for side effects (there are none in this language); a
-            // failure still stops the block, as it does in asteval.
-            eval_ast_public(ast, env).map_err(|err| Failure { err, span: *span })?;
-            Ok(())
-        }
-    }
+    let mut out = Vec::new();
+    stmts(&module.body, &mut out);
+    out
 }
 
 // === parser ===============================================================
@@ -387,27 +353,17 @@ fn parse_single_expression(expr: &str) -> ExprResult<Ast> {
     }
 }
 
+
 /// Parse `expr` as one expression when it is one, else as a statement block.
 ///
-/// # Errors
-/// A parse error. PARITY: asteval would record a `SyntaxError` and the row
-/// would yield None; failing at plan-build time instead is deliberate. The
-/// error reported is the single expression's unless the text looks like
-/// statements (several logical lines, an assignment, a `;` or an `if`).
+/// A block never fails to parse here: `asteval` swallows a `SyntaxError`
+/// (`unrestricted_eval` then yields None) and the restricted evaluator raises
+/// it when the block is evaluated, as upstream does, so a text that is not
+/// Python is a [`Program`] that remembers its error.
 pub(crate) fn parse_single_or_program(expr: &str) -> ExprResult<SingleOrProgram> {
-    let single_err = match parse_single_expression(expr) {
-        Ok(ast) => return Ok(SingleOrProgram::Single(ast)),
-        Err(e) => e,
-    };
-    match parse_program(expr) {
-        Ok(program) => Ok(SingleOrProgram::Program(program)),
-        Err(program_err) => {
-            if looks_like_statements(expr) {
-                Err(program_err)
-            } else {
-                Err(single_err)
-            }
-        }
+    match parse_single_expression(expr) {
+        Ok(ast) => Ok(SingleOrProgram::Single(ast)),
+        Err(single_err) => Ok(SingleOrProgram::Program(Program::new(expr, single_err))),
     }
 }
 
@@ -428,33 +384,21 @@ fn looks_like_statements(src: &str) -> bool {
 
 /// Parse a multi-statement program from `src`.
 ///
-/// Indentation-aware (Python-style): an `if cond:` line owns the following
-/// lines that are indented deeper than it. A trailing single statement on the
-/// same line as the colon is also supported (`if x: target = y`). A statement
-/// may continue over several physical lines inside brackets or after a
-/// trailing backslash, and `#` comments are ignored.
+/// # Errors
+/// A syntax error.
 pub fn parse_program(src: &str) -> ExprResult<Program> {
-    let lines = logical_lines(src);
-    let mut pos = 0usize;
-    let stmts = parse_stmts(&lines, &mut pos, None, 0)?;
-    Ok(Program {
-        stmts,
-        lines: src.split('\n').map(str::to_string).collect(),
-    })
+    let program = Program::new(src, ExprError::Parse("invalid syntax".into()));
+    match program.syntax_error() {
+        Some(e) => Err(e.clone()),
+        None => Ok(program),
+    }
 }
 
-/// How many blocks may be nested. CPython's tokenizer (`MAXINDENT` in
-/// `tokenizer.c`) raises `IndentationError: too many levels of indentation` for
-/// the hundredth indented level, so 99 nest and the 100th does not. Stopping
-/// here also bounds the recursion of the statement parser and interpreter.
-const MAX_INDENT_LEVELS: usize = 100;
-
-/// A logical line with its indentation depth (in columns; tabs = 1 each) and
-/// trimmed content. Blank lines are dropped.
-struct Line {
-    indent: usize,
-    text: String,
-    span: Span,
+/// A run of physical lines (zero-based, inclusive) that one logical line spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Span {
+    first: usize,
+    last: usize,
 }
 
 /// A logical line before `;` splitting: physical lines joined across brackets
@@ -556,27 +500,6 @@ fn scan_code(line: &str, depth: &mut i32) -> (String, bool) {
     (out, false)
 }
 
-fn logical_lines(src: &str) -> Vec<Line> {
-    let mut out = Vec::new();
-    for raw in raw_lines(src) {
-        // Inline `;` separation: subsequent segments inherit the same indent
-        // (siblings at the same level). None of the conformance specs use `;`,
-        // but Python allows it.
-        for seg in split_semicolons(&raw.text) {
-            let seg = seg.trim();
-            if seg.is_empty() {
-                continue;
-            }
-            out.push(Line {
-                indent: raw.indent,
-                text: seg.to_string(),
-                span: raw.span,
-            });
-        }
-    }
-    out
-}
-
 /// Split a line on top-level `;` (not inside strings/brackets).
 fn split_semicolons(s: &str) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();
@@ -627,89 +550,6 @@ fn split_semicolons(s: &str) -> Vec<String> {
     out
 }
 
-/// Parse statements at the current indentation level. `min_indent` is `None` at
-/// top level (everything), or `Some(d)` to consume only lines indented `>= d`
-/// that belong to the current block; parsing stops when a line dedents below
-/// the block's base indent.
-fn parse_stmts(
-    lines: &[Line],
-    pos: &mut usize,
-    block_indent: Option<usize>,
-    depth: usize,
-) -> ExprResult<Vec<Stmt>> {
-    let mut stmts = Vec::new();
-    let base = block_indent.unwrap_or(0);
-    while *pos < lines.len() {
-        // A nested block ends as soon as a line dedents below its base indent.
-        if block_indent.is_some() && lines[*pos].indent < base {
-            break;
-        }
-        let stmt = parse_one_stmt(lines, pos, depth)?;
-        stmts.push(stmt);
-    }
-    Ok(stmts)
-}
-
-fn parse_one_stmt(lines: &[Line], pos: &mut usize, depth: usize) -> ExprResult<Stmt> {
-    let line_indent = lines[*pos].indent;
-    let text = lines[*pos].text.clone();
-    let span = lines[*pos].span;
-    *pos += 1;
-
-    // `if <cond>:` — optionally with a trailing statement on the same line.
-    if let Some(rest) = strip_if_header(&text) {
-        let (cond_src, trailer) = split_if_colon(rest)?;
-        let cond = parse(cond_src.trim())?;
-        let trailer = trailer.trim();
-        if !trailer.is_empty() {
-            // Single-line body: `if cond: stmt`
-            let body_stmt = parse_simple_stmt(trailer, span)?;
-            return Ok(Stmt::If {
-                cond,
-                body: vec![body_stmt],
-                span,
-            });
-        }
-        // Indented block body: gather deeper-indented following lines.
-        if *pos < lines.len() && lines[*pos].indent > line_indent {
-            if depth + 1 >= MAX_INDENT_LEVELS {
-                return Err(ExprError::Parse("too many levels of indentation".into()));
-            }
-            let body_indent = lines[*pos].indent;
-            let body = parse_stmts(lines, pos, Some(body_indent), depth + 1)?;
-            return Ok(Stmt::If { cond, body, span });
-        }
-        // `if` with empty body — degrade to a no-op guard.
-        return Ok(Stmt::If {
-            cond,
-            body: vec![],
-            span,
-        });
-    }
-
-    parse_simple_stmt(&text, span)
-}
-
-/// Parse a non-compound statement: assignment or expression.
-fn parse_simple_stmt(text: &str, span: Span) -> ExprResult<Stmt> {
-    if let Some((lhs, rhs)) = split_assignment(text) {
-        let name = lhs.trim();
-        if !is_identifier(name) {
-            return Err(ExprError::Parse(format!(
-                "invalid assignment target: {name:?}"
-            )));
-        }
-        let value = parse(rhs.trim())?;
-        return Ok(Stmt::Assign {
-            name: name.to_string(),
-            value,
-            span,
-        });
-    }
-    let ast = parse(text.trim())?;
-    Ok(Stmt::Expr(ast, span))
-}
-
 /// If `text` begins an `if` statement, return the part after `if`.
 fn strip_if_header(text: &str) -> Option<&str> {
     let t = text.trim_start();
@@ -721,52 +561,6 @@ fn strip_if_header(text: &str) -> Option<&str> {
         return Some(&t[2..]);
     }
     None
-}
-
-/// Split `cond:` (or `cond: trailing`) at the top-level colon. Returns
-/// `(cond_src, trailer)`.
-fn split_if_colon(rest: &str) -> ExprResult<(&str, &str)> {
-    let chars: Vec<char> = rest.chars().collect();
-    let n = chars.len();
-    let mut depth = 0i32;
-    let mut in_str: Option<char> = None;
-    let mut i = 0;
-    let mut byte_idx = 0usize;
-    // Track byte index alongside char index for slicing.
-    let mut char_byte_positions = Vec::with_capacity(n + 1);
-    for (b, _) in rest.char_indices() {
-        char_byte_positions.push(b);
-    }
-    char_byte_positions.push(rest.len());
-    while i < n {
-        let c = chars[i];
-        byte_idx = char_byte_positions[i];
-        if let Some(q) = in_str {
-            if c == '\\' {
-                i += 2;
-                continue;
-            }
-            if c == q {
-                in_str = None;
-            }
-            i += 1;
-            continue;
-        }
-        match c {
-            '\'' | '"' => in_str = Some(c),
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ':' if depth == 0 => {
-                let cond = &rest[..byte_idx];
-                let trailer = &rest[char_byte_positions[i + 1]..];
-                return Ok((cond, trailer));
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    let _ = byte_idx;
-    Err(ExprError::Parse("expected ':' after if condition".into()))
 }
 
 /// Split `name = expr` at the top-level single `=`, skipping `==`/`!=`/`<=`/`>=`
@@ -816,14 +610,6 @@ fn split_assignment(text: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn is_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_alphanumeric() || c == '_')
-}
 
 #[cfg(test)]
 mod tests {
@@ -877,26 +663,22 @@ mod tests {
     }
 
     #[test]
-    fn malformed_single_line_reports_the_expression_error() {
+    fn syntax_errors_become_programs_that_remember_the_error() {
+        // asteval swallows the SyntaxError; the restricted evaluator raises it.
+        let Ok(SingleOrProgram::Program(p)) = parse_single_or_program("x = \ntarget = 1") else {
+            panic!("expected a program");
+        };
+        assert!(matches!(p.syntax_error(), Some(ExprError::Parse(_))));
+        assert_eq!(p.eval(&Bindings::new()).unwrap(), Value::Null);
+        assert!(matches!(
+            p.eval_first_statement(&Bindings::new()),
+            Err(ExprError::Parse(_))
+        ));
         // Not statements: the error is the expression parser's, as before.
-        let err = parse_single_or_program("{1 + }").err().expect("error");
-        assert_eq!(Some(err), parse_single_expression("{1 + }").err());
-        // Statements with a bad part: the program parser's error.
-        let err = parse_single_or_program("x = \ntarget = 1")
-            .err()
-            .expect("error");
-        assert!(matches!(err, ExprError::Parse(_)), "{err:?}");
-    }
-
-    #[test]
-    fn find_name_column_matches_python_col_offset() {
-        assert_eq!(find_name_column("target = age * 2", "age"), Some(9));
-        assert_eq!(find_name_column("    x = {age} * 2", "age"), Some(9));
-        // Not an attribute, string, or comment.
-        assert_eq!(find_name_column("x = src.age", "age"), None);
-        assert_eq!(find_name_column("x = 'age'", "age"), None);
-        assert_eq!(find_name_column("x = 1  # age", "age"), None);
-        assert_eq!(find_name_column("x = ages + age", "age"), Some(11));
+        let Ok(SingleOrProgram::Program(p)) = parse_single_or_program("{1 + }") else {
+            panic!("expected a program");
+        };
+        assert_eq!(p.syntax_error(), parse_single_expression("{1 + }").err().as_ref());
     }
 
     #[test]

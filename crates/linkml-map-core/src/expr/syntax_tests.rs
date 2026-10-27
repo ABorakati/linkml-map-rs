@@ -1478,10 +1478,9 @@ fn unrestricted_expressions_match_asteval() {
             continue;
         }
         // A statement block: asteval records an evaluation error and leaves
-        // `target` as None, where a syntax error fails up front.
+        // `target` as None; it swallows a syntax error the same way.
         let got = eval_unrestricted(&format!("target = {expr}"), json!({}));
         let (kind, payload) = match (kind, payload) {
-            ("err", p) if p.contains("SyntaxError") => ("err", p),
             ("err", _) => ("ok", "null"),
             other => other,
         };

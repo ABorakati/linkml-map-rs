@@ -8,7 +8,7 @@ use thiserror::Error;
 /// [`crate::value::Value::Null`] (SQL-style). These errors correspond to the
 /// Python paths that raise `ValueError`/`TypeError`/`NameError`/
 /// `InvalidExpression`.
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Clone, Error, PartialEq)]
 pub enum ExprError {
     /// Lexing failed (unexpected character, unterminated string, ...).
     #[error("lex error: {0}")]

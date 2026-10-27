@@ -3,6 +3,7 @@
 //! Native Rust port of `linkml_map.utils.eval_utils`. See [`eval`] for the
 //! evaluator semantics and the module-level tests for the ported doctests.
 
+mod asteval;
 mod builtins;
 #[cfg(test)]
 mod builtins_tests;
@@ -352,8 +353,15 @@ mod tests {
 
     #[test]
     fn parse_expr_propagates_parse_errors() {
-        // A syntactically invalid expr must error at parse time.
-        assert!(parse_expr("{1 + }").is_err());
+        // A syntactically invalid expr is not an error until it is evaluated:
+        // upstream parses lazily, the restricted evaluator raises the
+        // `SyntaxError`, and asteval swallows it.
+        let parsed = parse_expr("{1 + }").unwrap();
+        assert!(matches!(
+            parsed.eval(&Bindings::new()),
+            Err(super::ExprError::Parse(_))
+        ));
+        assert!(super::expression_asts("{1 + }").is_err());
         // `{1 + 2}` is a valid set display: Python parses it, and only the
         // restricted evaluator rejects it, at evaluation time.
         assert!(parse_expr("{1 + 2}").is_ok());

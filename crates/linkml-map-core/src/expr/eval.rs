@@ -337,7 +337,12 @@ pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
     }
     Ok(match parse_single_or_program(expr)? {
         SingleOrProgram::Single(ast) => vec![ast],
-        SingleOrProgram::Program(program) => program.exprs().into_iter().cloned().collect(),
+        SingleOrProgram::Program(program) => {
+            if let Some(err) = program.syntax_error() {
+                return Err(err.clone());
+            }
+            program.exprs().into_iter().cloned().collect()
+        }
     })
 }
 
