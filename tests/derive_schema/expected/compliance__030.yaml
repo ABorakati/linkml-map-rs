@@ -1,0 +1,13 @@
+name: types-derived
+id: https://example.org/types-derived
+default_prefix: https://example.org/types-derived/
+default_range: string
+classes:
+  C:
+    name: C
+    attributes:
+      height_in_cm:
+        name: height_in_cm
+        range: float
+        unit:
+          ucum_code: cm

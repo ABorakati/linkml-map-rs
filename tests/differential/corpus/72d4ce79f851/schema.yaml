@@ -1,0 +1,27 @@
+name: s
+id: https://example.org/s
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/s/
+default_range: string
+classes:
+  Row:
+    name: Row
+    from_schema: https://example.org/s
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/s
+        identifier: true
+        domain_of:
+        - Row
+      label:
+        name: label
+        from_schema: https://example.org/s
+        domain_of:
+        - Row
+source_file: /tmp/pytest-of-root/pytest-13/test_parent_only_derivation_ha0/schema.yaml

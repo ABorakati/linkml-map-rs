@@ -1,0 +1,8 @@
+id: test
+class_derivations:
+- name: MyClass
+  populated_from: MyClass
+  slot_derivations:
+    my_att:
+      name: my_att
+      populated_from: my_att

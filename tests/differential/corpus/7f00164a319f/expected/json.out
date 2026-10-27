@@ -1,0 +1,23 @@
+[
+{
+  "id": "p1",
+  "out_e": "p1",
+  "score": "1e-07",
+  "out_c": "t_a",
+  "out_f": "t_a"
+},
+{
+  "id": "p2",
+  "out_e": "p2",
+  "score": "-0.0",
+  "out_c": "t_a",
+  "out_f": "t_a"
+},
+{
+  "id": "p3",
+  "out_e": "p3",
+  "score": "3.14",
+  "out_c": "t_a",
+  "out_f": "t_a"
+}
+]

@@ -1,0 +1,1 @@
+{a: len(b) for a, b in dict(a=[1], b=[2, 3])}

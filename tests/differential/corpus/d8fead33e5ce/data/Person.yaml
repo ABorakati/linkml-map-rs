@@ -1,0 +1,9 @@
+- id: p1
+  ratio2: inf
+- id: p2
+  ratio: -2.5
+- id: p3
+  ratio: '1.'
+- id: p4
+  ratio: 2.5e-05
+  ratio2: 1.0e+20

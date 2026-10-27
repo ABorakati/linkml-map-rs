@@ -1,0 +1,2 @@
+id,associated_participant,associated_visit,observation_type,method_type,tags,steps
+96f96229-639e-5a18-8d90-0c8967c3671a,P1,V1,OBA:VT0000184,lipid assay,['fasting', 'exam 1'],['draw', 'spin']

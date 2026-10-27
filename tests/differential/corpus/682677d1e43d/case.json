@@ -1,0 +1,18 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/Light-001.yaml",
+  "source_type": "Light",
+  "target_schema": "target.yaml",
+  "flags": [
+    "--unrestricted-eval",
+    "--strict"
+  ],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

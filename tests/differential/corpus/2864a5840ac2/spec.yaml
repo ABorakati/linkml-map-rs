@@ -1,0 +1,20 @@
+id: https://example.org/spec
+title: fuzz spec
+class_defaults:
+  Agent:
+    mint_ids: false
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      out_c:
+        populated_from: id
+      out_b:
+        populated_from: id
+      out_a:
+        populated_from: id
+      out_a1:
+        populated_from: id
+        missing_values:
+        - -9
+        - '99'

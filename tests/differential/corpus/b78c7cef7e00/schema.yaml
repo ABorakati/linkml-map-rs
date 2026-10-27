@@ -1,0 +1,73 @@
+name: lights-source
+id: https://example.org/lights-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/lights-source/
+enums:
+  PrimaryColors:
+    name: PrimaryColors
+    permissible_values:
+      light_red:
+        text: light_red
+      dark_red:
+        text: dark_red
+      light_green:
+        text: light_green
+      dark_green:
+        text: dark_green
+      light_blue:
+        text: light_blue
+      dark_blue:
+        text: dark_blue
+  SecondaryColors:
+    name: SecondaryColors
+    permissible_values:
+      light_cyan:
+        text: light_cyan
+      dark_cyan:
+        text: dark_cyan
+      light_magenta:
+        text: light_magenta
+      dark_magenta:
+        text: dark_magenta
+  Missingness:
+    name: Missingness
+    permissible_values:
+      not_available:
+        text: not_available
+      other:
+        text: other
+classes:
+  Light:
+    name: Light
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      color:
+        name: color
+        any_of:
+        - range: PrimaryColors
+        - range: SecondaryColors
+        - range: Missingness
+      colors:
+        name: colors
+        multivalued: true
+        any_of:
+        - range: PrimaryColors
+        - range: SecondaryColors
+        - range: Missingness
+  Container:
+    name: Container
+    attributes:
+      lights:
+        name: lights
+        range: Light
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true

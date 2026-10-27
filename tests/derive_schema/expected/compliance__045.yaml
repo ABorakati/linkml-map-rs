@@ -1,0 +1,17 @@
+name: types-derived
+id: https://example.org/types-derived
+default_prefix: https://example.org/types-derived/
+default_range: string
+classes:
+  R:
+    name: R
+    attributes:
+      s1_id:
+        name: s1_id
+      s1_name:
+        name: s1_name
+      s2_id:
+        name: s2_id
+      s2_name:
+        name: s2_name
+    tree_root: true

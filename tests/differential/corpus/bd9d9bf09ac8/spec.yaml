@@ -1,0 +1,21 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      out_e:
+        populated_from: status2
+  Record:
+    populated_from: Order
+    slot_derivations:
+      out_e:
+        populated_from: note
+enum_derivations:
+  TStatus:
+    populated_from: Status
+    permissible_value_derivations:
+      t_a:
+        populated_from:
+        - Ünï

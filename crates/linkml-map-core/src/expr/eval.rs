@@ -429,6 +429,19 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                     message,
                 });
             }
+            // A bound root name (`x.attr`, or `{x}.attr` outside a statement
+            // block, where `{x}` is just `x`) is read in place: `resolve_name`
+            // would clone the whole bound value (a nested record, say) to read
+            // one attribute.
+            let root_ast = match value.as_ref() {
+                Ast::Brace(inner) if !object_attr_mode_enabled() => inner.as_ref(),
+                other => other,
+            };
+            if let Ast::Name(root) = root_ast
+                && let Some(bound) = vars.get(root.as_str())
+            {
+                return distributed_getattr(bound, attr);
+            }
             let obj = eval_ast(value, vars)?;
             distributed_getattr(&obj, attr)
         }
@@ -689,6 +702,7 @@ pub(super) fn type_name(v: &Value) -> &'static str {
         Value::Int(_) => "int",
         Value::Float(_) => "float",
         Value::Decimal(_) => "Decimal",
+        Value::Temporal(t) => t.type_name(),
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",
@@ -1296,6 +1310,7 @@ pub(crate) fn py_str(v: &Value) -> String {
         Value::Int(i) => i.to_string(),
         Value::Float(f) => format_py_float(*f),
         Value::Decimal(d) => d.to_sci_string(),
+        Value::Temporal(t) => t.to_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let parts: Vec<String> = items.iter().map(py_repr).collect();
@@ -1315,6 +1330,7 @@ pub(crate) fn py_repr(v: &Value) -> String {
     match v {
         Value::Str(s) => crate::pyfmt::py_repr_str(s),
         Value::Decimal(d) => format!("Decimal('{}')", d.to_sci_string()),
+        Value::Temporal(t) => t.repr(),
         other => py_str(other),
     }
 }

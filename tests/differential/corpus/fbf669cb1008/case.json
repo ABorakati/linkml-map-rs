@@ -1,0 +1,17 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/Person-001.yaml",
+  "source_type": "Person",
+  "target_schema": "target.yaml",
+  "flags": [
+    "--strict"
+  ],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

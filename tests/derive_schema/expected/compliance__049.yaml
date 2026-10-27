@@ -1,0 +1,21 @@
+name: enums-derived
+id: https://example.org/enums-derived
+default_prefix: https://example.org/enums-derived/
+default_range: string
+enums:
+  E:
+    name: E
+    permissible_values:
+      A:
+        text: A
+      B:
+        text: B
+      C:
+        text: C
+classes:
+  C:
+    name: C
+    attributes:
+      s1:
+        name: s1
+        range: E

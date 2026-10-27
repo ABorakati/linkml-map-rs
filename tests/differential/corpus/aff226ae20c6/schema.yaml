@@ -1,0 +1,90 @@
+name: lights-source
+id: https://example.org/lights-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/lights-source/
+enums:
+  PrimaryColors:
+    name: PrimaryColors
+    from_schema: https://example.org/lights-source
+    permissible_values:
+      light_red:
+        text: light_red
+      dark_red:
+        text: dark_red
+      light_green:
+        text: light_green
+      dark_green:
+        text: dark_green
+      light_blue:
+        text: light_blue
+      dark_blue:
+        text: dark_blue
+  SecondaryColors:
+    name: SecondaryColors
+    from_schema: https://example.org/lights-source
+    permissible_values:
+      light_cyan:
+        text: light_cyan
+      dark_cyan:
+        text: dark_cyan
+      light_magenta:
+        text: light_magenta
+      dark_magenta:
+        text: dark_magenta
+  Missingness:
+    name: Missingness
+    from_schema: https://example.org/lights-source
+    permissible_values:
+      not_available:
+        text: not_available
+      other:
+        text: other
+classes:
+  Light:
+    name: Light
+    from_schema: https://example.org/lights-source
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/lights-source
+        identifier: true
+        domain_of:
+        - Light
+        range: string
+      color:
+        name: color
+        from_schema: https://example.org/lights-source
+        domain_of:
+        - Light
+        any_of:
+        - range: PrimaryColors
+        - range: SecondaryColors
+        - range: Missingness
+      colors:
+        name: colors
+        from_schema: https://example.org/lights-source
+        domain_of:
+        - Light
+        multivalued: true
+        any_of:
+        - range: PrimaryColors
+        - range: SecondaryColors
+        - range: Missingness
+  Container:
+    name: Container
+    from_schema: https://example.org/lights-source
+    attributes:
+      lights:
+        name: lights
+        from_schema: https://example.org/lights-source
+        domain_of:
+        - Container
+        range: Light
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true

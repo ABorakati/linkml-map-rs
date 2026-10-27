@@ -1,0 +1,15 @@
+class_derivations:
+  C:
+    slot_derivations:
+      s1:
+        populated_from: s1
+enum_derivations:
+  E:
+    populated_from: E
+    mirror_source: false
+    permissible_value_derivations:
+      B:
+        populated_from:
+        - A
+        - C
+id: https://example.org/spec

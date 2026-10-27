@@ -1,0 +1,31 @@
+name: isomorphic-derived
+id: https://example.org/isomorphic-derived
+default_prefix: https://example.org/isomorphic-derived/
+default_range: string
+classes:
+  Container:
+    name: Container
+    attributes:
+      c_list:
+        name: c_list
+        range: C
+        multivalued: true
+      d:
+        name: d
+        range: D
+    tree_root: true
+  C:
+    name: C
+    attributes:
+      s1:
+        name: s1
+        range: string
+      s2:
+        name: s2
+        range: string
+  D:
+    name: D
+    attributes:
+      s3:
+        name: s3
+        range: string

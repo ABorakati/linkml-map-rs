@@ -1,0 +1,40 @@
+name: greetings-derived
+id: greetings-derived
+imports:
+- linkml:types
+default_prefix: greetings-derived/
+default_range: string
+enums:
+  languages:
+    name: languages
+    permissible_values:
+      bonjour:
+        text: bonjour
+      ciao:
+        text: ciao
+      hello:
+        text: hello
+      hola:
+        text: hola
+      konnichiwa:
+        text: konnichiwa
+      namaste:
+        text: namaste
+classes:
+  my_languages:
+    name: my_languages
+    attributes:
+      language:
+        name: language
+        range: greetings
+        multivalued: true
+        inlined_as_list: true
+  Container:
+    name: Container
+    attributes:
+      my_languages:
+        name: my_languages
+        range: my_greetings
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true

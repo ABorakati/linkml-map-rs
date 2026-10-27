@@ -1,0 +1,9 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Person:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      out_f:
+        populated_from: born

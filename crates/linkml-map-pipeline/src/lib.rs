@@ -39,15 +39,16 @@ use futures::StreamExt;
 use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::{
-        CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer, TargetCoercions,
+        CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer,
+        ResolvedDerivations, TargetCoercions,
     },
     normalize::constant_blocks::{Block, classify_blocks},
     schema::{RangeKind, SchemaProvider},
     value::Value,
 };
 use linkml_map_io::{
-    Format, NumericColumnHints, NumericColumnKind, WriteOptions, validate_additional_outputs,
-    write_all_with, write_all_writer_with,
+    Format, NumericColumnHints, WriteOptions, validate_additional_outputs, write_all_with,
+    write_all_writer_with,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
@@ -191,6 +192,9 @@ pub struct CompiledPlan {
     /// warn-once state), resolved once and shared (by borrow) into every
     /// per-row engine. `None` without a target schema.
     target_coercions: Option<TargetCoercions>,
+    /// Class derivations resolved (and `is_a` / `mixins` merged) once per source
+    /// type, shared (by borrow) into every per-row engine.
+    resolved_derivations: ResolvedDerivations,
     /// Strict mode, applied to every per-row engine. See [`PipelineConfig::strict`].
     strict: bool,
     /// Unrestricted evaluation, applied to every per-row engine. See
@@ -240,6 +244,10 @@ impl CompiledPlan {
     /// Precompute CSV/TSV numeric column hints from the source schema already
     /// loaded into this plan. The loader reuses these hints across every row and
     /// never reopens or reparses the schema file.
+    ///
+    /// Mirrors `data_loaders._numeric_slots_for`: a slot is numeric when its
+    /// range is a type whose `typeof` ancestors include `integer`, `float`,
+    /// `double` or `decimal`.
     fn numeric_column_hints_for_class(&self, class_name: Option<&str>) -> NumericColumnHints {
         let Some(class_name) = class_name else {
             return NumericColumnHints::new();
@@ -250,14 +258,17 @@ impl CompiledPlan {
             .map(|slots| {
                 slots
                     .into_iter()
-                    .filter_map(|slot| match slot.range {
-                        RangeKind::Type(range) => {
-                            numeric_column_kind(&range).map(|kind| (slot.name, kind))
-                        }
+                    .filter(|slot| match &slot.range {
+                        RangeKind::Type(range) => self
+                            .source_provider
+                            .type_ancestors(range)
+                            .iter()
+                            .any(|ancestor| is_numeric_type_name(ancestor)),
                         // Enums and strings intentionally remain lexical, even
                         // where their concrete values happen to look numeric.
-                        RangeKind::Class(_) | RangeKind::Enum(_) | RangeKind::None => None,
+                        RangeKind::Class(_) | RangeKind::Enum(_) | RangeKind::None => false,
                     })
+                    .map(|slot| slot.name)
                     .collect()
             })
             // A class hint can be absent for a generic object mapping. Preserve
@@ -331,6 +342,10 @@ impl CompiledPlan {
             .as_deref()
             .map(|target| TargetCoercions::build(&spec, target));
 
+        // Resolve each source type's class derivation (with its `is_a` /
+        // `mixins` ancestors merged) ONCE, so the per-row engines only look it up.
+        let resolved_derivations = ResolvedDerivations::build(&spec);
+
         // Classify every block once, as upstream `transform_spec` does before it
         // streams anything: merge `is_a`/`mixins`, then tell constants-only
         // blocks (emitted once, reading no input) from row blocks.
@@ -366,6 +381,7 @@ impl CompiledPlan {
             target_provider,
             compiled_exprs,
             target_coercions,
+            resolved_derivations,
             strict: false,
             unrestricted_eval: false,
             source_class,
@@ -558,6 +574,7 @@ impl CompiledPlan {
             engine = engine.with_target_coercions(coercions);
         }
         engine = engine
+            .with_resolved_derivations(&self.resolved_derivations)
             .with_strict_exprs(self.strict)
             .with_unrestricted_eval(self.unrestricted_eval);
         if let Some(ids) = &self.content_ids {
@@ -1122,16 +1139,11 @@ fn py_str_list<'a>(items: impl Iterator<Item = &'a String>) -> String {
 // used to need an in-memory YAML fallback now load through the strict backend
 // directly.
 
-/// Return the scalar coercion appropriate for a built-in LinkML numeric range.
-/// Custom scalar types are intentionally left lexical: without the type's
-/// `typeof` chain, guessing would reintroduce the ZIP-code/enum coercion bug.
-fn numeric_column_kind(range: &str) -> Option<NumericColumnKind> {
-    match range.to_ascii_lowercase().as_str() {
-        "integer" | "nonnegativeinteger" | "positiveinteger" | "nonpositiveinteger"
-        | "negativeinteger" | "unsignedinteger" => Some(NumericColumnKind::Integer),
-        "float" | "double" | "decimal" => Some(NumericColumnKind::Float),
-        _ => None,
-    }
+/// `_NUMERIC_TYPE_NAMES` (`data_loaders.py`, `delimited_file_loader.py`). Custom
+/// scalar types are numeric only through their `typeof` chain, so a ZIP-code
+/// type derived from `string` stays lexical.
+fn is_numeric_type_name(name: &str) -> bool {
+    matches!(name, "integer" | "float" | "double" | "decimal")
 }
 
 /// Load a source/target schema through `SchemaViewProvider`, applying any
@@ -1147,8 +1159,19 @@ fn load_schema(path: &Path, patch: Option<&serde_json::Value>) -> Result<SchemaV
 pub fn load_transform_spec(path: &Path) -> Result<TransformationSpecification> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading spec {}", path.display()))?;
-    let mut obj: serde_json::Value =
-        serde_yaml_ng::from_str(&text).context("parsing transform YAML")?;
+    // `yaml.safe_load` (`transformer.py::load_transformer_specification`): YAML 1.1,
+    // so an unquoted `yes`, `017`, `1_000` or `2024-01-01` in a `value:` is not a string.
+    let mut obj = match linkml_map_io::yaml_load::safe_load_all(&text)
+        .with_context(|| format!("parsing transform YAML {}", path.display()))?
+        .as_slice()
+    {
+        [] => serde_json::Value::Null,
+        [doc] => serde_json::Value::from(doc),
+        _ => anyhow::bail!(
+            "parsing transform YAML {}: expected a single document in the stream",
+            path.display()
+        ),
+    };
     linkml_map_core::datamodel::normalise_spec_json(&mut obj);
     serde_json::from_value(obj).with_context(|| format!("parsing spec {}", path.display()))
 }

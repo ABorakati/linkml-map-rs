@@ -1,0 +1,70 @@
+name: rich-derived
+id: https://example.org/rich-derived
+imports:
+- linkml:types
+- ./rich_common
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/rich/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+default_prefix: https://example.org/rich-derived/
+default_range: string
+classes:
+  Combined:
+    name: Combined
+    annotations:
+      owner:
+        tag: owner
+        value: ex
+    description: A person
+    in_subset:
+    - basic
+    exact_mappings:
+    - schema:Person
+    attributes:
+      name:
+        name: name
+        annotations:
+          note:
+            tag: note
+            value: free text
+        description: The name
+        aliases:
+        - label
+        - title
+        exact_mappings:
+        - schema:name
+        slot_uri: schema:name
+        range: integer
+        required: true
+      salary:
+        name: salary
+        range: integer
+    class_uri: schema:Person
+    tree_root: true
+    unique_keys:
+      nk:
+        unique_key_name: nk
+        unique_key_slots:
+        - name
+        - age
+    rules:
+    - preconditions:
+        slot_conditions:
+          age:
+            name: age
+            minimum_value: 18
+      postconditions:
+        slot_conditions:
+          status:
+            name: status
+            equals_string: ADULT
+  Other:
+    name: Other
+    tree_root: true

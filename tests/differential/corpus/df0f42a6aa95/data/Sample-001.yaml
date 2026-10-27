@@ -1,0 +1,6 @@
+id: samp004
+name: Generic sample
+depth:
+  has_numeric_value: 7.0
+  has_unit: m
+elev: null

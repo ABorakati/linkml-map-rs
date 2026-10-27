@@ -1,0 +1,5 @@
+{
+	"id": "j2",
+	"a": "tab-indented JSON is not YAML, so it falls back to json.loads",
+	"x": 1e5
+}

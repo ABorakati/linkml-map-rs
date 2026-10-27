@@ -1,0 +1,29 @@
+id: https://example.org/rich_common
+name: rich_common
+prefixes:
+  ex: https://example.org/rich_common/
+  linkml: https://w3id.org/linkml/
+default_prefix: ex
+imports:
+  - linkml:types
+slots:
+  common_id:
+    identifier: true
+    range: string
+    description: Shared identifier
+classes:
+  Base:
+    abstract: true
+    description: A base class from an import
+    slots:
+      - common_id
+enums:
+  Colour:
+    permissible_values:
+      RED:
+        description: Red
+        meaning: ex:red
+      GREEN:
+      BLUE:
+        annotations:
+          hex: "#0000ff"

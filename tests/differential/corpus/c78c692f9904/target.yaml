@@ -1,0 +1,26 @@
+name: nested-flat
+id: https://example.org/nested-flat
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/nested-flat/
+classes:
+  FlatSample:
+    name: FlatSample
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      env_broad_scale_term_id:
+        name: env_broad_scale_term_id
+        range: string
+      env_broad_scale_term_name:
+        name: env_broad_scale_term_name
+        range: string
+      env_broad_scale_has_raw_value:
+        name: env_broad_scale_has_raw_value
+        range: string

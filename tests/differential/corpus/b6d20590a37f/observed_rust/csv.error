@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0: transformation error in 'Person.hid': expr eval failed for slot 'hid' in class 'Person': eval error: name 'flag' is not defined"
+}

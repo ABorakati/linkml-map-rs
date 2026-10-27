@@ -1,0 +1,6 @@
+{
+  "event_id": "qc-sparse",
+  "event_type": "QualityCheck",
+  "name": "Sparse",
+  "started_at": "2021-01-01T00:00:00"
+}

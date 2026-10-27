@@ -1,0 +1,13 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      inner:
+        class_derivations:
+        - name: InnerAgent0
+          populated_from: Person
+          slot_derivations:
+            out_a:
+              populated_from: id

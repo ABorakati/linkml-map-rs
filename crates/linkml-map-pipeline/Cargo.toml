@@ -31,6 +31,7 @@ name = "bench-e2e"
 path = "src/bin/bench_e2e.rs"
 
 [dev-dependencies]
+proptest = { workspace = true }
 tokio     = { workspace = true }
 tempfile  = { workspace = true }
 indexmap  = { workspace = true }

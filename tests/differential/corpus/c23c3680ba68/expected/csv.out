@@ -1,0 +1,2 @@
+id,associated_participant,associated_visit,observation_type,method_type,tags,steps,value_quantity__id,value_quantity__value_decimal,value_quantity__unit
+1f14752c-bdae-5fb6-b7f9-61a779e4e728,P1,V1,OBA:VT0000184,lipid assay,['fasting', 'exam 1'],['draw', 'spin'],852f926a-1107-56c6-8286-c437a8e95a13,52.31,mg/dL

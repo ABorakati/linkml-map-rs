@@ -1,0 +1,85 @@
+id: https://example.org/spec/features
+class_derivations:
+  Agent:
+    populated_from: Person
+    is_a: Base
+    mixins: [HasTags]
+    slot_derivations:
+      full_name:
+        populated_from: name
+        description: overridden description
+      age_years:
+        populated_from: age
+        range: float
+      mass:
+        populated_from: weight
+        unit_conversion:
+          target_unit: g
+      tag_string:
+        populated_from: tags
+        stringification:
+          delimiter: ","
+          reversed: true
+      joined:
+        populated_from: tags
+        stringification:
+          delimiter: ";"
+      friends_by_name:
+        populated_from: friends
+        range: Agent
+        dictionary_key: full_name
+      friend_list:
+        populated_from: friends
+        cast_collection_as: MultiValuedList
+      friend_dict:
+        populated_from: friends
+        cast_collection_as: MultiValuedDict
+      friend_multi:
+        populated_from: friends
+        cast_collection_as: MultiValued
+      secret:
+        hide: true
+      custom:
+        target_definition:
+          range: integer
+          required: "true"
+          description: from the spec
+          annotations:
+            k: v
+      nickname:
+        populated_from: nickname
+        overrides:
+          description: nickname override
+          multivalued: true
+          aliases: [nick]
+    target_definition:
+      description: A spec description
+      class_uri: ex:Agent
+      slots: [custom]
+  Entity:
+    populated_from: Base
+  Taggable:
+    populated_from: HasTags
+    overrides:
+      description: tag mixin
+  Staff:
+    populated_from: Employee
+    slot_derivations:
+      department:
+        populated_from: department
+      salary:
+        populated_from: salary
+enum_derivations:
+  Status:
+    populated_from: Status
+    permissible_value_derivations:
+      ACTIVE:
+        populated_from: [ACTIVE, ENABLED]
+      NEW:
+        populated_from: [NEW]
+  StatusMirror:
+    populated_from: Status
+    mirror_source: true
+  Shade:
+    populated_from: Colour
+    mirror_source: true

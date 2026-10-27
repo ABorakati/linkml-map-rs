@@ -1,0 +1,59 @@
+name: personinfo-derived
+id: https://w3id.org/linkml/examples/personinfo-derived
+imports:
+- linkml:types
+prefixes:
+  personinfo:
+    prefix_prefix: personinfo
+    prefix_reference: https://w3id.org/linkml/examples/personinfo/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+  rdfs:
+    prefix_prefix: rdfs
+    prefix_reference: http://www.w3.org/2000/01/rdf-schema#
+  prov:
+    prefix_prefix: prov
+    prefix_reference: http://www.w3.org/ns/prov#
+  GSSO:
+    prefix_prefix: GSSO
+    prefix_reference: http://purl.obolibrary.org/obo/GSSO_
+  famrel:
+    prefix_prefix: famrel
+    prefix_reference: https://example.org/FamilialRelations#
+  P:
+    prefix_prefix: P
+    prefix_reference: http://example.org/P/
+  ROR:
+    prefix_prefix: ROR
+    prefix_reference: http://example.org/ror/
+  CODE:
+    prefix_prefix: CODE
+    prefix_reference: http://example.org/code/
+  GEO:
+    prefix_prefix: GEO
+    prefix_reference: http://example.org/geoloc/
+default_prefix: https://w3id.org/linkml/examples/personinfo-derived/
+default_range: string
+classes:
+  MappingSet:
+    name: MappingSet
+    attributes:
+      mappings:
+        name: mappings
+  Mapping:
+    name: Mapping
+    attributes:
+      subject_id:
+        name: subject_id
+      subject_name:
+        name: subject_name
+      object_id:
+        name: object_id
+      object_name:
+        name: object_name
+      predicate_id:
+        name: predicate_id

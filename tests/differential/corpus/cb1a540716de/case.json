@@ -1,0 +1,15 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/Assembly-001.yaml",
+  "source_type": "Assembly",
+  "target_schema": "target.yaml",
+  "flags": [],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

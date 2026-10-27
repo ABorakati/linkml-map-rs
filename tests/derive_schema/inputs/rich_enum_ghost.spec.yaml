@@ -1,0 +1,7 @@
+id: https://example.org/spec/enum_ghost
+enum_derivations:
+  Ghost:
+    populated_from: NoSuch
+    permissible_value_derivations:
+      A:
+        populated_from: [B]

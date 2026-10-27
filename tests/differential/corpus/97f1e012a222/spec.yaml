@@ -1,0 +1,11 @@
+class_derivations:
+- name: Person
+  populated_from: Person
+  slot_derivations:
+    age_at_start:
+      name: age_at_start
+      populated_from: age_at_measurement
+      offset:
+        offset_value: 1.0
+        offset_field: days
+        offset_reverse: true

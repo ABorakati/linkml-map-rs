@@ -1,0 +1,27 @@
+name: wide-source
+id: https://example.org/wide-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/wide-source/
+classes:
+  WideRecord:
+    name: WideRecord
+    attributes:
+      id:
+        name: id
+        range: string
+      height:
+        name: height
+        range: float
+      weight:
+        name: weight
+        range: float
+      measurements:
+        name: measurements
+        range: string
+        multivalued: true
+    tree_root: true

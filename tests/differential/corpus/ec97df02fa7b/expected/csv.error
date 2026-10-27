@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "No such slot flag as an attribute of Person ancestors or as a slot definition in the schema; class_derivation=Order (from Order); slot_derivation=out_a (from flag)"
+}

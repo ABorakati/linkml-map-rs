@@ -1,0 +1,111 @@
+description: 'This mapping set demonstrates how to transform a person information
+  schema
+
+  into a different format using LinkML.
+
+  '
+id: https://w3id.org/linkml/map/example/personinfo-to-agent.transform.yaml
+title: PersonInfo to Agent example transformation
+publication_date: '2025-08-14'
+license: https://creativecommons.org/licenses/by/4.0/
+version: '0.1'
+prefixes:
+  foo:
+    key: foo
+    value: foo
+  semapv:
+    key: semapv
+    value: https://w3id.org/semapv/vocab/
+source_schema:
+  name: ../source/personinfo.yaml
+target_schema:
+  name: ../target/agent.yaml
+creator:
+- id: https://orcid.org/0000-0002-7356-1779
+author:
+- id: https://orcid.org/0000-0002-7356-1779
+mapping_method: semapv:ManualMappingCuration
+class_derivations:
+- name: Container
+  populated_from: Container
+  slot_derivations:
+    agents:
+      name: agents
+      populated_from: persons
+- description: Abstract base for entity-like target classes
+  name: Entity
+- name: Agent
+  is_a: Entity
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    label:
+      name: label
+      populated_from: name
+    age:
+      name: age
+      expr: str({age_in_years}) + ' years'
+    primary_email:
+      name: primary_email
+    secondary_email:
+      name: secondary_email
+      expr: 'NULL'
+    gender:
+      name: gender
+      expr: None
+    driving_since:
+      name: driving_since
+      expr: "d_test = [x.important_event_date for x in src.has_important_life_events\
+        \ if str(x.event_name) == \"PASSED_DRIVING_TEST\"]\nif len(d_test):\n    target\
+        \ = d_test[0]\n"
+    first_known_event:
+      name: first_known_event
+      expr: "if src.has_important_life_events:\n  target = src.has_important_life_events[0].important_event_date\n"
+    death_date:
+      name: death_date
+      expr: "death_dates = [x.important_event_date for x in src.has_important_life_events\
+        \ if str(x.event_name) == \"DEATH\"]\nif len(death_dates):\n  target = death_dates[0]\n"
+    current_address:
+      name: current_address
+    has_familial_relationships:
+      name: has_familial_relationships
+      populated_from: has_familial_relationships
+    study_name:
+      name: study_name
+      value: Framingham
+      range: string
+- name: Address
+  populated_from: Address
+  slot_derivations:
+    address_of:
+      name: address_of
+      expr: '''foo'''
+      inverse_of:
+        slot_name: current_address
+        class_name: Agent
+    street:
+      name: street
+    city:
+      name: city
+- name: FamilialRelationship
+  populated_from: FamilialRelationship
+  slot_derivations:
+    type:
+      name: type
+    related_to:
+      name: related_to
+enum_derivations:
+  FamilialRelationshipType:
+    name: FamilialRelationshipType
+    mirror_source: true
+    populated_from: FamilialRelationshipType
+    permissible_value_derivations:
+      SIBLING_OF:
+        name: SIBLING_OF
+        populated_from:
+        - SIBLING_OF
+      CHILD_OF:
+        name: CHILD_OF
+        populated_from:
+        - CHILD_OF

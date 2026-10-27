@@ -1,0 +1,3 @@
+d_test = [x.important_event_date for x in src.events if str(x.event_name) == "DEATH"]
+if len(d_test):
+    target = d_test[0]

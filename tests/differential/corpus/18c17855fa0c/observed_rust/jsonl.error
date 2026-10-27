@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "compiling plan: synthesizing implicit joins for spec /home/user/wt/difffuzz/tests/differential/corpus/18c17855fa0c/spec.yaml: could not parse expression during join synthesis: parse error: expected Eof, found Name(\"is\")"
+}

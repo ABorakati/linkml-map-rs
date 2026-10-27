@@ -16,13 +16,19 @@
 //! println!("class: {}", class.name);
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
+
+/// The lookup tables of [`SchemaCache`] are read per row by name: a fast hash.
+type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
+type FastSet<K> = HashSet<K, foldhash::fast::RandomState>;
 
 use linkml_map_core::schema::{
     ClassDef, EnumDef, PermissibleValue, RangeKind, SchemaError, SchemaProvider, SchemaResult,
     SlotDef,
 };
+use linkml_schemaview::Converter;
 use linkml_schemaview::identifier::Identifier;
 use linkml_schemaview::schemaview::SchemaView;
 
@@ -32,11 +38,99 @@ use linkml_schemaview::schemaview::SchemaView;
 /// [`SchemaViewProvider::from_yaml_str`].
 pub struct SchemaViewProvider {
     sv: SchemaView,
+    /// Build-once lookup caches over the (immutable once loaded) schema; see
+    /// [`SchemaCache`].
+    cache: SchemaCache,
+}
+
+/// Memoised answers to the schema queries the engine repeats for every row.
+///
+/// Python's `SchemaView` caches these (`lru_cache` on `induced_slot`,
+/// `class_induced_slots`, `all_enums`, ...). The schema is never mutated after
+/// [`SchemaViewProvider`] is constructed, so a cached answer can never go
+/// stale. Classes and enums are filled lazily behind a [`OnceLock`] (lock-free
+/// reads, shared across worker threads); the maps themselves are fixed at
+/// construction.
+struct SchemaCache {
+    /// The CURIE converter over every loaded schema.
+    /// `SchemaView::converter` rebuilds it from scratch on every call.
+    converter: Converter,
+    class_names: Vec<String>,
+    enum_names: Vec<String>,
+    type_names: Vec<String>,
+    enum_set: FastSet<String>,
+    type_set: FastSet<String>,
+    /// `None` inside: the class did not resolve; callers take the uncached path
+    /// (which reports the error).
+    classes: FastMap<String, OnceLock<Option<ClassCache>>>,
+    enums: FastMap<String, OnceLock<Option<EnumDef>>>,
+    /// `typeof` parent of each custom type, first definition wins.
+    type_parents: HashMap<String, String>,
+    schema_id: Option<String>,
+    default_range: Option<String>,
+    /// `SchemaProvider::tree_root_class`, resolved on first use.
+    tree_root: OnceLock<Option<String>>,
+}
+
+/// Everything the provider derives from one class's `ClassView`.
+struct ClassCache {
+    def: ClassDef,
+    /// `SchemaProvider::induced_slots`, in declaration order.
+    slots: Vec<SlotDef>,
+    /// Slot name to the index of the first induced slot of that name.
+    slot_index: FastMap<String, usize>,
+    /// `SchemaProvider::identifier_slot` (`identifier` or `key`).
+    key_or_identifier: Option<SlotDef>,
+    /// `SchemaProvider::identifier_slot_without_key`.
+    identifier_name: Option<String>,
+    abstract_or_mixin: bool,
+    ordered_slots: Vec<String>,
 }
 
 // ── Constructors ──────────────────────────────────────────────────────────────
 
 impl SchemaViewProvider {
+    /// Wrap a fully populated `SchemaView`, building the [`SchemaCache`].
+    fn new(sv: SchemaView) -> Self {
+        let mut p = Self {
+            cache: SchemaCache {
+                converter: sv.converter(),
+                class_names: Vec::new(),
+                enum_names: Vec::new(),
+                type_names: Vec::new(),
+                enum_set: FastSet::default(),
+                type_set: FastSet::default(),
+                classes: FastMap::default(),
+                enums: FastMap::default(),
+                type_parents: HashMap::new(),
+                schema_id: None,
+                default_range: None,
+                tree_root: OnceLock::new(),
+            },
+            sv,
+        };
+        let class_names = p.all_class_names_internal();
+        let enum_names = p.all_enum_names_internal();
+        let type_names = p.all_type_names_internal();
+        p.cache.enum_set = enum_names.iter().cloned().collect();
+        p.cache.type_set = type_names.iter().cloned().collect();
+        p.cache.classes = class_names
+            .iter()
+            .map(|n| (n.clone(), OnceLock::new()))
+            .collect();
+        p.cache.enums = enum_names
+            .iter()
+            .map(|n| (n.clone(), OnceLock::new()))
+            .collect();
+        p.cache.type_parents = p.collect_type_parents();
+        p.cache.schema_id = p.sv.primary_schema().map(|s| s.id);
+        p.cache.default_range = p.sv.primary_schema().and_then(|s| s.default_range);
+        p.cache.class_names = class_names;
+        p.cache.enum_names = enum_names;
+        p.cache.type_names = type_names;
+        p
+    }
+
     /// Load a LinkML schema YAML from a file path.
     ///
     /// The file must be self-contained (i.e. all `imports` must be resolvable
@@ -65,7 +159,7 @@ impl SchemaViewProvider {
         sv.add_schema(schema)
             .map_err(|e| anyhow::anyhow!("SchemaView::add_schema failed: {}", e))?;
 
-        Ok(Self { sv })
+        Ok(Self::new(sv))
     }
 
     /// Load a LinkML schema from a YAML string.
@@ -90,7 +184,7 @@ impl SchemaViewProvider {
         sv.add_schema(schema)
             .map_err(|e| anyhow::anyhow!("SchemaView::add_schema failed: {}", e))?;
 
-        Ok(Self { sv })
+        Ok(Self::new(sv))
     }
 }
 
@@ -640,7 +734,7 @@ impl SchemaViewProvider {
         let Some(any_of) = &def.any_of else {
             return result;
         };
-        let enum_names: HashSet<_> = self.all_enum_names_internal().into_iter().collect();
+        let enum_names = &self.cache.enum_set;
         for expr in any_of {
             if let Some(range) = &expr.range
                 && enum_names.contains(range.as_str())
@@ -656,100 +750,22 @@ impl SchemaViewProvider {
         &self,
         class_name: &str,
     ) -> SchemaResult<linkml_schemaview::classview::ClassView> {
-        let conv = self.sv.converter();
         self.sv
-            .get_class(&Identifier::Name(class_name.to_owned()), &conv)
+            .get_class(
+                &Identifier::Name(class_name.to_owned()),
+                &self.cache.converter,
+            )
             .map_err(|e| SchemaError::Other(format!("{e:?}")))?
             .ok_or_else(|| SchemaError::ClassNotFound(class_name.to_owned()))
     }
-}
 
-// ── SchemaProvider impl ───────────────────────────────────────────────────────
-
-impl SchemaProvider for SchemaViewProvider {
-    // ── Class queries ────────────────────────────────────────────────────────
-
-    fn get_class(&self, class_name: &str) -> SchemaResult<ClassDef> {
-        let cv = self.get_class_view(class_name)?;
-        let class_def = cv.def();
-        Ok(ClassDef {
-            name: cv.name().to_owned(),
-            tree_root: class_def.tree_root.unwrap_or(false),
-            is_a: class_def.is_a.clone(),
-            mixins: class_def.mixins.clone().unwrap_or_default(),
-        })
-    }
-
-    fn all_class_names(&self) -> Vec<String> {
-        self.all_class_names_internal()
-    }
-
-    fn induced_slots(&self, class_name: &str) -> SchemaResult<Vec<SlotDef>> {
-        let cv = self.get_class_view(class_name)?;
-        let slots = cv
-            .slots()
-            .iter()
-            .map(|sv| self.slot_view_to_def(sv))
-            .collect();
-        Ok(slots)
-    }
-
-    fn identifier_slot(&self, class_name: &str) -> SchemaResult<Option<SlotDef>> {
-        let cv = self.get_class_view(class_name)?;
-        Ok(cv
-            .key_or_identifier_slot()
-            .map(|sv| self.slot_view_to_def(sv)))
-    }
-
-    fn identifier_slot_without_key(&self, class_name: &str) -> Option<String> {
-        // `get_identifier_slot(use_key=False)`: `identifier: true` only.
-        let cv = self.get_class_view(class_name).ok()?;
-        cv.identifier_slot().map(|sv| sv.name.clone())
-    }
-
-    fn schema_id(&self) -> Option<String> {
-        self.sv.primary_schema().map(|s| s.id)
-    }
-
-    fn is_abstract_or_mixin(&self, class_name: &str) -> bool {
-        self.get_class_view(class_name).is_ok_and(|cv| {
-            let def = cv.def();
-            def.abstract_.unwrap_or(false) || def.mixin.unwrap_or(false)
-        })
-    }
-
-    fn list_elements_ordered_slots(&self, class_name: &str) -> Vec<String> {
-        let Ok(cv) = self.get_class_view(class_name) else {
-            return Vec::new();
-        };
-        cv.slots()
-            .iter()
-            .filter(|sv| sv.definition().list_elements_ordered.unwrap_or(false))
-            .map(|sv| sv.name.clone())
-            .collect()
-    }
-
-    // ── Slot queries ─────────────────────────────────────────────────────────
-
-    fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef> {
-        let cv = self.get_class_view(class_name)?;
-        cv.slots()
-            .iter()
-            .find(|sv| sv.name == slot_name)
-            .map(|sv| self.slot_view_to_def(sv))
-            .ok_or_else(|| SchemaError::SlotNotFound {
-                class: class_name.to_owned(),
-                slot: slot_name.to_owned(),
-            })
-    }
-
-    // ── Enum queries ─────────────────────────────────────────────────────────
-
-    fn get_enum(&self, enum_name: &str) -> SchemaResult<EnumDef> {
-        let conv = self.sv.converter();
+    fn build_enum(&self, enum_name: &str) -> SchemaResult<EnumDef> {
         let ev = self
             .sv
-            .get_enum(&Identifier::Name(enum_name.to_owned()), &conv)
+            .get_enum(
+                &Identifier::Name(enum_name.to_owned()),
+                &self.cache.converter,
+            )
             .map_err(|e| SchemaError::Other(format!("{e:?}")))?
             .ok_or_else(|| SchemaError::EnumNotFound(enum_name.to_owned()))?;
 
@@ -797,27 +813,9 @@ impl SchemaProvider for SchemaViewProvider {
         })
     }
 
-    fn all_enum_names(&self) -> Vec<String> {
-        self.all_enum_names_internal()
-    }
-
-    // ── Schema-level queries ─────────────────────────────────────────────────
-
-    fn all_type_names(&self) -> Vec<String> {
-        self.all_type_names_internal()
-    }
-
-    fn default_range(&self) -> Option<String> {
-        self.sv.primary_schema().and_then(|s| s.default_range)
-    }
-
-    fn type_ancestors(&self, type_name: &str) -> Vec<String> {
-        // Walk the `typeof` chain ourselves: the backend's `type_ancestors`
-        // drops a parent that is not defined in a loaded schema (e.g. a custom
-        // `typeof: decimal` when `linkml:types` is not loaded), whereas Python's
-        // chain keeps the parent's name.
-        let mut parents: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
+    /// The `typeof` parent of every custom type across the loaded schemas.
+    fn collect_type_parents(&self) -> HashMap<String, String> {
+        let mut parents: HashMap<String, String> = HashMap::new();
         self.sv.with_schema_definitions(|schemas| {
             for schema in schemas.values() {
                 for (name, t) in schema.types.iter().flatten() {
@@ -829,6 +827,174 @@ impl SchemaProvider for SchemaViewProvider {
                 }
             }
         });
+        parents
+    }
+
+    /// Derive everything the provider answers about `class_name` from its
+    /// `ClassView`. Errors are those of [`Self::get_class_view`].
+    fn build_class_cache(&self, class_name: &str) -> SchemaResult<ClassCache> {
+        let cv = self.get_class_view(class_name)?;
+        let class_def = cv.def();
+        let views = cv.slots();
+        let slots: Vec<SlotDef> = views.iter().map(|sv| self.slot_view_to_def(sv)).collect();
+        let mut slot_index = FastMap::with_capacity_and_hasher(slots.len(), Default::default());
+        for (i, slot) in slots.iter().enumerate() {
+            slot_index.entry(slot.name.clone()).or_insert(i);
+        }
+        Ok(ClassCache {
+            def: ClassDef {
+                name: cv.name().to_owned(),
+                tree_root: class_def.tree_root.unwrap_or(false),
+                is_a: class_def.is_a.clone(),
+                mixins: class_def.mixins.clone().unwrap_or_default(),
+            },
+            slots,
+            slot_index,
+            key_or_identifier: cv
+                .key_or_identifier_slot()
+                .map(|sv| self.slot_view_to_def(sv)),
+            identifier_name: cv.identifier_slot().map(|sv| sv.name.clone()),
+            abstract_or_mixin: class_def.abstract_.unwrap_or(false)
+                || class_def.mixin.unwrap_or(false),
+            ordered_slots: views
+                .iter()
+                .filter(|sv| sv.definition().list_elements_ordered.unwrap_or(false))
+                .map(|sv| sv.name.clone())
+                .collect(),
+        })
+    }
+
+    /// Run `f` on the (memoised) [`ClassCache`] of `class_name`. A class the
+    /// schema does not list is derived afresh each time, which also reports
+    /// the lookup error.
+    fn with_class<R>(&self, class_name: &str, f: impl FnOnce(&ClassCache) -> R) -> SchemaResult<R> {
+        if let Some(cached) = self.cache.classes.get(class_name).and_then(|slot| {
+            slot.get_or_init(|| self.build_class_cache(class_name).ok())
+                .as_ref()
+        }) {
+            return Ok(f(cached));
+        }
+        Ok(f(&self.build_class_cache(class_name)?))
+    }
+}
+
+// ── SchemaProvider impl ───────────────────────────────────────────────────────
+
+impl SchemaProvider for SchemaViewProvider {
+    // ── Class queries ────────────────────────────────────────────────────────
+
+    fn get_class(&self, class_name: &str) -> SchemaResult<ClassDef> {
+        self.with_class(class_name, |c| c.def.clone())
+    }
+
+    fn all_class_names(&self) -> Vec<String> {
+        self.cache.class_names.clone()
+    }
+
+    fn induced_slots(&self, class_name: &str) -> SchemaResult<Vec<SlotDef>> {
+        self.with_class(class_name, |c| c.slots.clone())
+    }
+
+    fn identifier_slot(&self, class_name: &str) -> SchemaResult<Option<SlotDef>> {
+        self.with_class(class_name, |c| c.key_or_identifier.clone())
+    }
+
+    fn identifier_slot_without_key(&self, class_name: &str) -> Option<String> {
+        // `get_identifier_slot(use_key=False)`: `identifier: true` only.
+        self.with_class(class_name, |c| c.identifier_name.clone())
+            .ok()
+            .flatten()
+    }
+
+    fn schema_id(&self) -> Option<String> {
+        self.cache.schema_id.clone()
+    }
+
+    fn is_abstract_or_mixin(&self, class_name: &str) -> bool {
+        self.with_class(class_name, |c| c.abstract_or_mixin)
+            .unwrap_or(false)
+    }
+
+    fn list_elements_ordered_slots(&self, class_name: &str) -> Vec<String> {
+        self.with_class(class_name, |c| c.ordered_slots.clone())
+            .unwrap_or_default()
+    }
+
+    fn tree_root_class(&self) -> Option<String> {
+        self.cache
+            .tree_root
+            .get_or_init(|| {
+                self.cache.class_names.iter().find_map(|name| {
+                    self.get_class(name)
+                        .is_ok_and(|c| c.tree_root)
+                        .then(|| name.clone())
+                })
+            })
+            .clone()
+    }
+
+    // ── Slot queries ─────────────────────────────────────────────────────────
+
+    fn induced_slot_ref(&self, slot_name: &str, class_name: &str) -> Option<&SlotDef> {
+        let class = self
+            .cache
+            .classes
+            .get(class_name)?
+            .get_or_init(|| self.build_class_cache(class_name).ok())
+            .as_ref()?;
+        class.slot_index.get(slot_name).map(|&i| &class.slots[i])
+    }
+
+    fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef> {
+        self.with_class(class_name, |c| {
+            c.slot_index.get(slot_name).map(|&i| c.slots[i].clone())
+        })?
+        .ok_or_else(|| SchemaError::SlotNotFound {
+            class: class_name.to_owned(),
+            slot: slot_name.to_owned(),
+        })
+    }
+
+    // ── Enum queries ─────────────────────────────────────────────────────────
+
+    fn get_enum(&self, enum_name: &str) -> SchemaResult<EnumDef> {
+        if let Some(cached) = self.cache.enums.get(enum_name).and_then(|slot| {
+            slot.get_or_init(|| self.build_enum(enum_name).ok())
+                .as_ref()
+        }) {
+            return Ok(cached.clone());
+        }
+        self.build_enum(enum_name)
+    }
+
+    fn all_enum_names(&self) -> Vec<String> {
+        self.cache.enum_names.clone()
+    }
+
+    fn has_enum(&self, enum_name: &str) -> bool {
+        self.cache.enum_set.contains(enum_name)
+    }
+
+    // ── Schema-level queries ─────────────────────────────────────────────────
+
+    fn all_type_names(&self) -> Vec<String> {
+        self.cache.type_names.clone()
+    }
+
+    fn has_type(&self, type_name: &str) -> bool {
+        self.cache.type_set.contains(type_name)
+    }
+
+    fn default_range(&self) -> Option<String> {
+        self.cache.default_range.clone()
+    }
+
+    fn type_ancestors(&self, type_name: &str) -> Vec<String> {
+        // Walk the `typeof` chain ourselves: the backend's `type_ancestors`
+        // drops a parent that is not defined in a loaded schema (e.g. a custom
+        // `typeof: decimal` when `linkml:types` is not loaded), whereas Python's
+        // chain keeps the parent's name.
+        let parents = &self.cache.type_parents;
         let mut chain = vec![type_name.to_owned()];
         while let Some(parent) = parents.get(chain.last().map_or("", String::as_str)) {
             if chain.contains(parent) {
@@ -846,8 +1012,7 @@ impl SchemaProvider for SchemaViewProvider {
         if curie.contains("://") {
             return None;
         }
-        let conv = self.sv.converter();
-        conv.expand(curie).ok()
+        self.cache.converter.expand(curie).ok()
     }
 
     fn compress_uri(&self, uri: &str) -> Option<String> {
@@ -855,8 +1020,7 @@ impl SchemaProvider for SchemaViewProvider {
         if !uri.contains("://") {
             return None;
         }
-        let conv = self.sv.converter();
-        conv.compress(uri).ok()
+        self.cache.converter.compress(uri).ok()
     }
 }
 

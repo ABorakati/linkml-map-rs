@@ -1,0 +1,41 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Person:
+    slot_derivations:
+      id: null
+      out_c:
+        populated_from: flag
+      out_e:
+        populated_from: flag
+        value_mappings:
+          'False': Zoë
+          'true': Zoë
+          '1': X
+        expression_mappings:
+          'False': '{flag} + ''x'''
+      out_d:
+        populated_from: born
+      out_e1:
+        populated_from: born
+  Order:
+    slot_derivations:
+      id: null
+      out_b:
+        populated_from: id
+  Row:
+    populated_from: Item
+    joins:
+      Order:
+        source_key: order_ref
+        lookup_key: id
+    slot_derivations:
+      id: null
+      out_c:
+        expr: '{Order.amount}'
+      out_f:
+        populated_from: Order.amount
+      out_c1:
+        populated_from: Order.id
+      out_f1:
+        value: 0

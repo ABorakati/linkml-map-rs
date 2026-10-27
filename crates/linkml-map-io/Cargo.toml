@@ -8,7 +8,6 @@ license.workspace = true
 linkml-map-core = { path = "../linkml-map-core" }
 tokio = { workspace = true }
 futures = { workspace = true }
-csv-async = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
@@ -17,10 +16,12 @@ indexmap = { workspace = true }
 log = { workspace = true }
 
 linkml-map-duckdb = { path = "../linkml-map-duckdb", optional = true }
+unsafe-libyaml = "0.2"
 
 [features]
 # Parquet and DuckDB output via DuckDB (compiles DuckDB; off by default).
 columnar = ["dep:linkml-map-duckdb", "linkml-map-duckdb/columnar"]
 
 [dev-dependencies]
+proptest = { workspace = true }
 tempfile = "3"

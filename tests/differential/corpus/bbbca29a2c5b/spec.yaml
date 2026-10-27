@@ -1,0 +1,15 @@
+class_derivations:
+- name: FlatSample
+  populated_from: Sample
+  slot_derivations:
+    id:
+      name: id
+    env_broad_scale_term_id:
+      name: env_broad_scale_term_id
+      expr: env_broad_scale.term.id
+    env_broad_scale_term_name:
+      name: env_broad_scale_term_name
+      expr: env_broad_scale.term.name
+    env_broad_scale_has_raw_value:
+      name: env_broad_scale_has_raw_value
+      expr: env_broad_scale.has_raw_value

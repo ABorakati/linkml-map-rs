@@ -1,0 +1,2 @@
+id,value_decimal,values_decimal
+r1,None,[Decimal('1'), Decimal('2.50')]

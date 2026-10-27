@@ -1,0 +1,63 @@
+name: range_target
+id: https://example.org/range-target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: range_target
+default_range: string
+types:
+  Score:
+    name: Score
+    typeof: decimal
+enums:
+  Color:
+    name: Color
+    permissible_values:
+      red:
+        text: red
+classes:
+  Site:
+    name: Site
+    attributes:
+      id:
+        name: id
+        identifier: true
+  Measurement:
+    name: Measurement
+    attributes:
+      id:
+        name: id
+        identifier: true
+      count:
+        name: count
+        range: integer
+      ratio:
+        name: ratio
+        range: float
+      ratio_text:
+        name: ratio_text
+        range: float
+      amount:
+        name: amount
+        range: decimal
+      flag:
+        name: flag
+        range: boolean
+      score:
+        name: score
+        range: Score
+      color:
+        name: color
+        range: Color
+      site:
+        name: site
+        range: Site
+      note:
+        name: note
+      counts:
+        name: counts
+        range: integer
+        multivalued: true

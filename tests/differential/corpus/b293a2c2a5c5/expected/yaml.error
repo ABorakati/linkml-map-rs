@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Sorry, Lambda is not available in this evaluator; class_derivation=Agent (from Person); slot_derivation=label"
+}

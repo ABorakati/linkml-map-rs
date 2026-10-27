@@ -1,0 +1,20 @@
+{
+  "associated_participant": "P1",
+  "associated_visit": "V1",
+  "observation_type": "OBA:VT0000184",
+  "method_type": "lipid assay",
+  "tags": [
+    "fasting",
+    "exam 1"
+  ],
+  "steps": [
+    "draw",
+    "spin"
+  ],
+  "value_quantity": {
+    "id": "199f65b6-2954-565e-912a-b814c2568cd9",
+    "value_decimal": 52.3,
+    "unit": "mg/dL"
+  },
+  "id": "M-P1"
+}

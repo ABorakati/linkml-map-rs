@@ -1,0 +1,15 @@
+class_derivations:
+  C:
+    slot_derivations:
+      ds:
+        populated_from: ds
+        cast_collection_as: MultiValuedDict
+        dictionary_key: id
+  D:
+    slot_derivations:
+      id:
+        populated_from: id
+      s1:
+        populated_from: s1
+        range: string
+id: https://example.org/spec

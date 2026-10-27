@@ -1,0 +1,14 @@
+class_derivations:
+  C:
+    populated_from: C
+    slot_derivations:
+      s1:
+        expr: s1 + 1
+    mixins:
+    - D
+  D:
+    populated_from: D
+    slot_derivations:
+      s2:
+        expr: s2 + 1
+id: https://example.org/spec

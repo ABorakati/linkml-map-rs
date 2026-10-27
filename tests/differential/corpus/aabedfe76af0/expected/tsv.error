@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Expression references 'colorr' which is not a slot on the source class. Typo or stale reference?; class_derivation=Light (from Light); slot_derivation=color (from color)"
+}

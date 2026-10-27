@@ -1,0 +1,39 @@
+name: test-schema
+id: http://example.org/test-schema
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  test_schema:
+    prefix_prefix: test_schema
+    prefix_reference: http://example.org/test-schema/
+default_prefix: test_schema
+default_range: string
+slots:
+  id:
+    name: id
+    identifier: true
+    range: string
+  has_numeric_value:
+    name: has_numeric_value
+    range: float
+  has_unit:
+    name: has_unit
+    range: string
+  depth:
+    name: depth
+    range: QuantityValue
+    inlined: true
+classes:
+  QuantityValue:
+    name: QuantityValue
+    slots:
+    - has_numeric_value
+    - has_unit
+  StructuredSample:
+    name: StructuredSample
+    slots:
+    - id
+    - depth

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Mismatch in source units for slot 'height_cm': schema unit 'cm' vs. transformation spec 'mm'; class_derivation=Agent (from Person); slot_derivation=height_m (from height_cm)"
+}

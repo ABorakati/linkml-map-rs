@@ -1,0 +1,1 @@
+upstream_error/TransformationErrorQ object has no attribute Q; class_derivation=Agent (from Person); slot_derivation=inner//

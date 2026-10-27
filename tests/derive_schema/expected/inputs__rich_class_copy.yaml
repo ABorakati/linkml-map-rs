@@ -1,0 +1,89 @@
+name: rich-derived
+id: https://example.org/rich-derived
+imports:
+- linkml:types
+- ./rich_common
+prefixes:
+  ex:
+    prefix_prefix: ex
+    prefix_reference: https://example.org/rich/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+default_prefix: https://example.org/rich-derived/
+default_range: string
+classes:
+  Person:
+    name: Person
+    annotations:
+      owner:
+        tag: owner
+        value: ex
+    description: A person
+    in_subset:
+    - basic
+    exact_mappings:
+    - schema:Person
+    slots:
+    - name
+    - age
+    - friends
+    - weight
+    - status
+    attributes:
+      nickname:
+        name: nickname
+        description: An attribute only on Person
+        from_schema: https://example.org/rich
+        range: string
+    class_uri: schema:Person
+    tree_root: true
+    unique_keys:
+      nk:
+        unique_key_name: nk
+        unique_key_slots:
+        - name
+        - age
+    rules:
+    - preconditions:
+        slot_conditions:
+          age:
+            name: age
+            minimum_value: 18
+      postconditions:
+        slot_conditions:
+          status:
+            name: status
+            equals_string: ADULT
+  Employee:
+    name: Employee
+    description: An employee
+    is_a: Person
+    attributes:
+      pay:
+        name: pay
+        range: float
+    any_of:
+    - slot_conditions:
+        salary:
+          name: salary
+          minimum_value: 1
+  Person2:
+    name: Person2
+    attributes:
+      persons:
+        name: persons
+        from_schema: https://example.org/rich
+        range: Person
+        multivalued: true
+        inlined: true
+      employees:
+        name: employees
+        from_schema: https://example.org/rich
+        range: Employee
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true

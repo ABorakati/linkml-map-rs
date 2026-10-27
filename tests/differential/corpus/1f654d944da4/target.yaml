@@ -1,0 +1,28 @@
+id: https://example.org/tgt
+name: tgt
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+classes:
+  Agent:
+    attributes:
+      id:
+        range: integer
+        identifier: true
+      inner:
+        range: InnerAgent0
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+  InnerAgent0:
+    attributes:
+      out_d:
+        range: string
+      label: {}
+      label1:
+        range: date
+      out_b:
+        range: integer

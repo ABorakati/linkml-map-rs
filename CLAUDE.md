@@ -72,6 +72,10 @@ cargo clippy --workspace --all-targets       # keep clippy-clean
 cargo test -p linkml-map-cli --features columnar   # Parquet/DuckDB output tests
 ```
 
+- Property tests (`proptest`, `crates/*/tests/proptest_*.rs`) run under plain `cargo test` at modest case
+  counts; `PROPTEST_CASES=20000` runs them long. Coverage-guided fuzz targets live in [`fuzz/`](fuzz)
+  (nightly + `cargo-fuzz`, see its README); CI runs both weekly. A property or fuzz failure is a real
+  finding: do not weaken the property; known bugs are `#[ignore = "bug: ..."]` regression tests.
 - Parquet and DuckDB output is behind the off-by-default **`columnar`** cargo feature.
   It compiles a bundled DuckDB, so the first build is slow; default builds never
   compile DuckDB.
@@ -87,6 +91,15 @@ cargo test -p linkml-map-cli --features columnar   # Parquet/DuckDB output tests
   (`./run.sh <rows>`).
 - `linkml-map-py` requires Python 3 + `linkml-runtime` on PATH to test; exclude it
   otherwise (this is an environment constraint, not a failure).
+
+### Differential testing vs upstream (`tests/differential/`)
+
+`tests/differential/run.sh [--examples] [--fuzz N] [--seed S] [--time-budget T]` drives upstream Python `linkml-map`
+(own venv, pinned tag) and `linkml-tr-rs` over the upstream examples and Hypothesis-generated cases, comparing bytes
+per output format and error parity. Shrunk counterexamples land in `tests/differential/corpus/<hash>/` with upstream's
+expected output; `cargo test -p linkml-map-cli --test differential_corpus` replays them without Python (cases with
+`expected_divergence.md` are listed as skipped with their reason; `-- --ignored` asserts they now match). When you fix a
+divergence, delete its `expected_divergence.md`. CI job: `differential` (separate venv from `test` and `python-compat`).
 
 ### PyO3 drop-in compat leg (`python-compat` CI job)
 

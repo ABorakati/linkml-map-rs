@@ -1,0 +1,10 @@
+id: https://example.org/transform
+class_derivations:
+- name: Orphan
+  populated_from: DoesNotExist
+- name: Person
+  populated_from: Person
+  slot_derivations:
+    name:
+      name: name
+      populated_from: name

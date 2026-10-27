@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Cannot convert 'NaN' to decimal: not a finite number; class_derivation=Measurement (from Row); slot_derivation=value_decimal (from value)"
+}

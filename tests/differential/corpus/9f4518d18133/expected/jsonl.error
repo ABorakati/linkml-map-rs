@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "'FEMALE' matches more than one permissible value of enum SexEnum: ['F1', 'F2']; class_derivation=Agent (from Person); slot_derivation=sex"
+}

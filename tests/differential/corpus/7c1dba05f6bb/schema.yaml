@@ -1,0 +1,509 @@
+name: personinfo
+description: Information about people, based on [schema.org](http://schema.org)
+id: https://w3id.org/linkml/examples/personinfo
+imports:
+- linkml:types
+license: https://creativecommons.org/publicdomain/zero/1.0/
+prefixes:
+  personinfo:
+    prefix_prefix: personinfo
+    prefix_reference: https://w3id.org/linkml/examples/personinfo/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  schema:
+    prefix_prefix: schema
+    prefix_reference: http://schema.org/
+  rdfs:
+    prefix_prefix: rdfs
+    prefix_reference: http://www.w3.org/2000/01/rdf-schema#
+  prov:
+    prefix_prefix: prov
+    prefix_reference: http://www.w3.org/ns/prov#
+  GSSO:
+    prefix_prefix: GSSO
+    prefix_reference: http://purl.obolibrary.org/obo/GSSO_
+  famrel:
+    prefix_prefix: famrel
+    prefix_reference: https://example.org/FamilialRelations#
+  P:
+    prefix_prefix: P
+    prefix_reference: http://example.org/P/
+  ROR:
+    prefix_prefix: ROR
+    prefix_reference: http://example.org/ror/
+  CODE:
+    prefix_prefix: CODE
+    prefix_reference: http://example.org/code/
+  GEO:
+    prefix_prefix: GEO
+    prefix_reference: http://example.org/geoloc/
+emit_prefixes:
+- rdf
+- rdfs
+- xsd
+- skos
+default_curi_maps:
+- semweb_context
+default_prefix: personinfo
+default_range: string
+subsets:
+  basic_subset:
+    name: basic_subset
+    description: A subset of the schema that handles basic information
+    from_schema: https://w3id.org/linkml/examples/personinfo
+enums:
+  RelationshipType:
+    name: RelationshipType
+    from_schema: https://w3id.org/linkml/examples/personinfo
+  FamilialRelationshipType:
+    name: FamilialRelationshipType
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: RelationshipType
+    permissible_values:
+      SIBLING_OF:
+        text: SIBLING_OF
+        meaning: famrel:01
+      PARENT_OF:
+        text: PARENT_OF
+        meaning: famrel:02
+      CHILD_OF:
+        text: CHILD_OF
+        meaning: famrel:05
+      FATHER_OF:
+        text: FATHER_OF
+        meaning: famrel:11
+  GenderType:
+    name: GenderType
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    permissible_values:
+      nonbinary man:
+        text: nonbinary man
+        meaning: GSSO:009254
+      nonbinary woman:
+        text: nonbinary woman
+        meaning: GSSO:009253
+      transgender woman:
+        text: transgender woman
+        meaning: GSSO:000384
+      transgender man:
+        text: transgender man
+        meaning: GSSO:000372
+      cisgender man:
+        text: cisgender man
+        meaning: GSSO:000371
+      cisgender woman:
+        text: cisgender woman
+        meaning: GSSO:000385
+      None:
+        text: None
+        meaning: GSSO:000283
+  DiagnosisType:
+    name: DiagnosisType
+    from_schema: https://w3id.org/linkml/examples/personinfo
+  ImportantLifeEventType:
+    name: ImportantLifeEventType
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    permissible_values:
+      BIRTH:
+        text: BIRTH
+      DEATH:
+        text: DEATH
+      PASSED_DRIVING_TEST:
+        text: PASSED_DRIVING_TEST
+      FIRST_CAR_ACCIDENT:
+        text: FIRST_CAR_ACCIDENT
+      MARRIAGE:
+        text: MARRIAGE
+      DIVORCE:
+        text: DIVORCE
+slots:
+  id:
+    name: id
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:identifier
+    identifier: true
+    domain_of:
+    - NamedThing
+    - Place
+  name:
+    name: name
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:name
+    domain_of:
+    - NamedThing
+    - Place
+  description:
+    name: description
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:description
+    domain_of:
+    - NamedThing
+  image:
+    name: image
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:image
+    domain_of:
+    - NamedThing
+  gender:
+    name: gender
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:gender
+    domain_of:
+    - Person
+    range: GenderType
+  primary_email:
+    name: primary_email
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:email
+    domain_of:
+    - Person
+  secondary_email:
+    name: secondary_email
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+  birth_date:
+    name: birth_date
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: schema:birthDate
+    domain_of:
+    - Person
+  employed_at:
+    name: employed_at
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    range: Organization
+  is_current:
+    name: is_current
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Event
+    range: boolean
+  has_employment_history:
+    name: has_employment_history
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+    range: EmploymentEvent
+    multivalued: true
+    inlined_as_list: true
+  has_medical_history:
+    name: has_medical_history
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+    range: MedicalEvent
+    multivalued: true
+    inlined_as_list: true
+  has_familial_relationships:
+    name: has_familial_relationships
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+    range: FamilialRelationship
+    multivalued: true
+    inlined_as_list: true
+  has_important_life_events:
+    name: has_important_life_events
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+    range: ImportantLifeEvent
+    multivalued: true
+    inlined_as_list: true
+  important_event_date:
+    name: important_event_date
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - ImportantLifeEvent
+    range: date
+    required: true
+  event_name:
+    name: event_name
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - ImportantLifeEvent
+    range: ImportantLifeEventType
+    required: true
+  in_location:
+    name: in_location
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - MedicalEvent
+    - WithLocation
+    range: Place
+  current_address:
+    name: current_address
+    description: The address at which a person currently lives
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+    range: Address
+  age_in_years:
+    name: age_in_years
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Person
+    range: integer
+    minimum_value: 0
+    maximum_value: 999
+  related_to:
+    name: related_to
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Relationship
+  type:
+    name: type
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - FamilialRelationship
+    - EmploymentEvent
+    - MedicalEvent
+    range: RelationshipType
+  street:
+    name: street
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Address
+  city:
+    name: city
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Address
+  mission_statement:
+    name: mission_statement
+    from_schema: https://w3id.org/linkml/examples/personinfo
+  founding_date:
+    name: founding_date
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Organization
+  founding_location:
+    name: founding_location
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Organization
+    range: Place
+  postal_code:
+    name: postal_code
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Address
+    range: string
+  started_at_time:
+    name: started_at_time
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: prov:startedAtTime
+    domain_of:
+    - Event
+    - Relationship
+    range: date
+  duration:
+    name: duration
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Event
+    range: float
+  diagnosis:
+    name: diagnosis
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - MedicalEvent
+    range: DiagnosisConcept
+    inlined: true
+  procedure:
+    name: procedure
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - MedicalEvent
+    range: ProcedureConcept
+    inlined: true
+  ended_at_time:
+    name: ended_at_time
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slot_uri: prov:endedAtTime
+    domain_of:
+    - Event
+    - Relationship
+    range: date
+  persons:
+    name: persons
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Container
+    range: Person
+    multivalued: true
+    inlined: true
+    inlined_as_list: true
+  organizations:
+    name: organizations
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    domain_of:
+    - Container
+    range: Organization
+    multivalued: true
+    inlined: true
+    inlined_as_list: true
+classes:
+  NamedThing:
+    name: NamedThing
+    description: A generic grouping for any identifiable entity
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    close_mappings:
+    - schema:Thing
+    slots:
+    - id
+    - name
+    - description
+    - image
+  Person:
+    name: Person
+    description: A person (alive, dead, undead, or fictional).
+    in_subset:
+    - basic_subset
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: NamedThing
+    mixins:
+    - HasAliases
+    slots:
+    - primary_email
+    - secondary_email
+    - birth_date
+    - age_in_years
+    - gender
+    - current_address
+    - has_employment_history
+    - has_familial_relationships
+    - has_medical_history
+    - has_important_life_events
+    slot_usage:
+      primary_email:
+        name: primary_email
+        pattern: ^\S+@[\S+\.]+\S+
+      secondary_email:
+        name: secondary_email
+        pattern: ^\S+@[\S+\.]+\S+
+    class_uri: schema:Person
+  HasAliases:
+    name: HasAliases
+    description: A mixin applied to any class that can have aliases/alternateNames
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    mixin: true
+    attributes:
+      aliases:
+        name: aliases
+        from_schema: https://w3id.org/linkml/examples/personinfo
+        exact_mappings:
+        - schema:alternateName
+        domain_of:
+        - HasAliases
+        multivalued: true
+  Organization:
+    name: Organization
+    description: An organization such as a company or university
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: NamedThing
+    mixins:
+    - HasAliases
+    slots:
+    - mission_statement
+    - founding_date
+    - founding_location
+    class_uri: schema:Organization
+  Place:
+    name: Place
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    mixins:
+    - HasAliases
+    slots:
+    - id
+    - name
+  Address:
+    name: Address
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slots:
+    - street
+    - city
+    - postal_code
+    class_uri: schema:PostalAddress
+  Event:
+    name: Event
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    close_mappings:
+    - schema:Event
+    slots:
+    - started_at_time
+    - ended_at_time
+    - duration
+    - is_current
+  Concept:
+    name: Concept
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: NamedThing
+  DiagnosisConcept:
+    name: DiagnosisConcept
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: Concept
+  ProcedureConcept:
+    name: ProcedureConcept
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: Concept
+  Relationship:
+    name: Relationship
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slots:
+    - started_at_time
+    - ended_at_time
+    - related_to
+  FamilialRelationship:
+    name: FamilialRelationship
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: Relationship
+    slots:
+    - type
+    slot_usage:
+      type:
+        name: type
+        range: FamilialRelationshipType
+        required: true
+      related_to:
+        name: related_to
+        range: Person
+        required: true
+  EmploymentEvent:
+    name: EmploymentEvent
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: Event
+    slots:
+    - employed_at
+    - type
+  MedicalEvent:
+    name: MedicalEvent
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: Event
+    slots:
+    - in_location
+    - diagnosis
+    - procedure
+    - type
+  ImportantLifeEvent:
+    name: ImportantLifeEvent
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    is_a: Event
+    slots:
+    - important_event_date
+    - event_name
+  WithLocation:
+    name: WithLocation
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    mixin: true
+    slots:
+    - in_location
+  Container:
+    name: Container
+    from_schema: https://w3id.org/linkml/examples/personinfo
+    slots:
+    - persons
+    - organizations
+    tree_root: true
+source_file: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/source/personinfo.yaml

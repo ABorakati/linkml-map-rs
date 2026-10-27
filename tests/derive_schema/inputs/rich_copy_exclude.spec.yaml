@@ -1,0 +1,12 @@
+id: https://example.org/spec/copy_exclude
+copy_directives:
+  all:
+    element_name: all
+    copy_all: true
+    exclude:
+      - Employee
+      - Unused
+      - tags
+class_derivations:
+  Thing:
+    populated_from: Person

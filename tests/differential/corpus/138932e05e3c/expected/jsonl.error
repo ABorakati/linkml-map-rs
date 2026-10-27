@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "'NoneType' object is not subscriptable; class_derivation=Light (from Light); slot_derivation=color (from color)"
+}

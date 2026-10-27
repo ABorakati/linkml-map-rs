@@ -1,0 +1,2 @@
+id	a	b	c	d	e	f	g	n	x	m	tags_json	tags_yaml
+r6	None	None	None	None	None	None	None	None	None	None	[1, 2.5, true, "1e3", "0o7", "007", 1000, Infinity]	[1, 2.5, true, 1e3, 0o7, '007', 1000, .inf]
