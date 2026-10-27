@@ -34,7 +34,7 @@ use linkml_map_core::{
 };
 use linkml_map_io::{
     Format, jsonl_line, load_all_single_object, load_all_with_numeric_hints,
-    load_stream_single_object, load_stream_with_numeric_hints,
+    load_stream_single_object, load_stream_with_numeric_hints, parse_numeric,
 };
 use tokio::sync::mpsc;
 
@@ -310,6 +310,23 @@ async fn lookup_index_for(
         // JSONL tables are a Rust extension (upstream's loader never finds them).
         if fmt == Format::Yaml {
             anyhow::bail!("LookupIndex does not yet support 'yaml' files");
+        }
+        // PARITY: `LookupIndex` reads a CSV/TSV table as all-varchar text and runs
+        // `_parse_numeric` over *every* cell of a returned row, whatever the schema
+        // says about the column (`"007"` reads as 7); the key itself is matched as
+        // text. A JSON table keeps the types the loader gives it.
+        if matches!(fmt, Format::Csv | Format::Tsv) {
+            let rows = load_all_with_numeric_hints(&file, fmt, Default::default())
+                .await
+                .with_context(|| {
+                    format!("loading joined table {table:?} from {}", file.display())
+                })?;
+            index.register_table_with(table, &rows, lookup_key, |cell| match cell {
+                Value::Str(text) => parse_numeric(text),
+                other => other.clone(),
+            });
+            any_registered = true;
+            continue;
         }
         let rows = load_all_with_numeric_hints(
             &file,

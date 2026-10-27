@@ -130,6 +130,27 @@ pub(crate) fn int_from_str(text: &str) -> Option<i64> {
     trimmed.parse().ok()
 }
 
+/// The digits of `int(text)` for a `str` in base 10, of any size: an optional `-`
+/// followed by ASCII digits (`None` for an invalid literal). The surrounding
+/// whitespace, Unicode digit and underscore rules are those of [`float_from_str`].
+pub fn int_literal(text: &str) -> Option<String> {
+    let normalised = ascii_digits(text);
+    let trimmed = normalised.trim_matches(is_c_space);
+    let cleaned = if trimmed.contains('_') {
+        if !underscores_between_digits(trimmed) {
+            return None;
+        }
+        Cow::Owned(trimmed.replace('_', ""))
+    } else {
+        Cow::Borrowed(trimmed)
+    };
+    let body = cleaned.strip_prefix(['+', '-']).unwrap_or(&cleaned);
+    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(cleaned.strip_prefix('+').unwrap_or(&cleaned).to_owned())
+}
+
 /// The text `Decimal(text)` parses (`numeric_as_ascii` in `_decimal.c`): the
 /// surrounding `str.isspace()` whitespace is stripped (U+001C to U+001F
 /// included), then every `_` is dropped wherever it stands and Unicode decimal

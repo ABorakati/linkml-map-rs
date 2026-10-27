@@ -66,13 +66,30 @@ impl LookupIndex {
     /// Rows that are not `Value::Map` or that lack `key_column` are silently
     /// skipped.  Calling again with the same name replaces the existing table.
     pub fn register_table(&mut self, name: &str, rows: &[Value], key_column: &str) {
+        self.register_table_with(name, rows, key_column, Value::clone);
+    }
+
+    /// [`register_table`](Self::register_table), storing each cell as
+    /// `coerce(cell)` while the key is still matched on the cell as given.
+    ///
+    /// Upstream's `LookupIndex` reads a CSV/TSV table as text, finds a row by the
+    /// key's text (`WHERE key = '007'`) and only then runs `_parse_numeric` over
+    /// every cell of the row it returns, so `"007"` matches `007` and reads as 7.
+    pub fn register_table_with(
+        &mut self,
+        name: &str,
+        rows: &[Value],
+        key_column: &str,
+        coerce: impl Fn(&Value) -> Value,
+    ) {
         let mut index: HashMap<String, Vec<IndexMap<String, Value>>> = HashMap::new();
         for row in rows {
             if let Value::Map(m) = row
                 && let Some(key_val) = m.get(key_column)
             {
                 let key_str = value_to_key(key_val);
-                index.entry(key_str).or_default().push(m.clone());
+                let stored = m.iter().map(|(k, v)| (k.clone(), coerce(v))).collect();
+                index.entry(key_str).or_default().push(stored);
             }
         }
         self.tables

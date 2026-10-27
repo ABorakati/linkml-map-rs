@@ -284,15 +284,7 @@ impl Node {
 }
 
 fn py_float_repr(f: f64) -> String {
-    if f.is_nan() {
-        "nan".into()
-    } else if f.is_infinite() {
-        if f > 0.0 { "inf".into() } else { "-inf".into() }
-    } else if f == f.trunc() && f.abs() < 1e16 {
-        format!("{f:.1}")
-    } else {
-        format!("{f}")
-    }
+    crate::pyfmt::py_float_repr(f)
 }
 
 // ── The metamodel field table ─────────────────────────────────────────────────

@@ -29,6 +29,7 @@ pub use eval::{
 };
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
+pub use pystr::int_literal as python_int_literal;
 
 #[cfg(test)]
 mod tests {
