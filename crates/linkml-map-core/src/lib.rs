@@ -4,6 +4,7 @@ pub mod error;
 pub mod expr;
 pub mod inference;
 pub mod normalize;
+pub mod pyfmt;
 pub mod schema;
 pub mod validate;
 pub mod value;

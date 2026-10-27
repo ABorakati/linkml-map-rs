@@ -22,9 +22,11 @@
 //!   defined in [`apply_aggregation`]. Spec→Python/SQL compilation and
 //!   JSON-schema target validation are intentionally out of scope.
 
+pub mod coerce;
 pub mod lookup_index;
 pub mod object_index;
 pub mod units;
+pub use coerce::TargetCoercions;
 pub use lookup_index::{LookupIndex, LookupIndexRef};
 pub use object_index::ObjectIndex;
 
@@ -32,7 +34,7 @@ use indexmap::IndexMap;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     datamodel::{
@@ -48,6 +50,7 @@ use crate::{
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
+use coerce::coerce_datatype;
 
 // ── Compiled expr cache ───────────────────────────────────────────────
 
@@ -134,6 +137,13 @@ pub struct ObjectTransformer<'s> {
     /// `slot()` references instead of silently yielding null (#232). Default
     /// false (lax). Set via [`with_strict_exprs`].
     strict: bool,
+    /// Optional shared target-schema lookup table (target slot datatypes).
+    /// Built once per plan and borrowed by every per-row engine; see
+    /// [`ObjectTransformer::with_target_coercions`].
+    target_coercions: Option<&'s TargetCoercions>,
+    /// Lazily built fallback used when no shared table is attached (tests,
+    /// `ObjectTransformer::new` callers). Unused without a target schema.
+    local_target_coercions: OnceLock<TargetCoercions>,
 }
 
 impl<'s> ObjectTransformer<'s> {
@@ -154,6 +164,8 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            target_coercions: None,
+            local_target_coercions: OnceLock::new(),
         }
     }
 
@@ -175,6 +187,8 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            target_coercions: None,
+            local_target_coercions: OnceLock::new(),
         }
     }
 
@@ -197,6 +211,15 @@ impl<'s> ObjectTransformer<'s> {
     /// callers and tests that use [`ObjectTransformer::new`] are unaffected.
     pub fn with_compiled_exprs(mut self, compiled: &'s CompiledExprs) -> Self {
         self.compiled = Some(compiled);
+        self
+    }
+
+    /// Attach a pre-built [`TargetCoercions`] table so the engine does not
+    /// re-resolve target slot datatypes per row. Must be built from the same
+    /// spec and target schema this transformer holds. Without one the engine
+    /// lazily builds its own on first use.
+    pub fn with_target_coercions(mut self, coercions: &'s TargetCoercions) -> Self {
+        self.target_coercions = Some(coercions);
         self
     }
 
@@ -682,12 +705,51 @@ impl<'s> ObjectTransformer<'s> {
         }
     }
 
+    /// The shared (or lazily built) target-schema lookup table; `None` without
+    /// a target schema, which switches all target-driven coercion off.
+    fn target_coercions(&self) -> Option<&TargetCoercions> {
+        let target = self.target_schema?;
+        Some(match self.target_coercions {
+            Some(shared) => shared,
+            None => self
+                .local_target_coercions
+                .get_or_init(|| TargetCoercions::build(&self.spec, target)),
+        })
+    }
+
+    /// Mirror of `Transformer._target_slot_datatype`: the built-in datatype the
+    /// target schema declares for a slot of the target class, if any.
+    fn target_slot_datatype(&self, class_name: &str, slot_name: &str) -> Option<&'static str> {
+        let target = self.target_schema?;
+        self.target_coercions()?
+            .datatype(target, class_name, slot_name)
+    }
+
+    /// The range values of `slot_deriv` are coerced to: the spec `range`, else
+    /// (when the spec declares none) the target schema's datatype.
+    fn coercion_datatype<'a>(
+        &self,
+        slot_deriv: &'a SlotDerivation,
+        class_deriv: &ClassDerivation,
+    ) -> Option<Cow<'a, str>> {
+        match slot_deriv.range.as_deref().filter(|r| !r.is_empty()) {
+            Some(range) => Some(Cow::Borrowed(range)),
+            None => self
+                .target_slot_datatype(&class_deriv.name, &slot_deriv.name)
+                .map(Cow::Borrowed),
+        }
+    }
+
     /// Apply range coercion post-processing when a source slot def is present.
     ///
     /// Runs `map_value_by_range` → `coerce_cardinality` → `coerce_datatype` →
     /// `reshape_collection` in that order.  Mirrors Python post-derivation
     /// coercion.  Returns `v` unchanged when `source_slot_def` is `None`, or
     /// when `v` is null or the slot is hidden.
+    ///
+    /// `map_value_by_range` sees the spec range only; the datatype coercion
+    /// falls back to the target schema's range when the spec declares none
+    /// (upstream 0469da7).
     fn apply_range_coercion(
         &self,
         mut v: Value,
@@ -702,8 +764,8 @@ impl<'s> ObjectTransformer<'s> {
         {
             v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
             v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
-            if let Some(target_range) = slot_deriv.range.as_deref() {
-                v = coerce_datatype(v, target_range);
+            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
+                v = coerce_datatype(v, &datatype)?;
             }
             v = self.reshape_collection(v, slot_deriv, ssd)?;
         }
@@ -2461,56 +2523,6 @@ fn yaml_flow(v: &Value) -> String {
     }
 }
 
-/// Mirror of Python `Transformer._coerce_datatype`.
-///
-/// Recursively converts scalar values to the named target range type.
-/// Unknown range names are passed through unchanged.
-fn coerce_datatype(v: Value, target_range: &str) -> Value {
-    match v {
-        Value::List(items) => Value::List(
-            items
-                .into_iter()
-                .map(|i| coerce_datatype(i, target_range))
-                .collect(),
-        ),
-        Value::Map(m) => Value::Map(
-            m.into_iter()
-                .map(|(k, i)| (k, coerce_datatype(i, target_range)))
-                .collect(),
-        ),
-        scalar => match target_range {
-            "integer" | "int" => match &scalar {
-                Value::Int(_) => scalar,
-                Value::Float(f) => Value::Int(*f as i64),
-                Value::Str(s) => s.trim().parse::<i64>().map(Value::Int).unwrap_or(scalar),
-                Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
-                _ => scalar,
-            },
-            "float" | "double" => match &scalar {
-                Value::Float(_) => scalar,
-                Value::Int(i) => Value::Float(*i as f64),
-                Value::Str(s) => s.trim().parse::<f64>().map(Value::Float).unwrap_or(scalar),
-                Value::Bool(b) => Value::Float(if *b { 1.0 } else { 0.0 }),
-                _ => scalar,
-            },
-            "string" | "str" => match &scalar {
-                Value::Str(_) => scalar,
-                other => Value::Str(value_to_string_key(other)),
-            },
-            "boolean" | "bool" => match &scalar {
-                Value::Bool(_) => scalar,
-                Value::Int(i) => Value::Bool(*i != 0),
-                Value::Str(s) => match s.to_lowercase().as_str() {
-                    "true" | "yes" | "1" => Value::Bool(true),
-                    _ => Value::Bool(false),
-                },
-                _ => scalar,
-            },
-            _ => scalar,
-        },
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3618,45 +3630,6 @@ mod tests {
     }
 
     // ── Test 14: coerce_datatype ──────────────────────────────────────────────
-
-    #[test]
-    fn test_coerce_datatype_integer() {
-        assert_eq!(
-            coerce_datatype(Value::Str("42".into()), "integer"),
-            Value::Int(42)
-        );
-        assert_eq!(coerce_datatype(Value::Float(3.7), "integer"), Value::Int(3));
-        assert_eq!(coerce_datatype(Value::Int(5), "integer"), Value::Int(5));
-    }
-
-    #[test]
-    fn test_coerce_datatype_float() {
-        assert_eq!(
-            coerce_datatype(Value::Str("3.14".into()), "float"),
-            Value::Float(3.14)
-        );
-        assert_eq!(coerce_datatype(Value::Int(2), "float"), Value::Float(2.0));
-    }
-
-    #[test]
-    fn test_coerce_datatype_string() {
-        assert_eq!(
-            coerce_datatype(Value::Int(99), "string"),
-            Value::Str("99".into())
-        );
-    }
-
-    #[test]
-    fn test_coerce_datatype_bool() {
-        assert_eq!(
-            coerce_datatype(Value::Str("true".into()), "boolean"),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            coerce_datatype(Value::Int(0), "boolean"),
-            Value::Bool(false)
-        );
-    }
 
     // ── Test 15: json_to_value round-trip ─────────────────────────────────────
 

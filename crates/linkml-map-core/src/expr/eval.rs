@@ -1434,7 +1434,7 @@ fn uuid5_two_level(namespace: &Value, name: &Value) -> ExprResult<String> {
 
 // --- scalar function implementations mirroring Python builtins ---
 
-fn py_str(v: &Value) -> String {
+pub(crate) fn py_str(v: &Value) -> String {
     match v {
         Value::Null => "None".to_string(),
         Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
@@ -1455,9 +1455,9 @@ fn py_str(v: &Value) -> String {
     }
 }
 
-fn py_repr(v: &Value) -> String {
+pub(crate) fn py_repr(v: &Value) -> String {
     match v {
-        Value::Str(s) => format!("'{s}'"),
+        Value::Str(s) => crate::pyfmt::py_repr_str(s),
         other => py_str(other),
     }
 }
@@ -1518,20 +1518,12 @@ fn slugify(s: &str) -> String {
 }
 
 fn format_py_float(f: f64) -> String {
-    if f.is_infinite() {
-        return if f > 0.0 { "inf".into() } else { "-inf".into() };
-    }
-    if f.is_nan() {
-        return "nan".into();
-    }
-    if f == f.trunc() && f.abs() < 1e16 {
-        format!("{f:.1}")
-    } else {
-        format!("{f}")
-    }
+    // Delegates to the exact Python `repr(float)` (the previous body diverged
+    // for |f| >= 1e16 and < 1e-4).
+    crate::pyfmt::py_float_repr(f)
 }
 
-fn py_int(v: &Value) -> ExprResult<Value> {
+pub(crate) fn py_int(v: &Value) -> ExprResult<Value> {
     match v {
         Value::Int(i) => Ok(Value::Int(*i)),
         Value::Bool(b) => Ok(Value::Int(*b as i64)),
@@ -1549,7 +1541,7 @@ fn py_int(v: &Value) -> ExprResult<Value> {
     }
 }
 
-fn py_float(v: &Value) -> ExprResult<Value> {
+pub(crate) fn py_float(v: &Value) -> ExprResult<Value> {
     match v {
         Value::Int(i) => Ok(Value::Float(*i as f64)),
         Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
