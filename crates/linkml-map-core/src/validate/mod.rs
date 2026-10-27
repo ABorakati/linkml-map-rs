@@ -47,6 +47,7 @@
 //! This is an **opt-in pre-flight check** — it is not wired into the transform
 //! path and does not affect engine output.
 
+mod enum_literals;
 pub mod expr_refs;
 mod identifiers;
 
@@ -366,6 +367,7 @@ fn validate_class_derivation(
             && target_slots.contains(&sd.name)
         {
             check_range_override(ctx, sd, cd_name, target, &sd_path, messages);
+            enum_literals::check_enum_literals(ctx, sd, cd_name, target, &sd_path, messages);
         }
         for nested in nested_class_derivations(sd) {
             validate_class_derivation(ctx, nested, Some(cd), &sd_path, messages);
