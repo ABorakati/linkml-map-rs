@@ -29,10 +29,9 @@
 //! Upstream's restricted evaluator rejects a set display other than `{x}` and a
 //! set comprehension (it then falls back to `asteval` only when
 //! `unrestricted_eval` is on, and for a single expression that fallback returns
-//! the unassigned `target`, i.e. `None`). Whether this evaluator rejects them is
-//! controlled by [`with_restricted_syntax`]; the default accepts everything,
-//! like the merged restricted/unrestricted evaluator always has. Inside a
-//! statement block (`asteval`) they are always accepted.
+//! the unassigned `target`, i.e. `None`; see [`super::gate`]). Everything
+//! outside a statement block is the restricted evaluator, so those two raise
+//! there; inside a statement block (`asteval`) they are always accepted.
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -42,39 +41,14 @@ use indexmap::IndexMap;
 use super::builtins::py_iter;
 use super::error::{ExprError, ExprResult};
 use super::eval::{Bindings, eval_ast, object_attr_mode_enabled, type_name};
+use super::gate::enter_comprehension;
 use super::parser::{Ast, CompKind, Comprehension, Target};
 use crate::value::Value;
 
-thread_local! {
-    /// When set, constructs upstream's restricted evaluator rejects (a set
-    /// display other than `{x}`, a set comprehension) raise instead of
-    /// evaluating. Off by default. Modelled on `STRICT_MODE` in the evaluator.
-    static RESTRICTED_SYNTAX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` with restricted-syntax checking set to `restricted`, restoring the
-/// prior setting afterwards (nesting-safe).
-///
-/// With `restricted` on, evaluating a set display other than a lone name or
-/// attribute raises the error upstream's `_eval_set` does (`ValueError: The {}
-/// must enclose a single variable` / `TypeError: The {} must enclose a
-/// variable`), and a set comprehension raises simpleeval's `FeatureNotAvailable`.
-/// These are the constructs the restricted evaluator rejects and `asteval`
-/// accepts; everything else the parser reads (conditional expressions, dict
-/// displays, `dict()`/`set()`, list and dict comprehensions, generator
-/// expressions, keyword arguments) is available in both.
-pub fn with_restricted_syntax<T>(restricted: bool, f: impl FnOnce() -> T) -> T {
-    RESTRICTED_SYNTAX.with(|m| {
-        let prev = m.replace(restricted);
-        let out = f();
-        m.set(prev);
-        out
-    })
-}
-
-/// Restricted syntax applies: requested, and not inside a statement block.
+/// Restricted syntax applies: not inside a statement block, which is the only
+/// place the asteval-style evaluator runs.
 fn restricted_syntax_enabled() -> bool {
-    RESTRICTED_SYNTAX.with(std::cell::Cell::get) && !object_attr_mode_enabled()
+    !object_attr_mode_enabled()
 }
 
 /// `{x}` as `asteval` sees it, evaluated as the one-element set it is. Only used
@@ -253,13 +227,13 @@ pub(super) fn dict(args: &[Value], keywords: Vec<(String, Value)>) -> ExprResult
 /// Items a comprehension ranges over: lists by element, dicts by key, strings
 /// by character; `None` yields nothing.
 ///
-/// PARITY: iterating `None` is a `TypeError` in Python; an absent value
-/// iterating as empty is this evaluator's long-standing behaviour (the
+/// PARITY: iterating `None` is a `TypeError` in Python's restricted evaluator;
+/// asteval, inside a statement block, iterates nothing instead (the
 /// `[e for e in src.events]` null-propagation the statement-block tests rely on).
 fn iteration_items(v: Value) -> ExprResult<Vec<Value>> {
     match v {
         Value::List(items) => Ok(items),
-        Value::Null => Ok(Vec::new()),
+        Value::Null if object_attr_mode_enabled() => Ok(Vec::new()),
         other => py_iter(&other).map(Cow::into_owned),
     }
 }
@@ -277,6 +251,14 @@ pub(super) fn eval_comprehension(c: &Comprehension, vars: &Bindings) -> ExprResu
             "Sorry, SetComp is not available in this evaluator".into(),
         ));
     }
+    // Record the loop variables for the restricted-mode attribute check (see
+    // `Ast::Attribute`); the guards unwind when the comprehension ends.
+    let _scopes: Vec<_> = c
+        .generators
+        .iter()
+        .flat_map(|g| g.target.names())
+        .map(|name| enter_comprehension(name, vars))
+        .collect();
     // The loop targets shadow the enclosing bindings in a child scope. The
     // targets bind single elements, so attribute access on one is per-element
     // (a scalar field read on a single Map), not the list auto-distribution

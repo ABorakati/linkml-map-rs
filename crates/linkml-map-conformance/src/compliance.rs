@@ -106,6 +106,8 @@ fn run_one(c: &Case) -> RunResult {
     };
 
     // ── run ───────────────────────────────────────────────────────────────────
+    // Upstream's compliance suite builds a default `ObjectTransformer()`: the
+    // restricted evaluator, so no `with_unrestricted_eval` here.
     let engine = ObjectTransformer::new(spec, Some(&provider as &dyn SchemaProvider), None);
     let input = json_to_value(&c.input);
 

@@ -12,8 +12,7 @@
 use serde_json::{Value as Json, json};
 
 use super::error::ExprError;
-use super::eval::{Bindings, eval_expr_with_mapping};
-use super::with_restricted_syntax;
+use super::eval::{Bindings, eval_expr_with_mapping, parse_expr};
 use crate::value::Value;
 
 fn bindings(vars: &Json) -> Bindings {
@@ -26,6 +25,12 @@ fn bindings(vars: &Json) -> Bindings {
 
 fn eval(expr: &str, vars: Json) -> Result<Value, ExprError> {
     eval_expr_with_mapping(expr, &bindings(&vars))
+}
+
+/// Evaluate with `unrestricted_eval` on, `vars` being the source slots a
+/// statement block reads as `src.<slot>`.
+fn eval_unrestricted(expr: &str, vars: Json) -> Result<Value, ExprError> {
+    parse_expr(expr)?.eval_unrestricted(&bindings(&vars))
 }
 
 #[track_caller]
@@ -1445,11 +1450,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     ("bool(set())", "[] (distributes over the empty list)"),
     ("bool(set([0]))", "[False]"),
     ("bool({0})", "[False]"),
-    // Not about sets: upstream's restricted evaluator refuses attribute access
-    // on a comprehension target (`_eval_attribute`, "comprehension-bound"); this
-    // evaluator reads the attribute, as `asteval` does.
-    ("[x.n for x in xs]", "[1, 2]"),
-    ("{x.n: x.m for x in xs}", "{'a': 1, 'b': 2}"),
     // Not about syntax: asteval has all of Python's built-ins, this evaluator the
     // LinkML function table, which takes no keyword arguments.
     ("sorted([2,1], reverse=True)", "error"),
@@ -1460,7 +1460,7 @@ fn restricted_expressions_match_upstream() {
     let mut failures = Vec::new();
     for &(expr, vars, kind, payload) in RESTRICTED_CASES {
         let vars: Json = serde_json::from_str(vars).unwrap();
-        let got = with_restricted_syntax(true, || eval(expr, vars.clone()));
+        let got = eval(expr, vars.clone());
         if let Some(why) = check(&got, kind, payload)
             && !KNOWN_DIVERGENCES.iter().any(|(e, _)| *e == expr)
         {
@@ -1479,7 +1479,7 @@ fn unrestricted_expressions_match_asteval() {
         }
         // A statement block: asteval records an evaluation error and leaves
         // `target` as None, where a syntax error fails up front.
-        let got = eval(&format!("target = {expr}"), json!({}));
+        let got = eval_unrestricted(&format!("target = {expr}"), json!({}));
         let (kind, payload) = match (kind, payload) {
             ("err", p) if p.contains("SyntaxError") => ("err", p),
             ("err", _) => ("ok", "null"),
@@ -1652,7 +1652,7 @@ fn references_still_resolve_inside_dicts_and_calls() {
 
 #[test]
 fn restricted_syntax_rejects_exactly_what_upstream_rejects() {
-    let restricted = |expr: &str| with_restricted_syntax(true, || eval(expr, json!({"x": 1})));
+    let restricted = |expr: &str| eval(expr, json!({"x": 1}));
     for rejected in [
         "{1, 2}",
         "{1}",
@@ -1680,30 +1680,21 @@ fn restricted_syntax_rejects_exactly_what_upstream_rejects() {
     // Like upstream, the rejection is dynamic: a branch not taken is not checked.
     assert!(restricted("1 if True else {1, 2}").is_ok());
     assert!(restricted("{1, 2} if True else 1").is_err());
-    // And the default setting accepts them.
-    assert!(eval("{1, 2}", json!({})).is_ok());
-}
-
-#[test]
-fn restricted_syntax_nests_and_restores() {
-    with_restricted_syntax(true, || {
-        with_restricted_syntax(false, || assert!(eval("{1, 2}", json!({})).is_ok()));
-        assert!(eval("{1, 2}", json!({})).is_err());
-    });
-    assert!(eval("{1, 2}", json!({})).is_ok());
+    // Inside a statement block (asteval) they are accepted.
+    assert!(eval_unrestricted("target = {1, 2}", json!({})).is_ok());
 }
 
 #[test]
 fn statement_blocks_are_never_restricted() {
     // asteval: `{x}` is a one-element set, whatever the restriction.
-    let got = with_restricted_syntax(true, || eval("target = {1, 2}", json!({}))).unwrap();
+    let got = eval_unrestricted("target = {1, 2}", json!({})).unwrap();
     assert_eq!(got, Value::from(&json!([1, 2])));
 }
 
 // === statement blocks (asteval) ===============================================
 
 fn run_block(src: &str, slots: Json) -> Value {
-    eval(src, json!({"src": slots})).unwrap()
+    eval_unrestricted(src, slots).unwrap()
 }
 
 #[test]
@@ -1806,10 +1797,10 @@ fn a_set_is_a_deduplicated_list_in_insertion_order() {
     // agree with Python.
     expect("set([3, 1, 2, 3, 1])", json!({}), json!([3, 1, 2]));
     expect("list(set(['b', 'a', 'b']))", json!({}), json!(["b", "a"]));
-    expect(
-        "{c for c in 'hello'}",
-        json!({}),
-        json!(["h", "e", "l", "o"]),
+    // A set comprehension is rejected by the restricted evaluator, so a block.
+    assert_eq!(
+        eval_unrestricted("target = {c for c in 'hello'}", json!({})).unwrap(),
+        Value::from(&json!(["h", "e", "l", "o"]))
     );
     // PARITY: a tuple is a list here, so it is unhashable (Python hashes tuples).
     expect_err("set([(1, 2)])", json!({}), "unhashable type: 'list'");

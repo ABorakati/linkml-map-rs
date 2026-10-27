@@ -108,6 +108,7 @@ async fn main() -> Result<()> {
             channel_depth: 512,
             write_options: Default::default(),
             strict: false,
+            unrestricted_eval: false,
         };
 
         let stats = linkml_map_pipeline::run_pipeline(cfg).await?;

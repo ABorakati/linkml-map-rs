@@ -159,6 +159,18 @@ pub enum Target {
     Tuple(Vec<String>),
 }
 
+impl Target {
+    /// The names this target binds.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        match self {
+            Self::Name(name) => std::slice::from_ref(name),
+            Self::Tuple(names) => names.as_slice(),
+        }
+        .iter()
+        .map(String::as_str)
+    }
+}
+
 /// One `for target in iter if cond ...` clause (`ast.comprehension`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generator {
