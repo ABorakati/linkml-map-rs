@@ -23,4 +23,5 @@ linkml-map-duckdb = { path = "../linkml-map-duckdb", optional = true }
 columnar = ["dep:linkml-map-duckdb", "linkml-map-duckdb/columnar"]
 
 [dev-dependencies]
+proptest = { workspace = true }
 tempfile = "3"

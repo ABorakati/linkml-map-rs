@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/linkml-map-core", "crates/linkml-map-io", "crates/linkml-map-cli", "crates/linkml-map-schemaview", "crates/linkml-map-conformance", "crates/linkml-map-pipeline", "crates/linkml-map-py", "crates/linkml-map-duckdb", "xtask"]
+exclude = ["fuzz"]
 # linkml-map-py is a cdylib (maturin wheel); add to members so workspace deps resolve
 # Build wheel: maturin build -m crates/linkml-map-py/Cargo.toml
 # cargo build --lib -p linkml-map-py  also works (skips Python linking)
@@ -29,3 +30,5 @@ tempfile = "3"
 log = "0.4"
 deunicode = "1"
 unicode-normalization = "0.1"
+# Property-based tests (dev-dependency only); see `tests/proptest_*.rs` in each crate.
+proptest = { version = "1", default-features = false, features = ["std"] }
