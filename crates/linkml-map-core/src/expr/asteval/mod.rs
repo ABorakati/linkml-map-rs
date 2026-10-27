@@ -6,6 +6,7 @@
 //! [`super::gate`] decides when it runs.
 
 pub(crate) mod ast;
+mod dirs;
 mod fmt;
 mod funcs;
 mod interp;
@@ -174,10 +175,10 @@ pub(crate) fn build_src<'v>(
         if matches!(k.as_str(), "NULL" | "__slot_values") {
             continue;
         }
-        if let Some(a) = attrs {
-            if !a.iter().any(|x| x == k) {
-                continue;
-            }
+        if let Some(a) = attrs
+            && !a.iter().any(|x| x == k)
+        {
+            continue;
         }
         m.insert(k.clone(), from_value(v));
     }
@@ -204,20 +205,19 @@ pub(crate) fn execute(
             "unrestricted expression exceeded the evaluation step limit".into(),
         ));
     }
-    if raise_undefined {
-        if let Some(first) = interp.error.first() {
-            if first.exc == Some("NameError") {
-                let detail = interp.error_detail(first);
-                let name = first.msg.split('\'').nth(1).unwrap_or_default().to_string();
-                return Err(ExecError::Undefined {
-                    name,
-                    message: format!(
-                        "Unrestricted expression uses an undefined name: {detail}. \
+    if raise_undefined
+        && let Some(first) = interp.error.first()
+        && first.exc == Some("NameError")
+    {
+        let detail = interp.error_detail(first);
+        let name = first.msg.split('\'').nth(1).unwrap_or_default().to_string();
+        return Err(ExecError::Undefined {
+            name,
+            message: format!(
+                "Unrestricted expression uses an undefined name: {detail}. \
                          Statements read slots as src.<slot>."
-                    ),
-                });
-            }
-        }
+            ),
+        });
     }
     match interp.symbol("target") {
         Some(v) => Ok(to_value(&v, 0)),

@@ -225,3 +225,144 @@ fn src_access() {
         run("target = a").unwrap_err()
     );
 }
+
+fn list(v: &[Value]) -> Value {
+    Value::List(v.to_vec())
+}
+
+#[test]
+fn interrupt_flags_survive_a_handled_error() {
+    // Verified against asteval 1.0.10: `raise_exception` leaves `_interrupt` set, so
+    // the statements after a handled error in a loop body are skipped.
+    let t = "target = 0\nfor i in range(3):\n    try:\n        x = 1 / 0\n    except ZeroDivisionError:\n        target += 1\n    target += 10";
+    assert_eq!(run(t).unwrap(), int(3));
+    // `continue` in a `while` skips the next test, so this would never end; the
+    // step limit turns the upstream hang into an error.
+    let t = "i = 0\nwhile i < 3:\n    i += 1\n    continue\ntarget = i";
+    assert!(matches!(run(t), Err(ExecError::Uncaught(_))));
+}
+
+#[test]
+fn error_list_decides_whether_a_typed_except_matches() {
+    // One level of nesting leaves an error with `exc_info`: the handler runs.
+    assert_eq!(
+        run("try:\n    x = unknown\nexcept NameError:\n    target = 'ne'").unwrap(),
+        s("ne")
+    );
+    // Deeper nesting is deduplicated to the innermost error, which has none:
+    // `None()` is called and the block aborts.
+    assert!(matches!(
+        run("try:\n    x = 1 + (2 + unknown)\nexcept NameError:\n    target = 'ne'"),
+        Err(ExecError::Undefined { .. })
+    ));
+    // `except <not a Python builtin>` catches everything; `except <builtin non-class>` fails.
+    assert_eq!(
+        run("try:\n    x = 1 / 0\nexcept sqrt:\n    target = 's'").unwrap(),
+        s("s")
+    );
+    assert_eq!(
+        run("try:\n    x = 1 / 0\nexcept len:\n    target = 'l'").unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        run("try:\n    x = 1 / 0\nexcept object:\n    target = 'o'").unwrap(),
+        s("o")
+    );
+}
+
+#[test]
+fn flat_symbol_table_and_calls() {
+    assert_eq!(
+        run("x = 1\ndef f():\n    x = 10\n    return x\nf()\ntarget = x").unwrap(),
+        int(1)
+    );
+    assert_eq!(
+        run("x = 1\ndef f():\n    return x\nx = 2\ntarget = f()").unwrap(),
+        int(2)
+    );
+    assert_eq!(
+        run("def f(a, b=2, *c, **d):\n    return [a, b, len(c), len(d)]\ntarget = f(1, 5, 6, 7, k=1)")
+            .unwrap(),
+        list(&[int(1), int(2), int(3), int(1)])
+    );
+    assert_eq!(
+        run("def f(a):\n    return a\ntarget = f()").unwrap(),
+        Value::Null
+    );
+    // `i` is gone once the comprehension ends: the call raises a NameError.
+    assert!(matches!(
+        run("target = [lambda: i for i in range(2)][0]()"),
+        Err(ExecError::Undefined { .. })
+    ));
+}
+
+#[test]
+fn comprehension_variables_leak_only_on_error() {
+    assert!(matches!(
+        run("y = [z for z in range(3)]\ntarget = z"),
+        Err(ExecError::Undefined { .. })
+    ));
+    assert_eq!(
+        run("try:\n    y = [zz for zz in range(3) if 1 / 0]\nexcept ZeroDivisionError:\n    pass\ntarget = zz")
+            .unwrap(),
+        int(0)
+    );
+}
+
+#[test]
+fn aliasing_and_in_place_methods() {
+    assert_eq!(
+        run("a = b = []\na.append(1)\ntarget = b").unwrap(),
+        list(&[int(1)])
+    );
+    assert_eq!(
+        run("x = [1, 2]\ny = x\ny += [3]\ntarget = x").unwrap(),
+        list(&[int(1), int(2)])
+    );
+    assert_eq!(
+        run("x = {'a': [1]}\ny = dict(x)\ny['a'].append(2)\ntarget = x['a']").unwrap(),
+        list(&[int(1), int(2)])
+    );
+}
+
+#[test]
+fn formatting() {
+    assert_eq!(
+        run("target = f'{1234567.891:,.2f}|{255:#x}|{\"a\":*^5}|{1:03d}'").unwrap(),
+        s("1,234,567.89|0xff|**a**|001")
+    );
+    assert_eq!(
+        run("target = '%5.2f|%-4s|%03d' % (3.14159, 'a', 7)").unwrap(),
+        s(" 3.14|a   |007")
+    );
+    assert_eq!(run("target = f'{100:.3}'").unwrap(), Value::Null);
+}
+
+#[test]
+fn numeric_semantics() {
+    assert_eq!(
+        run("target = [7 // -2, -7 % 3, 5.5 % 2, round(2.675, 2), round(2.5), 2 ** -1]").unwrap(),
+        list(&[
+            int(-4),
+            int(2),
+            Value::Float(1.5),
+            Value::Float(2.67),
+            int(2),
+            Value::Float(0.5)
+        ])
+    );
+    assert_eq!(run("target = sum([0.1] * 10)").unwrap(), Value::Float(1.0));
+    assert_eq!(run("target = 2 ** 10001").unwrap(), Value::Null);
+    assert_eq!(run("target = 1 << 1001").unwrap(), Value::Null);
+}
+
+#[test]
+fn string_length_limit() {
+    // asteval's MAX_STR_LEN is 2 << 17.
+    assert_eq!(run("target = len('a' * 262144)").unwrap(), int(262144));
+    assert_eq!(run("target = 'a' * 262145").unwrap(), Value::Null);
+    assert_eq!(
+        run("x = 'a' * 262144\ntarget = len(x + 'b')").unwrap(),
+        Value::Null
+    );
+}

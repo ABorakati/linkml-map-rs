@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use super::dirs;
 use super::ops::*;
 use super::value::*;
 use crate::expr::builtins;
@@ -122,16 +123,6 @@ pub(crate) fn lookup_builtin(name: &str) -> Option<Py> {
         return exc_class(name).map(Py::Type);
     }
     None
-}
-
-/// Every name in the initial symbol table (for `dir`-like checks and tests).
-#[cfg(test)]
-pub(crate) fn builtin_names() -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = BUILTIN_FUNCS.to_vec();
-    v.extend(BUILTIN_TYPES);
-    v.extend(["pi", "e"]);
-    v.extend(EXC_BUILTINS);
-    v
 }
 
 fn arity<T>(name: &str, got: usize, min: usize, max: usize) -> PyRes<T>
@@ -460,7 +451,35 @@ pub(crate) fn call_builtin(
                     .collect(),
                 ));
             }
-            runtime_err("dir(object) is not supported")
+            check_args(name, &args, 1, 1)?;
+            let names: &[&str] = match &args[0] {
+                Py::None => dirs::DIR_NONE,
+                Py::Bool(_) => dirs::DIR_BOOL,
+                Py::Int(_) => dirs::DIR_INT,
+                Py::Float(_) => dirs::DIR_FLOAT,
+                Py::Str(_) => dirs::DIR_STR,
+                Py::Bytes(_) => dirs::DIR_BYTES,
+                Py::List(_) => dirs::DIR_LIST,
+                Py::Tuple(_) => dirs::DIR_TUPLE,
+                Py::Dict(_) => dirs::DIR_DICT,
+                Py::Set(_) => dirs::DIR_SET,
+                Py::Range(..) => dirs::DIR_RANGE,
+                Py::Slice(_) => dirs::DIR_SLICE,
+                Py::Ellipsis => dirs::DIR_ELLIPSIS,
+                Py::Exc(_) => dirs::DIR_EXC,
+                Py::Type(_) => dirs::DIR_TYPE,
+                Py::Builtin(_) | Py::Method(_) => dirs::DIR_FUNC_BUILTIN,
+                Py::Obj(o) => {
+                    let mut v: Vec<String> =
+                        dirs::DIR_OBJ.iter().map(|s| (*s).to_string()).collect();
+                    v.extend(o.borrow().keys().cloned());
+                    v.sort();
+                    v.dedup();
+                    return Ok(Py::list(v.into_iter().map(Py::str).collect()));
+                }
+                _ => dirs::DIR_OBJ,
+            };
+            Ok(Py::list(names.iter().map(|s| Py::str(*s)).collect()))
         }
         "uuid5" => {
             no_kwargs(name, &kwargs)?;

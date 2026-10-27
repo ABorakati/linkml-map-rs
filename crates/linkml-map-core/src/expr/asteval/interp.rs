@@ -240,10 +240,10 @@ impl<'a> Interp<'a> {
             h_exc = in_except.map(|e| e.class);
         }
         let mut h_msg = msg.to_string();
-        if h_msg.is_empty() {
-            if let Some(e) = in_except {
-                h_msg = e.message();
-            }
+        if h_msg.is_empty()
+            && let Some(e) = in_except
+        {
+            h_msg = e.message();
         }
         self.interrupt = Some(Interrupt::Raise);
         self.error.push(Holder {
@@ -285,12 +285,11 @@ impl<'a> Interp<'a> {
                 args: vec![Py::str(popped.msg.as_str())],
             });
         }
-        if err_msg_len == 0 {
-            if let Some(i) = err_idx {
-                if let Some(h) = self.error.get_mut(i) {
-                    h.msg = error_msg.clone();
-                }
-            }
+        if err_msg_len == 0
+            && let Some(i) = err_idx
+            && let Some(h) = self.error.get_mut(i)
+        {
+            h.msg = error_msg.clone();
         }
         Box::new(ExcObj {
             class: exc,
@@ -305,10 +304,8 @@ impl<'a> Interp<'a> {
         let mut out = vec![self.error[0].clone()];
         for err in &self.error[1..] {
             let last = out.last().expect("non-empty");
-            if err.exc != last.exc || err.msg != last.msg {
-                if !err.msg.is_empty() {
-                    out.push(err.clone());
-                }
+            if (err.exc != last.exc || err.msg != last.msg) && !err.msg.is_empty() {
+                out.push(err.clone());
             }
         }
         self.error = out;
@@ -667,10 +664,10 @@ impl<'a> Interp<'a> {
                 };
                 // safe_format('{__fstring__[:spec]}', ...): the spec is parsed again as
                 // a format string, so braces in it are replacement fields.
-                if let Some(s) = &spec_text {
-                    if s.contains('{') || s.contains('}') {
-                        return Err(exc("ValueError", "Max string recursion exceeded"));
-                    }
+                if let Some(s) = &spec_text
+                    && (s.contains('{') || s.contains('}'))
+                {
+                    return Err(exc("ValueError", "Max string recursion exceeded"));
                 }
                 super::fmt::format_value(&val, spec_text.as_deref().unwrap_or(""))
             }
@@ -810,7 +807,7 @@ impl<'a> Interp<'a> {
                     .slot_values
                     .as_ref()
                     .and_then(|m| m.get(&**n))
-                    .map_or(Py::None, |v| plain_from_value(v)))
+                    .map_or(Py::None, plain_from_value))
             }
             Py::Builtin(n) => call_builtin(self, n, args, kwargs),
             Py::Type(n) => call_type(self, n, args, kwargs),
@@ -923,13 +920,12 @@ impl<'a> Interp<'a> {
         self.calldepth += 1;
         self.frames += 1;
         let mut retval = Py::None;
-        let body_exprs: Vec<Node<'_>>;
         let def = p.def.clone();
-        if p.is_lambda {
-            body_exprs = def.lambda_body.iter().map(Node::E).collect();
+        let body_exprs: Vec<Node<'_>> = if p.is_lambda {
+            def.lambda_body.iter().map(Node::E).collect()
         } else {
-            body_exprs = def.body.iter().map(Node::S).collect();
-        }
+            def.body.iter().map(Node::S).collect()
+        };
         let mut failure: Option<Box<ExcObj>> = None;
         for node in body_exprs {
             match self.run(Some(node), true) {
@@ -1288,7 +1284,7 @@ impl<'a> Interp<'a> {
     }
 
     fn on_with(&mut self, items: &[WithItem], _body: &[Stmt]) -> PyRes<Py> {
-        for item in items {
+        if let Some(item) = items.iter().next() {
             let ctx = self.run_e(&item.context_expr)?;
             // No value `asteval` can hold has `__enter__`.
             let msg = format!(

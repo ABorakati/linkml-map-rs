@@ -495,11 +495,11 @@ impl Parser {
                     self.import_from()?;
                     return Ok(Stmt::Unsupported("ImportFrom"));
                 }
-                "type" => {
+                "type"
                     // `type X = ...` / `type X[T] = ...` (soft keyword).
                     if matches!(self.peek_at(1), Tok::Name(m) if !is_keyword(m))
                         && (self.is_op_at(2, "=") || self.is_op_at(2, "["))
-                    {
+                    => {
                         self.advance();
                         self.advance();
                         if self.is_op("[") {
@@ -509,7 +509,6 @@ impl Parser {
                         self.expression()?;
                         return Ok(Stmt::Unsupported("TypeAlias"));
                     }
-                }
                 _ => {}
             }
         }

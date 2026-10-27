@@ -109,7 +109,7 @@ fn group(digits: &str, sep: char, size: usize) -> String {
     let n = digits.len();
     let mut out = String::new();
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (n - i) % size == 0 {
+        if i > 0 && (n - i).is_multiple_of(size) {
             out.push(sep);
         }
         out.push(ch);
@@ -279,13 +279,7 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
         ""
     };
     if let Some(sep) = s.grouping {
-        let size = if matches!(ty, 'd' | 'n') && sep == ',' {
-            3
-        } else if sep == '_' && matches!(ty, 'd' | 'n') {
-            3
-        } else {
-            4
-        };
+        let size = if matches!(ty, 'd' | 'n') { 3 } else { 4 };
         body = group(&body, sep, size);
     }
     let sign = match (neg, s.sign) {
@@ -413,7 +407,7 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
             }
             i += 1;
         }
-        let mut take_arg = |next_arg: &mut usize| -> PyRes<Py> {
+        let take_arg = |next_arg: &mut usize| -> PyRes<Py> {
             if let (Some(k), Some(Py::Dict(d))) = (&key, mapping) {
                 let hk = HKey::Str(k.as_str().into());
                 return match d.borrow().get(&hk) {

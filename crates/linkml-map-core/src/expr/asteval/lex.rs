@@ -354,7 +354,7 @@ impl Lexer {
                                 '[' => ']',
                                 _ => '}',
                             };
-                            if op.chars().next() != Some(want) {
+                            if !op.starts_with(want) {
                                 return Err(format!(
                                     "closing parenthesis '{op}' does not match opening parenthesis '{open}'"
                                 ));
@@ -646,7 +646,7 @@ fn scan_string_body(
                 i += 2;
                 continue;
             }
-            i = scan_field(chars, i + 1, q, triple, raw)?;
+            i = scan_field(chars, i + 1, triple, raw)?;
             continue;
         }
         i += 1;
@@ -660,7 +660,7 @@ fn scan_string_body(
 
 /// Scan an f-string replacement field starting after its `{`; returns the
 /// index just past the closing `}`.
-fn scan_field(chars: &[char], mut i: usize, q: char, triple: bool, raw: bool) -> PResult<usize> {
+fn scan_field(chars: &[char], mut i: usize, triple: bool, raw: bool) -> PResult<usize> {
     let n = chars.len();
     let mut stack: Vec<char> = Vec::new();
     while i < n {
@@ -725,7 +725,7 @@ fn scan_field(chars: &[char], mut i: usize, q: char, triple: bool, raw: bool) ->
                 while i < n {
                     match chars[i] {
                         '{' => {
-                            i = scan_field(chars, i + 1, q, triple, raw)?;
+                            i = scan_field(chars, i + 1, triple, raw)?;
                         }
                         '}' => return Ok(i + 1),
                         '\n' if !triple => return Err("unterminated string literal".into()),

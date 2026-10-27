@@ -273,7 +273,7 @@ impl Expr {
         match self {
             Expr::Constant(_) | Expr::Name(..) | Expr::Unsupported(_) | Expr::Lambda(_) => {}
             Expr::List(v) | Expr::Tuple(v) | Expr::Set(v) | Expr::BoolOp(_, v) => {
-                out.extend(v.drain(..));
+                out.append(v);
             }
             Expr::Dict(items) => {
                 for (k, v) in items.drain(..) {
@@ -293,7 +293,7 @@ impl Expr {
             }
             Expr::Call(func, args, kws) => {
                 out.push(take(func));
-                out.extend(args.drain(..));
+                out.append(args);
                 out.extend(kws.drain(..).map(|k| k.value));
             }
             Expr::Compare(l, rest) => {

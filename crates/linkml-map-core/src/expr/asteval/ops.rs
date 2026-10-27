@@ -61,10 +61,8 @@ pub(crate) fn float_floordiv(x: f64, y: f64) -> PyRes<f64> {
     }
     let mut m = x % y;
     let mut div = (x - m) / y;
-    if m != 0.0 {
-        if (y < 0.0) != (m < 0.0) {
-            div -= 1.0;
-        }
+    if m != 0.0 && (y < 0.0) != (m < 0.0) {
+        div -= 1.0;
     }
     let floordiv = if div != 0.0 {
         let f = div.floor();
@@ -220,12 +218,12 @@ fn sub(a: &Py, b: &Py) -> PyRes<Py> {
 
 fn mult(a: &Py, b: &Py) -> PyRes<Py> {
     // safe_mult
-    if let (Py::Str(s), Some(n)) = (a, is_int_like(b)) {
-        if (s.chars().count() as i128) * (n as i128) > MAX_STR_LEN as i128 {
-            return runtime_err(format!(
-                "String length exceeded, max string length is {MAX_STR_LEN}"
-            ));
-        }
+    if let (Py::Str(s), Some(n)) = (a, is_int_like(b))
+        && (s.chars().count() as i128) * (n as i128) > MAX_STR_LEN as i128
+    {
+        return runtime_err(format!(
+            "String length exceeded, max string length is {MAX_STR_LEN}"
+        ));
     }
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(match (x, y) {
