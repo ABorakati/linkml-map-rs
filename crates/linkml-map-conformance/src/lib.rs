@@ -30,6 +30,8 @@ use walkdir::WalkDir;
 #[cfg(test)]
 mod compliance;
 
+pub mod exprfuzz;
+
 // ─── Public data types ────────────────────────────────────────────────────────
 
 /// Status of a single fixture case run.
