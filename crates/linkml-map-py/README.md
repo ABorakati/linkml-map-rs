@@ -131,7 +131,15 @@ at construction.
 Covered: `ObjectTransformer(...)`, `.map_object()`,
 `.create_transformer_specification()`, `.load_transformer_specification()`,
 `.load_source_schema()`, `.index()` (no-op — the Rust engine builds any FK index
-internally), `.strict`, `load_specification()`.
+internally), `.strict`, `.unrestricted_eval`, `load_specification()`.
+
+`unrestricted_eval` is real, as upstream, and defaults to `False`: the safe
+evaluator has no `src`, runs only the first statement of an `expr:` block and
+refuses attribute access on comprehension variables. Pass
+`unrestricted_eval=True` for a spec that uses statement blocks (it also exists
+on `Transformer`, `transform_object` and `transform_objects` as a keyword).
+This is a behaviour change for callers of the Rust-backed classes, which used to
+always run unrestricted.
 
 Divergences from upstream, all deliberate:
 
@@ -145,9 +153,6 @@ Divergences from upstream, all deliberate:
   rather than raising, and a list attribute is a fresh list of views over the
   same dicts. Like upstream, `load_specification(dict)` normalises the dict in
   place.
-- `unrestricted_eval` is accepted and stored, but has no effect: the Rust
-  engine merges upstream's restricted and unrestricted evaluators, so it
-  evaluates the statement blocks upstream only runs when the flag is set.
 - `spec_messages` is always `[]`: the deprecation scan that fills it upstream
   is not ported.
 - A multi-line `str` that is not an existing file is read as YAML text (kept

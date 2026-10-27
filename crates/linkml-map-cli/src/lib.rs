@@ -64,6 +64,13 @@ pub struct MapDataConfig {
     /// enum value matching no (or more than one) permissible value of the
     /// target enum, instead of warning and carrying on.
     pub strict: bool,
+    /// Unrestricted evaluation (`--unrestricted-eval`): `expr:` statement blocks
+    /// run with the source object as `src`, and an expression the restricted
+    /// evaluator rejects yields null. Off by default, as upstream: the safe,
+    /// restricted evaluator has no `src` and evaluates one expression. Only
+    /// enable it for trusted specs. See
+    /// [`linkml_map_pipeline::PipelineConfig::unrestricted_eval`].
+    pub unrestricted_eval: bool,
     /// Input data path — a single data file (default), or a *directory* of tables
     /// for multi-table joins (each file is a named table matched by filename stem;
     /// the primary table is streamed and joined tables feed a lookup index). See
@@ -92,6 +99,7 @@ impl MapDataConfig {
             workers: 4,
             unordered: false,
             strict: false,
+            unrestricted_eval: false,
             input: input.into(),
             write_options: WriteOptions::default(),
         }
@@ -131,6 +139,7 @@ pub async fn run_map_data_config_with_options(
         channel_depth: 256,
         write_options: cfg.write_options.clone(),
         strict: cfg.strict,
+        unrestricted_eval: cfg.unrestricted_eval,
     };
 
     eprintln!(

@@ -124,6 +124,16 @@ linkml-tr-rs map-data \
   --source-type Person -o out.jsonl data.jsonl
 ```
 
+**Restricted evaluation is the default**, as upstream: an `expr:` is one
+expression over the source slots (plus `NULL`, join aliases and the built-in
+functions). It has no `src`, runs only the first statement of a block, and
+refuses attribute access on a comprehension variable. A spec that uses
+statement blocks, `src.` accessors or `[x.attr for x in ...]` (upstream's
+`personinfo_basic` is one) needs `--unrestricted-eval`, or
+`unrestricted_eval=True` in Python and `.with_unrestricted_eval(true)` in Rust.
+Only enable it for trusted specs. (Earlier releases always ran unrestricted, so
+this is a behaviour change for existing users.)
+
 Output follows upstream `linkml-map` byte for byte where it can: JSON, JSONL and
 YAML drop `null` slots, stream YAML is a key-sorted multi-document stream, and
 CSV/TSV flatten nested objects with `__`. `-f/--output-format` overrides the
@@ -159,7 +169,9 @@ converted with `str()`, so a `date`/`datetime` anywhere in the input, including 
 `yaml.safe_load`-parsed spec dict passed to `create_transformer_specification`,
 comes back as a plain `str`, never a native `datetime.date`/`datetime.datetime`.
 Schema and specification arguments accept a `str` or `os.PathLike`;
-`ObjectTransformer(..., strict=True)` turns on strict mode, and
+`ObjectTransformer(..., strict=True)` turns on strict mode,
+`ObjectTransformer(..., unrestricted_eval=True)` enables statement blocks (the
+default is the restricted evaluator, as upstream), and
 `linkml_map.load_specification(path_or_dict)` loads and validates a specification.
 
 <details>
@@ -212,6 +224,10 @@ use linkml_map_core::{engine::ObjectTransformer, value::Value};
 let engine = ObjectTransformer::new(spec, Some(&source_provider), None);
 let out = engine.map_container(&input, Some("Person"))?;
 ```
+
+`ObjectTransformer::with_strict_exprs(true)` and
+`with_unrestricted_eval(true)` mirror upstream's `strict` and `unrestricted_eval`;
+the latter defaults to off (restricted evaluation, see the CLI quickstart).
 
 ## Performance
 

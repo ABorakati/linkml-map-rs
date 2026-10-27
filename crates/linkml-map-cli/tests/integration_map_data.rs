@@ -107,6 +107,7 @@ fn continue_on_error_config(
         workers: 1,
         unordered: false,
         strict: false,
+        unrestricted_eval: false,
         input: input.to_string_lossy().into_owned(),
     }
 }
@@ -151,6 +152,7 @@ async fn test_map_data_measurements_001_golden() {
             .unwrap()
             .to_owned(),
         strict: false,
+        unrestricted_eval: false,
     };
 
     // ── Run ───────────────────────────────────────────────────────────────────
@@ -246,6 +248,7 @@ async fn test_map_data_measurements_001_yaml_output_shape() {
             .unwrap()
             .to_owned(),
         strict: false,
+        unrestricted_eval: false,
     };
 
     let stats = run_map_data_config(cfg)
@@ -315,6 +318,7 @@ async fn test_map_data_measurements_002_two_rows() {
         unordered: false,
         input: data_file.to_str().unwrap().to_owned(),
         strict: false,
+        unrestricted_eval: false,
     };
 
     let stats = run_map_data_config(cfg)
@@ -427,6 +431,7 @@ async fn test_map_data_stdout_with_explicit_format() {
             .unwrap()
             .to_owned(),
         strict: false,
+        unrestricted_eval: false,
     };
 
     let result = linkml_map_cli::run_map_data_config(cfg).await;
@@ -475,6 +480,7 @@ async fn test_map_data_stdout_without_format_defaults_to_yaml() {
             .unwrap()
             .to_owned(),
         strict: false,
+        unrestricted_eval: false,
     };
 
     let result = linkml_map_cli::run_map_data_config(cfg).await;
@@ -741,4 +747,59 @@ mod columnar {
         );
         assert_eq!(ids, ["P:001", "P:002", "P:003"]);
     }
+}
+
+// ── restricted vs unrestricted evaluation ───────────────────────────────────────
+
+/// `map-data` config for upstream's `personinfo_basic` example container.
+fn personinfo_config(output: &std::path::Path, unrestricted_eval: bool) -> MapDataConfig {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+    let root = PathBuf::from(&manifest)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/golden/personinfo_basic");
+    let mut cfg = MapDataConfig::new(
+        root.join("transform/personinfo-to-agent.transform.yaml")
+            .to_string_lossy(),
+        root.join("source/personinfo.yaml").to_string_lossy(),
+        root.join("data/Container-001.yaml").to_string_lossy(),
+        output.to_string_lossy(),
+    );
+    cfg.target_schema = Some(
+        root.join("target/agent.yaml")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    cfg.output_format = "yaml".into();
+    cfg.unrestricted_eval = unrestricted_eval;
+    cfg
+}
+
+/// Upstream `test_cli.py::test_map_data`: `--unrestricted-eval` reproduces the
+/// committed example output (the spec's `src.` accessors, statement blocks and
+/// comprehensions need it).
+#[tokio::test]
+async fn test_map_data_personinfo_unrestricted_eval() {
+    let dir = tempdir().unwrap();
+    let out = dir.path().join("out.yaml");
+    run_map_data_config(personinfo_config(&out, true))
+        .await
+        .expect("map-data --unrestricted-eval");
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(text.contains("driving_since"), "{text}");
+    assert!(text.contains("2014-03-31"), "{text}");
+}
+
+/// Upstream `test_cli.py::test_map_data_without_unrestricted_eval_fails`: safe
+/// mode must not silently emit partial data (linkml-map issue 270).
+#[tokio::test]
+async fn test_map_data_personinfo_restricted_fails() {
+    let dir = tempdir().unwrap();
+    let out = dir.path().join("out.yaml");
+    let err = run_map_data_config(personinfo_config(&out, false))
+        .await
+        .expect_err("restricted mode must fail on the example's statement blocks");
+    assert!(format!("{err:#}").contains("driving_since"), "{err:#}");
 }

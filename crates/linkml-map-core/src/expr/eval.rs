@@ -20,6 +20,7 @@ use log::warn;
 
 use super::builtins;
 use super::error::{ExprError, ExprResult};
+use super::gate::{self, EvalMode, eval_parsed_gated};
 use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
 use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
 use crate::value::Value;
@@ -166,14 +167,14 @@ fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
 /// [`Value::Null`], identical to the per-call string path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedExpr {
-    inner: ParsedInner,
+    pub(super) inner: ParsedInner,
 }
 
 /// Internal representation: a single cached expression (the fast path), the
 /// `"None"` literal short-circuit, or a multi-statement program (the
 /// `asteval`-style block path).
 #[derive(Debug, Clone, PartialEq)]
-enum ParsedInner {
+pub(super) enum ParsedInner {
     /// `"None"` literal short-circuit — always evaluates to [`Value::Null`].
     NoneLiteral,
     /// A single parsed expression tree (the common case + fast path).
@@ -183,11 +184,22 @@ enum ParsedInner {
 }
 
 impl ParsedExpr {
-    /// Evaluate this pre-parsed expression against `vars`.
+    /// Evaluate this pre-parsed expression against `vars` with the restricted
+    /// (default) evaluator.
     ///
     /// Equivalent to [`eval_parsed`]; provided as a method for ergonomics.
     pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
         eval_parsed(self, vars)
+    }
+
+    /// Evaluate this pre-parsed expression against `vars` with
+    /// `unrestricted_eval` enabled.
+    ///
+    /// Equivalent to [`eval_parsed_gated`] with [`EvalMode::UNRESTRICTED`]: a
+    /// statement block runs in the asteval-style interpreter, reading `vars` as
+    /// the source object `src`.
+    pub fn eval_unrestricted(&self, vars: &Bindings) -> ExprResult<Value> {
+        eval_parsed_gated(self, vars, EvalMode::UNRESTRICTED)
     }
 
     /// Evaluate this pre-parsed expression against `vars` in **strict** mode,
@@ -253,16 +265,16 @@ pub fn parse_expr(expr: &str) -> ExprResult<ParsedExpr> {
     })
 }
 
-/// Evaluate a pre-parsed expression against the given `bindings`.
+/// Evaluate a pre-parsed expression against the given `bindings` with the
+/// restricted evaluator.
 ///
 /// This performs no parsing — it walks the cached [`Ast`]/program directly.
-/// Unbound names resolve to [`Value::Null`].
+/// Unbound names resolve to [`Value::Null`]. Mirrors upstream
+/// `eval_utils.eval_expr_with_mapping` (the `simpleeval` evaluator): a
+/// statement block runs only its first statement, and no `src` is bound. Use
+/// [`eval_parsed_gated`] for the `unrestricted_eval` split.
 pub fn eval_parsed(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
-    match &parsed.inner {
-        ParsedInner::NoneLiteral => Ok(Value::Null),
-        ParsedInner::Single(ast) => eval_ast(ast, vars),
-        ParsedInner::Program(program) => program.eval(vars),
-    }
+    gate::eval_restricted(parsed, vars)
 }
 
 /// Evaluate `expr` against the given variable `bindings`.
@@ -353,6 +365,36 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             if let Ast::Name(root) = value.as_ref()
                 && !INJECTED_EVAL_NAMES.contains(&root.as_str())
                 && !is_function_name(root)
+            {
+                // PARITY: the root is resolved from the bindings the expression
+                // was given, never from an enclosing comprehension's scope
+                // (`super()._eval_name` bypasses the swapped-in comprehension
+                // name handler), so `x.attr` on a loop variable `x` is refused
+                // in restricted mode; asteval, behind `unrestricted_eval`,
+                // evaluates it. See [`gate::comprehension_root`].
+                match gate::comprehension_root(root) {
+                    gate::ComprehensionRoot::NotATarget => {}
+                    gate::ComprehensionRoot::Outer(outer) => {
+                        return distributed_getattr(&outer, attr);
+                    }
+                    gate::ComprehensionRoot::Unbound => {
+                        let message = format!(
+                            "Attribute access on comprehension-bound '{root}' in '{root}.{attr}' \
+                             is not supported. Building records in an expression bypasses the \
+                             range, cardinality, and datatype coercion applied to derived objects; \
+                             declare a class_derivation keyed on the source range class and reduce \
+                             the slot to populated_from instead."
+                        );
+                        return Err(ExprError::Undefined {
+                            name: root.clone(),
+                            message,
+                        });
+                    }
+                }
+            }
+            if let Ast::Name(root) = value.as_ref()
+                && !INJECTED_EVAL_NAMES.contains(&root.as_str())
+                && !is_function_name(root)
                 && !vars.contains_key(root)
             {
                 let message = format!(
@@ -388,12 +430,22 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             iter,
             cond,
         } => {
+            // Record the loop variable for the restricted-mode attribute check
+            // (see `Ast::Attribute`); the guard unwinds it when the
+            // comprehension ends, however it ends.
+            let _scope = gate::enter_comprehension(var, vars);
             let iterable = eval_ast(iter, vars)?;
             // Python iterates lists by element, dicts by *keys*, None → empty.
             let items: Vec<Value> = match iterable {
                 Value::List(items) => items,
                 Value::Map(m) => m.into_iter().map(|(k, _)| Value::Str(k)).collect(),
-                Value::Null => Vec::new(),
+                // PARITY: asteval (a statement block) iterates nothing for a
+                // missing value; the restricted evaluator's `for i in None`
+                // is a `TypeError`.
+                Value::Null if object_attr_mode_enabled() => Vec::new(),
+                Value::Null => {
+                    return Err(ExprError::Eval("'NoneType' object is not iterable".into()));
+                }
                 other => {
                     return Err(ExprError::Eval(format!(
                         "'{}' object is not iterable",
@@ -518,7 +570,7 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
             let len = items.len() as i64;
             let resolved = if i < 0 { len + i } else { i };
             if resolved < 0 || resolved >= len {
-                return Err(ExprError::Eval("list index out of range".into()));
+                return Err(ExprError::Uncaught("list index out of range".into()));
             }
             Ok(items[resolved as usize].clone())
         }
@@ -537,7 +589,7 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
             let len = chars.len() as i64;
             let resolved = if i < 0 { len + i } else { i };
             if resolved < 0 || resolved >= len {
-                return Err(ExprError::Eval("string index out of range".into()));
+                return Err(ExprError::Uncaught("string index out of range".into()));
             }
             Ok(Value::Str(chars[resolved as usize].to_string()))
         }
@@ -548,7 +600,7 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
             };
             match m.get(&key) {
                 Some(v) => Ok(v.clone()),
-                None => Err(ExprError::Eval(format!("KeyError: {key:?}"))),
+                None => Err(ExprError::Uncaught(format!("KeyError: {key:?}"))),
             }
         }
         Value::Null => Err(ExprError::Eval(
@@ -589,13 +641,15 @@ pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// True while a statement block is being evaluated (see [`with_object_attr_mode`]).
-fn object_attr_mode_enabled() -> bool {
+pub(super) fn object_attr_mode_enabled() -> bool {
     OBJECT_ATTR_MODE.with(|c| c.get())
 }
 
 fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
-        return Err(ExprError::Eval(format!(
+        // PARITY: a `NameError` upstream (`_distributed_getattr`), which
+        // `_eval_expr` never catches.
+        return Err(ExprError::Uncaught(format!(
             "Access to private attribute '{attr}' is not allowed"
         )));
     }
@@ -628,7 +682,8 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
         }
         Value::Null => Ok(Value::Null),
         // A scalar has no attributes; Python getattr would raise AttributeError.
-        other => Err(ExprError::Eval(format!(
+        // `AttributeError` upstream: not caught by `_eval_expr`.
+        other => Err(ExprError::Uncaught(format!(
             "value of type {} has no attribute '{attr}'",
             type_name(other)
         ))),

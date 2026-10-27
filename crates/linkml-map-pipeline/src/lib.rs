@@ -103,6 +103,13 @@ pub struct PipelineConfig {
     /// permissible value (or more than one), fails the row instead of yielding
     /// null / passing through with a warning. Default `false`.
     pub strict: bool,
+    /// Allow the unrestricted expression evaluator (upstream
+    /// `--unrestricted-eval`): `expr:` statement blocks run with the source
+    /// object as `src`, and an expression the restricted evaluator rejects
+    /// yields null instead of failing the row. Default `false`: the safe,
+    /// restricted evaluator, which has no `src` and evaluates one expression.
+    /// Only enable it for trusted specs.
+    pub unrestricted_eval: bool,
 }
 
 impl PipelineConfig {
@@ -128,6 +135,7 @@ impl PipelineConfig {
             channel_depth: 256,
             write_options: WriteOptions::default(),
             strict: false,
+            unrestricted_eval: false,
         }
     }
 }
@@ -168,6 +176,9 @@ pub struct CompiledPlan {
     target_coercions: Option<TargetCoercions>,
     /// Strict mode, applied to every per-row engine. See [`PipelineConfig::strict`].
     strict: bool,
+    /// Unrestricted evaluation, applied to every per-row engine. See
+    /// [`PipelineConfig::unrestricted_eval`].
+    unrestricted_eval: bool,
     /// Resolved source class name (empty string = let engine decide per row).
     source_class: Option<String>,
     /// Cross-table join lookup index, built once when the pipeline runs in
@@ -368,6 +379,7 @@ impl CompiledPlan {
             compiled_exprs,
             target_coercions,
             strict: false,
+            unrestricted_eval: false,
             source_class,
             lookup_index: None,
             blocks,
@@ -461,7 +473,9 @@ impl CompiledPlan {
         if let Some(coercions) = &self.target_coercions {
             engine = engine.with_target_coercions(coercions);
         }
-        engine = engine.with_strict_exprs(self.strict);
+        engine = engine
+            .with_strict_exprs(self.strict)
+            .with_unrestricted_eval(self.unrestricted_eval);
         if let Some(ids) = &self.content_ids {
             engine = engine.with_content_ids(ids);
         }
@@ -491,6 +505,12 @@ impl CompiledPlan {
     /// Set strict mode for every per-row engine (see [`PipelineConfig::strict`]).
     pub fn set_strict(&mut self, strict: bool) {
         self.strict = strict;
+    }
+
+    /// Set unrestricted evaluation for every per-row engine (see
+    /// [`PipelineConfig::unrestricted_eval`]).
+    pub fn set_unrestricted_eval(&mut self, unrestricted: bool) {
+        self.unrestricted_eval = unrestricted;
     }
 
     /// Attach a pre-built cross-table [`LookupIndex`] (directory mode).
@@ -770,6 +790,7 @@ pub async fn run_pipeline_with_options(
     )
     .context("compiling plan")?;
     plan.set_strict(config.strict);
+    plan.set_unrestricted_eval(config.unrestricted_eval);
 
     // ── 1a. Identifier slots must be derived or minted (upstream
     // `cli._require_identifiers`), checked before any output is opened. Without
@@ -1708,6 +1729,7 @@ mod tests {
             channel_depth: 64,
             write_options: Default::default(),
             strict: false,
+            unrestricted_eval: false,
         };
 
         let stats = run_pipeline(cfg).await.expect("pipeline failed");
@@ -1943,6 +1965,7 @@ class_derivations:
             channel_depth: 64,
             write_options: Default::default(),
             strict: false,
+            unrestricted_eval: false,
         };
 
         let stats = run_pipeline(cfg)
@@ -2030,6 +2053,7 @@ class_derivations:
             channel_depth: 64,
             write_options: Default::default(),
             strict: false,
+            unrestricted_eval: false,
         };
 
         // No directory ⇒ no lookup index ⇒ the unbound join reference surfaces as
@@ -2100,6 +2124,7 @@ class_derivations:
             channel_depth: 256,
             write_options: Default::default(),
             strict: false,
+            unrestricted_eval: false,
         };
 
         let stats = run_pipeline(cfg).await.expect("pipeline failed");
@@ -2200,6 +2225,7 @@ class_derivations:
             channel_depth: 64,
             write_options: Default::default(),
             strict: false,
+            unrestricted_eval: false,
         };
 
         // Verify the plan detects FK need.

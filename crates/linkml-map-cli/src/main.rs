@@ -186,11 +186,10 @@ struct MapDataArgs {
     #[arg(long = "no-strict", overrides_with = "strict")]
     no_strict: bool,
 
-    /// Allow unrestricted evaluation of expressions. Accepted for drop-in
-    /// compatibility; it has no effect.
-    // PARITY: upstream cli.py `--unrestricted-eval/--no-unrestricted-eval`
-    // gates asteval. The Rust evaluator merges the restricted and unrestricted
-    // paths and always behaves as unrestricted, so both spellings are no-ops.
+    /// Allow unrestricted evaluation of expressions: `expr:` blocks of Python
+    /// statements run with the source object as `src`, and an expression the
+    /// safe evaluator rejects yields null instead of an error. Only use this with
+    /// trusted specifications. The default is the restricted evaluator.
     #[arg(
         long = "unrestricted-eval",
         default_value_t = false,
@@ -198,7 +197,7 @@ struct MapDataArgs {
     )]
     unrestricted_eval: bool,
 
-    /// Restrict expression evaluation (the upstream default). Has no effect.
+    /// Use the restricted evaluator (the default).
     #[arg(long = "no-unrestricted-eval", overrides_with = "unrestricted_eval")]
     no_unrestricted_eval: bool,
 
@@ -279,6 +278,7 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
             ..WriteOptions::default()
         },
         strict: args.strict,
+        unrestricted_eval: args.unrestricted_eval,
     };
 
     run_map_data_config_with_options(cfg, args.continue_on_error).await?;
@@ -457,8 +457,13 @@ mod tests {
         assert!(parse(&["--strict"]).strict);
         assert!(!parse(&["--strict", "--no-strict"]).strict);
         assert!(parse(&["--no-strict", "--strict"]).strict);
+        assert!(
+            !parse(&[]).unrestricted_eval,
+            "restricted is the upstream default"
+        );
         assert!(parse(&["--unrestricted-eval"]).unrestricted_eval);
         assert!(!parse(&["--unrestricted-eval", "--no-unrestricted-eval"]).unrestricted_eval);
+        assert!(parse(&["--no-unrestricted-eval", "--unrestricted-eval"]).unrestricted_eval);
     }
 
     /// `-v` accumulates: `-vv` yields `verbose == 2`.

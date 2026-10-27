@@ -137,12 +137,22 @@ Each is marked `PARITY:` in the code.
   blocks once (as prologue or epilogue according to spec order). Upstream
   `transform_spec` streams every block that has data. A single input file picks
   the first row block, not the stem-matched one.
-- **No `unrestricted_eval` gate.** Rust is permanently "unrestricted"; the shim
-  accepts `unrestricted_eval` as a no-op.
+- **Unrestricted mode is a native interpreter, not asteval.** The gate is ported
+  (`expr/gate.rs`): restricted by default, `--unrestricted-eval` / `with_unrestricted_eval`
+  / `unrestricted_eval=` to opt in. Unrestricted blocks cover assignments, `if` and
+  expression statements only (no `for`, `while`, `def`, `lambda`, `try`); those fail to
+  parse at plan-build time, where asteval would run them.
+- **Errors are classified by variant, not by Python exception class.**
+  `ExprError::Eval` stands for upstream's `InvalidExpression`/`TypeError`/`ValueError`
+  (the unrestricted fallback catches these); `ExprError::Uncaught` covers `IndexError`,
+  `KeyError`, `AttributeError` and private-attribute `NameError`. Errors inside the
+  built-in function table are all `Eval`, so the few that upstream raises as
+  something else (an `AttributeError` from `uuid5` with a non-string name, say) become
+  null under `unrestricted_eval` instead of raising. Syntax errors in `{...}`
+  (`{1 + 2}`, `{x, y}`) surface at parse time in Rust but at evaluation time upstream,
+  so they are not swallowed by the unrestricted fallback.
 - **SQL-null leniency in statement blocks** (division by zero, `None` arithmetic)
   where asteval stops.
-- **Enum-level statement-block `expr` raises on an undefined name** (upstream's
-  enum fallback does not pass `raise_undefined`).
 - **`deunicode` stands in for `text-unidecode`** in `slugify`; rare characters may
   differ.
 - **Decimals:** ASCII digits only when parsing; Parquet/DuckDB decimals are staged
@@ -195,8 +205,6 @@ Each is marked `PARITY:` in the code.
 - **Multi-block streaming driver** (see divergences above).
 - **DuckDB set-based join engine** (`510b0a50ca`) and **SCAN/MIGRATE
   normalisation**: unchanged from earlier reviews.
-- **`unrestricted_eval` gate.** The CLI accepts `--unrestricted-eval` and
-  `--no-unrestricted-eval` as no-ops (`b737280`).
 - **Expression language gaps:** the conditional expression `x if c else y`,
   dict literals, and the `dict()`/`set()` constructors (upstream `test_ternary`,
   `test_dict_literal`). These need parser/AST work.

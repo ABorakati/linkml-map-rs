@@ -1,7 +1,9 @@
 //! Multi-statement (`asteval`-style) interpreter for `expr:` blocks.
 //!
-//! Native port of the linkml-map "unrestricted" expression path in
-//! `ObjectTransformer._derive_from_expr`:
+//! Native port of the linkml-map "unrestricted" expression path
+//! (`ObjectTransformer._unrestricted_eval`), reached only with
+//! `unrestricted_eval` on; see [`super::gate`] for the split. The restricted
+//! evaluator runs just a block's first statement (`Program::eval_first_statement`).
 //!
 //! ```python
 //! aeval = Interpreter(usersyms={"src": ctxt_obj, "target": None, "uuid5": _uuid5})
@@ -16,7 +18,7 @@
 //!
 //! Since upstream f299f3a the block sees *only* that namespace: slots are read
 //! as `src.<slot>`, and a bare slot name or `{slot}` reference is a
-//! `NameError` that is re-raised (see [`Program::eval`]). Any other error stops
+//! `NameError` that is re-raised (see [`Program::eval_with`]). Any other error stops
 //! the block, as asteval does, and the result is whatever `target` holds then.
 //!
 //! Supported constructs (exactly the set the personinfo_basic specs use):
@@ -108,40 +110,54 @@ impl Program {
 
     /// Evaluate the program against `vars` and return the `target` symbol.
     ///
-    /// Mirrors upstream `ObjectTransformer._unrestricted_eval(..,
-    /// raise_undefined=True)`: the block runs in a fresh namespace holding only
-    /// `src` (the whole source object, taken from `vars["src"]`), `target`
-    /// (pre-seeded to None) and the `slot()` lookup table, never the bare slot
-    /// names, join aliases or `NULL` that single expressions see.
+    /// `vars["src"]` is the source object, or, when absent, the whole of `vars`
+    /// (less the engine's own `NULL` / `__slot_values` entries). Equivalent to
+    /// [`Program::eval_with`] with `raise_undefined` set; the engine uses
+    /// `eval_with` directly so it never has to materialise a `src` binding for
+    /// the restricted path.
     ///
-    /// PARITY: asteval stops at the first error. A `NameError` (an undefined
-    /// name, typically a bare slot or a `{slot}` reference) is re-raised as
-    /// `ValueError("Unrestricted expression uses an undefined name: ...")`;
-    /// every other error (a missing value iterated, an index out of range, ...)
-    /// is swallowed and the result is whatever `target` held at that point,
-    /// None if it was never assigned. See `_unrestricted_eval` in
-    /// `transformer/object_transformer.py`.
+    /// # Errors
+    /// Only the undefined-name case described on [`Program::eval_with`].
+    pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
+        let src = vars
+            .get("src")
+            .cloned()
+            .unwrap_or_else(|| source_object(vars));
+        self.eval_with(src, vars.get("__slot_values").cloned(), true)
+    }
+
+    /// Run the program the way upstream's `ObjectTransformer._unrestricted_eval`
+    /// does and return the `target` symbol.
+    ///
+    /// The block runs in a fresh namespace holding only `src` (the source
+    /// object), `target` (pre-seeded to None) and the `slot()` lookup table
+    /// (`slot_values`), never the bare slot names, join aliases or `NULL` that
+    /// single expressions see.
+    ///
+    /// PARITY: asteval stops at the first error. With `raise_undefined`
+    /// (`_unrestricted_eval(.., raise_undefined=True)`, which `_eval_expr` sets
+    /// for statement blocks) a `NameError` (an undefined name, typically a bare
+    /// slot or a `{slot}` reference) is re-raised as `ValueError("Unrestricted
+    /// expression uses an undefined name: ...")`. Every other error (a missing
+    /// value iterated, an index out of range, ...), and a `NameError` without
+    /// `raise_undefined` (the enum-expression fallback), is swallowed and the
+    /// result is whatever `target` held at that point, None if it was never
+    /// assigned. See `_unrestricted_eval` in `transformer/object_transformer.py`.
     ///
     /// # Errors
     /// Only the undefined-name case above. It is an [`ExprError::Eval`].
-    pub fn eval(&self, vars: &Bindings) -> ExprResult<Value> {
+    pub fn eval_with(
+        &self,
+        src: Value,
+        slot_values: Option<Value>,
+        raise_undefined: bool,
+    ) -> ExprResult<Value> {
         let mut env = Bindings::new();
         // Pre-seed `target` to None, exactly like the asteval usersyms.
         env.insert("target".to_string(), Value::Null);
-        // Callers that bind no `src` (the enum-level `expr`, whose bindings are
-        // the source map itself) get the whole namespace as `src`, which is
-        // what upstream passes there (`_unrestricted_eval(expr, source_obj)`).
-        let src = vars.get("src").cloned().unwrap_or_else(|| {
-            Value::Map(
-                vars.iter()
-                    .filter(|(k, _)| !matches!(k.as_str(), "NULL" | "__slot_values"))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-            )
-        });
         env.insert("src".to_string(), src);
-        if let Some(slots) = vars.get("__slot_values") {
-            env.insert("__slot_values".to_string(), slots.clone());
+        if let Some(slots) = slot_values {
+            env.insert("__slot_values".to_string(), slots);
         }
         let outcome = with_object_attr_mode(|| exec_block(&self.stmts, &mut env));
         match outcome {
@@ -149,7 +165,7 @@ impl Program {
             Err(Failure {
                 err: ExprError::Undefined { name, .. },
                 span,
-            }) => {
+            }) if raise_undefined => {
                 return Err(ExprError::Eval(format!(
                     "Unrestricted expression uses an undefined name: {}. \
                      Statements read slots as src.<slot>.",
@@ -160,6 +176,30 @@ impl Program {
             Err(_) => {}
         }
         Ok(env.get("target").cloned().unwrap_or(Value::Null))
+    }
+
+    /// Evaluate the program the way upstream's restricted evaluator does.
+    ///
+    /// PARITY: `simpleeval.SimpleEval.parse` keeps only the first statement
+    /// (`ast.parse(expr.strip()).body[0]`, with a `MultipleExpressions`
+    /// warning for the rest). An assignment evaluates its right-hand side and
+    /// returns that value, ignoring the target (`_eval_assign`, with an
+    /// `AssignmentAttempted` warning), so `x = {age} * 2\ntarget = x + 1`
+    /// yields `age * 2`. A statement the evaluator has no handler for, such as
+    /// `if`, is `FeatureNotAvailable`, an `InvalidExpression`.
+    pub(super) fn eval_first_statement(&self, vars: &Bindings) -> ExprResult<Value> {
+        match self.stmts.first() {
+            Some(Stmt::Assign { value, .. }) | Some(Stmt::Expr(value, _)) => {
+                eval_ast_public(value, vars)
+            }
+            Some(Stmt::If { .. }) => Err(ExprError::Eval(
+                "Sorry, If is not available in this evaluator".into(),
+            )),
+            // `parse_single_or_program` never yields an empty program.
+            None => Err(ExprError::Eval(
+                "Sorry, cannot evaluate empty string".into(),
+            )),
+        }
     }
 
     /// The text asteval's `ExceptionHolder.get_error()` gives for a `NameError`:
@@ -244,6 +284,17 @@ fn find_name_column(line: &str, name: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// The source object a block sees as `src` when the caller binds none: every
+/// binding except the engine's own `NULL` and `__slot_values` entries.
+pub(super) fn source_object(vars: &Bindings) -> Value {
+    Value::Map(
+        vars.iter()
+            .filter(|(k, _)| !matches!(k.as_str(), "NULL" | "__slot_values"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
 }
 
 fn collect_assigned_names(stmts: &[Stmt], out: &mut Vec<String>) {
