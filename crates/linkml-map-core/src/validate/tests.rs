@@ -71,7 +71,9 @@ fn valid_spec_produces_no_messages() {
         "class_derivations": {
             "Person": {
                 "populated_from": "Person",
-                "slot_derivations": {"primary_email": None::<()>},
+                // An underived identifier is an error unless minted (upstream 76db207),
+                // so these specs derive `id` explicitly.
+                "slot_derivations": {"id": None::<()>, "primary_email": None::<()>},
             }
         }
     }));
@@ -143,7 +145,9 @@ fn unresolved_expr_ref_is_warning_non_strict() {
         "class_derivations": {
             "Person": {
                 "populated_from": "Person",
-                "slot_derivations": {"name": {"expr": "str({nonexistent}) + '!'"}},
+                // An underived identifier is an error unless minted (upstream 76db207),
+                // so these specs derive `id` explicitly.
+                "slot_derivations": {"id": None::<()>, "name": {"expr": "str({nonexistent}) + '!'"}},
             }
         }
     }));
@@ -161,7 +165,9 @@ fn unresolved_expr_ref_is_error_strict() {
         "class_derivations": {
             "Person": {
                 "populated_from": "Person",
-                "slot_derivations": {"name": {"expr": "str({nonexistent}) + '!'"}},
+                // An underived identifier is an error unless minted (upstream 76db207),
+                // so these specs derive `id` explicitly.
+                "slot_derivations": {"id": None::<()>, "name": {"expr": "str({nonexistent}) + '!'"}},
             }
         }
     }));
@@ -178,7 +184,9 @@ fn valid_expr_ref_produces_no_messages() {
         "class_derivations": {
             "Person": {
                 "populated_from": "Person",
-                "slot_derivations": {"primary_email": {"expr": "str({age_in_years}) + ' years'"}},
+                // An underived identifier is an error unless minted (upstream 76db207),
+                // so these specs derive `id` explicitly.
+                "slot_derivations": {"id": None::<()>, "primary_email": {"expr": "str({age_in_years}) + ' years'"}},
             }
         }
     }));
@@ -205,7 +213,9 @@ fn join_alias_in_expr_is_not_flagged() {
             "Person": {
                 "populated_from": "Person",
                 "joins": {"Address": {"alias": "Address", "join_on": "person_id"}},
-                "slot_derivations": {"primary_email": {"expr": "{Address.city}"}},
+                // An underived identifier is an error unless minted (upstream 76db207),
+                // so these specs derive `id` explicitly.
+                "slot_derivations": {"id": None::<()>, "primary_email": {"expr": "{Address.city}"}},
             }
         }
     }));

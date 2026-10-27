@@ -22,9 +22,11 @@
 //!   defined in [`apply_aggregation`]. Spec→Python/SQL compilation and
 //!   JSON-schema target validation are intentionally out of scope.
 
+pub mod content_id;
 pub mod lookup_index;
 pub mod object_index;
 pub mod units;
+pub use content_id::ContentIds;
 pub use lookup_index::{LookupIndex, LookupIndexRef};
 pub use object_index::ObjectIndex;
 
@@ -134,6 +136,13 @@ pub struct ObjectTransformer<'s> {
     /// `slot()` references instead of silently yielding null (#232). Default
     /// false (lax). Set via [`with_strict_exprs`].
     strict: bool,
+    /// Shared content-id synthesiser (built once per plan); when `None` one is
+    /// built lazily into `owned_content_ids`. See [`content_id`].
+    content_ids: Option<&'s ContentIds>,
+    owned_content_ids: content_id::OwnedContentIds,
+    /// Emit records whose identifier is neither derived nor minted instead of
+    /// raising (`--continue-on-error`). See [`content_id`].
+    emit_without_identifiers: bool,
 }
 
 impl<'s> ObjectTransformer<'s> {
@@ -154,6 +163,9 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            content_ids: None,
+            owned_content_ids: Default::default(),
+            emit_without_identifiers: false,
         }
     }
 
@@ -175,6 +187,9 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            content_ids: None,
+            owned_content_ids: Default::default(),
+            emit_without_identifiers: false,
         }
     }
 
@@ -342,7 +357,7 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
-        Ok(Value::Map(tgt_attrs))
+        self.with_synthesized_id(tgt_attrs, &class_deriv)
     }
 
     /// Like [`map_object_with_type`] but takes an explicit [`ClassDerivation`]
@@ -385,7 +400,7 @@ impl<'s> ObjectTransformer<'s> {
                 tgt_attrs.shift_remove(slot_deriv.name.as_str());
             }
         }
-        Ok(Value::Map(tgt_attrs))
+        self.with_synthesized_id(tgt_attrs, class_deriv)
     }
 
     // ── Pivot (melt / unmelt) ─────────────────────────────────────────────────
@@ -1846,6 +1861,12 @@ impl<'s> ObjectTransformer<'s> {
             // Recursively resolve the parent too.
             let parent = self.resolve_class_derivation_ancestors(parent, all)?;
             // Merge: ancestor slots that don't already exist in cd.
+            // PARITY: transformer.py::_with_inherited_fields copies every unset
+            // scalar from the first ancestor that sets it, `mint_ids` included
+            // (parents are resolved first, so this is the same depth-first order).
+            if cd.mint_ids.is_none() {
+                cd.mint_ids = parent.mint_ids;
+            }
             if let Some(ancestor_slots) = parent.slot_derivations {
                 let cd_slots = cd.slot_derivations.get_or_insert_with(IndexMap::new);
                 for (k, v) in ancestor_slots {
