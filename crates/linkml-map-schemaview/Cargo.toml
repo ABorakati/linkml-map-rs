@@ -15,6 +15,7 @@ serde_yaml = "0.9"
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+foldhash = { workspace = true }
 
 [dev-dependencies]
 indexmap = { workspace = true }

@@ -38,6 +38,10 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+/// A `HashMap` for the engine's read-only lookup tables: names looked up per row,
+/// from spec and schema text, so a fast non-cryptographic hash.
+pub(crate) type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
+
 use crate::{
     datamodel::{
         AggregationOperation, AggregationType, AliasedClass, ClassDerivation, CollectionType,
@@ -51,7 +55,7 @@ use crate::{
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
-use coerce::coerce_datatype;
+use coerce::{TargetSlot, coerce_datatype};
 
 // ── Compiled expr cache ───────────────────────────────────────────────
 
@@ -67,8 +71,10 @@ use coerce::coerce_datatype;
 /// shared across worker threads via `Arc`.
 #[derive(Debug, Clone, Default)]
 pub struct CompiledExprs {
-    /// `(class_derivation.name, slot_derivation.name)` → parsed slot `expr:`.
-    slot_exprs: HashMap<(String, String), ParsedExpr>,
+    /// `class_derivation.name` -> `slot_derivation.name` -> (the `expr:` text,
+    /// its parse). The text is kept so a lookup can confirm the cached parse is
+    /// of the very expression about to be evaluated.
+    slot_exprs: FastMap<String, FastMap<String, (String, ParsedExpr)>>,
     /// `enum_derivation map key` → parsed enum-level `expr:`.
     enum_exprs: HashMap<String, ParsedExpr>,
 }
@@ -79,18 +85,29 @@ impl CompiledExprs {
     /// Returns a parse error if any expression is syntactically invalid; this
     /// surfaces malformed exprs at plan-build time rather than on the first row.
     pub fn build(spec: &TransformationSpecification) -> ExprResult<Self> {
-        let mut slot_exprs = HashMap::new();
+        let mut slot_exprs: FastMap<String, FastMap<String, (String, ParsedExpr)>> =
+            FastMap::default();
         if let Some(cds) = &spec.class_derivations {
             for cd in cds {
                 if let Some(sds) = &cd.slot_derivations {
                     for (_, sd) in sds {
                         if let Some(expr) = &sd.expr {
                             let parsed = parse_expr(expr)?;
-                            slot_exprs.insert((cd.name.clone(), sd.name.clone()), parsed);
+                            slot_exprs
+                                .entry(cd.name.clone())
+                                .or_default()
+                                .insert(sd.name.clone(), (expr.clone(), parsed));
                         }
                     }
                 }
             }
+        }
+        // The derivations the engine runs are the `is_a` / `mixins`-merged ones,
+        // and nested ones: an `expr:` inherited from an ancestor, or on a nested
+        // class derivation, is cached too. A malformed one is left out, so the
+        // row path reports it exactly as it did before it was cached.
+        for cd in effective_class_derivations(spec) {
+            cache_slot_exprs(&cd, &mut slot_exprs);
         }
 
         let mut enum_exprs = HashMap::new();
@@ -108,10 +125,121 @@ impl CompiledExprs {
         })
     }
 
-    fn slot(&self, class: &str, slot: &str) -> Option<&ParsedExpr> {
-        self.slot_exprs.get(&(class.to_string(), slot.to_string()))
+    /// The parse of `expr`, the `expr:` of `slot` in class derivation `class`,
+    /// if one was cached from that same text.
+    fn slot(&self, class: &str, slot: &str, expr: &str) -> Option<&ParsedExpr> {
+        let (text, parsed) = self.slot_exprs.get(class)?.get(slot)?;
+        (text == expr).then_some(parsed)
     }
 }
+
+/// Cache the parse of every slot `expr:` under `cd`, nested derivations
+/// included, that is not cached yet and parses.
+fn cache_slot_exprs(
+    cd: &ClassDerivation,
+    out: &mut FastMap<String, FastMap<String, (String, ParsedExpr)>>,
+) {
+    for (_, sd) in cd.slot_derivations.iter().flatten() {
+        if let Some(expr) = &sd.expr
+            && !out.get(&cd.name).is_some_and(|m| m.contains_key(&sd.name))
+            && let Ok(parsed) = parse_expr(expr)
+        {
+            out.entry(cd.name.clone())
+                .or_default()
+                .insert(sd.name.clone(), (expr.clone(), parsed));
+        }
+        for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
+            cache_slot_exprs(nested, out);
+        }
+    }
+}
+
+/// The top-level class derivations as the engine runs them: each merged with
+/// its `is_a` / `mixins` ancestors (upstream `_with_inherited_fields`), or as
+/// written when the merge fails (the row path reports that error).
+pub(crate) fn effective_class_derivations(
+    spec: &TransformationSpecification,
+) -> Vec<ClassDerivation> {
+    let all: &[ClassDerivation] = spec.class_derivations.as_deref().unwrap_or(&[]);
+    all.iter()
+        .map(|cd| {
+            crate::normalize::inheritance::with_inherited_fields(cd, all)
+                .unwrap_or_else(|_| cd.clone())
+        })
+        .collect()
+}
+
+/// Class derivations resolved by source type, built once.
+///
+/// [`ObjectTransformer::map_object`] finds the derivation for a source type and
+/// merges it with its `is_a` / `mixins` ancestors, which clones the whole
+/// derivation. This table does that once per source type; a pipeline that
+/// builds an engine per row attaches it with
+/// [`ObjectTransformer::with_resolved_derivations`]. A source type that does not
+/// resolve (no derivation, several, or a broken `is_a` chain) is absent, so the
+/// engine resolves it itself and reports the error as before.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedDerivations {
+    by_source: FastMap<String, ClassDerivation>,
+}
+
+impl ResolvedDerivations {
+    /// Resolve the derivation of every source type `spec` names.
+    pub fn build(spec: &TransformationSpecification) -> Self {
+        let mut by_source = FastMap::default();
+        for cd in spec.class_derivations.iter().flatten() {
+            let source_type = cd.populated_from.as_deref().unwrap_or(&cd.name);
+            if !by_source.contains_key(source_type)
+                && let Ok(resolved) = resolve_class_derivation(spec, source_type)
+            {
+                by_source.insert(source_type.to_owned(), resolved);
+            }
+        }
+        Self { by_source }
+    }
+}
+
+/// Find the unique `ClassDerivation` for `source_type`: see
+/// [`ObjectTransformer::get_class_derivation`].
+fn resolve_class_derivation(
+    spec: &TransformationSpecification,
+    source_type: &str,
+) -> Result<ClassDerivation> {
+    let derivations = match &spec.class_derivations {
+        Some(v) => v,
+        None => {
+            return Err(Error::NoClassDerivation {
+                source_type: source_type.to_string(),
+                count: 0,
+            });
+        }
+    };
+
+    let matching: Vec<&ClassDerivation> = derivations
+        .iter()
+        .filter(|cd| {
+            cd.populated_from.as_deref() == Some(source_type)
+                || (cd.populated_from.is_none() && cd.name == source_type)
+        })
+        .collect();
+
+    if matching.len() != 1 {
+        return Err(Error::NoClassDerivation {
+            source_type: source_type.to_string(),
+            count: matching.len(),
+        });
+    }
+
+    // Python: `return self._with_inherited_fields(matching_tgt_class_derivs[0])`.
+    crate::normalize::inheritance::with_inherited_fields(matching[0], derivations)
+}
+
+/// The restricted-eval [`Bindings`] of one source row, built on first use and
+/// shared by every `expr:` slot of that row (see
+/// [`ObjectTransformer::eval_expr_for_slot`]). Local to one pass over a row's
+/// slot derivations, so the engine itself stays `Send + Sync`.
+#[derive(Default)]
+struct RowBindings(std::cell::RefCell<Option<Bindings>>);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -147,6 +275,9 @@ pub struct ObjectTransformer<'s> {
     /// Built once per plan and borrowed by every per-row engine; see
     /// [`ObjectTransformer::with_target_coercions`].
     target_coercions: Option<&'s TargetCoercions>,
+    /// Optional shared table of resolved class derivations; see
+    /// [`ObjectTransformer::with_resolved_derivations`].
+    resolved_derivations: Option<&'s ResolvedDerivations>,
     /// Lazily built fallback used when no shared table is attached (tests,
     /// `ObjectTransformer::new` callers). Unused without a target schema.
     local_target_coercions: OnceLock<TargetCoercions>,
@@ -179,6 +310,7 @@ impl<'s> ObjectTransformer<'s> {
             strict: false,
             unrestricted_eval: false,
             target_coercions: None,
+            resolved_derivations: None,
             local_target_coercions: OnceLock::new(),
             content_ids: None,
             owned_content_ids: Default::default(),
@@ -206,6 +338,7 @@ impl<'s> ObjectTransformer<'s> {
             strict: false,
             unrestricted_eval: false,
             target_coercions: None,
+            resolved_derivations: None,
             local_target_coercions: OnceLock::new(),
             content_ids: None,
             owned_content_ids: Default::default(),
@@ -241,6 +374,14 @@ impl<'s> ObjectTransformer<'s> {
     /// lazily builds its own on first use.
     pub fn with_target_coercions(mut self, coercions: &'s TargetCoercions) -> Self {
         self.target_coercions = Some(coercions);
+        self
+    }
+
+    /// Attach a pre-built [`ResolvedDerivations`] table so the engine does not
+    /// re-resolve (and re-merge `is_a` / `mixins` for) the class derivation of
+    /// every row. Must be built from the same spec this transformer holds.
+    pub fn with_resolved_derivations(mut self, resolved: &'s ResolvedDerivations) -> Self {
+        self.resolved_derivations = Some(resolved);
         self
     }
 
@@ -403,14 +544,14 @@ impl<'s> ObjectTransformer<'s> {
     ) -> Result<Value> {
         // Enum pass-through: if source_type is an enum, transform via enum derivation.
         if let Some(ss) = self.source_schema
-            && ss.all_enum_names().contains(&source_type.to_string())
+            && ss.has_enum(source_type)
         {
             return self.transform_enum(source_obj, &[source_type.to_string()], source_obj);
         }
 
         // Scalar pass-through: if it's a known type, return as-is.
         if let Some(ss) = self.source_schema
-            && ss.all_type_names().contains(&source_type.to_string())
+            && ss.has_type(source_type)
         {
             return Ok(source_obj.clone());
         }
@@ -428,10 +569,16 @@ impl<'s> ObjectTransformer<'s> {
         let looked_up;
         let class_deriv = match class_derivation {
             Some(cd) => cd,
-            None => {
-                looked_up = self.get_class_derivation(source_type)?;
-                &looked_up
-            }
+            None => match self
+                .resolved_derivations
+                .and_then(|r| r.by_source.get(source_type))
+            {
+                Some(resolved) => resolved,
+                None => {
+                    looked_up = self.get_class_derivation(source_type)?;
+                    &looked_up
+                }
+            },
         };
 
         // Class-level pivot (melt/unmelt) replaces per-slot derivation entirely.
@@ -444,7 +591,9 @@ impl<'s> ObjectTransformer<'s> {
         let empty_map = IndexMap::new();
         let slot_derivations = class_deriv.slot_derivations.as_ref().unwrap_or(&empty_map);
 
-        let mut tgt_attrs: IndexMap<String, Value> = IndexMap::new();
+        let mut tgt_attrs: IndexMap<String, Value> =
+            IndexMap::with_capacity(slot_derivations.len());
+        let row = RowBindings::default();
 
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
@@ -455,6 +604,7 @@ impl<'s> ObjectTransformer<'s> {
                     source_type,
                     class_deriv,
                     index,
+                    &row,
                     Some(&tgt_attrs),
                 )
                 .map_err(|e| Error::SlotTransform {
@@ -490,7 +640,9 @@ impl<'s> ObjectTransformer<'s> {
         let empty_map = IndexMap::new();
         let slot_derivations = class_deriv.slot_derivations.as_ref().unwrap_or(&empty_map);
 
-        let mut tgt_attrs: IndexMap<String, Value> = IndexMap::new();
+        let mut tgt_attrs: IndexMap<String, Value> =
+            IndexMap::with_capacity(slot_derivations.len());
+        let row = RowBindings::default();
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
             let v = self
@@ -500,6 +652,7 @@ impl<'s> ObjectTransformer<'s> {
                     source_type,
                     class_deriv,
                     index,
+                    &row,
                     Some(&tgt_attrs),
                 )
                 .map_err(|e| Error::SlotTransform {
@@ -609,6 +762,7 @@ impl<'s> ObjectTransformer<'s> {
     }
 
     /// Derive the value for a single slot derivation.
+    #[allow(clippy::too_many_arguments)]
     fn derive_slot(
         &self,
         slot_deriv: &SlotDerivation,
@@ -616,6 +770,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        row: &RowBindings,
         target_attrs: Option<&IndexMap<String, Value>>,
     ) -> Result<Value> {
         let slot_name = slot_deriv.name.as_str();
@@ -671,6 +826,7 @@ impl<'s> ObjectTransformer<'s> {
                 source_type,
                 class_deriv,
                 index,
+                row,
                 target_attrs,
             )?;
             (v, None)
@@ -697,6 +853,7 @@ impl<'s> ObjectTransformer<'s> {
                 source_type,
                 class_deriv,
                 index,
+                row,
                 target_attrs,
             )?;
             // Source slot def for range/cardinality coercion.
@@ -704,8 +861,7 @@ impl<'s> ObjectTransformer<'s> {
             let ssd = if populated_from == "_source_class" {
                 None
             } else {
-                self.source_schema
-                    .and_then(|ss| ss.induced_slot(populated_from, source_type).ok())
+                induced_slot_cow(self.source_schema, populated_from, source_type)
             };
             (mapped, ssd)
         } else if slot_deriv.class_derivations.is_some() {
@@ -725,9 +881,7 @@ impl<'s> ObjectTransformer<'s> {
         } else {
             // 5. Implicit same-name copy.
             let raw = source_map.get(slot_name).cloned().unwrap_or(Value::Null);
-            let ssd = self
-                .source_schema
-                .and_then(|ss| ss.induced_slot(slot_name, source_type).ok());
+            let ssd = induced_slot_cow(self.source_schema, slot_name, source_type);
             (raw, ssd)
         };
 
@@ -738,8 +892,13 @@ impl<'s> ObjectTransformer<'s> {
 
         // ── Post-processing: range coercion + cardinality ─────────────────────
 
-        v =
-            self.apply_range_coercion(v, slot_deriv, class_deriv, source_slot_def.as_ref(), index)?;
+        v = self.apply_range_coercion(
+            v,
+            slot_deriv,
+            class_deriv,
+            source_slot_def.as_deref(),
+            index,
+        )?;
 
         // ── URI / CURIE coercion (applied after other coercions) ──────────────
         //
@@ -777,6 +936,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        row: &RowBindings,
         target_attrs: Option<&IndexMap<String, Value>>,
     ) -> Result<Value> {
         if slot_deriv.value_mappings.is_none() && slot_deriv.expression_mappings.is_none() {
@@ -807,6 +967,7 @@ impl<'s> ObjectTransformer<'s> {
                 source_type,
                 class_deriv,
                 index,
+                row,
                 target_attrs,
             )
         } else {
@@ -826,6 +987,31 @@ impl<'s> ObjectTransformer<'s> {
         })
     }
 
+    /// Whether the target schema's induced slot is multivalued; `None` without a
+    /// target schema or when the target class has no such slot. `ts` is the
+    /// slot's [`TargetSlot`] when the caller already holds it.
+    fn target_slot_multivalued(
+        &self,
+        class_name: &str,
+        slot_name: &str,
+        ts: Option<&TargetSlot>,
+    ) -> Option<bool> {
+        let target = self.target_schema?;
+        match ts {
+            Some(t) => t.multivalued,
+            None => self
+                .target_coercions()?
+                .multivalued(target, class_name, slot_name),
+        }
+    }
+
+    /// The target schema's facts about one slot of a target class, from the
+    /// shared table; `None` without a target schema or when the table does not
+    /// hold the slot (callers then resolve on demand).
+    fn target_slot(&self, class_name: &str, slot_name: &str) -> Option<&TargetSlot> {
+        self.target_coercions()?.slot(class_name, slot_name)
+    }
+
     /// Mirror of `Transformer._target_slot_datatype`: the built-in datatype the
     /// target schema declares for a slot of the target class, if any.
     fn target_slot_datatype(&self, class_name: &str, slot_name: &str) -> Option<&'static str> {
@@ -842,11 +1028,19 @@ impl<'s> ObjectTransformer<'s> {
         v: Value,
         slot_deriv: &SlotDerivation,
         class_deriv: &ClassDerivation,
+        ts: Option<&TargetSlot>,
     ) -> Result<Value> {
         let (Some(target), Some(coercions)) = (self.target_schema, self.target_coercions()) else {
             return Ok(v);
         };
-        match coercions.enum_index(target, &class_deriv.name, slot_deriv) {
+        // The slot's own table entry, when it holds this spec range; otherwise
+        // resolve afresh.
+        let cached = ts.and_then(|t| t.enums.iter().find(|(range, _)| *range == slot_deriv.range));
+        let index = match cached {
+            Some((_, index)) => index.as_ref().map(Cow::Borrowed),
+            None => coercions.enum_index(target, &class_deriv.name, slot_deriv),
+        };
+        match index {
             Some(index) => coercions.resolve_enum_value(v, &index, target, self.strict),
             None => Ok(v),
         }
@@ -858,12 +1052,15 @@ impl<'s> ObjectTransformer<'s> {
         &self,
         slot_deriv: &'a SlotDerivation,
         class_deriv: &ClassDerivation,
+        ts: Option<&TargetSlot>,
     ) -> Option<Cow<'a, str>> {
         match slot_deriv.range.as_deref().filter(|r| !r.is_empty()) {
             Some(range) => Some(Cow::Borrowed(range)),
-            None => self
-                .target_slot_datatype(&class_deriv.name, &slot_deriv.name)
-                .map(Cow::Borrowed),
+            None => match ts {
+                Some(t) => t.datatype,
+                None => self.target_slot_datatype(&class_deriv.name, &slot_deriv.name),
+            }
+            .map(Cow::Borrowed),
         }
     }
 
@@ -886,16 +1083,18 @@ impl<'s> ObjectTransformer<'s> {
         source_slot_def: Option<&SlotDef>,
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
+        // Everything the target schema says of this slot, looked up once.
+        let ts = self.target_slot(&class_deriv.name, &slot_deriv.name);
         if let Some(ssd) = source_slot_def
             && !v.is_null()
             && !slot_deriv.hide.unwrap_or(false)
         {
             v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
-            v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
-            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
+            v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued, ts)?;
+            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv, ts) {
                 v = coerce_datatype(v, &datatype)?;
             }
-            v = self.resolve_enum_value(v, slot_deriv, class_deriv)?;
+            v = self.resolve_enum_value(v, slot_deriv, class_deriv, ts)?;
             v = self.reshape_collection(v, slot_deriv, ssd)?;
         } else if (slot_deriv.value.is_some()
             || slot_deriv.expr.as_deref().is_some_and(|e| !e.is_empty()))
@@ -910,11 +1109,11 @@ impl<'s> ObjectTransformer<'s> {
             // source slot); `source_multivalued` is false because upstream's
             // `_coerce_cardinality` takes no source slot. A `value:`/`expr:`
             // result is coerced to the spec range even without a target schema.
-            v = self.coerce_cardinality(v, slot_deriv, class_deriv, false)?;
-            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
+            v = self.coerce_cardinality(v, slot_deriv, class_deriv, false, ts)?;
+            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv, ts) {
                 v = coerce_datatype(v, &datatype)?;
             }
-            v = self.resolve_enum_value(v, slot_deriv, class_deriv)?;
+            v = self.resolve_enum_value(v, slot_deriv, class_deriv, ts)?;
         }
         Ok(v)
     }
@@ -1188,19 +1387,18 @@ impl<'s> ObjectTransformer<'s> {
         }
     }
 
-    fn eval_expr_for_slot(
+    /// The restricted-eval bindings of one source row: every source slot,
+    /// `NULL`, `_source_class` and the join aliases (everything but
+    /// `__slot_values`, which differs per slot).
+    fn row_bindings(
         &self,
-        expr: &str,
         source_map: &IndexMap<String, Value>,
-        slot_name: &str,
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
-        target_attrs: Option<&IndexMap<String, Value>>,
-    ) -> Result<Value> {
-        let class_name = class_deriv.name.as_str();
-        // Build bindings from all source map keys.
-        let mut bindings: Bindings = IndexMap::new();
+    ) -> Bindings {
+        // Sized for the slots and the three injected names.
+        let mut bindings: Bindings = IndexMap::with_capacity(source_map.len() + 3);
         bindings.insert("NULL".to_string(), Value::Null);
         // _source_class is the source class name, available in expr: bindings (#193).
         bindings.insert(
@@ -1248,23 +1446,50 @@ impl<'s> ObjectTransformer<'s> {
                 bindings.insert(alias.clone(), row.unwrap_or(Value::Null));
             }
         }
+        bindings
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_expr_for_slot(
+        &self,
+        expr: &str,
+        source_map: &IndexMap<String, Value>,
+        slot_name: &str,
+        source_type: &str,
+        class_deriv: &ClassDerivation,
+        index: Option<&ObjectIndex>,
+        row: &RowBindings,
+        target_attrs: Option<&IndexMap<String, Value>>,
+    ) -> Result<Value> {
+        let class_name = class_deriv.name.as_str();
+        // The row's bindings are built by the row's first `expr:` slot and kept
+        // for the rest: only `__slot_values` changes from slot to slot.
+        let mut cell = row.0.borrow_mut();
+        let bindings = cell
+            .get_or_insert_with(|| self.row_bindings(source_map, source_type, class_deriv, index));
 
         // PARITY: no `src` binding. Upstream's `Bindings` hold the source slots,
         // `NULL` and join aliases; `src` exists only inside an unrestricted
         // statement block (`_unrestricted_eval`), where `eval_parsed_gated`
         // builds it from these bindings. A single expression reading `src.x`
         // sees an unbound name: null, or an error in strict mode.
-        if let Some(attrs) = target_attrs {
-            bindings.insert("__slot_values".to_string(), Value::Map(attrs.clone()));
+        match target_attrs {
+            Some(attrs) => {
+                bindings.insert("__slot_values".to_string(), Value::Map(attrs.clone()));
+            }
+            None => {
+                bindings.shift_remove("__slot_values");
+            }
         }
 
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
         // string parse path otherwise (identical result).
         let result = self.eval_gated(
-            self.compiled.and_then(|c| c.slot(class_name, slot_name)),
+            self.compiled
+                .and_then(|c| c.slot(class_name, slot_name, expr)),
             expr,
-            &bindings,
+            bindings,
         );
         result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
@@ -1669,9 +1894,7 @@ impl<'s> ObjectTransformer<'s> {
         // early-return Null on empty: that would drop the `[]` for a multivalued
         // all-miss.
         let target_multivalued = self
-            .target_schema
-            .and_then(|ts| ts.induced_slot(&slot_deriv.name, &class_deriv.name).ok())
-            .map(|s| s.multivalued)
+            .target_slot_multivalued(&class_deriv.name, &slot_deriv.name, None)
             .unwrap_or(false); // default: single-valued when no target schema
 
         if target_multivalued {
@@ -1748,16 +1971,17 @@ impl<'s> ObjectTransformer<'s> {
         slot_deriv: &SlotDerivation,
         class_deriv: &ClassDerivation,
         source_multivalued: bool,
+        ts: Option<&TargetSlot>,
     ) -> Result<Value> {
         // Explicit single-valued intent (stringification join, cast SingleValued,
         // or a single-valued target slot) takes precedence over the implicit
         // "source is multivalued" signal, so a multivalued source can still be
         // collapsed (e.g. joined) into one value.
-        if self.is_coerce_to_singlevalued(slot_deriv, class_deriv) {
+        if self.is_coerce_to_singlevalued(slot_deriv, class_deriv, ts) {
             if let Value::List(items) = v {
                 return self.multivalued_to_single(items, slot_deriv);
             }
-        } else if self.is_coerce_to_multivalued(slot_deriv, class_deriv, source_multivalued) {
+        } else if self.is_coerce_to_multivalued(slot_deriv, class_deriv, source_multivalued, ts) {
             // Do NOT wrap a Map when reshape_collection will later convert it
             // (MultiValuedList: dict→list; MultiValuedDict / dictionary_key:
             // list→dict). Wrapping the Map in a 1-element List here would
@@ -1782,6 +2006,7 @@ impl<'s> ObjectTransformer<'s> {
         sd: &SlotDerivation,
         cd: &ClassDerivation,
         source_multivalued: bool,
+        ts: Option<&TargetSlot>,
     ) -> bool {
         if let Some(cast_as) = &sd.cast_collection_as {
             // MultiValuedDict and MultiValuedList are handled entirely by
@@ -1801,10 +2026,7 @@ impl<'s> ObjectTransformer<'s> {
             return true;
         }
         // Target schema says multivalued.
-        if let Some(ts) = self.target_schema
-            && let Ok(slot) = ts.induced_slot(&sd.name, &cd.name)
-            && slot.multivalued
-        {
+        if self.target_slot_multivalued(&cd.name, &sd.name, ts) == Some(true) {
             return true;
         }
         // Fallback: when the source slot is multivalued and no explicit
@@ -1817,7 +2039,12 @@ impl<'s> ObjectTransformer<'s> {
         false
     }
 
-    fn is_coerce_to_singlevalued(&self, sd: &SlotDerivation, cd: &ClassDerivation) -> bool {
+    fn is_coerce_to_singlevalued(
+        &self,
+        sd: &SlotDerivation,
+        cd: &ClassDerivation,
+        ts: Option<&TargetSlot>,
+    ) -> bool {
         if let Some(cast_as) = &sd.cast_collection_as
             && matches!(cast_as, CollectionType::SingleValued)
         {
@@ -1830,10 +2057,7 @@ impl<'s> ObjectTransformer<'s> {
             return true;
         }
         // Target schema says single-valued.
-        if let Some(ts) = self.target_schema
-            && let Ok(slot) = ts.induced_slot(&sd.name, &cd.name)
-            && !slot.multivalued
-        {
+        if self.target_slot_multivalued(&cd.name, &sd.name, ts) == Some(false) {
             return true;
         }
         false
@@ -1999,33 +2223,7 @@ impl<'s> ObjectTransformer<'s> {
     /// Then resolves is_a / mixin inheritance by merging every ancestor field
     /// ([`crate::normalize::inheritance::with_inherited_fields`]).
     fn get_class_derivation(&self, source_type: &str) -> Result<ClassDerivation> {
-        let derivations = match &self.spec.class_derivations {
-            Some(v) => v,
-            None => {
-                return Err(Error::NoClassDerivation {
-                    source_type: source_type.to_string(),
-                    count: 0,
-                });
-            }
-        };
-
-        let matching: Vec<&ClassDerivation> = derivations
-            .iter()
-            .filter(|cd| {
-                cd.populated_from.as_deref() == Some(source_type)
-                    || (cd.populated_from.is_none() && cd.name == source_type)
-            })
-            .collect();
-
-        if matching.len() != 1 {
-            return Err(Error::NoClassDerivation {
-                source_type: source_type.to_string(),
-                count: matching.len(),
-            });
-        }
-
-        // Python: `return self._with_inherited_fields(matching_tgt_class_derivs[0])`.
-        crate::normalize::inheritance::with_inherited_fields(matching[0], derivations)
+        resolve_class_derivation(&self.spec, source_type)
     }
 
     // ── Source type resolution ────────────────────────────────────────────────
@@ -2057,6 +2255,24 @@ impl<'s> ObjectTransformer<'s> {
         Err(Error::SourceTypeUnresolvable(
             "no source_type provided, no tree root, and spec has no class_derivations".to_string(),
         ))
+    }
+}
+
+/// The induced slot `slot_name` of `class_name`, borrowed from the provider when
+/// it can lend one (see [`SchemaProvider::induced_slot_ref`]), else cloned;
+/// `None` when the class has no such slot.
+fn induced_slot_cow<'a>(
+    schema: Option<&'a dyn SchemaProvider>,
+    slot_name: &str,
+    class_name: &str,
+) -> Option<Cow<'a, SlotDef>> {
+    let schema = schema?;
+    match schema.induced_slot_ref(slot_name, class_name) {
+        Some(slot) => Some(Cow::Borrowed(slot)),
+        None => schema
+            .induced_slot(slot_name, class_name)
+            .ok()
+            .map(Cow::Owned),
     }
 }
 
@@ -3113,6 +3329,102 @@ mod tests {
                 panic!("expected Map");
             }
         }
+    }
+
+    /// A parent derivation with an `expr:` slot, and a child (`is_a` parent)
+    /// that inherits it: the shape the shared tables must cover.
+    fn inherited_expr_spec() -> TransformationSpecification {
+        let slot = |name: &str, expr: &str| {
+            let mut m: IndexMap<String, SlotDerivation> = IndexMap::new();
+            m.insert(
+                name.into(),
+                SlotDerivation {
+                    name: name.into(),
+                    expr: Some(expr.into()),
+                    ..Default::default()
+                },
+            );
+            m
+        };
+        TransformationSpecification {
+            class_derivations: Some(vec![
+                ClassDerivation {
+                    name: "Base".into(),
+                    slot_derivations: Some(slot("age_str", "str(age_in_years) + \" years\"")),
+                    ..Default::default()
+                },
+                ClassDerivation {
+                    name: "Agent".into(),
+                    is_a: Some("Base".into()),
+                    populated_from: Some("Person".into()),
+                    slot_derivations: Some(slot("shout", "str(age_in_years) + \"!\"")),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_compiled_exprs_cover_inherited_slots_and_check_the_text() {
+        let spec = inherited_expr_spec();
+        let compiled = CompiledExprs::build(&spec).expect("compile exprs");
+        // Own slot, and the slot inherited from `Base`, are cached under `Agent`.
+        assert!(
+            compiled
+                .slot("Agent", "shout", "str(age_in_years) + \"!\"")
+                .is_some()
+        );
+        assert!(
+            compiled
+                .slot("Agent", "age_str", "str(age_in_years) + \" years\"")
+                .is_some()
+        );
+        // A different text for the same (class, slot) is never served from the cache.
+        assert!(compiled.slot("Agent", "age_str", "age_in_years").is_none());
+        assert!(compiled.slot("Agent", "missing", "age_in_years").is_none());
+    }
+
+    #[test]
+    fn test_resolved_derivations_match_the_per_row_lookup() {
+        let schema = make_person_schema();
+        let spec = inherited_expr_spec();
+        let compiled = CompiledExprs::build(&spec).expect("compile exprs");
+        let resolved = ResolvedDerivations::build(&spec);
+        let mut m = IndexMap::new();
+        m.insert("age_in_years".into(), Value::Int(33));
+        let src = Value::Map(m);
+
+        let plain = ObjectTransformer::new_borrowed(&spec, Some(&schema), None)
+            .map_object(&src, Some("Person"))
+            .unwrap();
+        let shared = ObjectTransformer::new_borrowed(&spec, Some(&schema), None)
+            .with_compiled_exprs(&compiled)
+            .with_resolved_derivations(&resolved)
+            .map_object(&src, Some("Person"))
+            .unwrap();
+        assert_eq!(shared, plain);
+        let Value::Map(out) = &shared else {
+            panic!("expected Map");
+        };
+        assert_eq!(out["age_str"], Value::Str("33 years".into()));
+        assert_eq!(out["shout"], Value::Str("33!".into()));
+
+        // A source type with no derivation is absent from the table, so the
+        // engine reports the same error with or without it.
+        let missing = |engine: ObjectTransformer| {
+            engine
+                .map_object(&src, Some("Nobody"))
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            missing(ObjectTransformer::new_borrowed(&spec, Some(&schema), None)),
+            missing(
+                ObjectTransformer::new_borrowed(&spec, Some(&schema), None)
+                    .with_resolved_derivations(&resolved)
+            )
+        );
     }
 
     // ── Test 3: constant value ────────────────────────────────────────────────

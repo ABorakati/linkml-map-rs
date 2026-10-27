@@ -12,9 +12,10 @@
 //! schema (the pipeline shares one per plan) and consulted per slot.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Mutex;
 
+use super::FastMap;
 use crate::{
     datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification},
     decimal::{Decimal, DecimalError},
@@ -72,7 +73,7 @@ fn resolve_target_enum_index(
             }
         }
     };
-    if !sv.all_enum_names().contains(&range) {
+    if !sv.has_enum(&range) {
         return None;
     }
     enum_index(sv, &range)
@@ -87,39 +88,81 @@ fn resolve_target_enum_index(
 /// resolved on demand, uncached.
 #[derive(Debug, Default)]
 pub struct TargetCoercions {
-    datatypes: HashMap<(String, String), Option<&'static str>>,
-    /// Upstream `_target_enum_cache`, keyed `(class, slot, spec range)`.
-    enums: HashMap<(String, String, Option<String>), Option<EnumIndex>>,
+    /// Target class name -> slot name -> what the target schema says of it.
+    /// Nested maps so a lookup takes the two `&str`s without allocating.
+    slots: FastMap<String, FastMap<String, TargetSlot>>,
     /// Upstream `_warned_unresolved_enum_values`: `(enum, value)` pairs already
     /// warned about in non-strict mode, so each logs once per run. Shared
     /// across worker threads through the plan.
     warned_enum_values: Mutex<HashSet<(String, String)>>,
 }
 
+/// What the target schema says of one slot of one target class.
+#[derive(Debug)]
+pub(crate) struct TargetSlot {
+    /// `Transformer._target_slot_datatype`.
+    pub(crate) datatype: Option<&'static str>,
+    /// Whether the induced slot is multivalued; `None` when the target class
+    /// has no such slot.
+    pub(crate) multivalued: Option<bool>,
+    /// Upstream `_target_enum_cache`, keyed by the spec range (the class and
+    /// slot are the keys above).
+    pub(crate) enums: Vec<(Option<String>, Option<EnumIndex>)>,
+}
+
+/// `Some(multivalued)` of the target class's induced slot, `None` when absent.
+fn resolve_target_slot_multivalued(
+    sv: &dyn SchemaProvider,
+    class_name: &str,
+    slot_name: &str,
+) -> Option<bool> {
+    sv.induced_slot(slot_name, class_name)
+        .ok()
+        .map(|s| s.multivalued)
+}
+
 impl TargetCoercions {
     /// Resolve every slot derivation of `spec` (nested class derivations
     /// included) against the target schema.
+    ///
+    /// The derivations resolved are those the engine runs: each top-level one
+    /// merged with its `is_a` / `mixins` ancestors, so inherited slots are in
+    /// the table too.
     pub fn build(spec: &TransformationSpecification, target: &dyn SchemaProvider) -> Self {
         let mut out = Self::default();
-        for cd in spec.class_derivations.iter().flatten() {
-            out.add_class_derivation(cd, target);
+        for cd in super::effective_class_derivations(spec) {
+            out.add_class_derivation(&cd, target);
         }
         out
     }
 
     fn add_class_derivation(&mut self, cd: &ClassDerivation, target: &dyn SchemaProvider) {
         for (_, sd) in cd.slot_derivations.iter().flatten() {
-            self.datatypes
-                .entry((cd.name.clone(), sd.name.clone()))
-                .or_insert_with(|| resolve_target_slot_datatype(target, &cd.name, &sd.name));
-            self.enums
-                .entry((cd.name.clone(), sd.name.clone(), sd.range.clone()))
-                .or_insert_with(|| resolve_target_enum_index(target, &cd.name, sd));
+            let slot = self
+                .slots
+                .entry(cd.name.clone())
+                .or_default()
+                .entry(sd.name.clone())
+                .or_insert_with(|| TargetSlot {
+                    datatype: resolve_target_slot_datatype(target, &cd.name, &sd.name),
+                    multivalued: resolve_target_slot_multivalued(target, &cd.name, &sd.name),
+                    enums: Vec::new(),
+                });
+            if !slot.enums.iter().any(|(range, _)| *range == sd.range) {
+                slot.enums.push((
+                    sd.range.clone(),
+                    resolve_target_enum_index(target, &cd.name, sd),
+                ));
+            }
             // The nested derivation's own name is the target class for its slots.
             for nested in sd.class_derivations.iter().flatten().map(|(_, v)| v) {
                 self.add_class_derivation(nested, target);
             }
         }
+    }
+
+    pub(crate) fn slot(&self, class_name: &str, slot_name: &str) -> Option<&TargetSlot> {
+        self.slots.get(class_name)?.get(slot_name)
     }
 
     /// Mirror of `Transformer._target_slot_datatype`.
@@ -129,12 +172,23 @@ impl TargetCoercions {
         class_name: &str,
         slot_name: &str,
     ) -> Option<&'static str> {
-        match self
-            .datatypes
-            .get(&(class_name.to_owned(), slot_name.to_owned()))
-        {
-            Some(found) => *found,
+        match self.slot(class_name, slot_name) {
+            Some(found) => found.datatype,
             None => resolve_target_slot_datatype(target, class_name, slot_name),
+        }
+    }
+
+    /// Whether the target schema's induced slot `slot_name` of `class_name` is
+    /// multivalued; `None` when the target class has no such slot.
+    pub fn multivalued(
+        &self,
+        target: &dyn SchemaProvider,
+        class_name: &str,
+        slot_name: &str,
+    ) -> Option<bool> {
+        match self.slot(class_name, slot_name) {
+            Some(found) => found.multivalued,
+            None => resolve_target_slot_multivalued(target, class_name, slot_name),
         }
     }
 }
@@ -147,9 +201,11 @@ impl TargetCoercions {
         class_name: &str,
         sd: &SlotDerivation,
     ) -> Option<Cow<'_, EnumIndex>> {
-        let key = (class_name.to_owned(), sd.name.clone(), sd.range.clone());
-        match self.enums.get(&key) {
-            Some(found) => found.as_ref().map(Cow::Borrowed),
+        let cached = self
+            .slot(class_name, &sd.name)
+            .and_then(|slot| slot.enums.iter().find(|(range, _)| *range == sd.range));
+        match cached {
+            Some((_, found)) => found.as_ref().map(Cow::Borrowed),
             None => resolve_target_enum_index(target, class_name, sd).map(Cow::Owned),
         }
     }
