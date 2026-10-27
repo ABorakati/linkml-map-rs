@@ -29,7 +29,7 @@ from pydantic import (
 )
 
 
-metamodel_version = "1.11.0"
+metamodel_version = "1.12.0"
 version = "None"
 
 
@@ -183,12 +183,16 @@ class TransformationSpecification(SpecificationComponent):
     source_schema: Optional[SchemaReference] = Field(default=None, description="""Reference to the schema that describes the source (input) objects.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
     target_schema: Optional[SchemaReference] = Field(default=None, description="""Reference to the schema that describes the target (output) objects.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
     source_schema_patches: Optional[Any] = Field(default=None, description="""Schema patches to apply to the source schema before transformation. Useful for adding foreign key relationships to auto-generated schemas. Uses LinkML schema YAML structure (classes, slots, attributes, etc.).""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
-    creator: Optional[list[Union[Agent,Person,Organization,Software]]] = Field(default_factory=list, description="""A list of creators of this transformation specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification'], 'slot_uri': 'dcterms:creator'} })
-    author: Optional[list[Union[Agent,Person,Organization,Software]]] = Field(default_factory=list, description="""A list of authors of this transformation specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
-    reviewer: Optional[list[Union[Agent,Person,Organization,Software]]] = Field(default_factory=list, description="""A list of reviewers of this transformation specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
+    creator: Optional[list[Union[Person,Organization,Software]]] = Field(default_factory=list, description="""A list of creators of this transformation specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification'], 'slot_uri': 'dcterms:creator'} })
+    author: Optional[list[Union[Person,Organization,Software]]] = Field(default_factory=list, description="""A list of authors of this transformation specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
+    reviewer: Optional[list[Union[Person,Organization,Software]]] = Field(default_factory=list, description="""A list of reviewers of this transformation specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
     mapping_method: Optional[str] = Field(default=None, description="""The method used to create this mapping, e.g. manual curation, automated mapping, etc.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
     documentation: Optional[str] = Field(default=None, description="""URL or reference to documentation for the mapping specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
     content_url: Optional[str] = Field(default=None, description="""Reference to the actual content of the mapping specification""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
+    mint_ids: Optional[bool] = Field(default=None, description="""Whether to synthesize an identifier from a hash of the record's content when the target class has an identifier slot that the class derivation does not derive. Defaults to false. An identifier that is neither derived nor minted is an error, and no records are produced. Overridden by the target class's entry in class_defaults, and by a class derivation's own mint_ids.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification',
+                       'ClassDefault',
+                       'ClassDerivation']} })
+    class_defaults: Optional[dict[str, Union[bool, ClassDefault]]] = Field(default_factory=dict, description="""Settings for every class derivation whose target is the named class, unless the derivation sets its own. Holds per-class policy settings only; derivation content belongs in class_derivations.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification']} })
     class_derivations: Optional[list[ClassDerivation]] = Field(default_factory=list, description="""Instructions on how to derive a set of classes in the target schema from classes in the source schema.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification',
                        'ObjectDerivation',
                        'SlotDerivation']} })
@@ -228,6 +232,7 @@ class SchemaReference(ConfiguredBaseModel):
 
     name: str = Field(default=..., description="""The name or identifier of the schema.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -247,6 +252,7 @@ class ElementDerivation(SpecificationComponent):
 
     name: str = Field(default=..., description="""Name of the element in the target schema""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -266,6 +272,25 @@ class ElementDerivation(SpecificationComponent):
     description: Optional[str] = Field(default=None, description="""description of the specification component""", json_schema_extra = { "linkml_meta": {'domain_of': ['SpecificationComponent'], 'slot_uri': 'dcterms:description'} })
     implements: Optional[list[str]] = Field(default_factory=list, description="""A reference to a specification that this component implements.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SpecificationComponent']} })
     comments: Optional[list[str]] = Field(default_factory=list, description="""A list of comments about this component. Comments are free text, and may be used to provide additional information about the component, including instructions for its use.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SpecificationComponent'], 'slot_uri': 'rdfs:comment'} })
+
+
+class ClassDefault(ConfiguredBaseModel):
+    """
+    Settings applied to every class derivation that targets this class, unless the derivation sets its own.
+    """
+    linkml_meta: ClassVar[LinkMLMeta] = LinkMLMeta({'from_schema': 'https://w3id.org/linkml/transformer'})
+
+    name: str = Field(default=..., description="""Name of the class in the target schema""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
+                       'ElementDerivation',
+                       'ClassDefault',
+                       'ObjectDerivation',
+                       'SlotDerivation',
+                       'EnumDerivation',
+                       'PermissibleValueDerivation',
+                       'Agent']} })
+    mint_ids: Optional[bool] = Field(default=None, description="""Whether derivations of this class mint content-hash identifiers. Takes precedence over the specification's mint_ids; a class derivation's own mint_ids takes precedence over this.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification',
+                       'ClassDefault',
+                       'ClassDerivation']} })
 
 
 class ClassDerivation(ElementDerivation):
@@ -293,8 +318,12 @@ class ClassDerivation(ElementDerivation):
     target_definition: Optional[Any] = Field(default=None, description="""LinkML class definition object for this slot.""", json_schema_extra = { "linkml_meta": {'comments': ['currently defined as Any to avoid coupling with metamodel'],
          'domain_of': ['ClassDerivation', 'SlotDerivation']} })
     pivot_operation: Optional[PivotOperation] = Field(default=None, description="""Configuration for pivot (unmelt) operations at class level""", json_schema_extra = { "linkml_meta": {'domain_of': ['ClassDerivation', 'SlotDerivation']} })
+    mint_ids: Optional[bool] = Field(default=None, description="""Overrides the specification's mint_ids, and the target class's entry in class_defaults, for this class derivation. Set to false on classes whose identifiers other records reference, so a missing derivation is an error rather than a content hash.""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification',
+                       'ClassDefault',
+                       'ClassDerivation']} })
     name: str = Field(default=..., description="""Name of the element in the target schema""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -327,6 +356,7 @@ class ObjectDerivation(ElementDerivation):
 
     name: Optional[str] = Field(default=None, description="""Name of the element in the target schema""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -372,6 +402,7 @@ class SlotDerivation(ElementDerivation):
 
     name: str = Field(default=..., description="""Target slot name""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -403,6 +434,7 @@ class SlotDerivation(ElementDerivation):
                        'EnumDerivation',
                        'PermissibleValueDerivation']} })
     value: Optional[Any] = Field(default=None, description="""A constant value to assign to the target slot.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SlotDerivation', 'KeyVal']} })
+    missing_values: Optional[list[Any]] = Field(default_factory=list, description="""Source values to treat as missing and emit as null instead of the literal value — e.g. sentinel codes like -9, 99, or 999 meaning \"not collected\". Accepts a single value or a list.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SlotDerivation']} })
     range: Optional[str] = Field(default=None, description="""The range (value type) to assign to the derived target slot, overriding the range inferred from the source.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SlotDerivation'], 'slot_uri': 'linkml:range'} })
     unit_conversion: Optional[UnitConversionConfiguration] = Field(default=None, description="""Configuration for converting the source value's unit of measure when deriving this slot.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SlotDerivation']} })
     inverse_of: Optional[Inverse] = Field(default=None, description="""Used to specify a class-slot tuple that is the inverse of the derived/target slot. This is used primarily for mapping to relational databases or formalisms that do not allow multiple values. The class representing the repeated element has a foreign key slot inserted in that 'back references' the original multivalued slot.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SlotDerivation']} })
@@ -433,6 +465,14 @@ class SlotDerivation(ElementDerivation):
     implements: Optional[list[str]] = Field(default_factory=list, description="""A reference to a specification that this component implements.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SpecificationComponent']} })
     comments: Optional[list[str]] = Field(default_factory=list, description="""A list of comments about this component. Comments are free text, and may be used to provide additional information about the component, including instructions for its use.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SpecificationComponent'], 'slot_uri': 'rdfs:comment'} })
 
+    @field_validator('missing_values', mode='before')
+    @classmethod
+    def coerce_missing_values(cls, v):
+        """Accept a single scalar as shorthand for a one-element list."""
+        if v is None or isinstance(v, list):
+            return v
+        return [v]
+
 
 class EnumDerivation(ElementDerivation):
     """
@@ -442,6 +482,7 @@ class EnumDerivation(ElementDerivation):
 
     name: str = Field(default=..., description="""Target enum name""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -492,6 +533,7 @@ class PermissibleValueDerivation(ElementDerivation):
 
     name: str = Field(default=..., description="""Target permissible value text""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -500,14 +542,13 @@ class PermissibleValueDerivation(ElementDerivation):
     expr: Optional[str] = Field(default=None, description="""An expression evaluated on the source object to derive this permissible value. Should be specified using the LinkML expression language.""", json_schema_extra = { "linkml_meta": {'domain_of': ['SlotDerivation',
                        'EnumDerivation',
                        'PermissibleValueDerivation']} })
-    populated_from: Optional[str] = Field(default=None, description="""Source permissible value that maps to this target permissible value.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ClassDerivation',
+    populated_from: Optional[list[str]] = Field(default_factory=list, description="""Source permissible value(s) that map to this target permissible value. Accepts a single value or a list; scalar input is normalized to a one-element list at load time.""", json_schema_extra = { "linkml_meta": {'domain_of': ['ClassDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
                        'PermissibleValueDerivation']} })
-    sources: Optional[list[str]] = Field(default_factory=list, description="""Deprecated. Use populated_from instead.""", json_schema_extra = { "linkml_meta": {'deprecated': 'Deprecated. Use populated_from instead. See '
-                       'https://github.com/linkml/linkml-map/issues/193 for planned '
-                       'list support in populated_from. Will be removed in a future '
-                       'version.',
+    sources: Optional[list[str]] = Field(default_factory=list, description="""Deprecated. Use populated_from instead.""", json_schema_extra = { "linkml_meta": {'deprecated': 'Deprecated. Use populated_from instead, which now accepts a '
+                       'list. See https://github.com/linkml/linkml-map/issues/193. '
+                       'Will be removed in a future version.',
          'domain_of': ['ClassDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -539,6 +580,7 @@ class PrefixDerivation(ElementDerivation):
 
     name: str = Field(default=..., description="""Name of the element in the target schema""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -681,6 +723,7 @@ class Agent(ConfiguredBaseModel):
     id: str = Field(default=..., description="""Identifier for the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification', 'Agent']} })
     name: Optional[str] = Field(default=None, description="""Name of the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -701,6 +744,7 @@ class Person(Agent):
     id: str = Field(default=..., description="""Identifier for the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification', 'Agent']} })
     name: Optional[str] = Field(default=None, description="""Name of the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -721,6 +765,7 @@ class Organization(Agent):
     id: str = Field(default=..., description="""Identifier for the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification', 'Agent']} })
     name: Optional[str] = Field(default=None, description="""Name of the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -741,6 +786,7 @@ class Software(Agent):
     id: str = Field(default=..., description="""Identifier for the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['TransformationSpecification', 'Agent']} })
     name: Optional[str] = Field(default=None, description="""Name of the agent""", json_schema_extra = { "linkml_meta": {'domain_of': ['SchemaReference',
                        'ElementDerivation',
+                       'ClassDefault',
                        'ObjectDerivation',
                        'SlotDerivation',
                        'EnumDerivation',
@@ -776,6 +822,7 @@ SpecificationComponent.model_rebuild()
 TransformationSpecification.model_rebuild()
 SchemaReference.model_rebuild()
 ElementDerivation.model_rebuild()
+ClassDefault.model_rebuild()
 ClassDerivation.model_rebuild()
 ObjectDerivation.model_rebuild()
 AliasedClass.model_rebuild()

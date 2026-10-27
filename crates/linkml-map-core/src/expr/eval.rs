@@ -19,8 +19,9 @@ use indexmap::IndexMap;
 use log::warn;
 
 use super::error::{ExprError, ExprResult};
-use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp, parse};
-use super::stmt::{Program, is_multi_statement, parse_program};
+use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
+use super::slugify;
+use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
 use crate::value::Value;
 
 /// Variable bindings: name → value mapping.
@@ -95,12 +96,22 @@ fn strict_mode_enabled() -> bool {
 
 /// Resolve `name` from `vars`, honouring the current strict mode: in lax mode an
 /// unbound name yields [`Value::Null`]; in strict mode it is an error.
+///
+/// PARITY: inside a statement block (see [`with_object_attr_mode`]) an unbound
+/// name is always an error, strict or not. asteval has no lax mode: reading a
+/// name missing from its symbol table is a `NameError`
+/// (`asteval.Interpreter._getsym`), which upstream `_unrestricted_eval`
+/// re-raises as `ValueError`.
 fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
     match vars.get(name) {
         Some(v) => Ok(v.clone()),
         None => {
-            if strict_mode_enabled() {
-                Err(ExprError::Eval(format!("name '{name}' is not defined")))
+            if strict_mode_enabled() || object_attr_mode_enabled() {
+                let message = format!("name '{name}' is not defined");
+                Err(ExprError::Undefined {
+                    name: name.to_string(),
+                    message,
+                })
             } else {
                 Ok(Value::Null)
             }
@@ -199,17 +210,14 @@ pub fn parse_expr(expr: &str) -> ExprResult<ParsedExpr> {
             inner: ParsedInner::NoneLiteral,
         });
     }
-    // Multi-statement (`asteval`-style) blocks route to the statement parser;
-    // single expressions keep the cached single-AST fast path untouched.
-    if is_multi_statement(expr) {
-        let program = parse_program(expr)?;
-        return Ok(ParsedExpr {
-            inner: ParsedInner::Program(program),
-        });
-    }
-    let ast = parse(expr)?;
+    // Statement blocks route to the statement parser; single expressions keep
+    // the cached single-AST fast path untouched. The split mirrors upstream
+    // `_is_statement_block`: whatever parses as one expression is one.
     Ok(ParsedExpr {
-        inner: ParsedInner::Single(ast),
+        inner: match parse_single_or_program(expr)? {
+            SingleOrProgram::Single(ast) => ParsedInner::Single(ast),
+            SingleOrProgram::Program(program) => ParsedInner::Program(program),
+        },
     })
 }
 
@@ -221,7 +229,7 @@ pub fn eval_parsed(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
     match &parsed.inner {
         ParsedInner::NoneLiteral => Ok(Value::Null),
         ParsedInner::Single(ast) => eval_ast(ast, vars),
-        ParsedInner::Program(program) => with_object_attr_mode(|| program.eval(vars)),
+        ParsedInner::Program(program) => program.eval(vars),
     }
 }
 
@@ -280,11 +288,10 @@ pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
     if expr == "None" {
         return Ok(vec![Ast::None]);
     }
-    if is_multi_statement(expr) {
-        let program = parse_program(expr)?;
-        return Ok(program.exprs().into_iter().cloned().collect());
-    }
-    Ok(vec![parse(expr)?])
+    Ok(match parse_single_or_program(expr)? {
+        SingleOrProgram::Single(ast) => vec![ast],
+        SingleOrProgram::Program(program) => program.exprs().into_iter().cloned().collect(),
+    })
 }
 
 fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
@@ -316,10 +323,14 @@ fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
                 && !is_function_name(root)
                 && !vars.contains_key(root)
             {
-                return Err(ExprError::Eval(format!(
+                let message = format!(
                     "Expression references unknown '{root}' in '{root}.{attr}': \
                      no such source class, join, or slot. Typo or stale reference?"
-                )));
+                );
+                return Err(ExprError::Undefined {
+                    name: root.clone(),
+                    message,
+                });
             }
             let obj = eval_ast(value, vars)?;
             distributed_getattr(&obj, attr)
@@ -443,7 +454,10 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
     match resolved {
         Some(v) => Ok(v),
         None => {
-            if strict_mode_enabled() {
+            // PARITY: in a statement block `slot` is the plain lambda
+            // `tgt_attrs.get(name)` (ObjectTransformer._derive_class), so an
+            // unresolved slot is None there, whatever the strict setting.
+            if strict_mode_enabled() && !object_attr_mode_enabled() {
                 Err(ExprError::Eval(format!(
                     "slot '{slot_name}' is not defined"
                 )))
@@ -542,6 +556,11 @@ pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
     })
 }
 
+/// True while a statement block is being evaluated (see [`with_object_attr_mode`]).
+fn object_attr_mode_enabled() -> bool {
+    OBJECT_ATTR_MODE.with(|c| c.get())
+}
+
 fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
         return Err(ExprError::Eval(format!(
@@ -566,7 +585,7 @@ fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
             //    like Python's `DynObj.__getattr__` (vars(self).get(p, None)).
             //  * default (single-expr) mode: distribute over the map's values,
             //    matching `_distributed_getattr` over a bare dict.
-            if OBJECT_ATTR_MODE.with(|c| c.get()) {
+            if object_attr_mode_enabled() {
                 return Ok(Value::Null);
             }
             let mut out = Vec::with_capacity(m.len());
@@ -590,6 +609,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Decimal(_) => "Decimal",
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",
@@ -1213,7 +1233,7 @@ fn call_function(name: &str, args: Vec<Value>) -> ExprResult<Value> {
         "capitalize" => distributing(args, "capitalize", |v| {
             Ok(Value::Str(py_capitalize(&py_str(&v))))
         }),
-        "slugify" => distributing(args, "slugify", |v| Ok(Value::Str(slugify(&py_str(&v))))),
+        "slugify" => distributing_slugify(args),
         "int" => distributing(args, "int", |v| py_int(&v)),
         "float" => distributing(args, "float", |v| py_float(&v)),
         "bool" => distributing(args, "bool", |v| Ok(Value::Bool(v.is_truthy()))),
@@ -1364,6 +1384,43 @@ fn distributing(
     f(arg)
 }
 
+/// `slugify(s, separator="_")`: distributes over a list first argument and
+/// propagates None like `_distributing`; the result is None when nothing
+/// identifier-shaped remains (upstream `_slugify`).
+fn distributing_slugify(args: Vec<Value>) -> ExprResult<Value> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ExprError::Eval(format!(
+            "slugify() takes 1 or 2 arguments ({} given)",
+            args.len()
+        )));
+    }
+    let separator = match args.get(1) {
+        None => "_".to_string(),
+        Some(Value::Null) => return Ok(Value::Null),
+        Some(sep) => py_str(sep),
+    };
+    let one = |v: &Value| match slugify::slugify(&py_str(v), &separator) {
+        Some(slug) => Value::Str(slug),
+        None => Value::Null,
+    };
+    Ok(match &args[0] {
+        Value::List(items) => Value::List(
+            items
+                .iter()
+                .map(|item| {
+                    if item.is_null() {
+                        Value::Null
+                    } else {
+                        one(item)
+                    }
+                })
+                .collect(),
+        ),
+        Value::Null => Value::Null,
+        v => one(v),
+    })
+}
+
 fn distributing_round(args: Vec<Value>) -> ExprResult<Value> {
     // round(x) or round(x, ndigits). Distributes over a list first-arg.
     if args.is_empty() || args.len() > 2 {
@@ -1434,12 +1491,13 @@ fn uuid5_two_level(namespace: &Value, name: &Value) -> ExprResult<String> {
 
 // --- scalar function implementations mirroring Python builtins ---
 
-fn py_str(v: &Value) -> String {
+pub(crate) fn py_str(v: &Value) -> String {
     match v {
         Value::Null => "None".to_string(),
         Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => format_py_float(*f),
+        Value::Decimal(d) => d.to_sci_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let parts: Vec<String> = items.iter().map(py_repr).collect();
@@ -1455,9 +1513,10 @@ fn py_str(v: &Value) -> String {
     }
 }
 
-fn py_repr(v: &Value) -> String {
+pub(crate) fn py_repr(v: &Value) -> String {
     match v {
-        Value::Str(s) => format!("'{s}'"),
+        Value::Str(s) => crate::pyfmt::py_repr_str(s),
+        Value::Decimal(d) => format!("Decimal('{}')", d.to_sci_string()),
         other => py_str(other),
     }
 }
@@ -1497,41 +1556,13 @@ fn py_capitalize(s: &str) -> String {
     }
 }
 
-/// ASCII slug: lowercase, trim, collapse each run of non-alphanumeric
-/// characters to a single `-`, and strip leading/trailing `-`.
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut pending_dash = false;
-    for c in s.trim().chars() {
-        if c.is_ascii_alphanumeric() {
-            if pending_dash && !out.is_empty() {
-                out.push('-');
-            }
-            pending_dash = false;
-            out.push(c.to_ascii_lowercase());
-        } else {
-            // Any run of non-alphanumeric chars becomes a single separator.
-            pending_dash = true;
-        }
-    }
-    out
-}
-
 fn format_py_float(f: f64) -> String {
-    if f.is_infinite() {
-        return if f > 0.0 { "inf".into() } else { "-inf".into() };
-    }
-    if f.is_nan() {
-        return "nan".into();
-    }
-    if f == f.trunc() && f.abs() < 1e16 {
-        format!("{f:.1}")
-    } else {
-        format!("{f}")
-    }
+    // Delegates to the exact Python `repr(float)` (the previous body diverged
+    // for |f| >= 1e16 and < 1e-4).
+    crate::pyfmt::py_float_repr(f)
 }
 
-fn py_int(v: &Value) -> ExprResult<Value> {
+pub(crate) fn py_int(v: &Value) -> ExprResult<Value> {
     match v {
         Value::Int(i) => Ok(Value::Int(*i)),
         Value::Bool(b) => Ok(Value::Int(*b as i64)),
@@ -1549,7 +1580,7 @@ fn py_int(v: &Value) -> ExprResult<Value> {
     }
 }
 
-fn py_float(v: &Value) -> ExprResult<Value> {
+pub(crate) fn py_float(v: &Value) -> ExprResult<Value> {
     match v {
         Value::Int(i) => Ok(Value::Float(*i as f64)),
         Value::Bool(b) => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
@@ -1683,16 +1714,34 @@ mod tests {
 
     #[test]
     fn test_slugify() {
+        // PARITY: upstream `_slugify` defaults to separator "_" and returns None
+        // when nothing identifier-shaped remains (see expr/slugify.rs).
         assert_eq!(
             eval("slugify('  Hello, World!  ')"),
-            Value::Str("hello-world".into())
+            Value::Str("hello_world".into())
         );
         assert_eq!(
             eval("slugify('Foo___Bar  Baz')"),
-            Value::Str("foo-bar-baz".into())
+            Value::Str("foo_bar_baz".into())
         );
         assert_eq!(eval("slugify('---abc---')"), Value::Str("abc".into()));
-        assert_eq!(eval("slugify('!!!')"), Value::Str("".into()));
+        assert_eq!(eval("slugify('!!!')"), Value::Null);
+        assert_eq!(eval("slugify('')"), Value::Null);
+        assert_eq!(
+            eval("slugify('caf\u{e9}-au-lait', '-')"),
+            Value::Str("cafe-au-lait".into())
+        );
+        assert_eq!(eval("slugify('123 hits')"), Value::Str("_123_hits".into()));
+        // `or`-chain fallback, the documented use.
+        assert_eq!(
+            eval("slugify('!!!') or 'anonymous'"),
+            Value::Str("anonymous".into())
+        );
+        // Distributes over a list; None stays None.
+        assert_eq!(
+            eval("slugify(['A b', None, '!'])"),
+            Value::List(vec![Value::Str("a_b".into()), Value::Null, Value::Null])
+        );
     }
 
     #[test]

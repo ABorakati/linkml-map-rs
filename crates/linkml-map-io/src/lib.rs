@@ -29,6 +29,7 @@ pub mod columnar;
 pub mod format;
 pub mod loaders;
 pub mod pycompat;
+pub mod serialization;
 pub mod writers;
 
 // Re-export the most commonly used items at crate root.

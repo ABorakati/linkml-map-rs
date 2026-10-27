@@ -701,6 +701,34 @@ impl SchemaProvider for SchemaViewProvider {
             .map(|sv| self.slot_view_to_def(sv)))
     }
 
+    fn identifier_slot_without_key(&self, class_name: &str) -> Option<String> {
+        // `get_identifier_slot(use_key=False)`: `identifier: true` only.
+        let cv = self.get_class_view(class_name).ok()?;
+        cv.identifier_slot().map(|sv| sv.name.clone())
+    }
+
+    fn schema_id(&self) -> Option<String> {
+        self.sv.primary_schema().map(|s| s.id)
+    }
+
+    fn is_abstract_or_mixin(&self, class_name: &str) -> bool {
+        self.get_class_view(class_name).is_ok_and(|cv| {
+            let def = cv.def();
+            def.abstract_.unwrap_or(false) || def.mixin.unwrap_or(false)
+        })
+    }
+
+    fn list_elements_ordered_slots(&self, class_name: &str) -> Vec<String> {
+        let Ok(cv) = self.get_class_view(class_name) else {
+            return Vec::new();
+        };
+        cv.slots()
+            .iter()
+            .filter(|sv| sv.definition().list_elements_ordered.unwrap_or(false))
+            .map(|sv| sv.name.clone())
+            .collect()
+    }
+
     // ── Slot queries ─────────────────────────────────────────────────────────
 
     fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef> {
@@ -737,28 +765,35 @@ impl SchemaProvider for SchemaViewProvider {
         let pvs = pv_keys
             .iter()
             .map(|key| {
-                let (description, meaning) = enum_def_raw
+                let raw_pv = enum_def_raw
                     .as_ref()
                     .and_then(|ed| ed.permissible_values.as_ref())
-                    .and_then(|pvmap| pvmap.get(key.as_str()))
-                    .map(|pv| {
-                        let desc = pv.description.clone();
-                        let meaning = pv.meaning.clone();
-                        (desc, meaning)
-                    })
-                    .unwrap_or((None, None));
+                    .and_then(|pvmap| pvmap.get(key.as_str()));
 
                 PermissibleValue {
                     text: key.clone(),
-                    description,
-                    meaning,
+                    description: raw_pv.and_then(|pv| pv.description.clone()),
+                    meaning: raw_pv.and_then(|pv| pv.meaning.clone()),
+                    title: raw_pv.and_then(|pv| pv.title.clone()),
+                    aliases: raw_pv.and_then(|pv| pv.aliases.clone()).unwrap_or_default(),
                 }
             })
             .collect();
 
+        // Upstream `_DYNAMIC_ENUM_SLOTS`: any non-empty one makes the enum open.
+        let is_dynamic = enum_def_raw.as_ref().is_some_and(|ed| {
+            ed.reachable_from.is_some()
+                || ed.matches.is_some()
+                || ed.concepts.as_ref().is_some_and(|v| !v.is_empty())
+                || ed.include.as_ref().is_some_and(|v| !v.is_empty())
+                || ed.minus.as_ref().is_some_and(|v| !v.is_empty())
+                || ed.inherits.as_ref().is_some_and(|v| !v.is_empty())
+        });
+
         Ok(EnumDef {
             name: enum_name.to_owned(),
             permissible_values: pvs,
+            is_dynamic,
         })
     }
 
@@ -770,6 +805,38 @@ impl SchemaProvider for SchemaViewProvider {
 
     fn all_type_names(&self) -> Vec<String> {
         self.all_type_names_internal()
+    }
+
+    fn default_range(&self) -> Option<String> {
+        self.sv.primary_schema().and_then(|s| s.default_range)
+    }
+
+    fn type_ancestors(&self, type_name: &str) -> Vec<String> {
+        // Walk the `typeof` chain ourselves: the backend's `type_ancestors`
+        // drops a parent that is not defined in a loaded schema (e.g. a custom
+        // `typeof: decimal` when `linkml:types` is not loaded), whereas Python's
+        // chain keeps the parent's name.
+        let mut parents: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        self.sv.with_schema_definitions(|schemas| {
+            for schema in schemas.values() {
+                for (name, t) in schema.types.iter().flatten() {
+                    if let Some(parent) = &t.typeof_ {
+                        parents
+                            .entry(name.clone())
+                            .or_insert_with(|| parent.clone());
+                    }
+                }
+            }
+        });
+        let mut chain = vec![type_name.to_owned()];
+        while let Some(parent) = parents.get(chain.last().map_or("", String::as_str)) {
+            if chain.contains(parent) {
+                break;
+            }
+            chain.push(parent.clone());
+        }
+        chain
     }
 
     // ── CURIE / URI coercion ─────────────────────────────────────────────────

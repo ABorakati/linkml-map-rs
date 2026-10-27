@@ -7,6 +7,7 @@ pub mod error;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+mod slugify;
 pub mod stmt;
 
 pub use error::{ExprError, ExprResult};

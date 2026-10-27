@@ -6,6 +6,8 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+pub use crate::decimal::Decimal;
+
 /// A dynamically-typed value during transformation.
 ///
 /// Objects (dicts) are represented as [`Value::Map`]; an unbound variable
@@ -23,12 +25,22 @@ pub enum Value {
     Int(i64),
     /// Floating point.
     Float(f64),
+    /// Exact decimal (Python `decimal.Decimal`), produced by `range: decimal`
+    /// coercion. Never deserialised from data: JSON/YAML numbers stay
+    /// `Int`/`Float`, and a decimal serialises generically as its exact text in
+    /// a string (the writers emit exact numeric literals themselves).
+    #[serde(skip_deserializing, serialize_with = "serialize_decimal")]
+    Decimal(Decimal),
     /// String.
     Str(String),
     /// Ordered list.
     List(Vec<Value>),
     /// Ordered map (object/dict).
     Map(IndexMap<String, Value>),
+}
+
+fn serialize_decimal<S: serde::Serializer>(d: &Decimal, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&d.to_sci_string())
 }
 
 impl Value {
@@ -41,6 +53,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
+            Value::Decimal(d) => !d.is_zero(),
             Value::Str(s) => !s.is_empty(),
             Value::List(items) => !items.is_empty(),
             Value::Map(m) => !m.is_empty(),
@@ -62,6 +75,9 @@ impl Value {
             Value::Bool(_) => None,
             Value::Int(i) => Some(*i as f64),
             Value::Float(f) => Some(*f),
+            // PARITY: Python `float(Decimal)` works; arithmetic mixing a
+            // Decimal with a float raises TypeError upstream, here it is numeric.
+            Value::Decimal(d) => Some(d.to_f64()),
             Value::Str(s) => parse_python_float(s),
             _ => None,
         }
@@ -159,6 +175,9 @@ impl From<&Value> for serde_json::Value {
             Value::Float(f) => serde_json::Number::from_f64(*f)
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null),
+            // Lossless generic form: the exact text as a string. Exact numeric
+            // output is the writers' job (see linkml-map-io).
+            Value::Decimal(d) => serde_json::Value::String(d.to_sci_string()),
             Value::Str(s) => serde_json::Value::String(s.clone()),
             Value::List(items) => {
                 serde_json::Value::Array(items.iter().map(serde_json::Value::from).collect())
@@ -188,6 +207,16 @@ impl Value {
             (Bool(a), Int(b)) | (Int(b), Bool(a)) => (*a as i64) == *b,
             (Bool(a), Float(b)) | (Float(b), Bool(a)) => (if *a { 1.0 } else { 0.0 }) == *b,
             (Int(a), Float(b)) | (Float(b), Int(a)) => (*a as f64) == *b,
+            // Python compares a Decimal with int/bool/Decimal numerically and with
+            // a float exactly (`Decimal("0.1") != 0.1`).
+            (Decimal(a), Decimal(b)) => a == b,
+            (Decimal(a), Int(b)) | (Int(b), Decimal(a)) => *a == self::Decimal::from_i64(*b),
+            (Decimal(a), Bool(b)) | (Bool(b), Decimal(a)) => {
+                *a == self::Decimal::from_i64(i64::from(*b))
+            }
+            (Decimal(a), Float(b)) | (Float(b), Decimal(a)) => {
+                a.cmp_f64(*b) == Some(std::cmp::Ordering::Equal)
+            }
             (Str(a), Str(b)) => a == b,
             (List(a), List(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.py_eq(y)),
             (Map(a), Map(b)) => {
@@ -207,6 +236,7 @@ impl PartialEq for Value {
             (Bool(a), Bool(b)) => a == b,
             (Int(a), Int(b)) => a == b,
             (Float(a), Float(b)) => a == b,
+            (Decimal(a), Decimal(b)) => a == b,
             (Str(a), Str(b)) => a == b,
             (List(a), List(b)) => a == b,
             (Map(a), Map(b)) => a == b,

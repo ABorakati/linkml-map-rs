@@ -26,5 +26,6 @@ log = { workspace = true }
 linkml-map-duckdb = { path = "../linkml-map-duckdb", optional = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio    = { workspace = true }

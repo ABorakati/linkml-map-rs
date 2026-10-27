@@ -7,9 +7,10 @@
 //! column per field and writes the real artifact in `finalize_path`.  Nested
 //! objects become `STRUCT` columns and lists of them `STRUCT[]`.
 //!
-//! Decimals: upstream stages them as strings and casts those paths to an exact
-//! `DECIMAL(p,s)`.  That needs a decimal [`Value`] variant and is not ported yet;
-//! see [`ColumnarStreamWriter::write_chunk`].
+//! Decimals: upstream stages them as strings and then casts those paths to an
+//! exact `DECIMAL(p,s)`.  The staging half is ported (a decimal is staged as its
+//! fixed-point text, so no digit is rounded through a float); the `DECIMAL` cast is
+//! not, so such columns come out as `VARCHAR` rather than `DECIMAL`.
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,33 @@ use linkml_map_core::value::Value;
 
 use crate::format::Format;
 use crate::writers::{StreamWriter, jsonl_line};
+
+fn contains_decimal(value: &Value) -> bool {
+    match value {
+        Value::Decimal(_) => true,
+        Value::List(items) => items.iter().any(contains_decimal),
+        Value::Map(map) => map.values().any(contains_decimal),
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => false,
+    }
+}
+
+/// Copy of *value* with every decimal replaced by its fixed-point text.
+fn decimals_as_strings(value: &Value) -> Value {
+    match value {
+        Value::Decimal(d) => Value::Str(d.to_fixed_string()),
+        Value::List(items) => Value::List(items.iter().map(decimals_as_strings).collect()),
+        Value::Map(map) => Value::Map(
+            map.iter()
+                .map(|(k, v)| (k.clone(), decimals_as_strings(v)))
+                .collect(),
+        ),
+        scalar @ (Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Str(_)) => scalar.clone(),
+    }
+}
 
 /// Which artifact the staged JSONL is converted into.
 #[derive(Debug, Clone)]
@@ -56,10 +84,14 @@ impl StreamWriter for ColumnarStreamWriter {
         // PARITY: output_streams.py::ColumnarStreamWriter.write_chunk stages
         // `json.dumps(_strip_nulls(obj), ensure_ascii=False)`; an all-null slot is
         // therefore absent from the artifact's schema.
-        // Decimal values are not staged as strings yet (see the module docs).
+        // `_decimal_as_string`: decimals are staged as strings (see the module docs).
         let mut out = String::new();
         for obj in chunk {
-            out.push_str(&jsonl_line(obj));
+            if contains_decimal(obj) {
+                out.push_str(&jsonl_line(&decimals_as_strings(obj)));
+            } else {
+                out.push_str(&jsonl_line(obj));
+            }
             out.push('\n');
         }
         Ok(out)
@@ -399,5 +431,32 @@ mod tests {
             err.to_string(),
             "parquet output requires an output file; pass -o/--output FILE"
         );
+    }
+}
+
+#[cfg(test)]
+mod decimal_tests {
+    use linkml_map_core::decimal::Decimal;
+
+    use super::*;
+
+    /// Decimals are staged as exact strings, never as float-rounded numbers.
+    #[test]
+    fn decimals_are_staged_as_strings() {
+        let row = Value::Map(
+            [
+                ("id".to_owned(), Value::Str("a".into())),
+                (
+                    "v".to_owned(),
+                    Value::Decimal(Decimal::parse_python("52.30").unwrap()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let staged = ColumnarStreamWriter::new(Format::Parquet, None)
+            .write_chunk(&[row])
+            .unwrap();
+        assert_eq!(staged, "{\"id\": \"a\", \"v\": \"52.30\"}\n");
     }
 }

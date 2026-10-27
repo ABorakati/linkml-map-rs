@@ -10,15 +10,15 @@ to Rust under the "mirror upstream Python" doctrine.
 | Field          | Value                                                        |
 |----------------|--------------------------------------------------------------|
 | Upstream repo  | https://github.com/linkml/linkml-map                        |
-| Pinned commit  | `v0.5.3` tag                                                |
-| Fetch date     | 2026-06-24 (initial); 2026-07-07; 2026-07-25 (pin bump to `v0.5.3`) |
+| Pinned commit  | `v0.6.0-rc1` tag (`1323cc8`)                                |
+| Fetch date     | 2026-06-24 (initial); 2026-07-07; 2026-07-25 (pin bump to `v0.5.3`); 2026-10-27 (pin bump to `v0.6.0-rc1`) |
 
-Pin-drift history: see [`docs/upstream-sync-2026-07-25.md`](../../docs/upstream-sync-2026-07-25.md).
+Pin-drift history: see [`docs/upstream-sync-2026-10-27.md`](../../docs/upstream-sync-2026-10-27.md).
 
 ## Raw URL pattern
 
 ```
-https://raw.githubusercontent.com/linkml/linkml-map/66cbcc31b5169f8f95a70f164161a4cee1c6a2bb/src/linkml_map/<path>
+https://raw.githubusercontent.com/linkml/linkml-map/1323cc8b73311c4774abac7337748d212ab76a32/src/linkml_map/<path>
 ```
 
 ## License
@@ -42,6 +42,14 @@ the same basis on which `tests/compliance/` already vendors upstream fixture fil
 | `utils/expression_locations.py`                  | `utils/expression_locations.py`             |
 | `datamodel/transformer_model.py`                 | `datamodel/transformer_model.py`            |
 | `inference/inverter.py`                          | `inference/inverter.py`                     |
+| `transformer/content_id.py`                      | `transformer/content_id.py`                 |
+| `transformer/pivot.py`                           | `transformer/pivot.py`                      |
+| `utils/enum_index.py`                            | `utils/enum_index.py`                       |
+| `utils/serialization.py`                         | `utils/serialization.py`                    |
+| `functions/unit_conversion.py`                   | `functions/unit_conversion.py`              |
+| `spec_normalizer.py`                             | `spec_normalizer.py`                        |
+| `writers/output_streams.py`                      | `writers/output_streams.py`                 |
+| `utils/loaders.py`                               | `utils/loaders.py`                          |
 
 ### Newly vendored (2026-07-07 pin bump)
 

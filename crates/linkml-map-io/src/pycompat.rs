@@ -110,6 +110,8 @@ fn write_json(
             let _ = write!(out, "{i}");
         }
         Value::Float(f) => out.push_str(&json_float(*f)),
+        // simplejson(use_decimal=True) writes `str(Decimal)` as a numeric literal.
+        Value::Decimal(d) => out.push_str(&d.to_sci_string()),
         Value::Str(s) => write_json_str(out, s),
         Value::List(items) => {
             if items.is_empty() {
@@ -203,6 +205,8 @@ pub fn tabular_cell(value: &Value) -> String {
         Value::Bool(b) => py_bool(*b).to_owned(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => py_float_repr(*f),
+        // `format_decimal`: fixed-point, every digit kept.
+        Value::Decimal(d) => d.to_fixed_string(),
         Value::Str(s) => s.clone(),
         Value::List(_) | Value::Map(_) => dumps_json(value, None, false),
     }
@@ -212,6 +216,7 @@ pub fn tabular_cell(value: &Value) -> String {
 pub fn py_str(value: &Value) -> String {
     match value {
         Value::Str(s) => s.clone(),
+        Value::Decimal(d) => d.to_sci_string(),
         other => py_repr(other),
     }
 }
@@ -223,6 +228,7 @@ pub fn py_repr(value: &Value) -> String {
         Value::Bool(b) => py_bool(*b).to_owned(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => py_float_repr(*f),
+        Value::Decimal(d) => format!("Decimal('{}')", d.to_sci_string()),
         Value::Str(s) => py_str_repr(s),
         Value::List(items) => {
             let inner: Vec<String> = items.iter().map(py_repr).collect();
@@ -293,6 +299,7 @@ pub fn strip_nulls(value: &Value) -> Value {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
+        | Value::Decimal(_)
         | Value::Str(_)) => scalar.clone(),
     }
 }
@@ -318,6 +325,7 @@ pub fn strip_empty(value: &Value) -> Value {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
+        | Value::Decimal(_)
         | Value::Str(_)) => scalar.clone(),
     }
 }
@@ -328,7 +336,9 @@ fn is_empty(value: &Value) -> bool {
         Value::Null => true,
         Value::List(items) => items.is_empty(),
         Value::Map(map) => map.is_empty(),
-        Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => false,
+        Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Decimal(_) | Value::Str(_) => {
+            false
+        }
     }
 }
 
@@ -350,6 +360,7 @@ pub fn sort_keys(value: &Value) -> Value {
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
+        | Value::Decimal(_)
         | Value::Str(_)) => scalar.clone(),
     }
 }
@@ -387,6 +398,7 @@ fn flatten_into<'a>(
             | Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
+            | Value::Decimal(_)
             | Value::Str(_)
             | Value::List(_)) => {
                 flat.insert(flat_key, leaf);

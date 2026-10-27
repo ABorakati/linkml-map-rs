@@ -41,6 +41,7 @@ use crate::format::Format;
 use crate::pycompat::{
     dumps_json, flatten, py_str, sort_keys, strip_empty, strip_nulls, tabular_cell,
 };
+use crate::serialization::{decimal_placeholder, restore_yaml_decimals};
 
 /// Records handed to a [`StreamWriter`] per `write_chunk` call (upstream
 /// `--chunk-size` default).
@@ -230,7 +231,29 @@ impl StreamWriter for YamlStreamWriter {
 
 /// `yaml.dump(obj, default_flow_style=False, allow_unicode=True)`.
 fn dump_yaml(value: &Value) -> Result<String> {
-    serde_yaml_ng::to_string(value).context("serialising YAML")
+    // PARITY: utils/serialization.py::dump_yaml — a Decimal is a plain scalar with
+    // every digit (`format(d, 'f')`); placeholders are swapped in after serialising.
+    let tree = decimals_as_placeholders(value);
+    let text = serde_yaml_ng::to_string(&tree).context("serialising YAML")?;
+    Ok(restore_yaml_decimals(&text).into_owned())
+}
+
+/// Copy of *value* with each decimal replaced by its [`decimal_placeholder`] string.
+fn decimals_as_placeholders(value: &Value) -> Value {
+    match value {
+        Value::Decimal(d) => Value::Str(decimal_placeholder(d)),
+        Value::List(items) => Value::List(items.iter().map(decimals_as_placeholders).collect()),
+        Value::Map(map) => Value::Map(
+            map.iter()
+                .map(|(k, v)| (k.clone(), decimals_as_placeholders(v)))
+                .collect(),
+        ),
+        scalar @ (Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Str(_)) => scalar.clone(),
+    }
 }
 
 // ─── CSV / TSV ───────────────────────────────────────────────────────────────
@@ -888,6 +911,9 @@ pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
                 .with_context(|| format!("non-finite float: {}", f))?;
             serde_json::Value::Number(n)
         }
+        // An exact decimal travels as a placeholder string that callers replace
+        // with a plain numeric literal after serialising (see `crate::serialization`).
+        Value::Decimal(d) => serde_json::Value::String(decimal_placeholder(d)),
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::List(items) => {
             serde_json::Value::Array(items.iter().map(value_to_json).collect::<Result<_>>()?)

@@ -1,9 +1,12 @@
 pub mod datamodel;
+pub mod decimal;
 pub mod engine;
+pub mod enum_index;
 pub mod error;
 pub mod expr;
 pub mod inference;
 pub mod normalize;
+pub mod pyfmt;
 pub mod schema;
 pub mod validate;
 pub mod value;

@@ -175,6 +175,13 @@ struct MapDataArgs {
     #[arg(long = "continue-on-error", default_value_t = false)]
     continue_on_error: bool,
 
+    /// Raise an error when an expression references a name that is not a slot
+    /// on the source class, or a value for an enum-ranged target slot matches no
+    /// permissible value, or more than one. Recommended for real data transforms;
+    /// the default warns and carries on for backward compatibility.
+    #[arg(long = "strict", default_value_t = false)]
+    strict: bool,
+
     /// Input data file, or a directory of tables for multi-table joins.
     ///
     /// A single file (default) is transformed row-by-row. A *directory* enables
@@ -251,6 +258,7 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
             additional_outputs: args.additional_output.iter().map(PathBuf::from).collect(),
             ..WriteOptions::default()
         },
+        strict: args.strict,
     };
 
     run_map_data_config_with_options(cfg, args.continue_on_error).await?;

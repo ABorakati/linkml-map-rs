@@ -60,6 +60,10 @@ pub struct MapDataConfig {
     pub workers: usize,
     /// `true` → rows written in arrival order (max throughput, output order undefined).
     pub unordered: bool,
+    /// Strict mode (`--strict`): fail a row on an unbound `expr:` name or an
+    /// enum value matching no (or more than one) permissible value of the
+    /// target enum, instead of warning and carrying on.
+    pub strict: bool,
     /// Input data path — a single data file (default), or a *directory* of tables
     /// for multi-table joins (each file is a named table matched by filename stem;
     /// the primary table is streamed and joined tables feed a lookup index). See
@@ -87,6 +91,7 @@ impl MapDataConfig {
             output_format: "auto".into(),
             workers: 4,
             unordered: false,
+            strict: false,
             input: input.into(),
             write_options: WriteOptions::default(),
         }
@@ -125,6 +130,7 @@ pub async fn run_map_data_config_with_options(
         ordered: !cfg.unordered,
         channel_depth: 256,
         write_options: cfg.write_options.clone(),
+        strict: cfg.strict,
     };
 
     eprintln!(

@@ -22,9 +22,13 @@
 //!   defined in [`apply_aggregation`]. Spec→Python/SQL compilation and
 //!   JSON-schema target validation are intentionally out of scope.
 
+pub mod coerce;
+pub mod content_id;
 pub mod lookup_index;
 pub mod object_index;
 pub mod units;
+pub use coerce::TargetCoercions;
+pub use content_id::ContentIds;
 pub use lookup_index::{LookupIndex, LookupIndexRef};
 pub use object_index::ObjectIndex;
 
@@ -32,7 +36,7 @@ use indexmap::IndexMap;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     datamodel::{
@@ -48,6 +52,7 @@ use crate::{
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
+use coerce::coerce_datatype;
 
 // ── Compiled expr cache ───────────────────────────────────────────────
 
@@ -134,6 +139,20 @@ pub struct ObjectTransformer<'s> {
     /// `slot()` references instead of silently yielding null (#232). Default
     /// false (lax). Set via [`with_strict_exprs`].
     strict: bool,
+    /// Optional shared target-schema lookup table (target slot datatypes).
+    /// Built once per plan and borrowed by every per-row engine; see
+    /// [`ObjectTransformer::with_target_coercions`].
+    target_coercions: Option<&'s TargetCoercions>,
+    /// Lazily built fallback used when no shared table is attached (tests,
+    /// `ObjectTransformer::new` callers). Unused without a target schema.
+    local_target_coercions: OnceLock<TargetCoercions>,
+    /// Shared content-id synthesiser (built once per plan); when `None` one is
+    /// built lazily into `owned_content_ids`. See [`content_id`].
+    content_ids: Option<&'s ContentIds>,
+    owned_content_ids: content_id::OwnedContentIds,
+    /// Emit records whose identifier is neither derived nor minted instead of
+    /// raising (`--continue-on-error`). See [`content_id`].
+    emit_without_identifiers: bool,
 }
 
 impl<'s> ObjectTransformer<'s> {
@@ -154,6 +173,11 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            target_coercions: None,
+            local_target_coercions: OnceLock::new(),
+            content_ids: None,
+            owned_content_ids: Default::default(),
+            emit_without_identifiers: false,
         }
     }
 
@@ -175,6 +199,11 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            target_coercions: None,
+            local_target_coercions: OnceLock::new(),
+            content_ids: None,
+            owned_content_ids: Default::default(),
+            emit_without_identifiers: false,
         }
     }
 
@@ -200,8 +229,20 @@ impl<'s> ObjectTransformer<'s> {
         self
     }
 
-    /// Enable strict expression evaluation: unbound names and unresolved
-    /// `slot()` references error instead of yielding null (#232). Default lax.
+    /// Attach a pre-built [`TargetCoercions`] table so the engine does not
+    /// re-resolve target slot datatypes per row. Must be built from the same
+    /// spec and target schema this transformer holds. Without one the engine
+    /// lazily builds its own on first use.
+    pub fn with_target_coercions(mut self, coercions: &'s TargetCoercions) -> Self {
+        self.target_coercions = Some(coercions);
+        self
+    }
+
+    /// Enable strict mode: unbound names and unresolved `slot()` references in
+    /// `expr:` error instead of yielding null (#232), and a value for an
+    /// enum-ranged target slot that matches no permissible value of the target
+    /// enum, or more than one, errors instead of passing through with a
+    /// (once-per-value) warning. Default lax. Mirrors upstream `strict`.
     pub fn with_strict_exprs(mut self, strict: bool) -> Self {
         self.strict = strict;
         self
@@ -215,6 +256,29 @@ impl<'s> ObjectTransformer<'s> {
     pub fn map_object(&self, source_obj: &Value, source_type: Option<&str>) -> Result<Value> {
         let source_type = self.resolve_source_type(source_type)?;
         self.map_object_with_type(source_obj, &source_type, None)
+    }
+
+    /// Transform a single source object through an explicit class derivation.
+    ///
+    /// Mirrors Python `ObjectTransformer.map_object(..., class_derivation=cd)`:
+    /// the derivation is used as given, skipping the by-source-type lookup and
+    /// therefore the `is_a`/`mixins` merge, so callers merge first
+    /// ([`crate::normalize::inheritance::with_inherited_fields`]). The streaming
+    /// driver uses it to emit a constants-only block once from an empty row
+    /// (upstream `transform_spec`, `1323cc8`).
+    pub fn map_object_with_derivation(
+        &self,
+        source_obj: &Value,
+        source_type: Option<&str>,
+        class_derivation: &ClassDerivation,
+    ) -> Result<Value> {
+        let source_type = self.resolve_source_type(source_type)?;
+        self.map_object_with_type_and_derivation(
+            source_obj,
+            &source_type,
+            None,
+            Some(class_derivation),
+        )
     }
 
     /// Transform a single source object with a pre-built [`ObjectIndex`].
@@ -276,6 +340,18 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         index: Option<&ObjectIndex>,
     ) -> Result<Value> {
+        self.map_object_with_type_and_derivation(source_obj, source_type, index, None)
+    }
+
+    /// [`Self::map_object_with_type`] with an optional explicit derivation
+    /// (Python `class_deriv = class_derivation or self._get_class_derivation(...)`).
+    fn map_object_with_type_and_derivation(
+        &self,
+        source_obj: &Value,
+        source_type: &str,
+        index: Option<&ObjectIndex>,
+        class_derivation: Option<&ClassDerivation>,
+    ) -> Result<Value> {
         // Enum pass-through: if source_type is an enum, transform via enum derivation.
         if let Some(ss) = self.source_schema
             && ss.all_enum_names().contains(&source_type.to_string())
@@ -300,7 +376,14 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         // Find the matching class derivation(s).
-        let class_deriv = self.get_class_derivation(source_type)?;
+        let looked_up;
+        let class_deriv = match class_derivation {
+            Some(cd) => cd,
+            None => {
+                looked_up = self.get_class_derivation(source_type)?;
+                &looked_up
+            }
+        };
 
         // Class-level pivot (melt/unmelt) replaces per-slot derivation entirely.
         // Mirrors Python `ObjectTransformer._perform_pivot_operation`.
@@ -321,7 +404,7 @@ impl<'s> ObjectTransformer<'s> {
                     slot_deriv,
                     source_map,
                     source_type,
-                    &class_deriv,
+                    class_deriv,
                     index,
                     Some(&tgt_attrs),
                 )
@@ -342,7 +425,7 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
-        Ok(Value::Map(tgt_attrs))
+        self.with_synthesized_id(tgt_attrs, &class_deriv)
     }
 
     /// Like [`map_object_with_type`] but takes an explicit [`ClassDerivation`]
@@ -385,7 +468,7 @@ impl<'s> ObjectTransformer<'s> {
                 tgt_attrs.shift_remove(slot_deriv.name.as_str());
             }
         }
-        Ok(Value::Map(tgt_attrs))
+        self.with_synthesized_id(tgt_attrs, class_deriv)
     }
 
     // ── Pivot (melt / unmelt) ─────────────────────────────────────────────────
@@ -682,12 +765,70 @@ impl<'s> ObjectTransformer<'s> {
         }
     }
 
-    /// Apply range coercion post-processing when a source slot def is present.
+    /// The shared (or lazily built) target-schema lookup table; `None` without
+    /// a target schema, which switches all target-driven coercion off.
+    fn target_coercions(&self) -> Option<&TargetCoercions> {
+        let target = self.target_schema?;
+        Some(match self.target_coercions {
+            Some(shared) => shared,
+            None => self
+                .local_target_coercions
+                .get_or_init(|| TargetCoercions::build(&self.spec, target)),
+        })
+    }
+
+    /// Mirror of `Transformer._target_slot_datatype`: the built-in datatype the
+    /// target schema declares for a slot of the target class, if any.
+    fn target_slot_datatype(&self, class_name: &str, slot_name: &str) -> Option<&'static str> {
+        let target = self.target_schema?;
+        self.target_coercions()?
+            .datatype(target, class_name, slot_name)
+    }
+
+    /// Mirror of `_resolve_enum_value(v, _target_enum_index(...))`: resolve an
+    /// enum-ranged target slot's value to the target enum's permissible value
+    /// key. A no-op without a target schema or an enum range.
+    fn resolve_enum_value(
+        &self,
+        v: Value,
+        slot_deriv: &SlotDerivation,
+        class_deriv: &ClassDerivation,
+    ) -> Result<Value> {
+        let (Some(target), Some(coercions)) = (self.target_schema, self.target_coercions()) else {
+            return Ok(v);
+        };
+        match coercions.enum_index(target, &class_deriv.name, slot_deriv) {
+            Some(index) => coercions.resolve_enum_value(v, &index, target, self.strict),
+            None => Ok(v),
+        }
+    }
+
+    /// The range values of `slot_deriv` are coerced to: the spec `range`, else
+    /// (when the spec declares none) the target schema's datatype.
+    fn coercion_datatype<'a>(
+        &self,
+        slot_deriv: &'a SlotDerivation,
+        class_deriv: &ClassDerivation,
+    ) -> Option<Cow<'a, str>> {
+        match slot_deriv.range.as_deref().filter(|r| !r.is_empty()) {
+            Some(range) => Some(Cow::Borrowed(range)),
+            None => self
+                .target_slot_datatype(&class_deriv.name, &slot_deriv.name)
+                .map(Cow::Borrowed),
+        }
+    }
+
+    /// Apply range coercion post-processing.
     ///
-    /// Runs `map_value_by_range` → `coerce_cardinality` → `coerce_datatype` →
-    /// `reshape_collection` in that order.  Mirrors Python post-derivation
-    /// coercion.  Returns `v` unchanged when `source_slot_def` is `None`, or
-    /// when `v` is null or the slot is hidden.
+    /// With a source slot def: `map_value_by_range` → `coerce_cardinality` →
+    /// `coerce_datatype` → `reshape_collection`, in that order (mirrors Python
+    /// post-derivation coercion). Without one, a `value:` / `expr:` slot gets
+    /// `coerce_cardinality` → `coerce_datatype` (upstream 11b425b). Returns `v`
+    /// unchanged when it is null, the slot is hidden, or neither applies.
+    ///
+    /// `map_value_by_range` sees the spec range only; the datatype coercion
+    /// falls back to the target schema's range when the spec declares none
+    /// (upstream 0469da7).
     fn apply_range_coercion(
         &self,
         mut v: Value,
@@ -702,10 +843,29 @@ impl<'s> ObjectTransformer<'s> {
         {
             v = self.map_value_by_range(&v, ssd, slot_deriv.range.as_deref(), index)?;
             v = self.coerce_cardinality(v, slot_deriv, class_deriv, ssd.multivalued)?;
-            if let Some(target_range) = slot_deriv.range.as_deref() {
-                v = coerce_datatype(v, target_range);
+            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
+                v = coerce_datatype(v, &datatype)?;
             }
+            v = self.resolve_enum_value(v, slot_deriv, class_deriv)?;
             v = self.reshape_collection(v, slot_deriv, ssd)?;
+        } else if (slot_deriv.value.is_some()
+            || slot_deriv.expr.as_deref().is_some_and(|e| !e.is_empty()))
+            && !v.is_null()
+            && !slot_deriv.hide.unwrap_or(false)
+        {
+            // PARITY: object_transformer.py::_derive_slot (11b425b) — an `elif`
+            // of the source-slot branch, keyed on the spec fields (`value is not
+            // None` / truthy `expr`) rather than on which branch produced `v`,
+            // so a slot with both `unit_conversion` and `expr` also lands here.
+            // No `_map_value_by_range` / `_reshape_collection` (they need a
+            // source slot); `source_multivalued` is false because upstream's
+            // `_coerce_cardinality` takes no source slot. A `value:`/`expr:`
+            // result is coerced to the spec range even without a target schema.
+            v = self.coerce_cardinality(v, slot_deriv, class_deriv, false)?;
+            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
+                v = coerce_datatype(v, &datatype)?;
+            }
+            v = self.resolve_enum_value(v, slot_deriv, class_deriv)?;
         }
         Ok(v)
     }
@@ -1785,7 +1945,8 @@ impl<'s> ObjectTransformer<'s> {
     ///
     /// Matches on `populated_from == source_type` (explicit mapping) OR
     /// `name == source_type` when `populated_from` is absent (identity mapping).
-    /// Then resolves is_a / mixin inheritance by merging ancestor slot_derivations.
+    /// Then resolves is_a / mixin inheritance by merging every ancestor field
+    /// ([`crate::normalize::inheritance::with_inherited_fields`]).
     fn get_class_derivation(&self, source_type: &str) -> Result<ClassDerivation> {
         let derivations = match &self.spec.class_derivations {
             Some(v) => v,
@@ -1812,49 +1973,8 @@ impl<'s> ObjectTransformer<'s> {
             });
         }
 
-        let cd = matching[0].clone();
-        self.resolve_class_derivation_ancestors(cd, derivations)
-    }
-
-    /// Merge is_a / mixin ancestor slot_derivations into `cd` (Python:
-    /// `_class_derivation_ancestors`).
-    ///
-    /// Ancestor slots are added only when the descendant does not already
-    /// override the same slot name.
-    fn resolve_class_derivation_ancestors(
-        &self,
-        mut cd: ClassDerivation,
-        all: &[ClassDerivation],
-    ) -> Result<ClassDerivation> {
-        let parents: Vec<String> = {
-            let mut p = cd.mixins.clone().unwrap_or_default();
-            if let Some(is_a) = &cd.is_a {
-                p.push(is_a.clone());
-            }
-            p
-        };
-
-        for parent_name in &parents {
-            let parent = all
-                .iter()
-                .find(|d| &d.name == parent_name)
-                .cloned()
-                .ok_or_else(|| Error::NoClassDerivation {
-                    source_type: parent_name.clone(),
-                    count: 0,
-                })?;
-            // Recursively resolve the parent too.
-            let parent = self.resolve_class_derivation_ancestors(parent, all)?;
-            // Merge: ancestor slots that don't already exist in cd.
-            if let Some(ancestor_slots) = parent.slot_derivations {
-                let cd_slots = cd.slot_derivations.get_or_insert_with(IndexMap::new);
-                for (k, v) in ancestor_slots {
-                    cd_slots.entry(k).or_insert(v);
-                }
-            }
-        }
-
-        Ok(cd)
+        // Python: `return self._with_inherited_fields(matching_tgt_class_derivs[0])`.
+        crate::normalize::inheritance::with_inherited_fields(matching[0], derivations)
     }
 
     // ── Source type resolution ────────────────────────────────────────────────
@@ -1917,6 +2037,8 @@ fn value_to_string_key(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // Python `str(Decimal)`.
+        Value::Decimal(d) => d.to_sci_string(),
         Value::Str(s) => s.clone(),
         Value::List(_) | Value::Map(_) => format!("{v:?}"),
     }
@@ -2164,6 +2286,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Decimal(_) => "Decimal",
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",
@@ -2419,6 +2542,9 @@ fn py_json(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // PARITY: utils/serialization.py::dumps_json (simplejson, use_decimal)
+        // writes a Decimal as its exact `str()` literal.
+        Value::Decimal(d) => d.to_sci_string(),
         // serde_json gives correct JSON string escaping + quoting.
         Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}")),
         Value::List(items) => {
@@ -2446,6 +2572,9 @@ fn yaml_flow(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // PARITY: utils/serialization.py::dump_yaml writes a Decimal as a plain
+        // scalar with `format(d, 'f')`.
+        Value::Decimal(d) => d.to_fixed_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let inner: Vec<String> = items.iter().map(yaml_flow).collect();
@@ -2458,56 +2587,6 @@ fn yaml_flow(v: &Value) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
-    }
-}
-
-/// Mirror of Python `Transformer._coerce_datatype`.
-///
-/// Recursively converts scalar values to the named target range type.
-/// Unknown range names are passed through unchanged.
-fn coerce_datatype(v: Value, target_range: &str) -> Value {
-    match v {
-        Value::List(items) => Value::List(
-            items
-                .into_iter()
-                .map(|i| coerce_datatype(i, target_range))
-                .collect(),
-        ),
-        Value::Map(m) => Value::Map(
-            m.into_iter()
-                .map(|(k, i)| (k, coerce_datatype(i, target_range)))
-                .collect(),
-        ),
-        scalar => match target_range {
-            "integer" | "int" => match &scalar {
-                Value::Int(_) => scalar,
-                Value::Float(f) => Value::Int(*f as i64),
-                Value::Str(s) => s.trim().parse::<i64>().map(Value::Int).unwrap_or(scalar),
-                Value::Bool(b) => Value::Int(if *b { 1 } else { 0 }),
-                _ => scalar,
-            },
-            "float" | "double" => match &scalar {
-                Value::Float(_) => scalar,
-                Value::Int(i) => Value::Float(*i as f64),
-                Value::Str(s) => s.trim().parse::<f64>().map(Value::Float).unwrap_or(scalar),
-                Value::Bool(b) => Value::Float(if *b { 1.0 } else { 0.0 }),
-                _ => scalar,
-            },
-            "string" | "str" => match &scalar {
-                Value::Str(_) => scalar,
-                other => Value::Str(value_to_string_key(other)),
-            },
-            "boolean" | "bool" => match &scalar {
-                Value::Bool(_) => scalar,
-                Value::Int(i) => Value::Bool(*i != 0),
-                Value::Str(s) => match s.to_lowercase().as_str() {
-                    "true" | "yes" | "1" => Value::Bool(true),
-                    _ => Value::Bool(false),
-                },
-                _ => scalar,
-            },
-            _ => scalar,
-        },
     }
 }
 
@@ -2547,18 +2626,22 @@ mod tests {
                         text: "male".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                     PermissibleValue {
                         text: "female".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                     PermissibleValue {
                         text: "nonbinary man".into(),
                         description: None,
                         meaning: None,
+                        ..Default::default()
                     },
                 ],
+                ..Default::default()
             })
             .add_class(ClassDef {
                 name: "Person".into(),
@@ -3618,45 +3701,6 @@ mod tests {
     }
 
     // ── Test 14: coerce_datatype ──────────────────────────────────────────────
-
-    #[test]
-    fn test_coerce_datatype_integer() {
-        assert_eq!(
-            coerce_datatype(Value::Str("42".into()), "integer"),
-            Value::Int(42)
-        );
-        assert_eq!(coerce_datatype(Value::Float(3.7), "integer"), Value::Int(3));
-        assert_eq!(coerce_datatype(Value::Int(5), "integer"), Value::Int(5));
-    }
-
-    #[test]
-    fn test_coerce_datatype_float() {
-        assert_eq!(
-            coerce_datatype(Value::Str("3.14".into()), "float"),
-            Value::Float(3.14)
-        );
-        assert_eq!(coerce_datatype(Value::Int(2), "float"), Value::Float(2.0));
-    }
-
-    #[test]
-    fn test_coerce_datatype_string() {
-        assert_eq!(
-            coerce_datatype(Value::Int(99), "string"),
-            Value::Str("99".into())
-        );
-    }
-
-    #[test]
-    fn test_coerce_datatype_bool() {
-        assert_eq!(
-            coerce_datatype(Value::Str("true".into()), "boolean"),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            coerce_datatype(Value::Int(0), "boolean"),
-            Value::Bool(false)
-        );
-    }
 
     // ── Test 15: json_to_value round-trip ─────────────────────────────────────
 
