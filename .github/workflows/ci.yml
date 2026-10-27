@@ -173,3 +173,64 @@ jobs:
     - name: Run PyO3 drop-in compat tests
       run: |
         pytest crates/linkml-map-py/tests/test_compat_api.py -v
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Expression-level differential fuzzing against upstream linkml-map.
+  #
+  # Self-contained: upstream v0.6.0-rc1 goes into its OWN venv (never the venv
+  # that runs the wheel-compat job, which must stay upstream-free), and the Rust
+  # side is the `expr_oracle` example. Three checks:
+  #   1. corpus replay: tests/differential/expr/corpus/*.jsonl against the stored
+  #      upstream results (plain `cargo test`, no Python);
+  #   2. a fixed-seed Hypothesis campaign (restricted + unrestricted) over the
+  #      `clean` grammar profile; any divergence that classes.py cannot name fails;
+  #   3. leaf oracles (float repr, json.dumps, str methods, ...) that must stay
+  #      clean. Known divergences live in the corpus (`status: divergence`) and in
+  #      tests/differential/expr/classes.py; shrink the `clean` profile as they are fixed.
+  # ───────────────────────────────────────────────────────────────────────────
+  expr-differential:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Install upstream linkml-map v0.6.0-rc1 (isolated venv) and Hypothesis
+      run: |
+        python -m venv "$RUNNER_TEMP/upvenv"
+        "$RUNNER_TEMP/upvenv/bin/python" -m pip install --upgrade pip
+        "$RUNNER_TEMP/upvenv/bin/python" -m pip install \
+          "git+https://github.com/linkml/linkml-map@v0.6.0-rc1" \
+          simpleeval==1.0.8 asteval==1.0.10 python-slugify==9.1.3 text-unidecode==1.3 \
+          inflection==0.5.1 hypothesis==6.170.12
+
+    - name: Corpus replay (stored upstream results, no Python)
+      run: cargo test -p linkml-map-conformance --test expr_differential
+
+    - name: Build the Rust oracle
+      run: cargo build -p linkml-map-conformance --example expr_oracle --release
+
+    - name: Fixed-seed differential campaign (clean profile)
+      env:
+        EXPR_ORACLE: ${{ github.workspace }}/target/release/examples/expr_oracle
+      run: |
+        cd tests/differential/expr
+        for mode in restricted unrestricted; do
+          "$RUNNER_TEMP/upvenv/bin/python" campaign.py run --n 3000 --seed 7 --mode "$mode" \
+            --profile clean --fail-on-unclassified --reps 2 --out "$RUNNER_TEMP/expr-diff-$mode"
+        done
+
+    - name: Leaf oracles that must stay clean
+      env:
+        EXPR_ORACLE: ${{ github.workspace }}/target/release/examples/expr_oracle
+      run: |
+        cd tests/differential/expr
+        "$RUNNER_TEMP/upvenv/bin/python" leaf.py --n 4000 --seed 7 --show 2 \
+          --only truthy,bool,strip,lstrip,rstrip,replace,split,join,substr,strlen,max,min,sorted,len \
+          --expect-clean truthy,bool,strip,lstrip,rstrip,replace,split,join,substr,strlen,max,min,sorted,len

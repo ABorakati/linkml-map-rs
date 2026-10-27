@@ -112,7 +112,11 @@ fn corpus_reports_divergences_that_have_been_fixed() {
     install_quiet_panic_hook();
     let fixed: Vec<String> = entries()
         .into_iter()
-        .filter(|(_, e)| e["status"].as_str() == Some("divergence") && e.get("hazard").is_none() && check_with_timeout(e).is_ok())
+        .filter(|(_, e)| {
+            e["status"].as_str() == Some("divergence")
+                && e.get("hazard").is_none()
+                && check_with_timeout(e).is_ok()
+        })
         .map(|(id, e)| format!("{id} [{}]", e["class"].as_str().unwrap_or("")))
         .collect();
     if !fixed.is_empty() {
