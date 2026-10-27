@@ -590,6 +590,7 @@ fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Decimal(_) => "Decimal",
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",
@@ -1440,6 +1441,7 @@ pub(crate) fn py_str(v: &Value) -> String {
         Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => format_py_float(*f),
+        Value::Decimal(d) => d.to_sci_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let parts: Vec<String> = items.iter().map(py_repr).collect();
@@ -1458,6 +1460,7 @@ pub(crate) fn py_str(v: &Value) -> String {
 pub(crate) fn py_repr(v: &Value) -> String {
     match v {
         Value::Str(s) => crate::pyfmt::py_repr_str(s),
+        Value::Decimal(d) => format!("Decimal('{}')", d.to_sci_string()),
         other => py_str(other),
     }
 }

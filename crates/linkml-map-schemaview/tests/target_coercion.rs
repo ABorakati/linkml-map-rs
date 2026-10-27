@@ -8,6 +8,7 @@
 
 use linkml_map_core::{
     datamodel::{TransformationSpecification, normalise_spec_json},
+    decimal::Decimal,
     engine::ObjectTransformer,
     schema::SchemaProvider,
     value::Value,
@@ -110,6 +111,17 @@ fn s(v: &str) -> Value {
     Value::Str(v.into())
 }
 
+fn dec(text: &str) -> Value {
+    Value::Decimal(Decimal::parse_python(text).unwrap())
+}
+
+fn sci(v: &Value) -> String {
+    match v {
+        Value::Decimal(d) => d.to_sci_string(),
+        other => panic!("expected a decimal, got {other:?}"),
+    }
+}
+
 fn row() -> Value {
     Value::Map(
         [
@@ -151,6 +163,10 @@ fn values_take_the_target_schema_range() {
     let out = map_object(true, &row()).unwrap();
     assert_eq!(get(&out, "count"), Value::Int(7));
     assert_eq!(get(&out, "ratio"), Value::Float(1.5));
+    assert_eq!(get(&out, "amount"), dec("52.30"));
+    assert_eq!(sci(&get(&out, "amount")), "52.30");
+    // `score: Score` where `Score typeof decimal`.
+    assert_eq!(sci(&get(&out, "score")), "0.10");
     assert_eq!(get(&out, "flag"), Value::Bool(false));
     assert_eq!(get(&out, "note"), s("42"));
     assert_eq!(

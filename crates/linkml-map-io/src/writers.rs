@@ -22,6 +22,9 @@ use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
 use crate::format::Format;
+use crate::serialization::{
+    decimal_placeholder, format_decimal, restore_json_decimals, restore_yaml_decimals,
+};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -103,6 +106,7 @@ where
         let val = item?;
         let json = value_to_json(&val)?;
         let line = serde_json::to_string(&json).context("serialising JSONL record")?;
+        let line = restore_json_decimals(&line);
         writer.write_all(line.as_bytes()).await?;
         writer.write_all(b"\n").await?;
     }
@@ -122,6 +126,7 @@ where
         let val = item?;
         let json = value_to_json(&val)?;
         let fragment = serde_json::to_string_pretty(&json).context("serialising JSON record")?;
+        let fragment = restore_json_decimals(&fragment);
         if !first {
             writer.write_all(b",\n").await?;
         }
@@ -193,6 +198,7 @@ where
         _ => serde_json::Value::Array(items),
     };
     let yaml_str = serde_yaml_ng::to_string(&yaml_value).context("serialising YAML")?;
+    let yaml_str = restore_yaml_decimals(&yaml_str);
     writer.write_all(yaml_str.as_bytes()).await?;
     Ok(())
 }
@@ -210,6 +216,10 @@ pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
                 .with_context(|| format!("non-finite float: {}", f))?;
             serde_json::Value::Number(n)
         }
+        // An exact decimal travels as a placeholder string that the writers
+        // replace with a plain numeric literal after serialising
+        // (see `crate::serialization`).
+        Value::Decimal(d) => serde_json::Value::String(decimal_placeholder(d)),
         Value::Str(s) => serde_json::Value::String(s.clone()),
         Value::List(items) => {
             serde_json::Value::Array(items.iter().map(value_to_json).collect::<Result<_>>()?)
@@ -234,10 +244,12 @@ fn value_to_csv_str(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // PARITY: output_streams.py::TabularStreamWriter — `format_decimal`.
+        Value::Decimal(d) => format_decimal(d),
         Value::Str(s) => s.clone(),
         Value::List(_) | Value::Map(_) => value_to_json(v)
             .ok()
-            .map(|j| j.to_string())
+            .map(|j| restore_json_decimals(&j.to_string()).into_owned())
             .unwrap_or_default(),
     }
 }

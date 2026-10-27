@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use crate::{
     datamodel::{ClassDerivation, TransformationSpecification},
+    decimal::{Decimal, DecimalError},
     error::{Error, Result},
     expr::{
         ExprError,
@@ -98,6 +99,28 @@ impl TargetCoercions {
     }
 }
 
+/// Mirror of upstream `_to_decimal`: an exact, finite decimal.
+///
+/// A [`Value::Decimal`] is kept as is; anything else goes through Python
+/// `Decimal(str(v))`, so a float keeps its printed digits rather than its
+/// binary expansion. The messages are upstream's: `Cannot convert 'abc' to
+/// decimal`, and `... to decimal: not a finite number` for NaN / infinities.
+///
+/// PARITY: transformer.py::_to_decimal. `True` fails (`Decimal("True")`).
+pub(crate) fn to_decimal(v: &Value) -> std::result::Result<Decimal, String> {
+    if let Value::Decimal(d) = v {
+        return Ok(d.clone());
+    }
+    match Decimal::parse_python(&py_str(v)) {
+        Ok(d) => Ok(d),
+        Err(DecimalError::Invalid) => Err(format!("Cannot convert {} to decimal", py_repr(v))),
+        Err(DecimalError::NotFinite) => Err(format!(
+            "Cannot convert {} to decimal: not a finite number",
+            py_repr(v)
+        )),
+    }
+}
+
 /// Mirror of upstream `_to_bool`: strings are parsed (`true|false|1|0`,
 /// case-insensitive, whitespace-stripped), anything else uses Python truthiness.
 ///
@@ -148,7 +171,9 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
         cause,
     };
     match target_range {
-        // TODO(72c0c28): "decimal" becomes an exact `Decimal` coercion.
+        "decimal" => to_decimal(&v)
+            .map(Value::Decimal)
+            .map_err(|cause| fail(&v, cause)),
         "boolean" => match to_bool(&v) {
             Ok(b) => Ok(Value::Bool(b)),
             Err(cause) => Err(fail(&v, cause)),
@@ -156,6 +181,15 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
         // `isinstance(True, int)` holds, so a bool stays a bool.
         "integer" => match &v {
             Value::Int(_) | Value::Bool(_) => Ok(v),
+            // `int(Decimal)` truncates toward zero.
+            Value::Decimal(d) => {
+                let fixed = d.to_fixed_string();
+                let int_part = fixed.split_once('.').map_or(fixed.as_str(), |(i, _)| i);
+                int_part
+                    .parse::<i64>()
+                    .map(Value::Int)
+                    .map_err(|e| fail(&v, e.to_string()))
+            }
             Value::Float(f) if f.is_nan() => {
                 Err(fail(&v, "cannot convert float NaN to integer".to_owned()))
             }
@@ -167,6 +201,7 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
         },
         "float" => match &v {
             Value::Float(_) => Ok(v),
+            Value::Decimal(d) => Ok(Value::Float(d.to_f64())),
             _ => py_float(&v).map_err(|e| fail(&v, expr_cause(e))),
         },
         "string" => match &v {
@@ -341,6 +376,163 @@ mod tests {
         );
         // A bad element fails the whole value.
         assert!(coerce_datatype(Value::List(vec![s("1"), s("x")]), "integer").is_err());
+    }
+
+    // ── decimal (upstream 72c0c28) ────────────────────────────────────────────
+
+    fn sci(v: &Value) -> String {
+        match v {
+            Value::Decimal(d) => d.to_sci_string(),
+            other => panic!("expected a decimal, got {other:?}"),
+        }
+    }
+
+    // Upstream: test_decimal_range.py::test_decimal_range_coerces_exactly
+    #[test]
+    fn decimal_range_coerces_exactly() {
+        for (src, want) in [
+            (s("52.3"), "52.3"),
+            (s("52.30"), "52.30"),
+            (s("52"), "52"),
+            (s("-0.05"), "-0.05"),
+            (s("0.123456789012345678901"), "0.123456789012345678901"),
+            (Value::Float(0.1), "0.1"),
+            (Value::Int(7), "7"),
+        ] {
+            let out = coerce_datatype(src.clone(), "decimal").unwrap();
+            assert_eq!(sci(&out), want, "{src:?}");
+        }
+    }
+
+    // Upstream: test_decimal_range_coerces_each_item
+    #[test]
+    fn decimal_range_coerces_each_item() {
+        let out = coerce_datatype(Value::List(vec![s("1"), s("2.50")]), "decimal").unwrap();
+        let Value::List(items) = out else {
+            panic!("expected a list")
+        };
+        assert_eq!(items.iter().map(sci).collect::<Vec<_>>(), ["1", "2.50"]);
+    }
+
+    // Upstream: test_decimal_range_rejects_non_numbers
+    #[test]
+    fn decimal_range_rejects_non_numbers() {
+        assert_eq!(
+            msg(coerce_datatype(s("abc"), "decimal")),
+            "Cannot convert 'abc' to decimal"
+        );
+        assert_eq!(
+            msg(coerce_datatype(Value::Bool(true), "decimal")),
+            "Cannot convert True to decimal"
+        );
+        assert_eq!(
+            msg(coerce_datatype(s("NaN"), "decimal")),
+            "Cannot convert 'NaN' to decimal: not a finite number"
+        );
+        assert_eq!(
+            msg(coerce_datatype(s("Infinity"), "decimal")),
+            "Cannot convert 'Infinity' to decimal: not a finite number"
+        );
+        assert_eq!(
+            msg(coerce_datatype(Value::Float(f64::INFINITY), "decimal")),
+            "Cannot convert inf to decimal: not a finite number"
+        );
+        for bad in ["", "  ", "0x10", "True"] {
+            assert!(coerce_datatype(s(bad), "decimal").is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn decimal_edge_cases() {
+        for (src, sci_want) in [
+            (" 5 ", "5"),
+            ("1_000", "1000"),
+            ("5.", "5"),
+            (".5", "0.5"),
+            ("1E-7", "1E-7"),
+            ("00012.50", "12.50"),
+        ] {
+            assert_eq!(
+                sci(&coerce_datatype(s(src), "decimal").unwrap()),
+                sci_want,
+                "{src:?}"
+            );
+        }
+        // Floats keep Python repr digits.
+        assert_eq!(
+            sci(&coerce_datatype(Value::Float(1.0), "decimal").unwrap()),
+            "1.0"
+        );
+        assert_eq!(
+            sci(&coerce_datatype(Value::Float(1e16), "decimal").unwrap()),
+            "1E+16"
+        );
+        // An existing Decimal passes through untouched.
+        let d = coerce_datatype(s("52.30"), "decimal").unwrap();
+        assert_eq!(sci(&coerce_datatype(d, "decimal").unwrap()), "52.30");
+    }
+
+    #[test]
+    fn decimal_converts_to_other_builtins() {
+        let d = coerce_datatype(s("52.70"), "decimal").unwrap();
+        assert_eq!(
+            coerce_datatype(d.clone(), "integer").unwrap(),
+            Value::Int(52)
+        );
+        assert_eq!(
+            coerce_datatype(d.clone(), "float").unwrap(),
+            Value::Float(52.7)
+        );
+        assert_eq!(coerce_datatype(d.clone(), "string").unwrap(), s("52.70"));
+        assert_eq!(coerce_datatype(d, "boolean").unwrap(), Value::Bool(true));
+        let zero = coerce_datatype(s("0.00"), "decimal").unwrap();
+        assert_eq!(
+            coerce_datatype(zero, "boolean").unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn decimal_range_through_the_engine_keeps_exact_digits() {
+        let src = source_schema();
+        let engine = ObjectTransformer::new(
+            spec(&[("ratio", Some("decimal")), ("counts", Some("decimal"))]),
+            Some(&src),
+            None,
+        );
+        let out = engine
+            .map_object(
+                &row(&[
+                    ("ratio", s("52.30")),
+                    ("counts", Value::List(vec![s("1"), s("2.50")])),
+                ]),
+                Some("Row"),
+            )
+            .unwrap();
+        assert_eq!(sci(&get(&out, "ratio")), "52.30");
+        let Value::List(items) = get(&out, "counts") else {
+            panic!("expected a list")
+        };
+        assert_eq!(items.iter().map(sci).collect::<Vec<_>>(), ["1", "2.50"]);
+        // A non-number fails the row, with the slot context attached.
+        let err = engine
+            .map_object(&row(&[("ratio", s("abc"))]), Some("Row"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("to decimal"), "{err}");
+    }
+
+    // Upstream: ObjectTransformer._multivalued_to_single stringification
+    // (dumps_json / dump_yaml keep decimals exact).
+    #[test]
+    fn multivalued_stringification_keeps_decimals_exact() {
+        let list = Value::List(vec![
+            coerce_datatype(s("1E-7"), "decimal").unwrap(),
+            coerce_datatype(s("2.50"), "decimal").unwrap(),
+        ]);
+        // JSON: `str(Decimal)`; YAML flow: `format(d, 'f')`.
+        assert_eq!(super::super::py_json(&list), "[1E-7, 2.50]");
+        assert_eq!(super::super::yaml_flow(&list), "[0.0000001, 2.50]");
     }
 
     // ── target schema lookups ─────────────────────────────────────────────────

@@ -628,9 +628,9 @@ pub async fn run_pipeline_with_options(
                     let outs: Vec<Option<String>> = all_rows
                         .par_iter()
                         .map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
-                            Ok(v) => linkml_map_io::value_to_json(&v)
-                                .ok()
-                                .and_then(|j| serde_json::to_string(&j).ok()),
+                            Ok(v) => linkml_map_io::value_to_json(&v).ok().and_then(|j| {
+                                linkml_map_io::serialization::json_to_string(&j).ok()
+                            }),
                             Err(e) => {
                                 eprintln!("FK transform error: {e:#}");
                                 None
@@ -1041,7 +1041,9 @@ fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> 
             return None;
         }
     };
-    match linkml_map_io::value_to_json(&out).and_then(|j| Ok(serde_json::to_string(&j)?)) {
+    match linkml_map_io::value_to_json(&out)
+        .and_then(|j| Ok(linkml_map_io::serialization::json_to_string(&j)?))
+    {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("serialise error: {e:#}");

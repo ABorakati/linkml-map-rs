@@ -1997,6 +1997,8 @@ fn value_to_string_key(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // Python `str(Decimal)`.
+        Value::Decimal(d) => d.to_sci_string(),
         Value::Str(s) => s.clone(),
         Value::List(_) | Value::Map(_) => format!("{v:?}"),
     }
@@ -2244,6 +2246,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::Int(_) => "int",
         Value::Float(_) => "float",
+        Value::Decimal(_) => "Decimal",
         Value::Str(_) => "str",
         Value::List(_) => "list",
         Value::Map(_) => "dict",
@@ -2499,6 +2502,9 @@ fn py_json(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // PARITY: utils/serialization.py::dumps_json (simplejson, use_decimal)
+        // writes a Decimal as its exact `str()` literal.
+        Value::Decimal(d) => d.to_sci_string(),
         // serde_json gives correct JSON string escaping + quoting.
         Value::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}")),
         Value::List(items) => {
@@ -2526,6 +2532,9 @@ fn yaml_flow(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => f.to_string(),
+        // PARITY: utils/serialization.py::dump_yaml writes a Decimal as a plain
+        // scalar with `format(d, 'f')`.
+        Value::Decimal(d) => d.to_fixed_string(),
         Value::Str(s) => s.clone(),
         Value::List(items) => {
             let inner: Vec<String> = items.iter().map(yaml_flow).collect();

@@ -1,4 +1,5 @@
 pub mod datamodel;
+pub mod decimal;
 pub mod engine;
 pub mod error;
 pub mod expr;

@@ -6,6 +6,7 @@
 
 use linkml_map_core::{
     datamodel::{TransformationSpecification, normalise_spec_json},
+    decimal::Decimal,
     engine::ObjectTransformer,
     schema::SchemaProvider,
     value::Value,
@@ -103,6 +104,25 @@ fn scalar_into_multivalued_becomes_a_list() {
 #[test]
 fn constant_into_multivalued_becomes_a_list() {
     assert_eq!(get(&map(true), "tags_value"), Value::List(vec![s("a")]));
+}
+
+#[test]
+fn decimal_target_gets_a_decimal() {
+    let out = map(true);
+    for slot in ["amt_pf", "amt_expr", "amt_value"] {
+        assert_eq!(
+            get(&out, slot),
+            Value::Decimal(Decimal::parse_python("5.0").unwrap()),
+            "{slot}"
+        );
+        assert_eq!(
+            match get(&out, slot) {
+                Value::Decimal(d) => d.to_sci_string(),
+                other => panic!("{other:?}"),
+            },
+            "5.0"
+        );
+    }
 }
 
 #[test]
