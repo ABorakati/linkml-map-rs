@@ -5,13 +5,16 @@
 //!
 //! * JSON / JSONL (`dumps_json`, simplejson with `use_decimal`): `str(Decimal)`
 //!   — [`Decimal::to_sci_string`] (`1E-7`, `52.30`).
-//! * YAML (`dump_yaml`) and CSV/TSV cells (`format_decimal`): `format(d, 'f')`
+//! * CSV/TSV cells (`format_decimal`): `format(d, 'f')`
 //!   — [`Decimal::to_fixed_string`] (`0.0000001`, `52.30`).
+//! * YAML (`dump_yaml`) uses the same `format(d, 'f')` spelling; the PyYAML
+//!   emitter in [`linkml_map_core::pyyaml`] writes it natively, so YAML needs
+//!   no placeholder.
 //!
-//! `serde_json` (without `arbitrary_precision`) and `serde_yaml_ng` cannot emit
-//! a number literal with arbitrary digits. The writers therefore convert a
-//! [`Value`] to a `serde_json::Value` tree as before, where a decimal is a
-//! *placeholder string* carrying both spellings, serialise the tree, and then
+//! `serde_json` (without `arbitrary_precision`) cannot emit a number literal
+//! with arbitrary digits. The JSON writers therefore convert a [`Value`] to a
+//! `serde_json::Value` tree as before, where a decimal is a *placeholder
+//! string* carrying its `str(Decimal)` spelling, serialise the tree, and then
 //! replace each serialised placeholder with the plain literal. Keeping the
 //! decimal inside an ordinary tree means any tree-level processing a writer
 //! does (null stripping, flattening) composes with it unchanged.
@@ -25,50 +28,32 @@ use std::borrow::Cow;
 use linkml_map_core::decimal::Decimal;
 
 const START: char = '\u{1}';
-const SEP: char = '\u{2}';
 const END: char = '\u{3}';
 
 /// The placeholder string standing for `d` inside a `serde_json::Value` tree.
 pub fn decimal_placeholder(d: &Decimal) -> String {
-    format!(
-        "{START}{}{SEP}{}{END}",
-        d.to_sci_string(),
-        d.to_fixed_string()
-    )
-}
-
-/// Which spelling a restore pass writes.
-#[derive(Clone, Copy)]
-enum Spelling {
-    /// `str(Decimal)`.
-    Sci,
-    /// `format(d, 'f')`.
-    Fixed,
+    format!("{START}{}{END}", d.to_sci_string())
 }
 
 /// How a serialiser spells the placeholder's three control characters.
 struct Escapes {
     start: &'static str,
-    sep: &'static str,
     end: &'static str,
 }
 
-/// Parse the scalar body `sci SEP fixed END` (in serialised spelling) into its
-/// two decimal spellings.
-fn parse_placeholder<'a>(body: &'a str, esc: &Escapes) -> Option<(&'a str, &'a str)> {
-    let inner = body.strip_suffix(esc.end)?;
-    let (sci, fixed) = inner.split_once(esc.sep)?;
-    let numeric = |s: &str| {
-        !s.is_empty()
-            && s.bytes()
-                .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'E'))
-    };
-    (numeric(sci) && numeric(fixed)).then_some((sci, fixed))
+/// Parse the scalar body `sci END` (in serialised spelling) into the decimal's
+/// `str(Decimal)` literal.
+fn parse_placeholder<'a>(body: &'a str, esc: &Escapes) -> Option<&'a str> {
+    let sci = body.strip_suffix(esc.end)?;
+    let numeric = !sci.is_empty()
+        && sci
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'E'));
+    numeric.then_some(sci)
 }
 
-/// Replace every double-quoted placeholder scalar in `text` with the chosen
-/// spelling of its decimal.
-fn restore<'t>(text: &'t str, esc: &Escapes, spelling: Spelling) -> Cow<'t, str> {
+/// Replace every double-quoted placeholder scalar in `text` with its decimal.
+fn restore<'t>(text: &'t str, esc: &Escapes) -> Cow<'t, str> {
     // Fast path: nothing was a decimal.
     if !text.contains(esc.start) {
         return Cow::Borrowed(text);
@@ -83,11 +68,8 @@ fn restore<'t>(text: &'t str, esc: &Escapes, spelling: Spelling) -> Cow<'t, str>
             .find('"')
             .and_then(|close| parse_placeholder(&after[..close], esc).map(|p| (p, close)));
         match parsed {
-            Some(((sci, fixed), close)) => {
-                out.push_str(match spelling {
-                    Spelling::Sci => sci,
-                    Spelling::Fixed => fixed,
-                });
+            Some((sci, close)) => {
+                out.push_str(sci);
                 rest = &after[close + 1..];
             }
             None => {
@@ -106,22 +88,9 @@ pub fn restore_json_decimals(json: &str) -> Cow<'_, str> {
     // serde_json escapes control characters as `\u0001`.
     const ESC: Escapes = Escapes {
         start: "\\u0001",
-        sep: "\\u0002",
         end: "\\u0003",
     };
-    restore(json, &ESC, Spelling::Sci)
-}
-
-/// Replace the placeholders in serialised YAML with `format(d, 'f')` plain scalars.
-pub fn restore_yaml_decimals(yaml: &str) -> Cow<'_, str> {
-    // serde_yaml_ng writes a control-character string double-quoted, escaped
-    // as `\x01`.
-    const ESC: Escapes = Escapes {
-        start: "\\x01",
-        sep: "\\x02",
-        end: "\\x03",
-    };
-    restore(yaml, &ESC, Spelling::Fixed)
+    restore(json, &ESC)
 }
 
 /// Serialise a `serde_json::Value` tree (as produced by
@@ -179,24 +148,9 @@ mod tests {
     }
 
     #[test]
-    fn yaml_uses_fixed_decimal_plain_scalars() {
-        let text = serde_yaml_ng::to_string(&tree()).unwrap();
-        let out = restore_yaml_decimals(&text);
-        assert!(out.contains("v: 52.30\n"), "{out}");
-        assert!(out.contains("n: 52\n"), "{out}");
-        assert!(out.contains("val: 0.123456789012345678901\n"), "{out}");
-        assert!(out.contains("- 0.0000001\n"), "{out}");
-        assert!(out.contains("- -3.25\n"), "{out}");
-        // A plain scalar, so YAML reads them back as numbers.
-        let back: serde_yaml_ng::Value = serde_yaml_ng::from_str(&out).unwrap();
-        assert!(back["v"].is_number(), "{out}");
-    }
-
-    #[test]
     fn text_without_decimals_is_untouched() {
         let text = "{\"a\":1}";
         assert!(matches!(restore_json_decimals(text), Cow::Borrowed(_)));
-        assert!(matches!(restore_yaml_decimals("a: 1\n"), Cow::Borrowed(_)));
     }
 
     #[test]

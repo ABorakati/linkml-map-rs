@@ -1,0 +1,7 @@
+id	name	bio	status	age	weight	active
+P:0001	Zoë Müller 日本語 😀	A long free-text biography that certainly needs to be folded because it runs well past the eighty column mark, with a colon: and a #hash and 'quotes'.	yes	42	1.0e20	true
+P:0002	Plain Name	short	no	7	0.1	false
+P:0003	kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk	xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx	null	-3	5e-7	true
+P:0004	- dash	a: b	~	5	2.5	true
+P:0005	1e3	2024-01-01	.5	0	1e16	false
+P:0006	it's "both"	a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a 	on	9	3.14	true

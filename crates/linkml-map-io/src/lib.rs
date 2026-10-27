@@ -29,6 +29,9 @@ pub mod columnar;
 pub mod format;
 pub mod loaders;
 pub mod pycompat;
+/// The PyYAML-compatible emitter (re-exported from `linkml-map-core`, where the
+/// engine's YAML stringification also uses it).
+pub use linkml_map_core::pyyaml;
 pub mod serialization;
 pub mod writers;
 

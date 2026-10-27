@@ -147,8 +147,13 @@ Each is marked `PARITY:` in the code.
   differ.
 - **Decimals:** ASCII digits only when parsing; Parquet/DuckDB decimals are staged
   as strings (VARCHAR), not cast to `DECIMAL(p,s)`.
-- **YAML scalar styling not emulated** (PyYAML quoting, 80-column wrap,
-  multi-line): YAML is byte-identical for plain scalars only.
+- **YAML anchors for a repeated `Decimal` object.** All YAML output now goes
+  through a port of PyYAML's emitter (`linkml_map_core::pyyaml`), including
+  quoting, 80-column folding and multi-line scalars. The one thing it cannot
+  reproduce is object identity: PyYAML writes the *same* `Decimal` object twice
+  as `&id001` / `*id001` (`SafeRepresenter.ignore_aliases` exempts `str`, `int`,
+  `float` and `bool` but not `Decimal`), whereas `Value` always writes the value
+  out in full.
 - **`--chunk-size 0` is an error** (upstream writes nothing); a failed columnar
   conversion removes its staging file.
 - **`validate`:** the schemaview backend does not load `linkml:types` and builtins
