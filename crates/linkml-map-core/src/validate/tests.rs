@@ -452,6 +452,97 @@ fn cross_table_join_on_typo_emits_warning_per_side() {
     assert_eq!(warns.len(), 2, "got {msgs:?}");
 }
 
+// ── dotted references through joined tables (upstream cbf2f97) ────────────────
+
+fn warnings(msgs: &[ValidationMessage]) -> Vec<&ValidationMessage> {
+    msgs.iter()
+        .filter(|m| m.severity == Severity::Warning)
+        .collect()
+}
+
+/// Upstream `_dotted_spec`: `Outer` populated from `Measurement` with one slot
+/// `value`, plus optional `joins:`.
+fn dotted_spec(
+    slot_derivation: serde_json::Value,
+    joins: Option<serde_json::Value>,
+) -> TransformationSpecification {
+    let mut cd = json!({
+        "populated_from": "Measurement",
+        "slot_derivations": {"value": slot_derivation},
+    });
+    if let Some(joins) = joins {
+        cd["joins"] = joins;
+    }
+    spec(json!({"class_derivations": {"Outer": cd}}))
+}
+
+/// Upstream `test_dotted_reference_to_joined_class_or_slot_passes`.
+#[test]
+fn dotted_reference_to_joined_class_or_slot_passes() {
+    let sv = joinable_schema();
+    let cases = [
+        (
+            "explicit-join",
+            json!({"populated_from": "Reading.score"}),
+            Some(json!({"Reading": {"join_on": "subject_id"}})),
+        ),
+        (
+            "implicit-join",
+            json!({"populated_from": "Reading.score"}),
+            None,
+        ),
+        (
+            "implicit-join-expr",
+            json!({"expr": "{Reading.score}"}),
+            None,
+        ),
+        (
+            "path-through-source-slot",
+            json!({"populated_from": "method.label"}),
+            None,
+        ),
+    ];
+    for (id, slot_derivation, joins) in cases {
+        let s = dotted_spec(slot_derivation, joins);
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let problems: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.severity != Severity::Info)
+            .collect();
+        assert!(problems.is_empty(), "{id}: got {problems:?}");
+    }
+}
+
+/// Upstream `test_dotted_populated_from_checks_joined_slot`.
+#[test]
+fn dotted_populated_from_checks_joined_slot() {
+    let sv = joinable_schema();
+    for joins in [Some(json!({"Reading": {"join_on": "subject_id"}})), None] {
+        let s = dotted_spec(json!({"populated_from": "Reading.bogus"}), joins);
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let errs: Vec<_> = errors(&msgs).iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(
+            errs,
+            [
+                "Source slot 'Reading.bogus' (populated_from): 'bogus' is not a slot on joined class 'Reading'"
+            ]
+        );
+    }
+}
+
+/// Upstream `test_dotted_populated_from_unknown_base_still_errors`.
+#[test]
+fn dotted_populated_from_unknown_base_still_errors() {
+    let sv = joinable_schema();
+    let s = dotted_spec(json!({"populated_from": "Nowhere.score"}), None);
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let errs: Vec<_> = errors(&msgs).iter().map(|m| m.message.as_str()).collect();
+    assert_eq!(
+        errs,
+        ["Source slot 'Nowhere.score' (populated_from) not found on source class"]
+    );
+}
+
 // ── enum derivations ─────────────────────────────────────────────────────────
 
 fn enum_schema() -> InMemorySchema {

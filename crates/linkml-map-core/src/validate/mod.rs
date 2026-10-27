@@ -348,7 +348,7 @@ fn build_joined_class_map(
     }
 
     // Identity case: populated_from omitted -> the CD's own name is the source.
-    if ctx.source.is_some()
+    if let Some(source) = ctx.source
         && let Some(parent_source) = effective_source(cd)
     {
         for sd in sds {
@@ -359,6 +359,44 @@ fn build_joined_class_map(
                 {
                     let entry = resolve_joined_class(ctx, nested_source.to_string());
                     result.insert(nested_source.to_string(), entry);
+                }
+            }
+        }
+
+        // Implicit join targets named by a dotted reference — `populated_from:
+        // Other.slot` or `{Other.slot}` in an expression, where `Other` is
+        // another source class rather than a slot (upstream cbf2f97).
+        let source_slots = if ctx.source_classes.contains(parent_source) {
+            induced_slot_names(source, parent_source)
+        } else {
+            BTreeSet::new()
+        };
+        for sd in sds {
+            let mut bases: BTreeSet<String> = sd
+                .expr
+                .as_deref()
+                .filter(|e| !e.is_empty())
+                .map(|e| extract_expr_attribute_references(e).into_keys().collect())
+                .unwrap_or_default();
+            if let Some((base, _)) = sd
+                .populated_from
+                .as_deref()
+                .and_then(|pf| pf.split_once('.'))
+            {
+                bases.insert(base.to_owned());
+            }
+            // Python: `bases - source_slots - set(result) - {parent_source}`,
+            // evaluated before this `sd`'s additions land in `result`.
+            let new_bases: Vec<String> = bases
+                .into_iter()
+                .filter(|b| {
+                    !source_slots.contains(b) && !result.contains_key(b) && b != parent_source
+                })
+                .collect();
+            for base in new_bases {
+                if ctx.source_classes.contains(&base) {
+                    let slots = induced_slot_names(source, &base);
+                    result.insert(base.clone(), (base, Some(slots)));
                 }
             }
         }
@@ -573,16 +611,41 @@ fn validate_slot_derivation(
         ));
     }
 
-    // Source: populated_from slot should be valid on the source class.
+    // Source: populated_from slot should be valid on the source class. A dotted
+    // reference is checked through the joined class when its first segment is a
+    // join alias; otherwise the first segment must be a source slot.
+    // PARITY: upstream validator._validate_slot_derivation (cbf2f97).
     if let (Some(source_slots), Some(populated_from)) =
         (source_class_slots, sd.populated_from.as_deref())
-        && !source_slots.contains(populated_from)
     {
-        messages.push(ValidationMessage::new(
-            Severity::Error,
-            &sd_path,
-            format!("Source slot '{populated_from}' (populated_from) not found on source class"),
-        ));
+        let (base, attr) = populated_from
+            .split_once('.')
+            .unwrap_or((populated_from, ""));
+        if let Some((joined_class, joined_slots)) = joined_class_slots.get(base)
+            && !attr.is_empty()
+        {
+            let attr = attr.split('.').next().unwrap_or_default();
+            if let Some(joined_slots) = joined_slots
+                && !joined_slots.contains(attr)
+            {
+                messages.push(ValidationMessage::new(
+                    Severity::Error,
+                    &sd_path,
+                    format!(
+                        "Source slot '{populated_from}' (populated_from): '{attr}' is not a \
+                         slot on joined class '{joined_class}'"
+                    ),
+                ));
+            }
+        } else if !source_slots.contains(base) {
+            messages.push(ValidationMessage::new(
+                Severity::Error,
+                &sd_path,
+                format!(
+                    "Source slot '{populated_from}' (populated_from) not found on source class"
+                ),
+            ));
+        }
     }
 
     let (Some(expr), Some(source_slots)) = (sd.expr.as_deref(), source_class_slots) else {
