@@ -1,6 +1,6 @@
-category: rust-gap: stringification delimiter on a single value into a multivalued target
+category: rust-gap: stringification / multivalued casting edge cases
 
-With a multivalued target slot upstream splits the (single) value on the delimiter into a list; Rust keeps the scalar.
+Single value into a multivalued target is split on the delimiter (upstream) / a scalar in a multivalued source slot is wrapped to a list before stringification; Rust keeps the scalar.
 
 See notes.md (what differs per format) and observed_rust/ (Rust's output when found).
 Delete this file once the Rust output matches expected/.

@@ -1,0 +1,23 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Person:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      out_e:
+        expr: '{id}'
+      score:
+        range: string
+      out_c:
+        populated_from: status
+      out_f:
+        populated_from: status
+enum_derivations:
+  TStatus:
+    populated_from: Status
+    expr: '''t_a'''
+    permissible_value_derivations:
+      t_a:
+        populated_from:
+        - C

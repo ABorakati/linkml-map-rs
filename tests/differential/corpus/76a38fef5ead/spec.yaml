@@ -1,0 +1,34 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Person:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      inner:
+        class_derivations:
+          InnerPerson0:
+            mint_ids: false
+            slot_derivations:
+              out_a:
+                expr: '{amount} > 0'
+              out_d:
+                expr: float({amount})
+              out_c:
+                expr: replace({id}, 'a', 'Z')
+      age: null
+      out_f:
+        expr: '{age} + {amount}'
+  Const:
+    slot_derivations:
+      k0:
+        value: 1000000000000000
+  Order:
+    slot_derivations:
+      id: null
+      out_f:
+        populated_from: id
+        missing_values:
+        - 1
+      out_c:
+        expr: '{rank} + {rank}'

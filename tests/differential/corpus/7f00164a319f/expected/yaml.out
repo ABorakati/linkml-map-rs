@@ -1,0 +1,18 @@
+id: p1
+out_c: t_a
+out_e: p1
+out_f: t_a
+score: 1e-07
+---
+id: p2
+out_c: t_a
+out_e: p2
+out_f: t_a
+score: '-0.0'
+---
+id: p3
+out_c: t_a
+out_e: p3
+out_f: t_a
+score: '3.14'
+---

@@ -10,6 +10,10 @@ same bytes for every output format, and failure where upstream fails.
 | `gen.py` | Hypothesis strategies: source schema, matching target schema (or none), spec, data (TSV/CSV/YAML/JSON, single object or table directory) |
 | `fuzz.py` | campaign driver. Uses `hypothesis.find` so every distinct divergence is shrunk to a minimal case and written to `corpus/<hash>/` |
 | `corpus/<hash>/` | `schema.yaml spec.yaml [target.yaml] data/ case.json expected/<fmt>.out\|.error observed_rust/ notes.md signature.txt [expected_divergence.md]` |
+| `capture_plugin.py`, `import_captured.py` | pytest plugin that records every top-level `map_object` call of upstream's own test-suite (schema, spec, target, input), and the importer that turns them into corpus cases with upstream's expected output |
+| `triage.py` | assigns `category:` (suspected cause) to `expected_divergence.md` from stored artefacts; `--prune K` keeps at most K fuzz-found cases per category |
+| `refresh_corpus.py` | after engine changes: re-runs Rust over the corpus with no Python, deletes the markers of cases that now match (FIXED), refreshes `observed_rust/` and categories of the rest, reports REGRESSIONS |
+| `known_sweep_divergences.txt` | allow-list for the examples sweep gate (`--fail-on-diff`); regenerate with `examples_sweep.py --write-allow` |
 | `run.sh` | entry point (`--examples`, `--fuzz N`, `--seed`, `--time-budget`, `--profiles`) |
 | `crates/linkml-map-cli/tests/differential_corpus.rs` | replays the corpus in plain `cargo test`, no Python needed |
 
@@ -24,6 +28,14 @@ cargo test -p linkml-map-cli --test differential_corpus -- --ignored    # which 
 
 The upstream venv needs upstream `linkml-map` at the pinned tag plus `hypothesis`. Never install it into the PyO3
 compat environment (see CLAUDE.md).
+
+## After merging engine changes
+
+```bash
+cargo build --release -p linkml-map-cli
+python3 tests/differential/refresh_corpus.py     # FIXED / still divergent / REGRESSIONS (needs no upstream venv)
+python3 tests/differential/triage.py --all       # re-categorise
+```
 
 ## Triage
 

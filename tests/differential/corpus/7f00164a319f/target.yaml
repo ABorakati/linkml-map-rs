@@ -1,0 +1,28 @@
+id: https://example.org/tgt
+name: tgt
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+enums:
+  TStatus:
+    permissible_values:
+      t_a: {}
+      t_b: {}
+      t_c: {}
+      other: {}
+classes:
+  Person:
+    attributes:
+      id:
+        range: string
+        identifier: true
+      out_e: {}
+      score:
+        range: boolean
+      out_c:
+        range: TStatus
+      out_f:
+        range: TStatus

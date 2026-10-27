@@ -323,6 +323,8 @@ def const_value(draw):
 
 
 def _cv(v, feats):
+    if "knownfree" in feats and isinstance(v, list):
+        return "k"  # list-valued `value:` is truncated by upstream's loader (reported upstream quirk)
     return 10**15 if ("knownfree" in feats and isinstance(v, int) and not isinstance(v, bool) and abs(v) > 2**62) else v
 
 
@@ -515,7 +517,7 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
 def _enum_slot(draw, s, name, enums, feats, has_target, tgt_enums, enum_derivs, same):
     src_enum = s.range
     tgt_en = f"T{src_enum}"
-    mode = draw(st.sampled_from(["pv", "pv", "pv", "mirror", "expr", "none", "map_list"]))
+    mode = draw(st.sampled_from(["pv", "pv", "pv", "mirror", "expr", "map_list"] + ([] if "knownfree" in feats else ["none"])))
     if mode != "none" and src_enum not in {d.get("populated_from") for d in enum_derivs.values()}:
         pvs = enums[src_enum]
         tvals = ["t_a", "t_b", "t_c"]
@@ -616,8 +618,8 @@ def worlds(draw, feats=ALL_FEATS):
     st_name = None
     if input_kind in ("tsv_file", "yaml_single", "json_single"):
         st_name = draw(st.sampled_from([b.populated_from for b in blocks if b.populated_from] or [classes[0].name]))
-    elif draw(st.sampled_from([False, False, False, True])):
-        st_name = blocks[0].populated_from
+    elif draw(st.sampled_from([False, False, False, True])) and not ("knownfree" in feats and len(blocks) > 1):
+        st_name = blocks[0].populated_from  # (--source-type with several blocks: upstream forces it on all of them)
     flags = []
     if draw(st.sampled_from([True, False])):
         flags.append("--unrestricted-eval")

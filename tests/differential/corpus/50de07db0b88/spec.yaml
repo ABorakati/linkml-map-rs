@@ -1,0 +1,31 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      out_a:
+        populated_from: code
+        value_mappings:
+          b: Y
+          a: '1'
+        expression_mappings:
+          b: '''E1'''
+      out_b:
+        expr: str({rank})
+      out_b1:
+        populated_from: note
+        value_mappings:
+          c: '1'
+          'True': X
+          b: X
+  Order:
+    populated_from: Order
+    slot_derivations:
+      id: null
+      out_c:
+        value: k
+      out_a:
+        populated_from: code
+      code: null
