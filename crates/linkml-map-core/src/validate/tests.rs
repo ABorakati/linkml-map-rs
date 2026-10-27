@@ -543,6 +543,154 @@ fn dotted_populated_from_unknown_base_still_errors() {
     );
 }
 
+// ── join keys in a derivation's own `joins:` block (upstream e373d93) ──────────
+
+/// Upstream `test_top_level_join_keys_checked`: `(key, class)` pairs of the
+/// "is not a slot on source class" warnings.
+#[test]
+fn top_level_join_keys_checked() {
+    let sv = joinable_schema();
+    let cases: [(&str, serde_json::Value, Vec<(&str, &str)>); 4] = [
+        (
+            "join_on-typo",
+            json!({"join_on": "subjet_id"}),
+            vec![
+                ("join_on=subjet_id", "Measurement"),
+                ("join_on=subjet_id", "Reading"),
+            ],
+        ),
+        (
+            "source_key-typo",
+            json!({"source_key": "subjet_id", "lookup_key": "subject_id"}),
+            vec![("source_key=subjet_id", "Measurement")],
+        ),
+        (
+            "lookup_key-typo",
+            json!({"source_key": "subject_id", "lookup_key": "subjet_id"}),
+            vec![("lookup_key=subjet_id", "Reading")],
+        ),
+        ("valid", json!({"join_on": "subject_id"}), vec![]),
+    ];
+    for (id, join, expected) in cases {
+        let s = dotted_spec(
+            json!({"populated_from": "Reading.score"}),
+            Some(json!({"Reading": join})),
+        );
+        let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+        let found: Vec<(String, String)> = warnings(&msgs)
+            .iter()
+            .filter(|m| m.message.contains("is not a slot on source class"))
+            .map(|m| {
+                (
+                    m.message.split('\'').nth(3).unwrap().to_owned(),
+                    m.message
+                        .split("source class '")
+                        .nth(1)
+                        .unwrap()
+                        .split('\'')
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String)> = expected
+            .into_iter()
+            .map(|(k, c)| (k.to_owned(), c.to_owned()))
+            .collect();
+        assert_eq!(found, expected, "{id}");
+        assert!(
+            warnings(&msgs)
+                .iter()
+                .all(|m| m.path == "class_derivations[Outer].joins[Reading]"),
+            "{id}: {msgs:?}"
+        );
+    }
+}
+
+/// Upstream `test_top_level_join_keys_checked_against_class_named`.
+#[test]
+fn top_level_join_keys_checked_against_class_named() {
+    let sv = joinable_schema();
+    let s = dotted_spec(
+        json!({"expr": "{r.score}"}),
+        Some(
+            json!({"r": {"class_named": "Reading", "source_key": "subject_id", "lookup_key": "nope"}}),
+        ),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let warns: Vec<_> = warnings(&msgs).iter().map(|m| m.message.as_str()).collect();
+    assert_eq!(
+        warns,
+        [
+            "Join spec for 'r': 'lookup_key=nope' is not a slot on source class 'Reading'. \
+             Runtime will silently resolve cross-table values to null."
+        ]
+    );
+}
+
+/// Upstream `test_top_level_join_missing_keys_warns`.
+#[test]
+fn top_level_join_missing_keys_warns() {
+    let sv = joinable_schema();
+    let s = dotted_spec(
+        json!({"populated_from": "Reading.score"}),
+        Some(json!({"Reading": {"source_key": "subject_id"}})),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let missing: Vec<_> = warnings(&msgs)
+        .into_iter()
+        .filter(|m| m.message.contains("missing keys"))
+        .collect();
+    assert_eq!(missing.len(), 1, "{msgs:?}");
+    assert_eq!(missing[0].path, "class_derivations[Outer].joins[Reading]");
+    assert_eq!(
+        missing[0].message,
+        "Join spec for 'Reading' is missing keys: must specify 'join_on' or both \
+         'source_key' and 'lookup_key'. Runtime will raise ValueError."
+    );
+}
+
+/// Edge cases from the triage: an empty-string key counts as missing; a joined
+/// class absent from the schema gives no key warnings; an identity (no
+/// `populated_from`) derivation checks keys against its own name.
+#[test]
+fn top_level_join_key_edge_cases() {
+    let sv = joinable_schema();
+
+    let s = dotted_spec(
+        json!({"expr": "{Reading.score}"}),
+        Some(json!({"Reading": {"join_on": ""}})),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    assert_eq!(
+        warnings(&msgs)
+            .iter()
+            .filter(|m| m.message.contains("missing keys"))
+            .count(),
+        1
+    );
+
+    let s = dotted_spec(
+        json!({"expr": "{Ghost.score}"}),
+        Some(json!({"Ghost": {"join_on": "nope"}})),
+    );
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    assert!(warnings(&msgs).is_empty(), "{msgs:?}");
+
+    let s = spec(json!({
+        "class_derivations": {
+            "Measurement": {"joins": {"Reading": {"join_on": "nope"}}}
+        }
+    }));
+    let msgs = validate_spec_semantics(&s, Some(&sv), None, false);
+    let found: Vec<_> = warnings(&msgs).iter().map(|m| m.message.as_str()).collect();
+    assert_eq!(found.len(), 2, "{msgs:?}");
+    assert!(found[0].ends_with(
+        "source class 'Measurement'. Runtime will silently resolve cross-table values to null."
+    ));
+}
+
 // ── enum derivations ─────────────────────────────────────────────────────────
 
 fn enum_schema() -> InMemorySchema {

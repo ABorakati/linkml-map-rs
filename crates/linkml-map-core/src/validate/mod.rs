@@ -252,6 +252,7 @@ fn validate_class_derivation(
 
     // Source: populated_from class should exist.
     let mut source_class_slots: Option<BTreeSet<String>> = None;
+    let mut resolved_source_class: Option<&str> = None;
     if let (Some(source), Some(source_class)) = (ctx.source, cd.populated_from.as_deref()) {
         if !ctx.source_classes.contains(source_class) {
             messages.push(ValidationMessage::new(
@@ -262,6 +263,7 @@ fn validate_class_derivation(
                 ),
             ));
         } else {
+            resolved_source_class = Some(source_class);
             source_class_slots = Some(induced_slot_names(source, source_class));
         }
     }
@@ -271,7 +273,7 @@ fn validate_class_derivation(
     // (cd_name). Mirrors the runtime's _derive_nested_objects behaviour.
     if let Some(source) = ctx.source
         && cd.populated_from.is_none()
-        && source_class_slots.is_none()
+        && resolved_source_class.is_none()
     {
         let fallback = match parent_cd {
             Some(parent) => parent
@@ -281,9 +283,12 @@ fn validate_class_derivation(
             None => cd_name,
         };
         if !fallback.is_empty() && ctx.source_classes.contains(fallback) {
+            resolved_source_class = Some(fallback);
             source_class_slots = Some(induced_slot_names(source, fallback));
         }
     }
+
+    check_join_keys(ctx, cd, resolved_source_class, &cd_path, messages);
 
     let sds = slot_derivations(cd);
 
@@ -417,6 +422,91 @@ fn resolve_joined_class(ctx: &Ctx, joined_class: String) -> JoinedClass {
     }
 }
 
+/// An optional string key, treating `""` as absent (Python truthiness).
+fn non_empty(key: &Option<String>) -> Option<&str> {
+    key.as_deref().filter(|v| !v.is_empty())
+}
+
+/// Check that each entry of a class derivation's `joins:` has keys that resolve.
+///
+/// An entry needs `join_on`, or both `source_key` and `lookup_key`; without them
+/// the runtime raises. A key that isn't a slot on its class passes that check but
+/// silently resolves every joined value to null, so it is reported too:
+/// `source_key` against the primary class, `lookup_key` against the joined class,
+/// and `join_on` against both. `primary_class` is the class the derivation reads
+/// rows from, or `None` if unresolved. Mirrors Python `_check_join_keys`
+/// (upstream e373d93).
+fn check_join_keys(
+    ctx: &Ctx,
+    cd: &ClassDerivation,
+    primary_class: Option<&str>,
+    cd_path: &str,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    for (alias, join_spec) in cd.joins.iter().flatten() {
+        let join_path = format!("{cd_path}.joins[{alias}]");
+        // PARITY: Python truthiness — an empty string counts as missing.
+        let join_on = non_empty(&join_spec.join_on);
+        let source_key = non_empty(&join_spec.source_key);
+        let lookup_key = non_empty(&join_spec.lookup_key);
+        if join_on.is_none() && !(source_key.is_some() && lookup_key.is_some()) {
+            messages.push(ValidationMessage::new(
+                Severity::Warning,
+                &join_path,
+                format!(
+                    "Join spec for '{alias}' is missing keys: must specify 'join_on' or both \
+                     'source_key' and 'lookup_key'. Runtime will raise ValueError."
+                ),
+            ));
+            continue;
+        }
+        let joined_class = non_empty(&join_spec.class_named).unwrap_or(alias.as_str());
+        let (Some(source), Some(primary_class)) = (ctx.source, primary_class) else {
+            continue;
+        };
+        if !ctx.source_classes.contains(primary_class) || !ctx.source_classes.contains(joined_class)
+        {
+            continue;
+        }
+        let primary_slots = induced_slot_names(source, primary_class);
+        let joined_slots = induced_slot_names(source, joined_class);
+        let key_checks: [(&str, &str, &BTreeSet<String>, &str); 2] = match join_on {
+            Some(k) => [
+                ("join_on", k, &primary_slots, primary_class),
+                ("join_on", k, &joined_slots, joined_class),
+            ],
+            None => [
+                (
+                    "source_key",
+                    source_key.unwrap_or_default(),
+                    &primary_slots,
+                    primary_class,
+                ),
+                (
+                    "lookup_key",
+                    lookup_key.unwrap_or_default(),
+                    &joined_slots,
+                    joined_class,
+                ),
+            ],
+        };
+        for (key_label, key_value, slot_set, class_name) in key_checks {
+            if slot_set.contains(key_value) {
+                continue;
+            }
+            messages.push(ValidationMessage::new(
+                Severity::Warning,
+                &join_path,
+                format!(
+                    "Join spec for '{alias}': '{key_label}={key_value}' is not a slot on \
+                     source class '{class_name}'. Runtime will silently resolve cross-table \
+                     values to null."
+                ),
+            ));
+        }
+    }
+}
+
 /// Diagnose a nested CD referencing a different source table than its parent.
 /// Mirrors Python `_check_cross_table_join`.
 fn check_cross_table_join(
@@ -436,64 +526,13 @@ fn check_cross_table_join(
         return;
     }
 
-    // Explicit join present: verify it carries enough keys to resolve a row.
-    if let Some(join_spec) = parent_cd.joins.as_ref().and_then(|j| j.get(nested_source)) {
-        let join_on = join_spec.join_on.as_deref();
-        let source_key = join_spec.source_key.as_deref();
-        let lookup_key = join_spec.lookup_key.as_deref();
-        if join_on.is_none() && !(source_key.is_some() && lookup_key.is_some()) {
-            messages.push(ValidationMessage::new(
-                Severity::Warning,
-                nested_path,
-                format!(
-                    "Join spec for '{nested_source}' is missing keys: must specify 'join_on' \
-                     or both 'source_key' and 'lookup_key'. Runtime will raise ValueError."
-                ),
-            ));
-        } else if ctx.source.is_some()
-            && ctx.source_classes.contains(parent_source)
-            && ctx.source_classes.contains(nested_source)
-        {
-            // Keys declared — verify they exist on the respective source classes.
-            let source = ctx.source.unwrap();
-            let parent_slots = induced_slot_names(source, parent_source);
-            let nested_slots = induced_slot_names(source, nested_source);
-            let key_checks: Vec<(&str, &BTreeSet<String>, &str, &str)> = if let Some(k) = join_on {
-                vec![
-                    (k, &parent_slots, parent_source, "join_on"),
-                    (k, &nested_slots, nested_source, "join_on"),
-                ]
-            } else {
-                vec![
-                    (
-                        source_key.unwrap(),
-                        &parent_slots,
-                        parent_source,
-                        "source_key",
-                    ),
-                    (
-                        lookup_key.unwrap(),
-                        &nested_slots,
-                        nested_source,
-                        "lookup_key",
-                    ),
-                ]
-            };
-            for (key_value, slot_set, class_name, key_label) in key_checks {
-                if slot_set.contains(key_value) {
-                    continue;
-                }
-                messages.push(ValidationMessage::new(
-                    Severity::Warning,
-                    nested_path,
-                    format!(
-                        "Join spec for '{nested_source}': '{key_label}={key_value}' is not a \
-                         slot on source class '{class_name}'. Runtime will silently resolve \
-                         cross-table values to null."
-                    ),
-                ));
-            }
-        }
+    // An explicit join covers the nested source; its keys are checked with the
+    // parent's other joins in `check_join_keys`.
+    if parent_cd
+        .joins
+        .as_ref()
+        .is_some_and(|j| j.contains_key(nested_source))
+    {
         return;
     }
 
