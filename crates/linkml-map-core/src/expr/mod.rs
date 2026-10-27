@@ -13,13 +13,22 @@ pub mod eval;
 pub mod gate;
 pub mod lexer;
 pub mod parser;
+mod pyformat;
+mod pymethods;
 mod pystr;
+#[rustfmt::skip]
+mod pyunicode;
+#[cfg(test)]
+mod syntax_eval_tests;
+#[cfg(test)]
+mod syntax_forms_tests;
 #[cfg(test)]
 mod syntax_tests;
 #[rustfmt::skip]
 mod pytables;
 mod slugify;
 pub mod stmt;
+mod syntax;
 
 pub use error::{ExprError, ExprResult};
 pub use eval::{

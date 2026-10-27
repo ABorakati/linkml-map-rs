@@ -238,6 +238,11 @@ impl Program {
                 Err(ExprError::Eval(message))
             }
             Err(asteval::ExecError::Uncaught(m)) => Err(ExprError::Uncaught(m)),
+            // A result Python builds but `Value` cannot hold (bytes, a function)
+            // is no error upstream: do not turn it into an unset `target`.
+            Err(asteval::ExecError::Unrepresentable(what)) => {
+                Err(ExprError::unrepresentable(what))
+            }
         }
     }
 
@@ -343,26 +348,18 @@ pub fn is_statement_block(expr: &str) -> bool {
 /// brackets (or after a trailing backslash) does not end the line and blank or
 /// comment-only lines are ignored.
 fn parse_single_expression(expr: &str) -> ExprResult<Ast> {
-    let restricted = parse_with_restricted_parser(expr);
-    // CPython decides what is an expression; the restricted parser then builds
-    // the tree (it may know less than Python, never more).
+    // The lexer follows the tokenizer: a newline inside brackets, a string or
+    // after a backslash continues the line, blank and comment-only lines are
+    // skipped, and any other newline is a `Newline` token the parser refuses.
+    let restricted = parse(expr.trim());
+    // CPython decides what is an expression (`pass`, `def`, ... are not); the
+    // restricted parser then builds the tree (it may know less than Python).
     if !asteval::parses_as_expression(expr.trim_matches(super::pystr::is_py_space)) {
         return Err(restricted
             .err()
             .unwrap_or_else(|| ExprError::Parse("invalid syntax".into())));
     }
     restricted
-}
-
-fn parse_with_restricted_parser(expr: &str) -> ExprResult<Ast> {
-    let lines = raw_lines(expr.trim());
-    match lines.as_slice() {
-        [line] => parse(&line.text),
-        [] => parse(""),
-        _ => Err(ExprError::Parse(
-            "an expression must be a single logical line".into(),
-        )),
-    }
 }
 
 /// Parse `expr` as one expression when it is one, else as a statement block.

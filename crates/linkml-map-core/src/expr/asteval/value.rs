@@ -882,3 +882,28 @@ pub(crate) fn frexp(x: f64) -> (f64, i32) {
     let m = f64::from_bits((bits & !(0x7ffu64 << 52)) | (1022u64 << 52));
     (m, exp - 1022)
 }
+
+/// The kind of the first value inside `v` that has no engine [`Value`] form.
+pub(crate) fn unrepresentable_kind(v: &Py, depth: usize) -> Option<&'static str> {
+    if depth > 200 {
+        return None;
+    }
+    match v {
+        Py::Bytes(_) => Some("bytes"),
+        Py::Builtin(_) | Py::Type(_) | Py::Method(_) | Py::Proc(_) => Some("function"),
+        Py::Iter(_) | Py::Range(..) => Some("iterator"),
+        Py::Exc(_) => Some("exception"),
+        Py::Slice(_) => Some("slice"),
+        Py::Ellipsis => Some("ellipsis"),
+        Py::Ast(_) => Some("object"),
+        Py::List(l) => l.borrow().iter().find_map(|x| unrepresentable_kind(x, depth + 1)),
+        Py::Tuple(t) => t.iter().find_map(|x| unrepresentable_kind(x, depth + 1)),
+        Py::Set(s) => s.borrow().values().find_map(|x| unrepresentable_kind(x, depth + 1)),
+        Py::Dict(d) => d
+            .borrow()
+            .values()
+            .find_map(|(_, x)| unrepresentable_kind(x, depth + 1)),
+        Py::Obj(o) => o.borrow().values().find_map(|x| unrepresentable_kind(x, depth + 1)),
+        _ => None,
+    }
+}

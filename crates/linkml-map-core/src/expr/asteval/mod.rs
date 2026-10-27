@@ -53,6 +53,9 @@ pub(crate) enum ExecError {
     /// An exception that escapes `_unrestricted_eval` (`KeyError` from
     /// `aeval.symtable["target"]` after `del target`) or the step limit.
     Uncaught(String),
+    /// `target` holds a Python object [`Value`] cannot represent (bytes, a
+    /// function, an iterator, ...): the kind, as upstream would hand it on.
+    Unrepresentable(&'static str),
 }
 
 /// The attributes of `src` a module reads, when every use of `src` is
@@ -220,7 +223,10 @@ pub(crate) fn execute(
         });
     }
     match interp.symbol("target") {
-        Some(v) => Ok(to_value(&v, 0)),
+        Some(v) => match value::unrepresentable_kind(&v, 0) {
+            Some(what) => Err(ExecError::Unrepresentable(what)),
+            None => Ok(to_value(&v, 0)),
+        },
         None => Err(ExecError::Uncaught("KeyError: 'target'".into())),
     }
 }

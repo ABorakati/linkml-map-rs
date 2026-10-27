@@ -259,6 +259,29 @@ Each is marked `PARITY:` in the code.
   restricted evaluator; `expr/gate.rs` enforces this in restricted mode. A set is a
   de-duplicated list in insertion order and dict keys are stringified
   (`expr/compound.rs`).
+- **Expression syntax (closed).** The lexer and parser follow CPython 3.13's
+  tokenizer and grammar, so an expression that parses upstream parses here even
+  where the construct is never evaluated: slices (`l[1:]`, `s[::-2]`), hex, octal,
+  binary, underscore and imaginary literals and `1.5.real`, triple-quoted, raw,
+  `u''`, `b''` and adjacent string literals with every escape (`\N{BULLET}` through
+  `unicode_names2`), f-strings (PEP 701: nested quotes, specs, `!r`, `{x=}`), `is` /
+  `is not`, `@`, `lambda`, `:=`, `...` and `*`/`**` unpacking. What simpleeval cannot
+  evaluate (`@`, a lambda, `:=`, a `Starred` argument, a call on anything but a name
+  or an attribute) is refused at evaluation, as `FeatureNotAvailable`/
+  `OperatorNotDefined`, so the unrestricted fallback retries it. Method calls and
+  attributes on scalars reach the real Python methods, as upstream's
+  `_eval_attribute` has no allow-list (`s.upper()`, `s.split(' ')`, `n.bit_length()`,
+  `x.real`, all of `str`'s methods); inside a statement block asteval's own rules
+  apply (`str.format` is refused, a list has its own methods, `**` in a dict display
+  is a `None` key, nothing unpacks with `*`). Remaining differences (`PARITY:` in
+  `expr/syntax.rs`, `expr/pymethods.rs`, `expr/pyformat.rs`): results with no `Value`
+  (`bytes`, complex numbers, `...`, functions and bound methods such as `s.upper`
+  or a bare `upper`) raise an "unrepresentable" error where upstream succeeds; a
+  list method called in a statement block does not mutate the binding; a tuple of
+  affixes for `startswith` is recognised by how it is written (`(..)` or `tuple(..)`)
+  because `Value` has no tuple; a lone-surrogate escape (`'\ud800'`) and an integer
+  literal beyond `i64` cannot be held; `str.casefold` folds the common special
+  cases, not all of `CaseFolding.txt`; `'{0.__class__}'.format(..)` is refused.
 - **`Value` has no tuple, set, bytes or big-integer variant**, so for example
   `is_list((1, 2))` is true, and integer results beyond `i64` raise.
 - **Joined/dotted `populated_from` values** are not coerced to the target range.

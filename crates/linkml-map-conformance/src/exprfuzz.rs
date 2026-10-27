@@ -148,6 +148,9 @@ pub fn eval_case(expr: &str, bindings: &J, mode: &str, strict: bool) -> Outcome 
             parse_expr(expr).and_then(|parsed| eval_parsed_gated(&parsed, &vars, eval_mode));
         match outcome {
             Ok(v) => Outcome::Ok(v),
+            // A result Python can produce but `Value` cannot hold (a bound
+            // method, bytes, a complex number): not comparable, not a divergence.
+            Err(e) if e.is_unrepresentable() => fail("unrepresentable", e.to_string()),
             Err(e) => fail(err_kind(&e), e.to_string()),
         }
     })

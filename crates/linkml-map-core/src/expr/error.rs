@@ -63,6 +63,21 @@ impl ExprError {
         Self::Uncaught("maximum recursion depth exceeded".into())
     }
 
+    /// A result Python produces that [`crate::value::Value`] cannot hold: a
+    /// bound method (`s.upper`), `bytes`, a complex number, `Ellipsis`, a
+    /// function. Upstream succeeds there, so this is not a rejection: it
+    /// propagates in both evaluation modes. The expression differential fuzzer
+    /// recognises it by [`UNREPRESENTABLE_PREFIX`] and does not count it as a
+    /// divergence.
+    pub(crate) fn unrepresentable(what: &str) -> Self {
+        Self::Uncaught(format!("{UNREPRESENTABLE_PREFIX}{what}"))
+    }
+
+    /// Whether this is the error [`ExprError::unrepresentable`] builds.
+    pub fn is_unrepresentable(&self) -> bool {
+        matches!(self, Self::Uncaught(m) | Self::Lex(m) if m.starts_with(UNREPRESENTABLE_PREFIX))
+    }
+
     /// True for the failures upstream's `ObjectTransformer._eval_expr` and
     /// `transform_enum` catch: `except (InvalidExpression, TypeError,
     /// ValueError)`. In restricted mode they are re-raised; with
@@ -71,6 +86,9 @@ impl ExprError {
         matches!(self, Self::Eval(_))
     }
 }
+
+/// The start of the message of an [`ExprError::unrepresentable`] error.
+pub const UNREPRESENTABLE_PREFIX: &str = "unrepresentable value: a Python ";
 
 /// Convenience alias.
 pub type ExprResult<T> = std::result::Result<T, ExprError>;

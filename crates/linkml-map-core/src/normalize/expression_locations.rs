@@ -121,75 +121,7 @@ impl ExpressionBearing for ClassDerivation {
 /// Visit every node in `node`, invoking `visit` on each (pre-order).
 fn walk_ast<F: FnMut(&Ast)>(node: &Ast, visit: &mut F) {
     visit(node);
-    match node {
-        Ast::Brace(inner) => walk_ast(inner, visit),
-        Ast::Attribute { value, .. } => walk_ast(value, visit),
-        Ast::List(items) | Ast::Tuple(items) => {
-            for item in items {
-                walk_ast(item, visit);
-            }
-        }
-        Ast::Subscript { value, index } => {
-            walk_ast(value, visit);
-            walk_ast(index, visit);
-        }
-        Ast::Set(items) => {
-            for item in items {
-                walk_ast(item, visit);
-            }
-        }
-        Ast::Dict(pairs) => {
-            for (k, v) in pairs {
-                walk_ast(k, visit);
-                walk_ast(v, visit);
-            }
-        }
-        Ast::Comp(c) => {
-            walk_ast(&c.elt, visit);
-            if let Some(value) = &c.value {
-                walk_ast(value, visit);
-            }
-            for g in &c.generators {
-                walk_ast(&g.iter, visit);
-                for cond in &g.ifs {
-                    walk_ast(cond, visit);
-                }
-            }
-        }
-        Ast::IfExp { test, body, orelse } => {
-            walk_ast(test, visit);
-            walk_ast(body, visit);
-            walk_ast(orelse, visit);
-        }
-        Ast::Call { args, keywords, .. } => {
-            for a in args {
-                walk_ast(a, visit);
-            }
-            for (_, v) in keywords {
-                walk_ast(v, visit);
-            }
-        }
-        Ast::Unary { operand, .. } => walk_ast(operand, visit),
-        Ast::Binary { left, right, .. } => {
-            walk_ast(left, visit);
-            walk_ast(right, visit);
-        }
-        Ast::Compare {
-            left, comparators, ..
-        } => {
-            walk_ast(left, visit);
-            for c in comparators {
-                walk_ast(c, visit);
-            }
-        }
-        Ast::BoolOp { values, .. } => {
-            for v in values {
-                walk_ast(v, visit);
-            }
-        }
-        // Leaf nodes.
-        Ast::Int(_) | Ast::Float(_) | Ast::Str(_) | Ast::Bool(_) | Ast::None | Ast::Name(_) => {}
-    }
+    node.for_each_child(&mut |child| walk_ast(child, visit));
 }
 
 /// Return the tables referenced as `{Table.col}` in `expression`.
