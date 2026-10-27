@@ -1,0 +1,92 @@
+[package]
+name = "linkml-map-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# cargo-fuzz expects the fuzz crate to be its own workspace root (the root workspace
+# lists it under `exclude`).
+[workspace]
+
+[features]
+# Switch off the guards that keep the fuzzers away from the known, already-reported
+# crashes (see the `bug:` tests under crates/*/tests/proptest_*.rs): deep nesting,
+# list repetition with a huge count, Decimal exponent overflow. With the guards on,
+# a crash found here is new.
+unguarded = []
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+indexmap = "2"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+tokio = { version = "1", features = ["rt", "fs"] }
+linkml-map-core = { path = "../crates/linkml-map-core" }
+linkml-map-io = { path = "../crates/linkml-map-io" }
+
+[lib]
+name = "fuzz_support"
+path = "src/lib.rs"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "expr_parse_eval"
+path = "fuzz_targets/expr_parse_eval.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "spec_load_compile"
+path = "fuzz_targets/spec_load_compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "loader_yaml"
+path = "fuzz_targets/loader_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "loader_jsonl"
+path = "fuzz_targets/loader_jsonl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "loader_tsv"
+path = "fuzz_targets/loader_tsv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decimal_parse"
+path = "fuzz_targets/decimal_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "writers_tabular"
+path = "fuzz_targets/writers_tabular.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pyyaml_emit"
+path = "fuzz_targets/pyyaml_emit.rs"
+test = false
+doc = false
+bench = false

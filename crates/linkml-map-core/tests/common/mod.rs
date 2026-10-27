@@ -962,7 +962,11 @@ pub fn short_floats(v: &Value) -> Value {
     match v {
         Value::Float(f) => Value::Float((f.clamp(-1e9, 1e9) * 1000.0).round() / 1000.0),
         Value::List(items) => Value::List(items.iter().map(short_floats).collect()),
-        Value::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), short_floats(v))).collect()),
+        Value::Map(m) => Value::Map(
+            m.iter()
+                .map(|(k, v)| (k.clone(), short_floats(v)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -974,5 +978,14 @@ pub fn arb_records(value: BoxedStrategy<Value>) -> BoxedStrategy<Vec<Value>> {
             .prop_map(|pairs| Value::Map(pairs.into_iter().collect::<IndexMap<_, _>>())),
         0..6,
     )
+    .boxed()
+}
+
+/// A name from the spec vocabulary (for renaming keys).
+pub fn arb_name_for_mutation() -> BoxedStrategy<String> {
+    prop_oneof![
+        3 => prop::sample::select(SPEC_KEYS.to_vec()).prop_map(str::to_string),
+        1 => arb_name(),
+    ]
     .boxed()
 }

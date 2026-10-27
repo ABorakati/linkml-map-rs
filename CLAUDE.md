@@ -72,6 +72,10 @@ cargo clippy --workspace --all-targets       # keep clippy-clean
 cargo test -p linkml-map-cli --features columnar   # Parquet/DuckDB output tests
 ```
 
+- Property tests (`proptest`, `crates/*/tests/proptest_*.rs`) run under plain `cargo test` at modest case
+  counts; `PROPTEST_CASES=20000` runs them long. Coverage-guided fuzz targets live in [`fuzz/`](fuzz)
+  (nightly + `cargo-fuzz`, see its README); CI runs both weekly. A property or fuzz failure is a real
+  finding: do not weaken the property; known bugs are `#[ignore = "bug: ..."]` regression tests.
 - Parquet and DuckDB output is behind the off-by-default **`columnar`** cargo feature.
   It compiles a bundled DuckDB, so the first build is slow; default builds never
   compile DuckDB.

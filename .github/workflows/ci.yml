@@ -5,9 +5,19 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  # Weekly deep run of the property tests and the cargo-fuzz targets (jobs `proptest-long`
+  # and `fuzz` below; every other job is skipped on this trigger).
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      fuzz_minutes:
+        description: 'Minutes per fuzz target'
+        default: '10'
 
 jobs:
   harness-gate:
+    if: github.event_name != 'schedule'
     # Fails when a changed crates/** path has no owner in harness-ownership.toml,
     # or when the public Rust API / PyO3 binding changed without the Python
     # surface (.pyi / shim / docs). Bypass a single change with [skip-harness]
@@ -38,6 +48,7 @@ jobs:
       run: cargo xtask harness-gate --base "${{ steps.base.outputs.ref }}"
 
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -126,6 +137,7 @@ jobs:
   # protection setting.
   # ───────────────────────────────────────────────────────────────────────────
   python-compat:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -173,3 +185,96 @@ jobs:
     - name: Run PyO3 drop-in compat tests
       run: |
         pytest crates/linkml-map-py/tests/test_compat_api.py -v
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Property tests (proptest) run in the `test` job above like any other test, at
+  # their default case counts. This job repeats them at a much higher count.
+  # ───────────────────────────────────────────────────────────────────────────
+  proptest-long:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Property tests, many cases
+      run: |
+        set -euo pipefail
+        PROPTEST_CASES=20000 cargo test -p linkml-map-core \
+          --test proptest_expr --test proptest_spec --test proptest_value --test proptest_yaml
+        PROPTEST_CASES=2000 cargo test -p linkml-map-io --test proptest_roundtrip
+        PROPTEST_CASES=300 cargo test -p linkml-map-pipeline \
+          --test proptest_pipeline --test proptest_spec_mutation
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Coverage-guided fuzzing (cargo-fuzz / libFuzzer, nightly). Targets live in
+  # fuzz/fuzz_targets; they need no Python. The corpus is seeded from the repo's
+  # fixtures (fuzz/seed.sh) and carried between runs through the Actions cache. A crash
+  # fails the job and its reproducer is uploaded as an artifact. The fuzzers skip the
+  # already-reported crashes (deep nesting, huge list repetition, Decimal exponent
+  # overflow); build with `--features unguarded` to see those again.
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - expr_parse_eval
+          - spec_load_compile
+          - loader_yaml
+          - loader_jsonl
+          - loader_tsv
+          - decimal_parse
+          - writers_tabular
+          - pyyaml_emit
+    env:
+      FUZZ_MINUTES: ${{ github.event.inputs.fuzz_minutes || '10' }}
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup nightly Rust
+      uses: dtolnay/rust-toolchain@nightly
+
+    - name: Cache cargo-fuzz and build output
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/cargo-fuzz
+          ~/.cargo/registry
+          fuzz/target
+        key: fuzz-build-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.toml', 'Cargo.lock') }}
+        restore-keys: fuzz-build-${{ runner.os }}-
+
+    - name: Install cargo-fuzz
+      run: command -v cargo-fuzz || cargo install cargo-fuzz --locked
+
+    - name: Restore corpus
+      uses: actions/cache@v4
+      with:
+        path: fuzz/corpus/${{ matrix.target }}
+        key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+        restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+    - name: Seed corpus from fixtures
+      run: ./fuzz/seed.sh
+
+    - name: Fuzz ${{ matrix.target }} for ${{ env.FUZZ_MINUTES }} minutes
+      run: |
+        cargo +nightly fuzz run -a ${{ matrix.target }} -- \
+          -max_total_time=$((FUZZ_MINUTES * 60)) -max_len=2048 -rss_limit_mb=2048 -timeout=30
+
+    - name: Minimise the corpus for the cache
+      if: success()
+      run: cargo +nightly fuzz cmin ${{ matrix.target }} || true
+
+    - name: Upload crashes
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-crashes-${{ matrix.target }}
+        path: fuzz/artifacts/${{ matrix.target }}
+        if-no-files-found: ignore

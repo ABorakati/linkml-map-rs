@@ -1,0 +1,5 @@
+{"id": "P:1", "name": "a", "height": {"value": 1.5, "unit": "cm"}}
+{"id": "P:2", "tags": ["x", "y"], "n": null, "f": 1e22}
+
+[1, 2, {"k": "v"}]
+"bare string"
