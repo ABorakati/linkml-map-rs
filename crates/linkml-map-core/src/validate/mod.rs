@@ -50,7 +50,7 @@ use std::fmt;
 
 use crate::datamodel::{ClassDerivation, SlotDerivation, TransformationSpecification};
 use crate::normalize::join_utils::{find_common_columns, pick_join_key};
-use crate::schema::SchemaProvider;
+use crate::schema::{SchemaProvider, coercible_datatype};
 
 use expr_refs::{extract_expr_attribute_references, extract_expr_slot_references};
 
@@ -97,6 +97,12 @@ impl ValidationMessage {
             category: None,
         }
     }
+
+    /// Tag this message with a `category` downstream consumers can group on.
+    fn with_category(mut self, category: &str) -> Self {
+        self.category = Some(category.to_owned());
+        self
+    }
 }
 
 impl fmt::Display for ValidationMessage {
@@ -120,6 +126,7 @@ struct Ctx<'a> {
     pool: BTreeSet<String>,
     source_classes: BTreeSet<String>,
     target_classes: BTreeSet<String>,
+    target_enums: BTreeSet<String>,
 }
 
 /// Validate a spec's references against the source and/or target schemas.
@@ -147,6 +154,9 @@ pub fn validate_spec_semantics(
         pool: collect_class_derivation_pool(spec),
         source_classes: source_schema.map(class_name_set).unwrap_or_default(),
         target_classes: target_schema.map(class_name_set).unwrap_or_default(),
+        target_enums: target_schema
+            .map(|sv| sv.all_enum_names().into_iter().collect())
+            .unwrap_or_default(),
     };
 
     for cd in spec.class_derivations.iter().flatten() {
@@ -308,6 +318,11 @@ fn validate_class_derivation(
         );
 
         let sd_path = format!("{cd_path}.slot_derivations[{}]", sd.name);
+        if let (Some(target), Some(target_slots)) = (ctx.target, target_class_slots.as_ref())
+            && target_slots.contains(&sd.name)
+        {
+            check_range_override(ctx, sd, cd_name, target, &sd_path, messages);
+        }
         for nested in nested_class_derivations(sd) {
             validate_class_derivation(ctx, nested, Some(cd), &sd_path, messages);
         }
@@ -738,6 +753,90 @@ fn validate_slot_derivation(
             }
         }
     }
+}
+
+// ── range override ──────────────────────────────────────────────────────────
+
+/// Datatypes whose values count as numbers (Python `_NUMERIC_DATATYPES`).
+const NUMERIC_DATATYPES: [&str; 3] = ["integer", "float", "decimal"];
+
+/// Whether values coerced to `spec_datatype` still validate against
+/// `target_datatype`. Mirrors Python `_datatype_fits`.
+///
+/// Integers and floats are valid wherever a float or decimal is; anything that
+/// isn't a number or a boolean stays a string. `None` is a range with no
+/// coercion, whose values pass through as the strings they arrived as.
+fn datatype_fits(spec_datatype: Option<&str>, target_datatype: &str) -> bool {
+    match target_datatype {
+        "string" => spec_datatype.is_none_or(|d| !NUMERIC_DATATYPES.contains(&d) && d != "boolean"),
+        "float" | "decimal" => spec_datatype.is_some_and(|d| NUMERIC_DATATYPES.contains(&d)),
+        other => spec_datatype == Some(other),
+    }
+}
+
+/// Report a slot derivation `range` that keeps values from matching the target
+/// slot's range. Mirrors Python `_check_range_override`.
+///
+/// An explicit `range` wins over the target schema's, so values are coerced to
+/// it instead and not resolved against a target enum. That is only a problem
+/// when the two disagree: a `range: string` on a slot whose target range is an
+/// enum or a decimal leaves the output invalid with no other sign of why.
+/// Under `strict` the finding is an error rather than a warning.
+fn check_range_override(
+    ctx: &Ctx,
+    sd: &SlotDerivation,
+    class_name: &str,
+    target: &dyn SchemaProvider,
+    sd_path: &str,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    // Python `induced_slot(...).range` falls back to the schema's `default_range`.
+    let Ok(target_slot) = target.induced_slot(&sd.name, class_name) else {
+        return;
+    };
+    let target_range = target_slot
+        .range
+        .name()
+        .map(str::to_owned)
+        .or_else(|| target.default_range());
+    let (Some(spec_range), Some(target_range)) = (sd.range.as_deref(), target_range.as_deref())
+    else {
+        return;
+    };
+    if spec_range == target_range {
+        return;
+    }
+    let consequence = if ctx.target_enums.contains(target_range) {
+        "its values aren't resolved to the target enum's permissible values".to_owned()
+    } else {
+        let Some(target_datatype) = coercible_datatype(target, Some(target_range)) else {
+            return;
+        };
+        let spec_datatype = if ctx.target_enums.contains(spec_range) {
+            Some("string")
+        } else {
+            coercible_datatype(target, Some(spec_range))
+        };
+        if datatype_fits(spec_datatype, target_datatype) {
+            return;
+        }
+        format!("its values aren't coerced to {target_datatype}")
+    };
+    messages.push(
+        ValidationMessage::new(
+            if ctx.strict {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            sd_path,
+            format!(
+                "range '{spec_range}' overrides the target slot's range '{target_range}', so \
+                 {consequence}. Remove the range to use the target schema's."
+            ),
+        )
+        .with_category("range-override"),
+    );
 }
 
 // ── enum derivation ─────────────────────────────────────────────────────────

@@ -691,6 +691,208 @@ fn top_level_join_key_edge_cases() {
     ));
 }
 
+// ── spec range overriding the target slot's range (upstream b332fc7) ─────────
+
+/// Upstream `_RANGE_TARGET_SCHEMA`: custom `Score typeof decimal`, enum
+/// `Relationship`, class `Site`, and `Participant` with a slot of each kind.
+fn range_target_schema() -> InMemorySchema {
+    let ranged = |name: &str, range: RangeKind| SlotDef {
+        range,
+        ..slot(name, false, false)
+    };
+    let ty = |t: &str| RangeKind::Type(t.into());
+    let mut b = InMemorySchemaBuilder::new()
+        .default_range("string")
+        .add_enum(EnumDef {
+            name: "Relationship".into(),
+            permissible_values: vec![],
+        })
+        .add_type_with_parent("Score", "decimal")
+        .add_class(class("Site"))
+        .add_slot("Site", slot("id", true, false))
+        .add_class(class("Participant"));
+    for t in [
+        "string",
+        "integer",
+        "float",
+        "decimal",
+        "boolean",
+        "date",
+        "uriorcurie",
+    ] {
+        b = b.add_type(t);
+    }
+    b.add_slot(
+        "Participant",
+        ranged("relationship", RangeKind::Enum("Relationship".into())),
+    )
+    .add_slot("Participant", ranged("amount", ty("decimal")))
+    .add_slot("Participant", ranged("score", ty("Score")))
+    .add_slot("Participant", ranged("ratio", ty("float")))
+    .add_slot("Participant", ranged("count", ty("integer")))
+    .add_slot("Participant", ranged("flag", ty("boolean")))
+    .add_slot("Participant", ranged("note", ty("string")))
+    .add_slot(
+        "Participant",
+        ranged("site", RangeKind::Class("Site".into())),
+    )
+    // No declared range: falls back to `default_range: string`.
+    .add_slot("Participant", ranged("untyped", RangeKind::None))
+    .build()
+}
+
+/// Upstream `_range_override_msgs`: only the `range-override` findings.
+fn range_override_msgs(slot_derivation: serde_json::Value, strict: bool) -> Vec<ValidationMessage> {
+    let s = spec(json!({
+        "class_derivations": {"Participant": {"slot_derivations": slot_derivation}}
+    }));
+    let sv = range_target_schema();
+    validate_spec_semantics(&s, None, Some(&sv), strict)
+        .into_iter()
+        .filter(|m| m.category.as_deref() == Some("range-override"))
+        .collect()
+}
+
+/// Upstream `test_semantics_conflicting_range_warns`.
+#[test]
+fn conflicting_range_warns() {
+    let cases = [
+        (
+            "enum",
+            json!({"relationship": {"value": "ONESELF", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'Relationship', so its values \
+             aren't resolved to the target enum's permissible values. Remove the range to use \
+             the target schema's.",
+        ),
+        (
+            "decimal",
+            json!({"amount": {"value": "1.5", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'decimal', so its values aren't \
+             coerced to decimal. Remove the range to use the target schema's.",
+        ),
+        (
+            "string",
+            json!({"note": {"value": "1", "range": "integer"}}),
+            "range 'integer' overrides the target slot's range 'string', so its values aren't \
+             coerced to string. Remove the range to use the target schema's.",
+        ),
+        (
+            "float-into-integer",
+            json!({"count": {"value": "1.5", "range": "float"}}),
+            "range 'float' overrides the target slot's range 'integer', so its values aren't \
+             coerced to integer. Remove the range to use the target schema's.",
+        ),
+        (
+            "boolean",
+            json!({"flag": {"value": "true", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'boolean', so its values aren't \
+             coerced to boolean. Remove the range to use the target schema's.",
+        ),
+        // Custom types resolve through `typeof`.
+        (
+            "custom-type-typeof-decimal",
+            json!({"score": {"value": "1", "range": "string"}}),
+            "range 'string' overrides the target slot's range 'Score', so its values aren't \
+             coerced to decimal. Remove the range to use the target schema's.",
+        ),
+        // The target range falls back to the schema's `default_range`.
+        (
+            "default-range-fallback",
+            json!({"untyped": {"value": "1", "range": "integer"}}),
+            "range 'integer' overrides the target slot's range 'string', so its values aren't \
+             coerced to string. Remove the range to use the target schema's.",
+        ),
+    ];
+    for (id, slot_derivation, message) in cases {
+        let msgs = range_override_msgs(slot_derivation, false);
+        let got: Vec<_> = msgs
+            .iter()
+            .map(|m| (m.severity, m.message.as_str()))
+            .collect();
+        assert_eq!(got, [(Severity::Warning, message)], "{id}");
+    }
+}
+
+/// Upstream `test_semantics_compatible_range_not_reported`.
+#[test]
+fn compatible_range_not_reported() {
+    let cases = [
+        ("no-range", json!({"relationship": {"value": "ONESELF"}})),
+        (
+            "same-range",
+            json!({"relationship": {"value": "ONESELF", "range": "Relationship"}}),
+        ),
+        (
+            "same-datatype",
+            json!({"score": {"value": "0.1", "range": "decimal"}}),
+        ),
+        (
+            "enum-into-string",
+            json!({"note": {"value": "ONESELF", "range": "Relationship"}}),
+        ),
+        (
+            "class-range",
+            json!({"site": {"value": "S1", "range": "string"}}),
+        ),
+        (
+            "integer-into-decimal",
+            json!({"amount": {"value": "1", "range": "integer"}}),
+        ),
+        (
+            "float-into-decimal",
+            json!({"amount": {"value": "1.5", "range": "float"}}),
+        ),
+        (
+            "integer-into-float",
+            json!({"ratio": {"value": "1", "range": "integer"}}),
+        ),
+        (
+            "date-into-string",
+            json!({"note": {"value": "2020-01-01", "range": "date"}}),
+        ),
+        (
+            "uriorcurie-into-string",
+            json!({"note": {"value": "X:1", "range": "uriorcurie"}}),
+        ),
+    ];
+    for (id, slot_derivation) in cases {
+        let msgs = range_override_msgs(slot_derivation, false);
+        assert!(msgs.is_empty(), "{id}: {msgs:?}");
+    }
+}
+
+/// Upstream `test_semantics_conflicting_range_strict_error`.
+#[test]
+fn conflicting_range_strict_error() {
+    let msgs = range_override_msgs(json!({"amount": {"value": "1.5", "range": "string"}}), true);
+    let severities: Vec<_> = msgs.iter().map(|m| m.severity).collect();
+    assert_eq!(severities, [Severity::Error]);
+}
+
+/// The finding is attached to the slot derivation's path.
+#[test]
+fn conflicting_range_reports_slot_derivation_path() {
+    let msgs = range_override_msgs(
+        json!({"amount": {"value": "1.5", "range": "string"}}),
+        false,
+    );
+    assert_eq!(
+        msgs[0].path,
+        "class_derivations[Participant].slot_derivations[amount]"
+    );
+}
+
+/// Upstream `_datatype_fits` doctests.
+#[test]
+fn datatype_fits_doctests() {
+    assert!(datatype_fits(Some("integer"), "decimal"));
+    assert!(!datatype_fits(Some("float"), "integer"));
+    assert!(datatype_fits(None, "string"));
+    assert!(!datatype_fits(Some("integer"), "string"));
+    assert!(!datatype_fits(Some("string"), "decimal"));
+    assert!(!datatype_fits(None, "boolean"));
+}
+
 // ── enum derivations ─────────────────────────────────────────────────────────
 
 fn enum_schema() -> InMemorySchema {
