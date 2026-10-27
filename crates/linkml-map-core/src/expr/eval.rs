@@ -347,7 +347,12 @@ pub fn expression_asts(expr: &str) -> ExprResult<Vec<Ast>> {
     }
     Ok(match parse_single_or_program(expr)? {
         SingleOrProgram::Single(ast) => vec![ast],
-        SingleOrProgram::Program(program) => program.exprs().into_iter().cloned().collect(),
+        SingleOrProgram::Program(program) => {
+            if let Some(err) = program.syntax_error() {
+                return Err(err.clone());
+            }
+            program.exprs().into_iter().cloned().collect()
+        }
     })
 }
 
@@ -533,6 +538,12 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             args,
             keywords,
         } => {
+            // PARITY: upstream rejects an unknown function before it evaluates
+            // any argument (`LinkMLEvaluator._eval_call`), so an error in an
+            // argument of an unknown call never surfaces.
+            if func != "slot" {
+                builtins::ensure_known_function(func)?;
+            }
             // case() arguments are (cond, val) pairs that must be evaluated;
             // they go through the generic arg evaluation below.
             let evaled = syntax::eval_call_args(args, vars)?;
@@ -673,6 +684,12 @@ thread_local! {
 
 /// Run `f` with object-attribute semantics enabled, restoring the prior mode
 /// afterwards (nesting-safe).
+///
+/// No longer called: statement blocks run in [`super::asteval`], which has its
+/// own `DynObj`. The `object_attr_mode_enabled()` branches in this module and
+/// in `compound`/`gate` are dead and can go with the next clean-up of the
+/// restricted evaluator (kept now to leave that code to its own owners).
+#[allow(dead_code)]
 pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
     OBJECT_ATTR_MODE.with(|m| {
         let prev = m.get();

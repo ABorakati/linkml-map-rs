@@ -155,6 +155,15 @@ fn lookup(name: &str) -> Option<(Wrap, Builtin)> {
     })
 }
 
+/// `LinkMLEvaluator._eval_call`'s pre-check: a call to a name outside the
+/// function table fails before any argument is evaluated.
+pub(super) fn ensure_known_function(name: &str) -> ExprResult<()> {
+    if lookup(name).is_none() {
+        return Err(unknown_function(name));
+    }
+    Ok(())
+}
+
 /// Call the built-in `name` with already-evaluated positional `args` and
 /// keyword arguments (`name(a, k=v)`).
 ///
@@ -868,7 +877,7 @@ fn decimal_to_int(d: &Decimal, mode: ToInt) -> ExprResult<Value> {
 /// `int(text, base)`: CPython's `PyLong_FromString` (surrounding whitespace, a
 /// sign, `0x`/`0o`/`0b` prefixes, single underscores between digits).
 ///
-fn parse_int(text: &str, base: i64) -> ExprResult<Value> {
+pub(super) fn parse_int(text: &str, base: i64) -> ExprResult<Value> {
     if base != 0 && !(2..=36).contains(&base) {
         return err("int() base must be >= 2 and <= 36, or 0");
     }
@@ -1069,7 +1078,7 @@ fn round(args: &[Value]) -> ExprResult<Value> {
 
 /// `int.__round__(ndigits)`: negative `ndigits` rounds to a multiple of a power
 /// of ten, halves to even.
-fn round_int(i: i64, ndigits: i64) -> ExprResult<Value> {
+pub(super) fn round_int(i: i64, ndigits: i64) -> ExprResult<Value> {
     if ndigits >= 0 {
         return Ok(Value::Int(i));
     }
@@ -1091,7 +1100,7 @@ fn round_int(i: i64, ndigits: i64) -> ExprResult<Value> {
 }
 
 /// `float.__round__(ndigits)` (CPython's correctly rounded `double_round`).
-fn round_float(x: f64, ndigits: i64) -> ExprResult<f64> {
+pub(super) fn round_float(x: f64, ndigits: i64) -> ExprResult<f64> {
     // CPython's NDIGITS_MAX / NDIGITS_MIN.
     if !x.is_finite() || ndigits > 323 {
         return Ok(x);

@@ -25,6 +25,7 @@ into `{"err": "crash"}` and carries on.
 | `shrink.py` | tree/bindings shrinker. |
 | `campaign.py` | generate, evaluate, cluster, shrink, write `divergences.jsonl` / `clusters.md`. |
 | `probes.py` | hand-written probes, one group per divergence class; `--write corpus/curated.jsonl`. |
+| `stmtprobe.py` | block/statement probes (`----`-separated file) compared against upstream asteval: `python stmtprobe.py FILE [-v]`. |
 | `leaf.py`, `chars.py` | leaf oracles (py_eq, truthiness, float repr, str/repr, Decimal, json.dumps, int()/float(), round, casing, slugify...) with random inputs, and an exhaustive per-code-point scan. |
 | `corpus/*.jsonl` | stored cases with the upstream result, replayed by `cargo test -p linkml-map-conformance --test expr_differential` (no Python needed). `status: divergence` entries are skipped by the default run and replayed by `-- --ignored`. |
 
@@ -36,7 +37,7 @@ export EXPR_ORACLE=$CARGO_TARGET_DIR/release/examples/expr_oracle
 PY=/home/user/upstream/upvenv/bin/python        # upstream linkml-map + hypothesis, isolated venv
 
 $PY campaign.py run --n 30000 --seed 1 --out /tmp/run1 --mode restricted
-$PY campaign.py run --n 30000 --seed 2 --out /tmp/run2 --mode unrestricted --mask stmt
+$PY campaign.py run --n 30000 --seed 2 --out /tmp/run2 --mode unrestricted 
 $PY campaign.py run --n 3000 --seed 7 --out /tmp/ci --profile clean --fail-on-divergence   # the CI profile
 $PY probes.py                       # curated probes
 $PY leaf.py --n 20000               # leaf oracles
@@ -45,7 +46,7 @@ $PY chars.py                        # every code point through casing/repr/slugi
 
 `--mask a,b,c` disables grammar features that are already known to diverge so the
 campaign can see what they hide (`rawint bigint slice strstyle fstr lambda method
-matmul setdisp stmt is tuple pow bitwise strescape numstr-unicode methodattr
+matmul setdisp is tuple pow bitwise strescape numstr-unicode methodattr
 numattr`; `in`, `div`, `strescape` and `numstr-unicode` are fixed and no longer masked). `--profile clean` is the mask set that currently yields no divergences;
 shrink it as divergences are fixed.
 

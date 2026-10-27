@@ -22,8 +22,9 @@ Diverge **only** when one of these forces it:
 1. **Exact replication is impossible in Rust.** Python's dynamic/untyped values
    map to the `Value` enum in [`crates/linkml-map-core/src/value.rs`](crates/linkml-map-core/src/value.rs)
    (note its `py_eq`/`is_truthy`/`try_numeric` deliberately mirror Python
-   semantics); `asteval` maps to the hand-written evaluator in
-   [`crates/linkml-map-core/src/expr/`](crates/linkml-map-core/src/expr). Keep the
+   semantics); `simpleeval` maps to the hand-written evaluator in
+   [`crates/linkml-map-core/src/expr/`](crates/linkml-map-core/src/expr) and `asteval` to its
+   port in [`expr/asteval/`](crates/linkml-map-core/src/expr/asteval). Keep the
    observable behaviour identical even where the mechanism differs.
 2. **Async/concurrency buys speed.** Parallelism lives in the **pipeline**
    ([`crates/linkml-map-pipeline`](crates/linkml-map-pipeline)) and async I/O in

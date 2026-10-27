@@ -7314,7 +7314,9 @@ mod upstream_errors {
             compiled.slot("Agent", "good", "{id}").is_some(),
             "valid expr stays cached"
         );
-        assert!(compiled.slot("Agent", "bad", "{id} +").is_none());
+        // A text that is not Python parses into a block that remembers its
+        // `SyntaxError`: raised when evaluated (restricted), swallowed by asteval.
+        assert!(compiled.slot("Agent", "bad", "{id} +").is_some());
         let engine =
             ObjectTransformer::new(spec, Some(&source), None).with_compiled_exprs(&compiled);
         let err = engine

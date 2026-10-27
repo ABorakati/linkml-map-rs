@@ -140,22 +140,34 @@ Each is marked `PARITY:` in the code.
   `--source-type` on a directory overrides every block's source type, as
   upstream, and a `populated_from` (or same-name copy) that is not a slot of that
   type now fails with "No such slot", as upstream does (closed: error parity).
-- **Unrestricted mode is a native interpreter, not asteval.** The gate is ported
-  (`expr/gate.rs`): restricted by default, `--unrestricted-eval` / `with_unrestricted_eval`
-  / `unrestricted_eval=` to opt in. Unrestricted blocks cover assignments, `if` and
-  expression statements only (no `for`, `while`, `def`, `lambda`, `try`); those fail to
-  parse at plan-build time, where asteval would run them.
+- **Unrestricted mode is a port of asteval 1.0.x** (`expr/asteval/`, wrapped by
+  `expr/stmt.rs`; the gate is `expr/gate.rs`): restricted by default,
+  `--unrestricted-eval` / `with_unrestricted_eval` / `unrestricted_eval=` to opt in. It
+  is a literal port of `asteval.Interpreter`: CPython 3.13's `ast.parse` rules
+  (indentation, tab/space check, f-strings), every statement form asteval handles
+  (`for`/`while` with `else`, `break`/`continue`, augmented and chained assignment,
+  unpacking, `def`/`lambda`/`return`, `try`/`except`/`else`/`finally`, `del`, `assert`,
+  `raise`), the exact symbol table (Python built-ins, `math`, `type`/`open`, no LinkML
+  built-ins), its error list and interrupt flags (including the odd outcomes, such as a
+  typed `except` after a direct `raise`), and its limits (`MAX_STR_LEN`,
+  `MAX_EXPONENT`, `MAX_SHIFT`, recursion). A text that does not parse is swallowed
+  (`target` stays None) exactly as asteval swallows `SyntaxError`/`IndentationError`.
+  A source map is a `DynObj` for attribute access (a missing attribute is None) and
+  also iterates, subscripts and tests membership like the dict it may be upstream (the
+  engine's `Value` cannot tell the two apart). Remaining differences: integers beyond `i64` (an `OverflowError`), sets
+  and tuples leave the block as lists, dict keys as strings, objects that have no
+  `Value` form (functions, iterators, bytes, complex numbers) are an
+  "unrepresentable value" error, `id()`/`hash()` of
+  strings, CPython's hash-order iteration of sets, `open()` always raising
+  `FileNotFoundError`. A runaway loop stops at a
+  step limit where upstream hangs.
 - **Errors are classified by variant, not by Python exception class.**
   `ExprError::Eval` stands for upstream's `InvalidExpression`/`TypeError`/`ValueError`
   (the unrestricted fallback catches these); `ExprError::Uncaught` covers `IndexError`,
   `KeyError`, `AttributeError` and private-attribute `NameError`. Errors inside the
   built-in function table are all `Eval`, so the few that upstream raises as
   something else (an `AttributeError` from `uuid5` with a non-string name, say) become
-  null under `unrestricted_eval` instead of raising. Syntax errors in `{...}`
-  (`{1 + 2}`, `{x, y}`) surface at parse time in Rust but at evaluation time upstream,
-  so they are not swallowed by the unrestricted fallback.
-- **SQL-null leniency in statement blocks** (division by zero, `None` arithmetic)
-  where asteval stops.
+  null under `unrestricted_eval` instead of raising.
 - **`deunicode` stands in for `text-unidecode`** in `slugify`; rare characters may
   differ.
 - **Decimals:** ASCII digits only when parsing; Parquet/DuckDB decimals are staged

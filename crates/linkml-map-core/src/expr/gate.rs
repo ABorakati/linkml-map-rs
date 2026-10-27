@@ -22,7 +22,6 @@ use std::cell::{Cell, RefCell};
 
 use super::error::ExprResult;
 use super::eval::{Bindings, ParsedExpr, ParsedInner, object_attr_mode_enabled, with_strict_mode};
-use super::stmt::source_object;
 use crate::value::Value;
 
 /// How an expression is evaluated: upstream's `strict` and `unrestricted_eval`
@@ -69,7 +68,7 @@ pub(super) fn eval_restricted(parsed: &ParsedExpr, vars: &Bindings) -> ExprResul
 /// `vars` are the restricted bindings: the source slots, `NULL` and join
 /// aliases. With `unrestricted_eval` a statement block runs in the asteval
 /// interpreter with every binding but `NULL` and `__slot_values` exposed as the
-/// source object `src`; it never sees `src` as a bare name otherwise.
+/// source object `src`; it never sees the bare slot names.
 ///
 /// Anything else goes to the restricted evaluator first. A rejection
 /// ([`ExprError::is_restricted_rejection`](super::error::ExprError::is_restricted_rejection),
@@ -85,15 +84,11 @@ pub fn eval_parsed_gated(
     if mode.unrestricted
         && let ParsedInner::Program(program) = &parsed.inner
     {
-        return program.eval_with(
-            source_object(vars),
-            vars.get("__slot_values").cloned(),
-            true,
-        );
+        return program.eval_vars(vars, true);
     }
     match with_strict_mode(mode.strict, || eval_restricted(parsed, vars)) {
         Err(e) if mode.unrestricted && e.is_restricted_rejection() => {
-            unrestricted_fallback(parsed, || source_object(vars), vars.get("__slot_values"))
+            unrestricted_fallback(parsed, Fallback::Vars(vars))
         }
         other => other,
     }
@@ -116,10 +111,18 @@ pub fn eval_enum_parsed(
 ) -> ExprResult<Value> {
     match with_strict_mode(mode.strict, || eval_restricted(parsed, vars)) {
         Err(e) if mode.unrestricted && e.is_restricted_rejection() => {
-            unrestricted_fallback(parsed, || src.clone(), None)
+            unrestricted_fallback(parsed, Fallback::Src(src))
         }
         other => other,
     }
+}
+
+/// What the fallback exposes as `src`.
+enum Fallback<'a> {
+    /// The restricted bindings (the slot gate).
+    Vars(&'a Bindings),
+    /// The source object itself (the enum gate).
+    Src(&'a Value),
 }
 
 /// `ObjectTransformer._unrestricted_eval(expr, src)` reached as the fallback
@@ -128,13 +131,12 @@ pub fn eval_enum_parsed(
 /// A statement block runs with an undefined name swallowed like any other
 /// error. Anything that parsed as one expression leaves `target` at its
 /// pre-seeded `None`: asteval evaluates it for nothing and the result is null.
-fn unrestricted_fallback(
-    parsed: &ParsedExpr,
-    src: impl FnOnce() -> Value,
-    slot_values: Option<&Value>,
-) -> ExprResult<Value> {
+fn unrestricted_fallback(parsed: &ParsedExpr, src: Fallback<'_>) -> ExprResult<Value> {
     match &parsed.inner {
-        ParsedInner::Program(program) => program.eval_with(src(), slot_values.cloned(), false),
+        ParsedInner::Program(program) => match src {
+            Fallback::Vars(vars) => program.eval_vars(vars, false),
+            Fallback::Src(src) => program.eval_src(src, None, false),
+        },
         ParsedInner::NoneLiteral | ParsedInner::Single(_) => Ok(Value::Null),
     }
 }
