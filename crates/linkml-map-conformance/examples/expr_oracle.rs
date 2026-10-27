@@ -18,7 +18,11 @@ fn main() -> std::io::Result<()> {
         .stack_size(2 * 1024 * 1024)
         .spawn(move || -> std::io::Result<()> {
             if let [inp, out] = args.as_slice() {
-                exprfuzz::serve(BufReader::new(File::open(inp)?), BufWriter::new(File::create(out)?), limit)
+                exprfuzz::serve(
+                    BufReader::new(File::open(inp)?),
+                    BufWriter::new(File::create(out)?),
+                    limit,
+                )
             } else {
                 exprfuzz::serve(stdin().lock(), stdout(), limit)
             }

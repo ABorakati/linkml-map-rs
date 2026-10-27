@@ -220,15 +220,16 @@ fn leaf_inner(name: &str, args: &[Value]) -> Result<Value, LeafErr> {
             names.push(format!("a{i}"));
         }
         let expr = format!("{func}({})", names.join(", "));
-        return eval_expr_with_mapping(&expr, &vars).map_err(|e| (err_kind(&e).to_owned(), e.to_string()));
+        return eval_expr_with_mapping(&expr, &vars)
+            .map_err(|e| (err_kind(&e).to_owned(), e.to_string()));
     }
     Ok(match name {
         "py_eq" => Value::Bool(args[0].py_eq(&args[1])),
         "truthy" => Value::Bool(args[0].is_truthy()),
-        "try_numeric" => args[0]
-            .try_numeric()
-            .map_or(Value::Null, Value::Float),
-        "parse_float" => parse_python_float(s(args, 0).map_err(bad)?).map_or(Value::Null, Value::Float),
+        "try_numeric" => args[0].try_numeric().map_or(Value::Null, Value::Float),
+        "parse_float" => {
+            parse_python_float(s(args, 0).map_err(bad)?).map_or(Value::Null, Value::Float)
+        }
         "float_repr" => match &args[0] {
             Value::Float(f) => Value::Str(pyfmt::py_float_repr(*f)),
             o => return Err(bad(format!("expected float, got {o:?}"))),
@@ -350,13 +351,18 @@ pub fn serve<W: Write + Send + 'static>(
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                let stuck = current
-                    .lock()
-                    .ok()
-                    .and_then(|c| c.as_ref().filter(|(_, t)| t.elapsed() > limit).map(|(id, _)| id.clone()));
+                let stuck = current.lock().ok().and_then(|c| {
+                    c.as_ref()
+                        .filter(|(_, t)| t.elapsed() > limit)
+                        .map(|(id, _)| id.clone())
+                });
                 if let Some(id) = stuck {
                     if let Ok(mut out) = output.lock() {
-                        let _ = writeln!(out, "{}", json!({"id": id, "err": "hang", "message": "exceeded watchdog limit"}));
+                        let _ = writeln!(
+                            out,
+                            "{}",
+                            json!({"id": id, "err": "hang", "message": "exceeded watchdog limit"})
+                        );
                         let _ = out.flush();
                     }
                     std::process::exit(0);
@@ -380,9 +386,161 @@ pub fn serve<W: Write + Send + 'static>(
         if let Ok(mut c) = current.lock() {
             *c = None;
         }
-        let mut out = output.lock().map_err(|_| std::io::Error::other("poisoned"))?;
+        let mut out = output
+            .lock()
+            .map_err(|_| std::io::Error::other("poisoned"))?;
         writeln!(out, "{resp}")?;
         out.flush()?;
     }
     Ok(())
+}
+
+// ─── Replay against stored upstream results ──────────────────────────────────
+
+/// Strict, Python-flavoured equality for comparing a Rust result with a stored
+/// upstream one: `1`, `1.0` and `True` are different, floats compare by bit
+/// pattern (all NaNs equal), a tuple/set folds into a list (sets compare
+/// order-insensitively because the port keeps them as insertion-ordered lists).
+fn strict_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => {
+            (x.is_nan() && y.is_nan()) || x.to_bits() == y.to_bits()
+        }
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::List(x), Value::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| strict_eq(p, q))
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((kx, vx), (ky, vy))| kx == ky && strict_eq(vx, vy))
+        }
+        _ => false,
+    }
+}
+
+/// Decode a stored upstream result (`$tuple`/`$set`/`$dict` folded into the
+/// closest `Value`). `None` when it has no Rust counterpart (`$other`, big
+/// integers, non-string dict keys).
+fn upstream_value(j: &J) -> Option<(Value, bool)> {
+    // The bool says "contains a set", making list comparison order-insensitive.
+    match j {
+        J::Object(m) if m.contains_key("$tuple") => {
+            let items = m["$tuple"].as_array()?;
+            let mut any_set = false;
+            let v = items
+                .iter()
+                .map(|x| {
+                    upstream_value(x).map(|(v, s)| {
+                        any_set |= s;
+                        v
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((Value::List(v), any_set))
+        }
+        J::Object(m) if m.contains_key("$set") => {
+            let items = m["$set"].as_array()?;
+            let v = items
+                .iter()
+                .map(|x| upstream_value(x).map(|(v, _)| v))
+                .collect::<Option<Vec<_>>>()?;
+            Some((Value::List(v), true))
+        }
+        J::Object(m) if m.contains_key("$dict") => {
+            let mut out = IndexMap::new();
+            for pair in m["$dict"].as_array()? {
+                let pair = pair.as_array()?;
+                let key = match decode(&pair[0]).ok()? {
+                    Value::Str(s) => s,
+                    _ => return None,
+                };
+                out.insert(key, upstream_value(&pair[1])?.0);
+            }
+            Some((Value::Map(out), false))
+        }
+        J::Object(m) if m.contains_key("$other") => None,
+        J::Array(a) => {
+            let mut any_set = false;
+            let v = a
+                .iter()
+                .map(|x| {
+                    upstream_value(x).map(|(v, s)| {
+                        any_set |= s;
+                        v
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((Value::List(v), any_set))
+        }
+        J::Object(m) if !m.contains_key("$f") && !m.contains_key("$i") => {
+            let mut out = IndexMap::new();
+            let mut any_set = false;
+            for (k, v) in m {
+                let (v, s) = upstream_value(v)?;
+                any_set |= s;
+                out.insert(k.clone(), v);
+            }
+            Some((Value::Map(out), any_set))
+        }
+        other => decode(other).ok().map(|v| (v, false)),
+    }
+}
+
+fn sorted_debug(v: &Value) -> Value {
+    match v {
+        Value::List(items) => {
+            let mut items: Vec<Value> = items.iter().map(sorted_debug).collect();
+            items.sort_by_key(|x| format!("{x:?}"));
+            Value::List(items)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Check one corpus entry (expression or leaf) against its stored upstream
+/// result. `Ok(())` means Rust agrees: both raise, or both return strictly
+/// equal values.
+///
+/// # Errors
+/// A one-line description of the disagreement.
+pub fn check_entry(entry: &J) -> Result<(), String> {
+    let up = entry.get("upstream").ok_or("entry has no `upstream`")?;
+    let resp = handle_line(&entry.to_string());
+    let up_err = up.get("err").is_some();
+    let rs_err = resp.get("err").is_some();
+    if resp.get("err").and_then(J::as_str) == Some("unrepresentable") {
+        return Ok(());
+    }
+    match (up_err, rs_err) {
+        (true, true) => Ok(()),
+        (true, false) => Err(format!(
+            "upstream raised {} but Rust returned {}",
+            up["err"], resp["ok"]
+        )),
+        (false, true) => Err(format!(
+            "upstream returned {} but Rust raised {}: {}",
+            up["ok"], resp["err"], resp["message"]
+        )),
+        (false, false) => {
+            let Some((exp, sets)) = upstream_value(&up["ok"]) else {
+                return Ok(()); // no Rust counterpart to compare with
+            };
+            let got = decode(&resp["ok"]).map_err(|e| e.to_string())?;
+            let same = if sets {
+                strict_eq(&sorted_debug(&exp), &sorted_debug(&got))
+            } else {
+                strict_eq(&exp, &got)
+            };
+            if same {
+                Ok(())
+            } else {
+                Err(format!("upstream {} != Rust {}", up["ok"], resp["ok"]))
+            }
+        }
+    }
 }
