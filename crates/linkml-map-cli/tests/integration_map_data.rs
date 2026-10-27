@@ -96,6 +96,7 @@ fn continue_on_error_config(
     output: &std::path::Path,
 ) -> MapDataConfig {
     MapDataConfig {
+        write_options: Default::default(),
         spec: spec.to_string_lossy().into_owned(),
         source_schema: schema.to_string_lossy().into_owned(),
         target_schema: Some(schema.to_string_lossy().into_owned()),
@@ -120,6 +121,7 @@ async fn test_map_data_measurements_001_golden() {
     let out_str = out_path.to_str().unwrap().to_owned();
 
     let cfg = MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -213,6 +215,7 @@ async fn test_map_data_measurements_001_yaml_output_shape() {
     let out_path = tmp.path().join("out.yaml");
 
     let cfg = MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -284,6 +287,7 @@ async fn test_map_data_measurements_002_two_rows() {
     let out_path = tmp.path().join("out.jsonl");
 
     let cfg = MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -390,6 +394,7 @@ async fn test_map_data_stdout_with_explicit_format() {
     let fix = measurements_dir();
 
     let cfg = linkml_map_cli::MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -429,12 +434,14 @@ async fn test_map_data_stdout_with_explicit_format() {
     assert!(stats.rows_out > 0, "should produce at least one output row");
 }
 
-/// `-o -` WITHOUT `--output-format` must fail with a clear message.
+/// `-o -` WITHOUT `--output-format` defaults to YAML, as upstream's `map-data` does
+/// when no output file (and so no extension) is given.
 #[tokio::test]
-async fn test_map_data_stdout_missing_format_is_rejected() {
+async fn test_map_data_stdout_without_format_defaults_to_yaml() {
     let fix = measurements_dir();
 
     let cfg = linkml_map_cli::MapDataConfig {
+        write_options: Default::default(),
         spec: fix
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()
@@ -454,7 +461,7 @@ async fn test_map_data_stdout_missing_format_is_rejected() {
         output: "-".to_string(),
         source_class: Some("Person".to_owned()),
         input_format: "auto".to_owned(),
-        output_format: "auto".to_owned(), // "auto" maps to None → error
+        output_format: "auto".to_owned(), // "auto" maps to None → YAML on stdout
         workers: 2,
         unordered: false,
         input: fix
@@ -465,10 +472,106 @@ async fn test_map_data_stdout_missing_format_is_rejected() {
     };
 
     let result = linkml_map_cli::run_map_data_config(cfg).await;
-    assert!(result.is_err(), "stdout without format must fail");
-    let msg = format!("{}", result.unwrap_err());
-    assert!(
-        msg.contains("output format is required when writing to stdout"),
-        "error must mention --output-format, got: {msg}"
+    let stats = result.expect("stdout without a format should default to YAML");
+    assert_eq!(stats.rows_out, 1);
+}
+
+// ── Output writers: null stripping and layout (upstream output_streams.py) ──
+
+/// Measurements fixture whose row (`PersonQuantityValue-002`) makes the engine emit a
+/// null-valued slot (`height_in_cm: null`).  The row is fed as JSONL so the streaming
+/// writers (not upstream's single-object `dump_output`) are used.
+fn null_slot_config(output: &str, output_format: &str) -> (MapDataConfig, tempfile::TempDir) {
+    let fix = measurements_dir();
+    let tmp = tempdir().expect("tempdir");
+    let input = tmp.path().join("Person.jsonl");
+    std::fs::write(
+        &input,
+        "{\"id\": \"P:2\", \"height\": {\"value\": 1.72, \"unit\": \"m\"}}\n",
+    )
+    .expect("writing JSONL");
+    let mut cfg = MapDataConfig::new(
+        fix.join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap(),
+        fix.join("source/quantity_value.yaml").to_str().unwrap(),
+        input.to_str().unwrap(),
+        tmp.path().join(output).to_str().unwrap(),
+    );
+    cfg.target_schema = Some(
+        fix.join("target/quantity_value_flat.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
+    cfg.source_class = Some("Person".to_owned());
+    cfg.output_format = output_format.to_owned();
+    cfg.workers = 2;
+    (cfg, tmp)
+}
+
+/// Streaming output drops null slots in JSON, JSONL and YAML, and writes stream YAML
+/// as a `---`-terminated document.  Port of upstream `test_writers_drop_null_slots`.
+#[tokio::test]
+async fn test_stream_outputs_drop_null_slots() {
+    for (file, format, want) in [
+        ("out.jsonl", "jsonl", "{\"id\": \"P:2\"}\n"),
+        ("out.json", "json", "[\n{\n  \"id\": \"P:2\"\n}\n]\n"),
+        ("out.yaml", "yaml", "id: P:2\n---\n"),
+    ] {
+        let (cfg, tmp) = null_slot_config(file, format);
+        run_map_data_config(cfg).await.expect("map-data failed");
+        let text = std::fs::read_to_string(tmp.path().join(file)).unwrap();
+        assert_eq!(text, want, "{format}");
+    }
+}
+
+/// `-O` fans the same records out to further files, format inferred per file.
+#[tokio::test]
+async fn test_additional_outputs_fan_out() {
+    let (mut cfg, tmp) = null_slot_config("out.jsonl", "auto");
+    let extra = tmp.path().join("extra.tsv");
+    cfg.write_options.additional_outputs = vec![extra.clone()];
+    run_map_data_config(cfg).await.expect("map-data failed");
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("out.jsonl")).unwrap(),
+        "{\"id\": \"P:2\"}\n"
+    );
+    // CSV/TSV keep null slots as empty cells (only JSON/JSONL/YAML strip them).
+    assert_eq!(
+        std::fs::read_to_string(extra).unwrap(),
+        "id\theight_in_cm\nP:2\t\n"
+    );
+}
+
+/// A single YAML object goes through upstream's `dump_output`: one plain document,
+/// insertion order, no `---`.
+#[tokio::test]
+async fn test_single_object_yaml_has_no_document_marker() {
+    let fix = measurements_dir();
+    let tmp = tempdir().expect("tempdir");
+    let out = tmp.path().join("out.yaml");
+    let mut cfg = MapDataConfig::new(
+        fix.join("transform/qv-to-scalar.transform.yaml")
+            .to_str()
+            .unwrap(),
+        fix.join("source/quantity_value.yaml").to_str().unwrap(),
+        fix.join("data/PersonQuantityValue-001.yaml")
+            .to_str()
+            .unwrap(),
+        out.to_str().unwrap(),
+    );
+    cfg.target_schema = Some(
+        fix.join("target/quantity_value_flat.yaml")
+            .to_str()
+            .unwrap()
+            .to_owned(),
+    );
+    cfg.source_class = Some("Person".to_owned());
+    cfg.workers = 2;
+    run_map_data_config(cfg).await.expect("map-data failed");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "id: P:1\nheight_in_cm: 172.0\n"
     );
 }

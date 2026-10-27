@@ -218,6 +218,7 @@ async fn dispatch_map_data(args: MapDataArgs) -> Result<()> {
         workers: args.workers,
         unordered: args.unordered,
         input: args.input,
+        write_options: Default::default(),
     };
 
     run_map_data_config_with_options(cfg, args.continue_on_error).await?;

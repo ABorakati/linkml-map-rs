@@ -40,8 +40,9 @@ use linkml_map_core::{
     value::Value,
 };
 use linkml_map_io::{
-    Format, NumericColumnHints, NumericColumnKind, load_all_with_numeric_hints,
-    load_stream_with_numeric_hints, write_all, write_all_writer,
+    Format, NumericColumnHints, NumericColumnKind, WriteOptions, jsonl_line,
+    load_all_with_numeric_hints, load_stream_with_numeric_hints, validate_additional_outputs,
+    write_all_with, write_all_writer_with,
 };
 use linkml_map_schemaview::SchemaViewProvider;
 use tokio::sync::mpsc;
@@ -90,6 +91,10 @@ pub struct PipelineConfig {
     pub ordered: bool,
     /// Depth of the tokio bounded channels (reader→workers and workers→writer).
     pub channel_depth: usize,
+    /// Output-writer options: `--table-name`, `--chunk-size` and `-O` additional
+    /// outputs. `single_object` is decided by the pipeline from the input kind and
+    /// is overwritten here.
+    pub write_options: WriteOptions,
 }
 
 impl PipelineConfig {
@@ -113,6 +118,7 @@ impl PipelineConfig {
             workers: 4,
             ordered: true,
             channel_depth: 256,
+            write_options: WriteOptions::default(),
         }
     }
 }
@@ -504,7 +510,8 @@ pub async fn run_pipeline_with_options(
     // ── 1b. Directory-source mode: resolve the primary table's file and build
     // the cross-table LookupIndex from sibling files (multi-table joins). In
     // single-file mode this whole block is skipped and behavior is unchanged.
-    if Path::new(&config.source_path).is_dir() {
+    let is_directory = Path::new(&config.source_path).is_dir();
+    if is_directory {
         let dir = PathBuf::from(&config.source_path);
         let (primary_file, index) = load_directory_source(&dir, &plan)
             .await
@@ -533,17 +540,32 @@ pub async fn run_pipeline_with_options(
         .unwrap_or_else(|| Format::from_path(&config.source_path))
         .with_context(|| format!("detecting source format for {}", config.source_path))?;
 
-    let out_format = if config.out_path == "-" {
-        config.out_format.ok_or_else(|| anyhow::anyhow!(
-            "output format is required when writing to stdout; pass --output-format (jsonl|json|csv|tsv|yaml)"
-        ))?
-    } else {
-        config
-            .out_format
-            .map(Ok)
-            .unwrap_or_else(|| Format::from_path(&config.out_path))
-            .with_context(|| format!("detecting output format for {}", config.out_path))?
+    // PARITY: cli.py::map_data — with no `--output-format`, the format comes from the
+    // output extension and falls back to YAML for an unknown extension or for stdout
+    // (`EXTENSION_FORMAT_MAP.get(ext, OutputFormat.YAML)`).
+    let out_format = config.out_format.unwrap_or_else(|| {
+        if config.out_path == "-" {
+            Format::Yaml
+        } else {
+            Format::from_path(&config.out_path).unwrap_or(Format::Yaml)
+        }
+    });
+
+    // PARITY: cli.py::map_data — only tabular (.tsv/.csv) or directory input streams;
+    // any other input is "single object" input and is written by `dump_output`
+    // (`_map_data_single`), which also ignores `-O`.  JSONL input is a Rust extension
+    // and keeps the streaming writers.
+    let single_object = !is_directory && matches!(src_format, Format::Yaml | Format::Json);
+    let write_options = WriteOptions {
+        single_object,
+        ..config.write_options.clone()
     };
+    if !single_object {
+        let primary = (config.out_path != "-").then(|| Path::new(&config.out_path));
+        validate_additional_outputs(primary, &write_options)?;
+    }
+    // The JSONL fast paths bypass the stream writers, so they cannot fan out to `-O`.
+    let fast_paths_ok = single_object || write_options.additional_outputs.is_empty();
 
     let rows_in;
     let rows_out;
@@ -607,7 +629,7 @@ pub async fn run_pipeline_with_options(
         // tiny rows. `collect()` preserves input order, so output is ordered.
         let pool = build_rayon_pool(config.workers)?;
 
-        if matches!(out_format, Format::Jsonl) {
+        if matches!(out_format, Format::Jsonl) && fast_paths_ok {
             // JSONL: transform AND serialise in parallel into one buffer, then a
             // single bulk write (serial per-row serialise was the writer wall).
             use rayon::prelude::*;
@@ -618,9 +640,7 @@ pub async fn run_pipeline_with_options(
                     let outs: Vec<Option<String>> = all_rows
                         .par_iter()
                         .map(|row| match plan2.transform_with_index(row.clone(), &idx2) {
-                            Ok(v) => linkml_map_io::value_to_json(&v)
-                                .ok()
-                                .and_then(|j| serde_json::to_string(&j).ok()),
+                            Ok(v) => Some(jsonl_line(&v)),
                             Err(e) => {
                                 eprintln!("FK transform error: {e:#}");
                                 None
@@ -677,11 +697,11 @@ pub async fn run_pipeline_with_options(
 
             rows_out = values.len();
             let stream = futures::stream::iter(values.into_iter().map(Ok::<_, anyhow::Error>));
-            write_stream_to_output(&config.out_path, out_format, stream)
+            write_stream_to_output(&config.out_path, out_format, &write_options, stream)
                 .await
                 .with_context(|| format!("writing FK output to {}", config.out_path))?;
         }
-    } else if src_format == Format::Jsonl && out_format == Format::Jsonl {
+    } else if src_format == Format::Jsonl && out_format == Format::Jsonl && fast_paths_ok {
         // ── Fully-parallel JSONL fast path ────────────────────────────────────
         //
         // The generic streaming path parses every record in the serial reader
@@ -833,7 +853,7 @@ pub async fn run_pipeline_with_options(
             rx.recv().await.map(|result| (result, rx))
         })
         .boxed();
-        write_stream_to_output(&config.out_path, out_format, out_stream)
+        write_stream_to_output(&config.out_path, out_format, &write_options, out_stream)
             .await
             .with_context(|| format!("writing output to {}", config.out_path))?;
 
@@ -922,12 +942,17 @@ async fn write_bytes_to_output(out_path: &str, buf: &[u8], label: &str) -> Resul
 ///
 /// When `out_path` is `"-"` the stream is written to stdout via
 /// [`write_all_writer`]; BrokenPipe is treated as normal termination.
-async fn write_stream_to_output<S>(out_path: &str, out_format: Format, stream: S) -> Result<()>
+async fn write_stream_to_output<S>(
+    out_path: &str,
+    out_format: Format,
+    options: &WriteOptions,
+    stream: S,
+) -> Result<()>
 where
     S: futures::Stream<Item = Result<Value>> + Unpin,
 {
     if out_path == "-" {
-        match write_all_writer(tokio::io::stdout(), out_format, stream).await {
+        match write_all_writer_with(tokio::io::stdout(), out_format, options, stream).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 if e.downcast_ref::<std::io::Error>()
@@ -940,7 +965,7 @@ where
             }
         }
     } else {
-        write_all(out_path, out_format, stream).await
+        write_all_with(out_path, out_format, options, stream).await
     }
 }
 
@@ -1031,13 +1056,7 @@ fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> 
             return None;
         }
     };
-    match linkml_map_io::value_to_json(&out).and_then(|j| Ok(serde_json::to_string(&j)?)) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("serialise error: {e:#}");
-            None
-        }
-    }
+    Some(jsonl_line(&out))
 }
 
 // ── Directory-source (multi-table) mode ──────────────────────────────────────
@@ -1241,6 +1260,7 @@ mod tests {
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
         };
 
         let stats = run_pipeline(cfg).await.expect("pipeline failed");
@@ -1474,6 +1494,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
         };
 
         let stats = run_pipeline(cfg)
@@ -1559,6 +1580,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
         };
 
         // No directory ⇒ no lookup index ⇒ the unbound join reference surfaces as
@@ -1627,6 +1649,7 @@ class_derivations:
             workers: 4,
             ordered: true,
             channel_depth: 256,
+            write_options: Default::default(),
         };
 
         let stats = run_pipeline(cfg).await.expect("pipeline failed");
@@ -1725,6 +1748,7 @@ class_derivations:
             workers: 2,
             ordered: true,
             channel_depth: 64,
+            write_options: Default::default(),
         };
 
         // Verify the plan detects FK need.
