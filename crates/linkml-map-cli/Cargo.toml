@@ -20,12 +20,12 @@ linkml-map-schemaview = { path = "../linkml-map-schemaview" }
 clap = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
-serde_yaml_ng = { workspace = true }
+serde_json = { workspace = true }
 log = { workspace = true }
 # Only for reading Parquet/DuckDB output back in the `columnar` tests.
 linkml-map-duckdb = { path = "../linkml-map-duckdb", optional = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
 tempfile = { workspace = true }
 tokio    = { workspace = true }

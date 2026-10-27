@@ -1,0 +1,46 @@
+id: P:0001
+label: Zoë Müller-Łukasiewicz 日本語 😀
+bio: 'A long free-text biography that certainly needs to be folded by the YAML emitter
+  because it runs well past the eighty column mark, with a colon: and a #hash and
+  ''quotes'' and "double quotes".'
+status: 'yes'
+tags:
+- 'null'
+- '~'
+- 1e3
+- '0x1F'
+- '2024-01-01'
+- '.5'
+- ''
+- ' lead'
+- 'trail '
+- 'a: b'
+- 'x #y'
+- '- dash'
+- 'multi
+
+  line'
+- "tab\there"
+codes_yaml: "[C1, 'D: 9', 'yes', \"\\xE9\", \"\\U0001F600\", it's, a long code value\
+  \ that goes past the\n    line width limit of eighty columns in flow style output]"
+age: 42
+weight: 1.0e+20
+active: true
+amount: '52.30'
+address:
+  city: St. John's
+  lines:
+  - 1 High Street
+  - Flat 2
+  - 'no'
+  - '007'
+notes:
+- title: 'Z: first'
+  body: 'Line one
+
+    Line two
+
+
+    Line four'
+- title: second
+  body: '  indented body  '
