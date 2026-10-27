@@ -151,6 +151,15 @@ Divergences from upstream, all deliberate:
 Needs `linkml-runtime` (for `SchemaView`) and `pyyaml`. `linkml_map.__all__` is
 upstream's: `["ObjectTransformer", "load_specification"]`.
 
+## Identifiers (`mint_ids`)
+
+With a `target_schema`, a class derivation whose target class has an
+`identifier: true` slot must derive that slot or set `mint_ids: true` (on the
+specification, in `class_defaults`, or on the class derivation); otherwise the
+transform raises `ValueError` naming the class derivation. Minted ids are UUID v5
+content hashes of the emitted record. See the top-level README, section
+*Identifiers*.
+
 ## Build
 
 ```bash

@@ -217,6 +217,50 @@ impl Decimal {
         self.to_sci_string().parse().unwrap_or(f64::NAN)
     }
 
+    /// Python `Decimal.normalize()` under the default context: the coefficient
+    /// is rounded to 28 significant digits (`ROUND_HALF_EVEN`), then trailing
+    /// zeros are folded into the exponent. A zero normalises to `0` (with its
+    /// sign).
+    pub fn normalize(&self) -> Self {
+        const PRECISION: usize = 28;
+        if self.coeff.len() <= PRECISION {
+            return self.trimmed();
+        }
+        let (kept, dropped) = self.coeff.split_at(PRECISION);
+        let first = dropped.as_bytes()[0];
+        let rest_nonzero = dropped[1..].bytes().any(|b| b != b'0');
+        let last_odd = (kept.as_bytes()[PRECISION - 1] - b'0') % 2 == 1;
+        let round_up = match first.cmp(&b'5') {
+            Ordering::Greater => true,
+            Ordering::Less => false,
+            Ordering::Equal => rest_nonzero || last_odd,
+        };
+        let mut digits: Vec<u8> = kept.bytes().collect();
+        if round_up {
+            let mut i = digits.len();
+            loop {
+                if i == 0 {
+                    // Carried out of the top digit: 99..9 + 1 = 100..0.
+                    digits.insert(0, b'1');
+                    break;
+                }
+                i -= 1;
+                if digits[i] == b'9' {
+                    digits[i] = b'0';
+                } else {
+                    digits[i] += 1;
+                    break;
+                }
+            }
+        }
+        Self {
+            negative: self.negative,
+            coeff: String::from_utf8(digits).unwrap_or_default(),
+            exp: self.exp + dropped.len() as i32,
+        }
+        .trimmed()
+    }
+
     /// This value with trailing coefficient zeros folded into the exponent.
     fn trimmed(&self) -> Self {
         if self.is_zero() {
@@ -456,6 +500,45 @@ mod tests {
         assert_eq!(d("2").cmp_f64(2.0), Some(Ordering::Equal));
         assert_eq!(d("1").cmp_f64(f64::NAN), None);
         assert_eq!(d("1").cmp_f64(f64::INFINITY), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn normalize_rounds_to_28_digits_half_even() {
+        let n = |t: &str| d(t).normalize().to_fixed_string();
+        assert_eq!(n("52.30"), "52.3");
+        assert_eq!(n("5.00"), "5");
+        assert_eq!(n("1E+3"), "1000");
+        assert_eq!(n("1000"), "1000");
+        // 29 significant digits: 28 kept, the 29th decides.
+        assert_eq!(
+            n("1.2345678901234567890123456789"),
+            "1.234567890123456789012345679"
+        );
+        assert_eq!(
+            n("1.2345678901234567890123456781"),
+            "1.234567890123456789012345678"
+        );
+        // Exact tie rounds to the even digit.
+        assert_eq!(
+            n("1.2345678901234567890123456785"),
+            "1.234567890123456789012345678"
+        );
+        assert_eq!(
+            n("1.2345678901234567890123456775"),
+            "1.234567890123456789012345678"
+        );
+        // A tie broken by further non-zero digits rounds up.
+        assert_eq!(
+            n("1.23456789012345678901234567851"),
+            "1.234567890123456789012345679"
+        );
+        // Carry out of the top digit.
+        assert_eq!(n("9.9999999999999999999999999999"), "10");
+        assert_eq!(n("-0.10"), "-0.1");
+        assert_eq!(
+            n("12345678901234567890123456789"),
+            "12345678901234567890123456790"
+        );
     }
 
     #[test]

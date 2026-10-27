@@ -34,7 +34,9 @@
 //!   derivation with no enclosing `class_derivation` to host the join (a
 //!   top-level enum / permissible-value / slot derivation).
 
+pub mod constant_blocks;
 pub mod expression_locations;
+pub mod inheritance;
 pub mod join_utils;
 
 use std::collections::BTreeSet;
@@ -69,11 +71,23 @@ pub fn synthesize_implicit_joins(
     sv: &dyn SchemaProvider,
 ) -> Result<()> {
     let table_names: BTreeSet<String> = sv.all_class_names().into_iter().collect();
+    // PARITY: `Transformer._synthesize_join` resolves `is_a`/`mixins` ancestors
+    // through `self._class_derivation_ancestors`, i.e. against `self.specification`
+    // (the original, un-synthesised spec), not the copy being mutated. Snapshot
+    // the blocks before the mutating loop.
+    let originals = spec.class_derivations.clone().unwrap_or_default();
     if let Some(cds) = spec.class_derivations.as_mut() {
         for cd in cds.iter_mut() {
             let parent_source = cd.populated_from.clone().unwrap_or_else(|| cd.name.clone());
             let available: BTreeSet<String> = std::iter::once(parent_source.clone()).collect();
-            walk_and_synthesize_joins(cd, &parent_source, sv, &table_names, &available)?;
+            walk_and_synthesize_joins(
+                cd,
+                &parent_source,
+                sv,
+                &table_names,
+                &available,
+                &originals,
+            )?;
         }
     }
     // Cross-table refs in derivations with no enclosing class_derivation
@@ -107,6 +121,7 @@ fn walk_and_synthesize_joins(
     sv: &dyn SchemaProvider,
     table_names: &BTreeSet<String>,
     available: &BTreeSet<String>,
+    originals: &[ClassDerivation],
 ) -> Result<()> {
     // ── Phase 1: collect the join/reject actions during an immutable walk. ────
     let known = known_roots(class_deriv, parent_source, sv, table_names, available);
@@ -152,7 +167,7 @@ fn walk_and_synthesize_joins(
     for action in actions {
         match action {
             JoinAction::Synthesize { table, required } => {
-                synthesize_join(class_deriv, parent_source, &table, sv, required)?;
+                synthesize_join(class_deriv, parent_source, &table, sv, required, originals)?;
             }
             JoinAction::RejectRoots { roots } => {
                 reject_unknown_qualified_roots(class_deriv, parent_source, &roots, &known)?;
@@ -177,6 +192,7 @@ fn walk_and_synthesize_joins(
                         sv,
                         table_names,
                         &child_available,
+                        originals,
                     )?;
                 }
             }
@@ -277,12 +293,18 @@ fn synthesize_join(
     table: &str,
     sv: &dyn SchemaProvider,
     required: bool,
+    originals: &[ClassDerivation],
 ) -> Result<()> {
     if class_deriv
         .joins
         .as_ref()
         .is_some_and(|j| j.contains_key(table))
     {
+        return Ok(());
+    }
+    // A join an is_a/mixins ancestor declares is merged in at transform time
+    // (upstream cd395ff).
+    if inherited_join_declared(class_deriv, table, originals)? {
         return Ok(());
     }
     let Some(join_key) = infer_join_key(sv, parent_source, table) else {
@@ -305,6 +327,30 @@ fn synthesize_join(
         },
     );
     Ok(())
+}
+
+/// Whether an `is_a`/`mixins` ancestor of `class_deriv` declares a join on
+/// `table`. Mirrors the ancestor check in `Transformer._synthesize_join`:
+/// `any(a.joins and table in a.joins for a in self._class_derivation_ancestors(cd).values())`.
+///
+/// # Errors
+/// [`Error::JoinSynthesis`] for an unknown parent, where upstream raises
+/// `KeyError("No class derivation named ...")`.
+fn inherited_join_declared(
+    class_deriv: &ClassDerivation,
+    table: &str,
+    originals: &[ClassDerivation],
+) -> Result<bool> {
+    let ancestors =
+        inheritance::class_derivation_ancestors(class_deriv, originals).map_err(|e| match e {
+            Error::NoClassDerivation { source_type, .. } => {
+                Error::JoinSynthesis(format!("No class derivation named '{source_type}'"))
+            }
+            other => other,
+        })?;
+    Ok(ancestors
+        .values()
+        .any(|a| a.joins.as_ref().is_some_and(|j| j.contains_key(table))))
 }
 
 /// Fail fast on a cross-table reference with no class_derivation to host its

@@ -25,7 +25,7 @@
 //! cost that previously dominated CPU and capped thread scaling.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -35,7 +35,10 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
     datamodel::{ClassDerivation, TransformationSpecification},
-    engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer, TargetCoercions},
+    engine::{
+        CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer, TargetCoercions,
+    },
+    normalize::constant_blocks::{Block, classify_blocks},
     schema::{RangeKind, SchemaProvider},
     value::Value,
 };
@@ -157,6 +160,47 @@ pub struct CompiledPlan {
     /// single-file mode — the historical behavior. Shared (`Arc`) into every
     /// per-row engine so lock-free join resolution runs across worker threads.
     lookup_index: Option<Arc<LookupIndex>>,
+    /// Every class derivation as upstream `transform_spec` sees it: `is_a` /
+    /// `mixins` ancestors merged, classified as a constants-only block or not.
+    /// Built once at [`CompiledPlan::load`]; the engine itself never sees it.
+    blocks: Vec<Block>,
+    /// The explicit source class (`--source-class`), if one was given. Upstream
+    /// passes it as `source_type` to `transform_spec`, which uses it for
+    /// constant blocks (`source_type or class_deriv.name`).
+    source_class_hint: Option<String>,
+    /// Content-id synthesiser for identifier slots the spec doesn't derive
+    /// (upstream #342), built once from the target schema and borrowed by every
+    /// per-row engine. `None` without a target schema.
+    content_ids: Option<ContentIds>,
+    /// Emit records whose identifier is neither derived nor minted instead of
+    /// failing (`--continue-on-error`; see [`CompiledPlan::missing_identifiers`]).
+    emit_without_identifiers: bool,
+}
+
+/// The objects built by the constants-only blocks of a spec, split by where they
+/// sit relative to the streamed (primary) block in spec order.
+///
+/// See [`CompiledPlan::constant_block_outputs`].
+#[derive(Debug, Default)]
+struct ConstantOutputs {
+    /// Constant blocks declared before the primary block: emitted first.
+    prologue: Vec<Value>,
+    /// Constant blocks declared after the primary block: emitted last.
+    epilogue: Vec<Value>,
+    /// Blocks whose transform failed under `continue_on_error`.
+    failed: usize,
+}
+
+impl ConstantOutputs {
+    /// Objects emitted (constant blocks that did not fail).
+    fn emitted(&self) -> usize {
+        self.prologue.len() + self.epilogue.len()
+    }
+
+    /// Constant blocks attempted, failed or not.
+    fn attempted(&self) -> usize {
+        self.emitted() + self.failed
+    }
 }
 
 impl CompiledPlan {
@@ -256,6 +300,12 @@ impl CompiledPlan {
             })
             .transpose()?;
 
+        // Content-id synthesis needs the target schema, so it is built once here
+        // and only when a target is present.
+        let content_ids = target_provider
+            .as_deref()
+            .map(|target| ContentIds::for_spec(target, &spec));
+
         // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
         // surface here at plan-build time rather than per row.
         let compiled_exprs = CompiledExprs::build(&spec)
@@ -268,14 +318,33 @@ impl CompiledPlan {
             .as_deref()
             .map(|target| TargetCoercions::build(&spec, target));
 
-        // Resolve the source class once
-        let source_class = source_class_hint.map(str::to_owned).or_else(|| {
-            // Try first class_derivation's populated_from, then its name
-            spec.class_derivations.as_ref().and_then(|cds| {
-                cds.first()
-                    .map(|cd| cd.populated_from.clone().unwrap_or_else(|| cd.name.clone()))
+        // Classify every block once, as upstream `transform_spec` does before it
+        // streams anything: merge `is_a`/`mixins`, then tell constants-only
+        // blocks (emitted once, reading no input) from row blocks.
+        let source_classes: BTreeSet<String> =
+            source_provider.all_class_names().into_iter().collect();
+        let blocks = classify_blocks(&spec, &source_classes)
+            .with_context(|| format!("resolving is_a/mixins in spec {}", spec_path.display()))?;
+
+        // Resolve the source class once: the explicit hint, else the first row
+        // block (a block that reads a table, and is not merely a parent template
+        // for another block). Upstream's `transform_spec` walks every block and
+        // skips those with no data; Rust streams one block, so this picks it.
+        let source_class = source_class_hint
+            .map(str::to_owned)
+            .or_else(|| {
+                row_block_candidates(&blocks)
+                    .next()
+                    .map(|block| block.table().to_owned())
             })
-        });
+            .or_else(|| {
+                // No row block (a constants-only spec): keep the historical
+                // default of the first class_derivation's populated_from / name.
+                spec.class_derivations.as_ref().and_then(|cds| {
+                    cds.first()
+                        .map(|cd| cd.populated_from.clone().unwrap_or_else(|| cd.name.clone()))
+                })
+            });
 
         Ok(Self {
             spec,
@@ -285,7 +354,121 @@ impl CompiledPlan {
             target_coercions,
             source_class,
             lookup_index: None,
+            blocks,
+            source_class_hint: source_class_hint.map(str::to_owned),
+            content_ids,
+            emit_without_identifiers: false,
         })
+    }
+
+    /// Whether the spec has any block that reads a table. A spec made only of
+    /// constants-only blocks (and templates) needs no input data at all.
+    ///
+    /// Mirrors upstream `tables = {cd.populated_from or cd.name for cd, constant
+    /// in blocks if not constant}` being non-empty.
+    fn has_row_blocks(&self) -> bool {
+        self.blocks.iter().any(|b| !b.constant)
+    }
+
+    /// The tables every row block reads, sorted (upstream's `tables`).
+    fn row_tables(&self) -> BTreeSet<String> {
+        self.blocks
+            .iter()
+            .filter(|b| !b.constant)
+            .map(|b| b.table().to_owned())
+            .collect()
+    }
+
+    /// Index of the streamed (primary) block in `blocks`: the first row block
+    /// reading the resolved source class.
+    fn primary_block_index(&self) -> Option<usize> {
+        let source_class = self.source_class.as_deref()?;
+        self.blocks
+            .iter()
+            .position(|b| !b.constant && b.table() == source_class)
+    }
+
+    /// Run every constants-only block once, each on one empty row.
+    ///
+    /// Mirrors upstream `transform_spec`:
+    /// `yield from _map_rows(transformer, [{}], source_type or cd.name, cd, on_error)`.
+    /// The engine stays a pure per-object function; "exactly once" is a property
+    /// of this driver-side call, made before any worker is spawned, so it holds
+    /// whatever the worker count, chunking or ordering.
+    ///
+    /// Upstream emits blocks in spec order. Rust streams a single primary block,
+    /// so a constant block declared before it goes to the prologue and one
+    /// declared after it to the epilogue (all of them to the prologue when there
+    /// is no primary block).
+    ///
+    /// With `continue_on_error` a failing block is reported on stderr and
+    /// counted in [`ConstantOutputs::failed`]; otherwise it fails the run before
+    /// any row streams.
+    fn constant_block_outputs(&self, continue_on_error: bool) -> Result<ConstantOutputs> {
+        let mut out = ConstantOutputs::default();
+        if !self.blocks.iter().any(|b| b.constant) {
+            return Ok(out);
+        }
+        let engine = self.configure(ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        ));
+        let primary = self.primary_block_index();
+        let empty_row = Value::Map(indexmap::IndexMap::new());
+        for (i, block) in self.blocks.iter().enumerate().filter(|(_, b)| b.constant) {
+            let cd = &block.class_derivation;
+            let source_type = self.source_class_hint.as_deref().unwrap_or(&cd.name);
+            match engine.map_object_with_derivation(&empty_row, Some(source_type), cd) {
+                Ok(v) if primary.is_some_and(|p| i > p) => out.epilogue.push(v),
+                Ok(v) => out.prologue.push(v),
+                Err(e) if continue_on_error => {
+                    // PARITY: transform_spec routes the error to `on_error` with
+                    // `row_index = 0`.
+                    eprintln!("transform error at row 0: {e:#}");
+                    out.failed += 1;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "transform error in constant block '{}': {e}",
+                        cd.name
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply the plan-wide engine settings (shared content-id synthesiser,
+    /// identifier policy) to a per-row engine.
+    fn configure<'a>(&'a self, mut engine: ObjectTransformer<'a>) -> ObjectTransformer<'a> {
+        if let Some(coercions) = &self.target_coercions {
+            engine = engine.with_target_coercions(coercions);
+        }
+        if let Some(ids) = &self.content_ids {
+            engine = engine.with_content_ids(ids);
+        }
+        engine.with_emit_without_identifiers(self.emit_without_identifiers)
+    }
+
+    /// Describe every class derivation that would emit records without their
+    /// identifier (neither derived nor minted). Empty without a target schema.
+    /// Mirrors upstream `ObjectTransformer.missing_identifiers`.
+    pub fn missing_identifiers(&self) -> Result<Vec<String>> {
+        self.configure(ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        ))
+        .missing_identifiers()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Let per-row engines emit records without their identifier instead of
+    /// failing; set after the caller has reported
+    /// [`CompiledPlan::missing_identifiers`] (`--continue-on-error`).
+    pub fn set_emit_without_identifiers(&mut self, emit: bool) {
+        self.emit_without_identifiers = emit;
     }
 
     /// Attach a pre-built cross-table [`LookupIndex`] (directory mode).
@@ -407,26 +590,18 @@ impl CompiledPlan {
         })
     }
 
-    /// A per-row engine borrowing the plan's spec, schemas and shared
-    /// target-schema lookups.
-    fn base_engine(&self) -> ObjectTransformer<'_> {
-        let engine = ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        );
-        match &self.target_coercions {
-            Some(coercions) => engine.with_target_coercions(coercions),
-            None => engine,
-        }
-    }
-
     /// Transform one row using a pre-built [`ObjectIndex`].
     ///
     /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
     /// a reference to each parallel worker — zero per-row index rebuild.
     pub fn transform_with_index(&self, row: Value, index: &ObjectIndex) -> Result<Value> {
-        let mut engine = self.base_engine().with_compiled_exprs(&self.compiled_exprs);
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        )
+        .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.configure(engine);
         if let Some(li) = &self.lookup_index {
             engine = engine.with_lookup_index(Arc::clone(li));
         }
@@ -441,7 +616,13 @@ impl CompiledPlan {
     /// reader/writer I/O path.
     pub fn transform(&self, row: Value) -> Result<Value> {
         // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
-        let mut engine = self.base_engine().with_compiled_exprs(&self.compiled_exprs);
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        )
+        .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.configure(engine);
         if let Some(li) = &self.lookup_index {
             engine = engine.with_lookup_index(Arc::clone(li));
         }
@@ -455,11 +636,53 @@ impl CompiledPlan {
     /// (string-parse) baseline against [`CompiledPlan::transform`] in-process.
     /// Still borrows the spec, so the only difference is expr parsing.
     pub fn transform_uncached(&self, row: Value) -> Result<Value> {
-        let engine = self.base_engine();
-        engine
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        );
+        self.configure(engine)
             .map_object(&row, self.source_class.as_deref())
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
     }
+}
+
+/// Whether `path` names a tabular file (`.tsv` / `.csv`), the condition under
+/// which upstream `map_data` takes the streaming `transform_spec` route.
+fn is_tabular_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("tsv") || e.eq_ignore_ascii_case("csv"))
+}
+
+/// Serialise values as JSONL (one object per line, trailing newline), for the
+/// raw-buffer output paths.
+fn jsonl_lines(values: &[Value]) -> String {
+    let mut buf = String::new();
+    for v in values {
+        match linkml_map_io::value_to_json(v).and_then(|j| Ok(serde_json::to_string(&j)?)) {
+            Ok(line) => {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+            Err(e) => eprintln!("serialise error: {e:#}"),
+        }
+    }
+    buf
+}
+
+/// Row blocks eligible to be the streamed block, in spec order: blocks that read
+/// a table and that no other block inherits from, then the inherited-from ones.
+///
+/// Upstream's driver streams every block that has data and skips the rest, so a
+/// parent template without a table is harmless there; picking the first block
+/// blindly would stream such a template (or a constants-only block) as the table.
+fn row_block_candidates(blocks: &[Block]) -> impl Iterator<Item = &Block> {
+    let rows = || blocks.iter().filter(|b| !b.constant);
+    rows()
+        .filter(|b| !b.is_parent)
+        .chain(rows().filter(|b| b.is_parent))
 }
 
 // ── Core pipeline ─────────────────────────────────────────────────────────────
@@ -477,6 +700,25 @@ pub async fn run_pipeline(config: PipelineConfig) -> Result<PipelineStats> {
 
 /// Run the pipeline, optionally keeping processing after row-level transform
 /// failures.
+///
+/// # Constants-only blocks (upstream `1323cc8`)
+///
+/// For tabular (`.tsv`/`.csv`) or directory input, a class derivation built only
+/// from constants is emitted exactly once, on this driver before the row stream
+/// (or after it, when declared after the streamed block), and reads no input.
+/// A spec with no row block at all runs without opening any source file.
+///
+/// PARITY: upstream `engine.py::transform_spec` iterates **every** class
+/// derivation, streaming each block that has data. This pipeline streams ONE
+/// primary block (`--source-class`, else the first row block with data, parents
+/// of `is_a`/`mixins` last) plus the constants-only blocks. Remaining divergence:
+/// a spec with two or more row blocks emits only the primary block's rows, where
+/// upstream emits every block's, in spec order. Constant blocks keep their spec
+/// position relative to the primary block only (before = prologue, after =
+/// epilogue); relative to the other row blocks' output they cannot interleave.
+///
+/// Also unlike upstream, a single-file input takes the first row block rather
+/// than the block whose table equals the file stem (`DataLoader.identifier`).
 ///
 /// When `continue_on_error` is enabled, every failed row is reported to stderr
 /// as soon as the collector observes it.  A clean run that saw any such errors
@@ -511,12 +753,89 @@ pub async fn run_pipeline_with_options(
     )
     .context("compiling plan")?;
 
-    // ── 1b. Directory-source mode: resolve the primary table's file and build
+    // ── 1a. Identifier slots must be derived or minted (upstream
+    // `cli._require_identifiers`), checked before any output is opened. Without
+    // `--continue-on-error` a problem refuses the run; with it each problem is
+    // reported once, records are emitted without ids, and the run ends non-zero.
+    let identifier_problems = plan.missing_identifiers()?;
+    if !identifier_problems.is_empty() && !continue_on_error {
+        anyhow::bail!("{}", identifier_problems.join("\n"));
+    }
+    for problem in &identifier_problems {
+        eprintln!("  - {problem}");
+    }
+    plan.set_emit_without_identifiers(!identifier_problems.is_empty());
+    let identifier_errors = identifier_problems.len();
+
+    // ── 1b. Constants-only blocks (upstream `1323cc8`).
+    //
+    // Upstream applies the "emit once, read no input" rule only in
+    // `transform_spec`, which `map_data` uses for tabular (`.tsv`/`.csv`) input
+    // or a directory; single-object input goes through `_map_data_single`.
+    // Gate on the same condition, judged on the path as given (a directory is
+    // rewritten to its primary file below).
+    let source_is_dir = Path::new(&config.source_path).is_dir();
+    let streaming_input = source_is_dir || is_tabular_path(&config.source_path);
+    let constants = if streaming_input {
+        plan.constant_block_outputs(continue_on_error)?
+    } else {
+        ConstantOutputs::default()
+    };
+    let (constants_ok, constants_failed, constants_attempted) =
+        (constants.emitted(), constants.failed, constants.attempted());
+    // A spec made only of constants-only blocks reads nothing: no source file is
+    // required, opened or format-detected.
+    let reads_no_input = streaming_input && !plan.has_row_blocks();
+
+    let out_format = if config.out_path == "-" {
+        config.out_format.ok_or_else(|| anyhow::anyhow!(
+            "output format is required when writing to stdout; pass --output-format (jsonl|json|csv|tsv|yaml)"
+        ))?
+    } else {
+        config
+            .out_format
+            .map(Ok)
+            .unwrap_or_else(|| Format::from_path(&config.out_path))
+            .with_context(|| format!("detecting output format for {}", config.out_path))?
+    };
+
+    if reads_no_input {
+        let n_out = constants_ok;
+        let stream = futures::stream::iter(
+            constants
+                .prologue
+                .into_iter()
+                .chain(constants.epilogue)
+                .map(Ok::<_, anyhow::Error>),
+        );
+        write_stream_to_output(&config.out_path, out_format, stream)
+            .await
+            .with_context(|| format!("writing output to {}", config.out_path))?;
+        if constants_failed > 0 {
+            anyhow::bail!(
+                "{constants_failed} of {constants_attempted} rows failed to transform \
+                 (see stderr for details)"
+            );
+        }
+        let elapsed = start.elapsed();
+        return Ok(PipelineStats {
+            rows_in: 0,
+            rows_out: n_out,
+            elapsed,
+            rows_per_sec: if elapsed.as_secs_f64() > 0.0 {
+                n_out as f64 / elapsed.as_secs_f64()
+            } else {
+                f64::INFINITY
+            },
+        });
+    }
+
+    // ── 1c. Directory-source mode: resolve the primary table's file and build
     // the cross-table LookupIndex from sibling files (multi-table joins). In
     // single-file mode this whole block is skipped and behavior is unchanged.
-    if Path::new(&config.source_path).is_dir() {
+    if source_is_dir {
         let dir = PathBuf::from(&config.source_path);
-        let (primary_file, index) = load_directory_source(&dir, &plan)
+        let (primary_file, index) = load_directory_source(&dir, &mut plan)
             .await
             .with_context(|| format!("loading directory source {}", dir.display()))?;
         if let Some(index) = index {
@@ -542,18 +861,6 @@ pub async fn run_pipeline_with_options(
         .map(Ok)
         .unwrap_or_else(|| Format::from_path(&config.source_path))
         .with_context(|| format!("detecting source format for {}", config.source_path))?;
-
-    let out_format = if config.out_path == "-" {
-        config.out_format.ok_or_else(|| anyhow::anyhow!(
-            "output format is required when writing to stdout; pass --output-format (jsonl|json|csv|tsv|yaml)"
-        ))?
-    } else {
-        config
-            .out_format
-            .map(Ok)
-            .unwrap_or_else(|| Format::from_path(&config.out_path))
-            .with_context(|| format!("detecting output format for {}", config.out_path))?
-    };
 
     let rows_in;
     let rows_out;
@@ -623,6 +930,10 @@ pub async fn run_pipeline_with_options(
             use rayon::prelude::*;
             let plan2 = Arc::clone(&plan);
             let idx2 = Arc::clone(&index);
+            let (pro, epi) = (
+                jsonl_lines(&constants.prologue),
+                jsonl_lines(&constants.epilogue),
+            );
             let (buf, n): (String, usize) = tokio::task::spawn_blocking(move || {
                 let work = || -> (String, usize) {
                     let outs: Vec<Option<String>> = all_rows
@@ -637,13 +948,15 @@ pub async fn run_pipeline_with_options(
                             }
                         })
                         .collect();
-                    let mut buf = String::with_capacity(outs.len() * 64);
+                    let mut buf = String::with_capacity(pro.len() + epi.len() + outs.len() * 64);
+                    buf.push_str(&pro);
                     let mut n = 0usize;
                     for o in outs.into_iter().flatten() {
                         buf.push_str(&o);
                         buf.push('\n');
                         n += 1;
                     }
+                    buf.push_str(&epi);
                     (buf, n)
                 };
                 match pool.as_ref() {
@@ -686,7 +999,14 @@ pub async fn run_pipeline_with_options(
             .context("FK transform task")?;
 
             rows_out = values.len();
-            let stream = futures::stream::iter(values.into_iter().map(Ok::<_, anyhow::Error>));
+            let stream = futures::stream::iter(
+                constants
+                    .prologue
+                    .into_iter()
+                    .chain(values)
+                    .chain(constants.epilogue)
+                    .map(Ok::<_, anyhow::Error>),
+            );
             write_stream_to_output(&config.out_path, out_format, stream)
                 .await
                 .with_context(|| format!("writing FK output to {}", config.out_path))?;
@@ -700,7 +1020,13 @@ pub async fn run_pipeline_with_options(
         // reader emits *raw lines* (cheap byte scan), workers parse+transform+
         // serialise in parallel, and the writer does raw byte appends. This moves
         // JSON parse + serialise off the serial path onto the worker pool.
-        let (ri, ro) = transform_jsonl_parallel(&config, Arc::clone(&plan)).await?;
+        let (ri, ro) = transform_jsonl_parallel(
+            &config,
+            Arc::clone(&plan),
+            jsonl_lines(&constants.prologue),
+            jsonl_lines(&constants.epilogue),
+        )
+        .await?;
         rows_in = ri;
         rows_out = ro;
     } else {
@@ -843,6 +1169,15 @@ pub async fn run_pipeline_with_options(
             rx.recv().await.map(|result| (result, rx))
         })
         .boxed();
+        // Constant blocks were built on this thread before any worker started;
+        // they bracket the row stream so they appear exactly once whatever the
+        // worker count or `ordered` setting.
+        let out_stream = futures::stream::iter(constants.prologue.into_iter().map(Ok))
+            .chain(out_stream)
+            .chain(futures::stream::iter(
+                constants.epilogue.into_iter().map(Ok),
+            ))
+            .boxed();
         write_stream_to_output(&config.out_path, out_format, out_stream)
             .await
             .with_context(|| format!("writing output to {}", config.out_path))?;
@@ -852,12 +1187,19 @@ pub async fn run_pipeline_with_options(
         let _ = dispatcher_handle.await;
     }
 
-    if rows_out < rows_in {
+    // Constant objects are not input rows, so they must not mask failed rows.
+    let rows_failed = rows_in.saturating_sub(rows_out) + constants_failed;
+    if rows_failed > 0 {
         anyhow::bail!(
-            "{} of {} rows failed to transform (see stderr for details)",
-            rows_in - rows_out,
-            rows_in
+            "{rows_failed} of {} rows failed to transform (see stderr for details)",
+            rows_in + constants_attempted
         );
+    }
+    let rows_out = rows_out + constants_ok;
+
+    // The identifier problems reported up front count toward the exit status.
+    if identifier_errors > 0 {
+        anyhow::bail!("{identifier_errors} transformation error(s)");
     }
 
     let elapsed = start.elapsed();
@@ -957,6 +1299,8 @@ where
 async fn transform_jsonl_parallel(
     config: &PipelineConfig,
     plan: Arc<CompiledPlan>,
+    prologue: String,
+    epilogue: String,
 ) -> Result<(usize, usize)> {
     use rayon::prelude::*;
 
@@ -988,13 +1332,18 @@ async fn transform_jsonl_parallel(
                     .par_iter()
                     .map(|l| parse_transform_serialize(&plan2, l))
                     .collect();
-                let mut buf = String::with_capacity(outs.len() * 64);
+                // Constant blocks bracket the rows in the same single buffer, so
+                // the file is opened and written once.
+                let mut buf =
+                    String::with_capacity(prologue.len() + epilogue.len() + outs.len() * 64);
+                buf.push_str(&prologue);
                 let mut n_out = 0usize;
                 for o in outs.into_iter().flatten() {
                     buf.push_str(&o);
                     buf.push('\n');
                     n_out += 1;
                 }
+                buf.push_str(&epilogue);
                 (buf, n_in, n_out)
             };
             match pool.as_ref() {
@@ -1072,17 +1421,44 @@ fn parse_transform_serialize(plan: &CompiledPlan, line: &str) -> Option<String> 
 /// not a silent empty run.
 async fn load_directory_source(
     dir: &Path,
-    plan: &CompiledPlan,
+    plan: &mut CompiledPlan,
 ) -> Result<(String, Option<LookupIndex>)> {
-    // Primary table = the resolved source class (populated_from / name of the
-    // first class_derivation). Its data file is matched by stem, same as joins.
-    let primary_table = plan.source_class.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "directory source {} requires a resolvable source class, but the spec \
-             declares no class_derivations to derive one from",
-            dir.display()
-        )
-    })?;
+    // Primary table = the table of the block to stream. An explicit
+    // `--source-class` names it. Otherwise it is the first row block, in spec
+    // order, whose table has a file in the directory — upstream's driver skips
+    // blocks with no data ("Skipping class_derivation ...: no data found"), and
+    // fails only when none of them has any.
+    let primary_table = match plan.source_class_hint.clone() {
+        Some(hint) => hint,
+        None => {
+            let tables = plan.row_tables();
+            let mut found = None;
+            for block in row_block_candidates(&plan.blocks) {
+                if find_table_file(dir, block.table())?.is_some() {
+                    found = Some(block.table().to_owned());
+                    break;
+                }
+            }
+            match found {
+                Some(table) => table,
+                None if tables.is_empty() => plan.source_class.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "directory source {} requires a resolvable source class, but the spec \
+                         declares no class_derivations to derive one from",
+                        dir.display()
+                    )
+                })?,
+                // Upstream `transform_spec`: FileNotFoundError, same text.
+                None => anyhow::bail!(
+                    "No input data for any class derivation: expected one of {}, found {}",
+                    py_str_list(tables.iter()),
+                    py_str_list(available_table_names(dir)?.iter()),
+                ),
+            }
+        }
+    };
+    plan.source_class = Some(primary_table.clone());
+    let primary_table = primary_table.as_str();
     let primary_file = find_table_file(dir, primary_table)?.ok_or_else(|| {
         anyhow::anyhow!(
             "directory source {} has no data file for the primary table {primary_table:?} \
@@ -1118,6 +1494,37 @@ async fn load_directory_source(
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("non-UTF-8 primary file path {}", primary_file.display()))?;
     Ok((primary.to_owned(), any_registered.then_some(index)))
+}
+
+/// Format names as a Python list repr (`['a', 'b']`), as upstream's f-string of
+/// a `list[str]` renders them.
+fn py_str_list<'a>(items: impl Iterator<Item = &'a String>) -> String {
+    let inner = items
+        .map(|s| format!("'{s}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{inner}]")
+}
+
+/// Sorted, de-duplicated filename stems of the data files in `dir`. Mirrors
+/// `DataLoader.get_available_identifiers` (plus `.jsonl`, which Rust also reads).
+fn available_table_names(dir: &Path) -> Result<Vec<String>> {
+    let mut names = BTreeSet::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("reading source directory {}", dir.display()))?
+    {
+        let path = entry
+            .with_context(|| format!("reading entry in {}", dir.display()))?
+            .path();
+        let supported = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            ["tsv", "csv", "yaml", "yml", "json", "jsonl"]
+                .contains(&e.to_ascii_lowercase().as_str())
+        });
+        if supported && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            names.insert(stem.to_owned());
+        }
+    }
+    Ok(names.into_iter().collect())
 }
 
 /// Find the file in `dir` whose filename stem equals `table_name`.

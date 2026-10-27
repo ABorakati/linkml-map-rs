@@ -15,6 +15,11 @@ pub enum Error {
     #[error("no class derivation for source type '{source_type}' (found {count} candidates)")]
     NoClassDerivation { source_type: String, count: usize },
 
+    /// An `is_a` / `mixins` chain between class derivations loops back on itself
+    /// (upstream raises `RecursionError`).
+    #[error("class derivation '{0}' inherits from itself via is_a/mixins")]
+    CyclicInheritance(String),
+
     /// No matching EnumDerivation was found.
     #[error("no enum derivation for source enum '{0}'")]
     NoEnumDerivation(String),
@@ -72,6 +77,17 @@ pub enum Error {
         class: String,
         slot: String,
         cause: String,
+    },
+
+    /// A class derivation neither derives nor mints its target class's
+    /// identifier slot (`mint_ids` is not true). Mirrors the Python
+    /// `TransformationError` raised by `ObjectTransformer._with_synthesized_id`
+    /// (upstream #342); `message` is `missing_identifier_message`.
+    #[error("{message}")]
+    MissingIdentifier {
+        message: String,
+        class_derivation_name: String,
+        class_populated_from: Option<String>,
     },
 
     /// A `populated_from` dot-path that traverses inlined nested data hit an

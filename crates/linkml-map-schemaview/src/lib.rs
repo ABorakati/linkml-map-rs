@@ -701,6 +701,34 @@ impl SchemaProvider for SchemaViewProvider {
             .map(|sv| self.slot_view_to_def(sv)))
     }
 
+    fn identifier_slot_without_key(&self, class_name: &str) -> Option<String> {
+        // `get_identifier_slot(use_key=False)`: `identifier: true` only.
+        let cv = self.get_class_view(class_name).ok()?;
+        cv.identifier_slot().map(|sv| sv.name.clone())
+    }
+
+    fn schema_id(&self) -> Option<String> {
+        self.sv.primary_schema().map(|s| s.id)
+    }
+
+    fn is_abstract_or_mixin(&self, class_name: &str) -> bool {
+        self.get_class_view(class_name).is_ok_and(|cv| {
+            let def = cv.def();
+            def.abstract_.unwrap_or(false) || def.mixin.unwrap_or(false)
+        })
+    }
+
+    fn list_elements_ordered_slots(&self, class_name: &str) -> Vec<String> {
+        let Ok(cv) = self.get_class_view(class_name) else {
+            return Vec::new();
+        };
+        cv.slots()
+            .iter()
+            .filter(|sv| sv.definition().list_elements_ordered.unwrap_or(false))
+            .map(|sv| sv.name.clone())
+            .collect()
+    }
+
     // ── Slot queries ─────────────────────────────────────────────────────────
 
     fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef> {

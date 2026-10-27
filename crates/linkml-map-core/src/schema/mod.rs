@@ -203,6 +203,40 @@ pub trait SchemaProvider: Send + Sync {
     /// Mirrors `sv.get_identifier_slot(class_name, use_key=True)`.
     fn identifier_slot(&self, class_name: &str) -> SchemaResult<Option<SlotDef>>;
 
+    /// Return the name of the first `identifier: true` slot of a class, if any.
+    ///
+    /// Mirrors `sv.get_identifier_slot(class_name)` with its default
+    /// `use_key=False`: unlike [`SchemaProvider::identifier_slot`], a `key:`
+    /// slot does **not** count. Used by content-id synthesis.
+    fn identifier_slot_without_key(&self, class_name: &str) -> Option<String> {
+        self.induced_slots(class_name)
+            .ok()?
+            .into_iter()
+            .find(|s| s.identifier)
+            .map(|s| s.name)
+    }
+
+    /// The schema's own `id` (the base of every content-id namespace).
+    ///
+    /// The default is `None` for providers that do not carry one.
+    fn schema_id(&self) -> Option<String> {
+        None
+    }
+
+    /// True when the class is `abstract: true` or `mixin: true` (it never has
+    /// instances of its own). Default `false`.
+    fn is_abstract_or_mixin(&self, class_name: &str) -> bool {
+        let _ = class_name;
+        false
+    }
+
+    /// Names of the induced slots of a class that declare
+    /// `list_elements_ordered: true`. Default: none.
+    fn list_elements_ordered_slots(&self, class_name: &str) -> Vec<String> {
+        let _ = class_name;
+        Vec::new()
+    }
+
     // ── Slot-level queries ───────────────────────────────────────────────────
 
     /// Return the induced slot definition for a single named slot on a class.
@@ -287,6 +321,9 @@ pub struct InMemorySchema {
     classes: HashMap<String, ClassRecord>,
     enums: HashMap<String, EnumDef>,
     types: Vec<String>,
+    schema_id: Option<String>,
+    abstract_or_mixin: Vec<String>,
+    ordered_slots: Vec<(String, String)>,
     /// `typeof` parent of each custom type.
     type_parents: HashMap<String, String>,
     default_range: Option<String>,
@@ -346,6 +383,30 @@ impl InMemorySchemaBuilder {
     /// Register a scalar type name.
     pub fn add_type(mut self, name: impl Into<String>) -> Self {
         self.schema.types.push(name.into());
+        self
+    }
+
+    /// Set the schema's `id` (the base of content-id namespaces).
+    pub fn with_schema_id(mut self, id: impl Into<String>) -> Self {
+        self.schema.schema_id = Some(id.into());
+        self
+    }
+
+    /// Mark a class `abstract` (or `mixin`): it never has instances of its own.
+    pub fn mark_abstract(mut self, class_name: impl Into<String>) -> Self {
+        self.schema.abstract_or_mixin.push(class_name.into());
+        self
+    }
+
+    /// Mark a slot of a class `list_elements_ordered: true`.
+    pub fn mark_list_elements_ordered(
+        mut self,
+        class_name: impl Into<String>,
+        slot_name: impl Into<String>,
+    ) -> Self {
+        self.schema
+            .ordered_slots
+            .push((class_name.into(), slot_name.into()));
         self
     }
 
@@ -432,6 +493,22 @@ impl SchemaProvider for InMemorySchema {
 
     fn all_type_names(&self) -> Vec<String> {
         self.types.clone()
+    }
+
+    fn schema_id(&self) -> Option<String> {
+        self.schema_id.clone()
+    }
+
+    fn is_abstract_or_mixin(&self, class_name: &str) -> bool {
+        self.abstract_or_mixin.iter().any(|c| c == class_name)
+    }
+
+    fn list_elements_ordered_slots(&self, class_name: &str) -> Vec<String> {
+        self.ordered_slots
+            .iter()
+            .filter(|(c, _)| c == class_name)
+            .map(|(_, s)| s.clone())
+            .collect()
     }
 
     fn default_range(&self) -> Option<String> {

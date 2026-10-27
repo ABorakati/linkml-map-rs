@@ -48,6 +48,7 @@
 //! path and does not affect engine output.
 
 pub mod expr_refs;
+mod identifiers;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -123,6 +124,9 @@ impl fmt::Display for ValidationMessage {
 /// `_validate_class_derivation` (`derivation_pool`, `source_all_classes`,
 /// `target_all_classes`) so nested derivations don't rebuild them.
 struct Ctx<'a> {
+    /// The spec being validated (for `mint_ids` / `class_defaults` and the
+    /// top-level derivation pool; see [`identifiers`]).
+    spec: &'a TransformationSpecification,
     source: Option<&'a dyn SchemaProvider>,
     target: Option<&'a dyn SchemaProvider>,
     strict: bool,
@@ -156,6 +160,7 @@ pub fn validate_spec_semantics(
 
     let known_ranges = collect_known_ranges(spec, source_schema, target_schema);
     let ctx = Ctx {
+        spec,
         source: source_schema,
         target: target_schema,
         strict,
@@ -167,6 +172,8 @@ pub fn validate_spec_semantics(
             .unwrap_or_default(),
         known_ranges,
     };
+
+    identifiers::check_class_defaults(&ctx, &mut messages);
 
     for cd in spec.class_derivations.iter().flatten() {
         validate_class_derivation(&ctx, cd, None, "", &mut messages);
@@ -365,20 +372,10 @@ fn validate_class_derivation(
         }
     }
 
-    // Warning: required target slots with no derivation.
+    // Identifier slots must be derived or minted; other required target slots
+    // with no derivation are a warning (upstream #342 reworked this block).
     if let (Some(target), Some(_)) = (ctx.target, target_class_slots.as_ref()) {
-        let derived: BTreeSet<&str> = sds.iter().map(|sd| sd.name.as_str()).collect();
-        if let Ok(slots) = target.induced_slots(cd_name) {
-            for slot in slots {
-                if slot.required && !derived.contains(slot.name.as_str()) {
-                    messages.push(ValidationMessage::new(
-                        Severity::Warning,
-                        &cd_path,
-                        format!("Required target slot '{}' has no derivation", slot.name),
-                    ));
-                }
-            }
-        }
+        identifiers::check_underived_slots(ctx, target, cd, &cd_path, messages);
     }
 }
 

@@ -218,6 +218,7 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
 fn expr_cause(e: ExprError) -> String {
     match e {
         ExprError::Eval(m) | ExprError::Lex(m) | ExprError::Parse(m) => m,
+        other => other.to_string(),
     }
 }
 

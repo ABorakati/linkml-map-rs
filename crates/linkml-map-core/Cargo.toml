@@ -12,6 +12,8 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
+deunicode = { workspace = true }
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

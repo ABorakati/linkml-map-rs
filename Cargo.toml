@@ -27,3 +27,5 @@ pyo3 = { version = "0.23", features = ["extension-module"] }
 walkdir = "2"
 tempfile = "3"
 log = "0.4"
+deunicode = "1"
+unicode-normalization = "0.1"
