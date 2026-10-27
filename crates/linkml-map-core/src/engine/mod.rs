@@ -740,12 +740,13 @@ impl<'s> ObjectTransformer<'s> {
         }
     }
 
-    /// Apply range coercion post-processing when a source slot def is present.
+    /// Apply range coercion post-processing.
     ///
-    /// Runs `map_value_by_range` → `coerce_cardinality` → `coerce_datatype` →
-    /// `reshape_collection` in that order.  Mirrors Python post-derivation
-    /// coercion.  Returns `v` unchanged when `source_slot_def` is `None`, or
-    /// when `v` is null or the slot is hidden.
+    /// With a source slot def: `map_value_by_range` → `coerce_cardinality` →
+    /// `coerce_datatype` → `reshape_collection`, in that order (mirrors Python
+    /// post-derivation coercion). Without one, a `value:` / `expr:` slot gets
+    /// `coerce_cardinality` → `coerce_datatype` (upstream 11b425b). Returns `v`
+    /// unchanged when it is null, the slot is hidden, or neither applies.
     ///
     /// `map_value_by_range` sees the spec range only; the datatype coercion
     /// falls back to the target schema's range when the spec declares none
@@ -768,6 +769,23 @@ impl<'s> ObjectTransformer<'s> {
                 v = coerce_datatype(v, &datatype)?;
             }
             v = self.reshape_collection(v, slot_deriv, ssd)?;
+        } else if (slot_deriv.value.is_some()
+            || slot_deriv.expr.as_deref().is_some_and(|e| !e.is_empty()))
+            && !v.is_null()
+            && !slot_deriv.hide.unwrap_or(false)
+        {
+            // PARITY: object_transformer.py::_derive_slot (11b425b) — an `elif`
+            // of the source-slot branch, keyed on the spec fields (`value is not
+            // None` / truthy `expr`) rather than on which branch produced `v`,
+            // so a slot with both `unit_conversion` and `expr` also lands here.
+            // No `_map_value_by_range` / `_reshape_collection` (they need a
+            // source slot); `source_multivalued` is false because upstream's
+            // `_coerce_cardinality` takes no source slot. A `value:`/`expr:`
+            // result is coerced to the spec range even without a target schema.
+            v = self.coerce_cardinality(v, slot_deriv, class_deriv, false)?;
+            if let Some(datatype) = self.coercion_datatype(slot_deriv, class_deriv) {
+                v = coerce_datatype(v, &datatype)?;
+            }
         }
         Ok(v)
     }

@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use linkml_map_core::{
     datamodel::{ClassDerivation, TransformationSpecification},
-    engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer},
+    engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer, TargetCoercions},
     schema::{RangeKind, SchemaProvider},
     value::Value,
 };
@@ -147,6 +147,9 @@ pub struct CompiledPlan {
     target_provider: Option<Box<dyn SchemaProvider>>,
     /// Pre-parsed `expr:` ASTs, shared (by borrow) into every per-row engine.
     compiled_exprs: CompiledExprs,
+    /// Target-schema lookups (slot datatypes), resolved once and shared (by
+    /// borrow) into every per-row engine. `None` without a target schema.
+    target_coercions: Option<TargetCoercions>,
     /// Resolved source class name (empty string = let engine decide per row).
     source_class: Option<String>,
     /// Cross-table join lookup index, built once when the pipeline runs in
@@ -259,6 +262,12 @@ impl CompiledPlan {
             .map_err(|e| anyhow::anyhow!("compiling expr ASTs: {e}"))
             .with_context(|| format!("compiling exprs from spec {}", spec_path.display()))?;
 
+        // Resolve every target slot's coercion datatype ONCE (no target schema,
+        // no target-driven coercion).
+        let target_coercions = target_provider
+            .as_deref()
+            .map(|target| TargetCoercions::build(&spec, target));
+
         // Resolve the source class once
         let source_class = source_class_hint.map(str::to_owned).or_else(|| {
             // Try first class_derivation's populated_from, then its name
@@ -273,6 +282,7 @@ impl CompiledPlan {
             source_provider,
             target_provider,
             compiled_exprs,
+            target_coercions,
             source_class,
             lookup_index: None,
         })
@@ -397,17 +407,26 @@ impl CompiledPlan {
         })
     }
 
+    /// A per-row engine borrowing the plan's spec, schemas and shared
+    /// target-schema lookups.
+    fn base_engine(&self) -> ObjectTransformer<'_> {
+        let engine = ObjectTransformer::new_borrowed(
+            &self.spec,
+            Some(self.source_provider.as_ref()),
+            self.target_provider.as_deref(),
+        );
+        match &self.target_coercions {
+            Some(coercions) => engine.with_target_coercions(coercions),
+            None => engine,
+        }
+    }
+
     /// Transform one row using a pre-built [`ObjectIndex`].
     ///
     /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
     /// a reference to each parallel worker — zero per-row index rebuild.
     pub fn transform_with_index(&self, row: Value, index: &ObjectIndex) -> Result<Value> {
-        let mut engine = ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        )
-        .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.base_engine().with_compiled_exprs(&self.compiled_exprs);
         if let Some(li) = &self.lookup_index {
             engine = engine.with_lookup_index(Arc::clone(li));
         }
@@ -422,12 +441,7 @@ impl CompiledPlan {
     /// reader/writer I/O path.
     pub fn transform(&self, row: Value) -> Result<Value> {
         // Borrow the spec (no per-row deep clone) and the pre-parsed expr cache.
-        let mut engine = ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        )
-        .with_compiled_exprs(&self.compiled_exprs);
+        let mut engine = self.base_engine().with_compiled_exprs(&self.compiled_exprs);
         if let Some(li) = &self.lookup_index {
             engine = engine.with_lookup_index(Arc::clone(li));
         }
@@ -441,11 +455,7 @@ impl CompiledPlan {
     /// (string-parse) baseline against [`CompiledPlan::transform`] in-process.
     /// Still borrows the spec, so the only difference is expr parsing.
     pub fn transform_uncached(&self, row: Value) -> Result<Value> {
-        let engine = ObjectTransformer::new_borrowed(
-            &self.spec,
-            Some(self.source_provider.as_ref()),
-            self.target_provider.as_deref(),
-        );
+        let engine = self.base_engine();
         engine
             .map_object(&row, self.source_class.as_deref())
             .map_err(|e| anyhow::anyhow!("transform error: {e}"))
