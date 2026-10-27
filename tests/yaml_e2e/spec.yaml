@@ -1,0 +1,31 @@
+id: https://example.org/yaml-e2e-spec
+class_derivations:
+  Out:
+    populated_from: Record
+    slot_derivations:
+      id:
+      label:
+        populated_from: name
+      bio:
+      status:
+      tags:
+      codes_yaml:
+        populated_from: codes
+        stringification:
+          syntax: YAML
+      age:
+      weight:
+      active:
+      amount:
+      address:
+      notes:
+  Address:
+    populated_from: Address
+    slot_derivations:
+      city:
+      lines:
+  Note:
+    populated_from: Note
+    slot_derivations:
+      title:
+      body:
