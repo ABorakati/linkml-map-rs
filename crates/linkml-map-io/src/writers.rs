@@ -661,11 +661,17 @@ fn dump_delimited(data: &Value, separator: &str) -> Result<String> {
             .join(separator),
     ];
     for row in &rows {
-        // PARITY: cli.py::dump_output — cells are `str(c)` with no quoting, and a
+        // PARITY: cli.py::dump_output — cells are `str(c)` with no quoting (a
+        // `Decimal` goes through `format_decimal`: `1E+2` is `100`), and a
         // present-but-null value renders as the text `None` (a missing key is empty).
         let cells: Vec<String> = headers
             .iter()
-            .map(|h| row.get(*h).map_or_else(String::new, |v| py_str(v)))
+            .map(|h| {
+                row.get(*h).map_or_else(String::new, |v| match v {
+                    Value::Decimal(d) => crate::serialization::format_decimal(d),
+                    other => py_str(other),
+                })
+            })
             .collect();
         lines.push(cells.join(separator));
     }
