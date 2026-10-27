@@ -179,8 +179,28 @@ struct MapDataArgs {
     /// on the source class, or a value for an enum-ranged target slot matches no
     /// permissible value, or more than one. Recommended for real data transforms;
     /// the default warns and carries on for backward compatibility.
-    #[arg(long = "strict", default_value_t = false)]
+    #[arg(long = "strict", default_value_t = false, overrides_with = "no_strict")]
     strict: bool,
+
+    /// Disable strict mode (the default).
+    #[arg(long = "no-strict", overrides_with = "strict")]
+    no_strict: bool,
+
+    /// Allow unrestricted evaluation of expressions. Accepted for drop-in
+    /// compatibility; it has no effect.
+    // PARITY: upstream cli.py `--unrestricted-eval/--no-unrestricted-eval`
+    // gates asteval. The Rust evaluator merges the restricted and unrestricted
+    // paths and always behaves as unrestricted, so both spellings are no-ops.
+    #[arg(
+        long = "unrestricted-eval",
+        default_value_t = false,
+        overrides_with = "no_unrestricted_eval"
+    )]
+    unrestricted_eval: bool,
+
+    /// Restrict expression evaluation (the upstream default). Has no effect.
+    #[arg(long = "no-unrestricted-eval", overrides_with = "unrestricted_eval")]
+    no_unrestricted_eval: bool,
 
     /// Input data file, or a directory of tables for multi-table joins.
     ///
@@ -408,6 +428,37 @@ mod tests {
                 "{flag} swallowed the subcommand"
             );
         }
+    }
+
+    /// `--strict/--no-strict` and `--unrestricted-eval/--no-unrestricted-eval`
+    /// parse as upstream's click flag pairs: the last one given wins.
+    #[test]
+    fn test_map_data_flag_pairs() {
+        let base = [
+            "linkml-tr-rs",
+            "map-data",
+            "-T",
+            "s.yaml",
+            "-s",
+            "src.yaml",
+            "in.tsv",
+        ];
+        let parse = |extra: &[&str]| {
+            let argv: Vec<&str> = base.iter().chain(extra).copied().collect();
+            match Cli::try_parse_from(argv)
+                .expect("map-data should parse")
+                .command
+            {
+                Commands::MapData(m) => m,
+                _ => panic!("expected MapData"),
+            }
+        };
+        assert!(!parse(&[]).strict);
+        assert!(parse(&["--strict"]).strict);
+        assert!(!parse(&["--strict", "--no-strict"]).strict);
+        assert!(parse(&["--no-strict", "--strict"]).strict);
+        assert!(parse(&["--unrestricted-eval"]).unrestricted_eval);
+        assert!(!parse(&["--unrestricted-eval", "--no-unrestricted-eval"]).unrestricted_eval);
     }
 
     /// `-v` accumulates: `-vv` yields `verbose == 2`.
