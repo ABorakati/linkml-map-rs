@@ -33,11 +33,12 @@ async fn run_once(src: &str, out: &str, workers: usize, label: &str) -> Result<(
             .to_str()
             .unwrap()
             .to_owned(),
-        target_schema_path: f
-            .join("target/quantity_value_flat.yaml")
-            .to_str()
-            .unwrap()
-            .to_owned(),
+        target_schema_path: Some(
+            f.join("target/quantity_value_flat.yaml")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        ),
         spec_path: f
             .join("transform/qv-to-scalar.transform.yaml")
             .to_str()

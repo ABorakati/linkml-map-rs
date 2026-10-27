@@ -107,15 +107,11 @@ pub async fn run_map_data_config_with_options(
     let source_format = parse_format_str(&cfg.input_format)?;
     let out_format = parse_format_str(&cfg.output_format)?;
 
-    let target_schema = cfg
-        .target_schema
-        .unwrap_or_else(|| cfg.source_schema.clone());
-
     let pipeline_cfg = PipelineConfig {
         source_path: cfg.input.clone(),
         source_format,
         schema_path: cfg.source_schema.clone(),
-        target_schema_path: target_schema,
+        target_schema_path: cfg.target_schema.clone(),
         spec_path: cfg.spec.clone(),
         out_path: cfg.output.clone(),
         out_format,

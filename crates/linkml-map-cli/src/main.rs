@@ -108,7 +108,7 @@ struct MapDataArgs {
     #[arg(short = 's', long = "source-schema", value_name = "SCHEMA_YAML")]
     source_schema: String,
 
-    /// Target LinkML schema YAML file (defaults to source schema when omitted).
+    /// Target LinkML schema YAML file. When omitted no target schema is used (as upstream).
     #[arg(long = "target-schema", value_name = "TARGET_YAML")]
     target_schema: Option<String>,
 

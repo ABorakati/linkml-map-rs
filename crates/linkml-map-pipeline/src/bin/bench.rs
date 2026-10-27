@@ -88,11 +88,13 @@ async fn main() -> Result<()> {
                 .to_str()
                 .unwrap()
                 .to_owned(),
-            target_schema_path: fixture
-                .join("target/quantity_value_flat.yaml")
-                .to_str()
-                .unwrap()
-                .to_owned(),
+            target_schema_path: Some(
+                fixture
+                    .join("target/quantity_value_flat.yaml")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            ),
             spec_path: fixture
                 .join("transform/qv-to-scalar.transform.yaml")
                 .to_str()
@@ -142,7 +144,7 @@ fn transform_only_bench(fixture: &std::path::Path, n_rows: usize) -> Result<()> 
     let plan = Arc::new(CompiledPlan::load(
         &fixture.join("transform/qv-to-scalar.transform.yaml"),
         &fixture.join("source/quantity_value.yaml"),
-        &fixture.join("target/quantity_value_flat.yaml"),
+        Some(&fixture.join("target/quantity_value_flat.yaml")),
         Some("Person"),
     )?);
 

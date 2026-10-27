@@ -71,8 +71,10 @@ pub struct PipelineConfig {
     pub source_format: Option<Format>,
     /// Path to the source LinkML schema YAML.
     pub schema_path: String,
-    /// Path to the target LinkML schema YAML (may be the same as `schema_path`).
-    pub target_schema_path: String,
+    /// Path to the target LinkML schema YAML. `None` mirrors upstream's
+    /// `target_schema=None`: no target-schema-driven behaviour (target-range
+    /// coercion, enum resolution, induced target slots) is applied.
+    pub target_schema_path: Option<String>,
     /// Path to the transformation specification YAML.
     pub spec_path: String,
     /// Output file path.
@@ -95,7 +97,7 @@ impl PipelineConfig {
     pub fn new(
         source_path: impl Into<String>,
         schema_path: impl Into<String>,
-        target_schema_path: impl Into<String>,
+        target_schema_path: Option<impl Into<String>>,
         spec_path: impl Into<String>,
         out_path: impl Into<String>,
     ) -> Self {
@@ -103,7 +105,7 @@ impl PipelineConfig {
             source_path: source_path.into(),
             source_format: None,
             schema_path: schema_path.into(),
-            target_schema_path: target_schema_path.into(),
+            target_schema_path: target_schema_path.map(Into::into),
             spec_path: spec_path.into(),
             out_path: out_path.into(),
             out_format: None,
@@ -142,7 +144,7 @@ pub struct CompiledPlan {
     /// tolerant `InMemorySchema` fallback for schemas with unresolvable CURIE maps.
     source_provider: Box<dyn SchemaProvider>,
     /// Target schema provider (same tolerance).
-    target_provider: Box<dyn SchemaProvider>,
+    target_provider: Option<Box<dyn SchemaProvider>>,
     /// Pre-parsed `expr:` ASTs, shared (by borrow) into every per-row engine.
     compiled_exprs: CompiledExprs,
     /// Resolved source class name (empty string = let engine decide per row).
@@ -207,7 +209,7 @@ impl CompiledPlan {
     pub fn load(
         spec_path: &Path,
         schema_path: &Path,
-        target_schema_path: &Path,
+        target_schema_path: Option<&Path>,
         source_class_hint: Option<&str>,
     ) -> Result<Self> {
         // Load + normalise the transformation spec first so we can extract
@@ -240,11 +242,16 @@ impl CompiledPlan {
                 )
             })?;
 
-        // Load target schema (may be same file — that's fine, second load is cheap)
-        let target_provider: Box<dyn SchemaProvider> =
-            Box::new(load_schema(target_schema_path, None).with_context(|| {
-                format!("loading target schema {}", target_schema_path.display())
-            })?);
+        // Load the target schema when one was given. Upstream leaves
+        // `target_schemaview` as None otherwise; it does not fall back to the
+        // source schema.
+        let target_provider = target_schema_path
+            .map(|path| -> Result<Box<dyn SchemaProvider>> {
+                Ok(Box::new(load_schema(path, None).with_context(|| {
+                    format!("loading target schema {}", path.display())
+                })?))
+            })
+            .transpose()?;
 
         // Parse every expr: ONCE into a reusable AST cache. Malformed exprs
         // surface here at plan-build time rather than per row.
@@ -398,7 +405,7 @@ impl CompiledPlan {
         let mut engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
-            Some(self.target_provider.as_ref()),
+            self.target_provider.as_deref(),
         )
         .with_compiled_exprs(&self.compiled_exprs);
         if let Some(li) = &self.lookup_index {
@@ -418,7 +425,7 @@ impl CompiledPlan {
         let mut engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
-            Some(self.target_provider.as_ref()),
+            self.target_provider.as_deref(),
         )
         .with_compiled_exprs(&self.compiled_exprs);
         if let Some(li) = &self.lookup_index {
@@ -437,7 +444,7 @@ impl CompiledPlan {
         let engine = ObjectTransformer::new_borrowed(
             &self.spec,
             Some(self.source_provider.as_ref()),
-            Some(self.target_provider.as_ref()),
+            self.target_provider.as_deref(),
         );
         engine
             .map_object(&row, self.source_class.as_deref())
@@ -489,7 +496,7 @@ pub async fn run_pipeline_with_options(
     let mut plan = CompiledPlan::load(
         Path::new(&config.spec_path),
         Path::new(&config.schema_path),
-        Path::new(&config.target_schema_path),
+        config.target_schema_path.as_deref().map(Path::new),
         config.source_class.as_deref(),
     )
     .context("compiling plan")?;
@@ -1216,11 +1223,13 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .to_owned(),
-            target_schema_path: fixture
-                .join("target/quantity_value_flat.yaml")
-                .to_str()
-                .unwrap()
-                .to_owned(),
+            target_schema_path: Some(
+                fixture
+                    .join("target/quantity_value_flat.yaml")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            ),
             spec_path: fixture
                 .join("transform/qv-to-scalar.transform.yaml")
                 .to_str()
@@ -1322,7 +1331,7 @@ class_derivations:
         )
         .unwrap();
 
-        let plan = CompiledPlan::load(&spec, &schema, &schema, Some("Measurement"))
+        let plan = CompiledPlan::load(&spec, &schema, Some(&schema), Some("Measurement"))
             .expect("plan load (with join synthesis) failed");
 
         let cd = &plan.spec.class_derivations.as_ref().unwrap()[0];
@@ -1362,7 +1371,7 @@ class_derivations:
         )
         .unwrap();
 
-        let err = match CompiledPlan::load(&spec, &schema, &schema, Some("Measurement")) {
+        let err = match CompiledPlan::load(&spec, &schema, Some(&schema), Some("Measurement")) {
             Ok(_) => panic!("unhostable cross-table ref should fail loud at load"),
             Err(e) => e,
         };
@@ -1457,7 +1466,7 @@ class_derivations:
             source_path: data_dir.to_str().unwrap().to_owned(),
             source_format: None,
             schema_path: schema.to_str().unwrap().to_owned(),
-            target_schema_path: target.to_str().unwrap().to_owned(),
+            target_schema_path: Some(target.to_str().unwrap().to_owned()),
             spec_path: spec.to_str().unwrap().to_owned(),
             out_path: out_path.to_str().unwrap().to_owned(),
             out_format: Some(Format::Jsonl),
@@ -1542,7 +1551,7 @@ class_derivations:
             source_path: src.to_str().unwrap().to_owned(),
             source_format: Some(Format::Jsonl),
             schema_path: schema.to_str().unwrap().to_owned(),
-            target_schema_path: target.to_str().unwrap().to_owned(),
+            target_schema_path: Some(target.to_str().unwrap().to_owned()),
             spec_path: spec.to_str().unwrap().to_owned(),
             out_path: out_path.to_str().unwrap().to_owned(),
             out_format: Some(Format::Jsonl),
@@ -1600,11 +1609,13 @@ class_derivations:
                 .to_str()
                 .unwrap()
                 .to_owned(),
-            target_schema_path: fixture
-                .join("target/quantity_value_flat.yaml")
-                .to_str()
-                .unwrap()
-                .to_owned(),
+            target_schema_path: Some(
+                fixture
+                    .join("target/quantity_value_flat.yaml")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            ),
             spec_path: fixture
                 .join("transform/qv-to-scalar.transform.yaml")
                 .to_str()
@@ -1696,11 +1707,13 @@ class_derivations:
                 .to_str()
                 .unwrap()
                 .to_owned(),
-            target_schema_path: fixture
-                .join("target/denormalized.yaml")
-                .to_str()
-                .unwrap()
-                .to_owned(),
+            target_schema_path: Some(
+                fixture
+                    .join("target/denormalized.yaml")
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            ),
             spec_path: fixture
                 .join("transform/denormalize.transform.yaml")
                 .to_str()
@@ -1718,7 +1731,7 @@ class_derivations:
         let plan = CompiledPlan::load(
             std::path::Path::new(&cfg.spec_path),
             std::path::Path::new(&cfg.schema_path),
-            std::path::Path::new(&cfg.target_schema_path),
+            cfg.target_schema_path.as_deref().map(std::path::Path::new),
             cfg.source_class.as_deref(),
         )
         .expect("plan load failed");
@@ -2110,7 +2123,7 @@ class_derivations:
             CompiledPlan::load(
                 &fixture.join("transform/qv-to-scalar.transform.yaml"),
                 &fixture.join("source/quantity_value.yaml"),
-                &fixture.join("target/quantity_value_flat.yaml"),
+                Some(&fixture.join("target/quantity_value_flat.yaml")),
                 Some("Person"),
             )
             .unwrap(),
