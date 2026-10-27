@@ -101,7 +101,8 @@ fn pow_float(x: f64, y: f64) -> PyRes<Py> {
         return zero_div("0.0 cannot be raised to a negative power");
     }
     if x < 0.0 && y.is_finite() && y.fract() != 0.0 {
-        return runtime_err("complex numbers are not supported");
+        let (a, b) = (Py::Float(x), Py::Float(y));
+        return complex_binop(BinOp::Pow, (x, 0.0), (y, 0.0), &a, &b);
     }
     let r = x.powf(y);
     if r.is_infinite() && x.is_finite() && y.is_finite() {
@@ -124,6 +125,11 @@ fn repeat_len(len: usize, n: i64) -> PyRes<usize> {
 /// `op2func(op)(a, b)` for the arithmetic operators, including the `safe_*`
 /// wrappers.
 pub(crate) fn binop(op: BinOp, a: &Py, b: &Py) -> PyRes<Py> {
+    if (matches!(a, Py::Complex(..)) || matches!(b, Py::Complex(..)))
+        && let (Some(x), Some(y)) = (complex_parts(a), complex_parts(b))
+    {
+        return complex_binop(op, x, y, a, b);
+    }
     match op {
         BinOp::Add => add(a, b),
         BinOp::Sub => sub(a, b),
@@ -474,6 +480,11 @@ fn bitop(op: BinOp, a: &Py, b: &Py) -> PyRes<Py> {
 pub(crate) fn unaryop(op: UnaryOp, a: &Py) -> PyRes<Py> {
     match op {
         UnaryOp::Not => Ok(Py::Bool(!a.truthy())),
+        UnaryOp::USub if matches!(a, Py::Complex(..)) => {
+            let Py::Complex(r, i) = a else { unreachable!() };
+            Ok(Py::Complex(-r, -i))
+        }
+        UnaryOp::UAdd if matches!(a, Py::Complex(..)) => Ok(a.clone()),
         UnaryOp::USub => match a {
             Py::Bool(b) => Ok(Py::Int(-(*b as i64))),
             Py::Int(i) => i
@@ -542,6 +553,9 @@ pub(crate) fn contains(container: &Py, item: &Py) -> PyRes<bool> {
             let k = hkey(item)?;
             Ok(s.borrow().contains_key(&k))
         }
+        // PARITY: a map may be the `DynObj` or the plain dict upstream builds; reads
+        // that only the dict supports work (see `getitem`).
+        Py::Obj(m) => Ok(matches!(item, Py::Str(k) if m.borrow().contains_key(&**k))),
         Py::Range(a, b, c) => Ok(match item {
             Py::Int(_) | Py::Bool(_) => {
                 let x = is_int_like(item).unwrap_or(0);
@@ -629,6 +643,7 @@ pub(crate) fn iterate(v: &Py) -> PyRes<Cursor> {
         Py::Str(s) => Cursor::Chars(s.chars().collect(), 0),
         Py::Bytes(b) => Cursor::Items(b.iter().map(|&x| Py::Int(x as i64)).collect()),
         Py::Dict(d) => Cursor::Items(d.borrow().values().map(|(k, _)| k.clone()).collect()),
+        Py::Obj(m) => Cursor::Items(m.borrow().keys().map(|k| Py::str(k.as_str())).collect()),
         Py::Set(s) => Cursor::Items(s.borrow().values().cloned().collect()),
         Py::Range(a, b, c) => Cursor::Range(*a, *b, *c),
         Py::Iter(it) => {
@@ -665,6 +680,7 @@ pub(crate) fn py_len(v: &Py) -> PyRes<i64> {
         Py::List(l) => l.borrow().len() as i64,
         Py::Tuple(t) => t.len() as i64,
         Py::Dict(d) => d.borrow().len() as i64,
+        Py::Obj(m) => m.borrow().len() as i64,
         Py::Set(s) => s.borrow().len() as i64,
         Py::Range(a, b, c) => range_len(*a, *b, *c),
         Py::Iter(it) if it.borrow().kind.starts_with("dict_") => it.borrow().items.len() as i64,
@@ -838,6 +854,19 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
                 })),
             }
         }
+        // PARITY: see `contains`: a map subscripts like the dict it may be.
+        Py::Obj(m) => match key {
+            Py::Str(k) => m.borrow().get(&**k).cloned().ok_or_else(|| {
+                Box::new(ExcObj {
+                    class: "KeyError",
+                    args: vec![key.clone()],
+                })
+            }),
+            _ => Err(Box::new(ExcObj {
+                class: "KeyError",
+                args: vec![key.clone()],
+            })),
+        },
         Py::Iter(it) if it.borrow().kind.starts_with("dict_") => {
             type_err(format!("'{}' object is not subscriptable", obj.type_name()))
         }
@@ -973,5 +1002,54 @@ pub(crate) fn deepcopy(v: &Py) -> Py {
             args: e.args.iter().map(deepcopy).collect(),
         })),
         other => other.clone(),
+    }
+}
+
+fn complex_binop(op: BinOp, x: (f64, f64), y: (f64, f64), a: &Py, b: &Py) -> PyRes<Py> {
+    let c = |r: f64, i: f64| Ok(Py::Complex(r, i));
+    match op {
+        BinOp::Add => c(x.0 + y.0, x.1 + y.1),
+        BinOp::Sub => c(x.0 - y.0, x.1 - y.1),
+        BinOp::Mult => c(x.0 * y.0 - x.1 * y.1, x.0 * y.1 + x.1 * y.0),
+        BinOp::Div => {
+            let d = y.0 * y.0 + y.1 * y.1;
+            if d == 0.0 {
+                return zero_div("division by zero");
+            }
+            c((x.0 * y.0 + x.1 * y.1) / d, (x.1 * y.0 - x.0 * y.1) / d)
+        }
+        BinOp::Pow => {
+            if y.0 > MAX_EXPONENT as f64 {
+                return runtime_err(format!("Invalid exponent, max exponent is {MAX_EXPONENT}"));
+            }
+            if x == (0.0, 0.0) {
+                return if y == (0.0, 0.0) {
+                    c(1.0, 0.0)
+                } else {
+                    c(0.0, 0.0)
+                };
+            }
+            let (r, theta) = (x.0.hypot(x.1), x.1.atan2(x.0));
+            let (lr, li) = (r.ln(), theta);
+            let (er, ei) = (y.0 * lr - y.1 * li, y.0 * li + y.1 * lr);
+            let m = er.exp();
+            if m.is_infinite() {
+                return overflow_err("complex exponentiation");
+            }
+            c(m * ei.cos(), m * ei.sin())
+        }
+        BinOp::FloorDiv => unsupported_operand("//", a, b),
+        BinOp::Mod => unsupported_operand("%", a, b),
+        _ => {
+            let sym = match op {
+                BinOp::LShift => "<<",
+                BinOp::RShift => ">>",
+                BinOp::BitAnd => "&",
+                BinOp::BitOr => "|",
+                BinOp::BitXor => "^",
+                _ => "@",
+            };
+            unsupported_operand(sym, a, b)
+        }
     }
 }

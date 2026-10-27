@@ -625,6 +625,15 @@ fn scan_string_body(
                 break;
             }
             // In a raw f-string `\{` does not escape the brace, but the quote still is.
+            if fstring && !raw && chars.get(i + 1) == Some(&'N') && chars.get(i + 2) == Some(&'{') {
+                // `\N{NAME}`: the braces belong to the escape.
+                i += 3;
+                while i < n && chars[i] != '}' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
             i += 2;
             continue;
         }

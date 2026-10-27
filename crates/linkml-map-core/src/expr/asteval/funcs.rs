@@ -271,6 +271,7 @@ pub(crate) fn call_builtin(
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 1, 1)?;
             match &args[0] {
+                Py::Complex(r, i) => Ok(Py::Float(r.hypot(*i))),
                 Py::Bool(b) => Ok(Py::Int(*b as i64)),
                 Py::Int(i) => i.checked_abs().map_or_else(
                     || overflow_err("integer result out of range"),
@@ -612,6 +613,7 @@ fn instance_of(obj: &Py, t: &str) -> bool {
         (Py::Bool(_), "bool" | "int") => true,
         (Py::Int(_), "int") => true,
         (Py::Float(_), "float") => true,
+        (Py::Complex(..), "complex") => true,
         (Py::Str(_), "str") => true,
         (Py::Bytes(_), "bytes") => true,
         (Py::List(_), "list") => true,
@@ -1441,7 +1443,30 @@ pub(crate) fn call_type(
                 }
             }))
         }
-        "complex" => runtime_err("complex numbers are not supported"),
+        "complex" => {
+            no_kwargs_except(name, &kwargs, &["real", "imag"])?;
+            check_args(name, &args, 0, 2)?;
+            let part =
+                |v: Option<&Py>| -> PyRes<(f64, f64)> {
+                    match v {
+                    None => Ok((0.0, 0.0)),
+                    Some(Py::Str(_)) => value_err("complex() string arguments are not supported"),
+                    Some(x) => complex_parts(x).map_or_else(
+                        || type_err(format!(
+                            "complex() first argument must be a string or a number, not '{}'",
+                            x.type_name()
+                        )),
+                        Ok,
+                    ),
+                }
+                };
+            let (a, b) = (
+                part(args.first().or_else(|| kw(&kwargs, "real")))?,
+                part(args.get(1).or_else(|| kw(&kwargs, "imag")))?,
+            );
+            // complex(a, b) = a + b*1j
+            Ok(Py::Complex(a.0 - b.1, a.1 + b.0))
+        }
         _ => type_err(format!("cannot create '{name}' instances")),
     }
 }

@@ -226,7 +226,18 @@ fn format_float_spec(x: f64, s: &Spec) -> PyRes<String> {
             None => (&body_core[..], ""),
         };
         if int_part.chars().all(|c| c.is_ascii_digit()) {
-            format!("{}{rest}", group(int_part, sep, 3))
+            let mut digits = int_part.to_string();
+            if s.zero && s.fill.is_none() {
+                let width = s.width.unwrap_or(0);
+                while group(&digits, sep, 3).chars().count()
+                    + rest.chars().count()
+                    + sign_prefix.chars().count()
+                    < width
+                {
+                    digits.insert(0, '0');
+                }
+            }
+            format!("{}{rest}", group(&digits, sep, 3))
         } else {
             body_core
         }
@@ -278,10 +289,6 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
     } else {
         ""
     };
-    if let Some(sep) = s.grouping {
-        let size = if matches!(ty, 'd' | 'n') { 3 } else { 4 };
-        body = group(&body, sep, size);
-    }
     let sign = match (neg, s.sign) {
         (true, _) => "-",
         (false, Some('+')) => "+",
@@ -289,6 +296,16 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
         _ => "",
     };
     let sign_prefix = format!("{sign}{prefix}");
+    if let Some(sep) = s.grouping {
+        let size = if matches!(ty, 'd' | 'n') { 3 } else { 4 };
+        if s.zero && s.fill.is_none() {
+            let width = s.width.unwrap_or(0);
+            while group(&body, sep, size).chars().count() + sign_prefix.chars().count() < width {
+                body.insert(0, '0');
+            }
+        }
+        body = group(&body, sep, size);
+    }
     Ok(pad(&body, &sign_prefix, s, '>', true))
 }
 

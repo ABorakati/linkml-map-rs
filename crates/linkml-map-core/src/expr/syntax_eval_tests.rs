@@ -186,5 +186,6 @@ fn statement_blocks_follow_asteval() {
 #[test]
 fn deeply_nested_lambdas_are_refused_not_overflowed() {
     let src = format!("{}1", "lambda: ".repeat(10_000));
-    assert!(parse_expr(&src).is_err());
+    // Parsed lazily: the text is refused when it is evaluated.
+    assert!(parse_expr(&src).is_ok_and(|p| p.eval(&Bindings::new()).is_err()));
 }

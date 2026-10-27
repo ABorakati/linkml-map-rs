@@ -240,9 +240,7 @@ impl Program {
             Err(asteval::ExecError::Uncaught(m)) => Err(ExprError::Uncaught(m)),
             // A result Python builds but `Value` cannot hold (bytes, a function)
             // is no error upstream: do not turn it into an unset `target`.
-            Err(asteval::ExecError::Unrepresentable(what)) => {
-                Err(ExprError::unrepresentable(what))
-            }
+            Err(asteval::ExecError::Unrepresentable(what)) => Err(ExprError::unrepresentable(what)),
         }
     }
 

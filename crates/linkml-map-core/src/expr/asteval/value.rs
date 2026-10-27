@@ -74,6 +74,7 @@ pub(crate) enum Py {
     Bool(bool),
     Int(i64),
     Float(f64),
+    Complex(f64, f64),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
     List(Rf<Vec<Py>>),
@@ -149,6 +150,7 @@ impl Py {
             Py::Bool(_) => "bool".into(),
             Py::Int(_) => "int".into(),
             Py::Float(_) => "float".into(),
+            Py::Complex(..) => "complex".into(),
             Py::Str(_) => "str".into(),
             Py::Bytes(_) => "bytes".into(),
             Py::List(_) => "list".into(),
@@ -178,6 +180,7 @@ impl Py {
             Py::Bool(b) => *b,
             Py::Int(i) => *i != 0,
             Py::Float(f) => *f != 0.0,
+            Py::Complex(r, i) => *r != 0.0 || *i != 0.0,
             Py::Str(s) => !s.is_empty(),
             Py::Bytes(b) => !b.is_empty(),
             Py::List(l) => !l.borrow().is_empty(),
@@ -194,10 +197,14 @@ impl Py {
         match (self, other) {
             (Py::None, Py::None) | (Py::Ellipsis, Py::Ellipsis) => true,
             (Py::Bool(a), Py::Bool(b)) => a == b,
-            (Py::Int(a), Py::Int(b)) => a == b,
-            (Py::Float(a), Py::Float(b)) => a.to_bits() == b.to_bits(),
+            // CPython caches the small ints; other numbers are fresh objects (a
+            // value held in two names is not tracked).
+            (Py::Int(a), Py::Int(b)) => a == b && (-5..=256).contains(a),
+            (Py::Float(_), Py::Float(_)) => false,
             (Py::Str(a), Py::Str(b)) => {
-                Arc::ptr_eq(a, b) || (a.len() <= 1 && a == b) || (a.is_empty() && b.is_empty())
+                Arc::ptr_eq(a, b)
+                    || a.is_empty() && b.is_empty()
+                    || (a == b && a.chars().count() == 1 && a.chars().all(|c| (c as u32) < 256))
             }
             (Py::Bytes(a), Py::Bytes(b)) => Arc::ptr_eq(a, b),
             (Py::List(a), Py::List(b)) => Rc::ptr_eq(a, b),
@@ -398,6 +405,8 @@ pub(crate) fn hkey(v: &Py) -> PyRes<HKey> {
         Py::None => HKey::None,
         Py::Bool(b) => HKey::Int(*b as i64),
         Py::Int(i) => HKey::Int(*i),
+        Py::Complex(r, i) if *i == 0.0 => hkey(&Py::Float(*r))?,
+        Py::Complex(r, i) => HKey::Tuple(vec![HKey::Float(r.to_bits()), HKey::Float(i.to_bits())]),
         Py::Float(f) => {
             if f.fract() == 0.0 && f.abs() < 9.2e18 {
                 HKey::Int(*f as i64)
@@ -458,6 +467,11 @@ pub(crate) fn cmp_num(a: NumV, b: NumV) -> Option<Ordering> {
 pub(crate) fn py_eq(a: &Py, b: &Py) -> bool {
     if let (Some(x), Some(y)) = (num_of(a), num_of(b)) {
         return cmp_num(x, y) == Some(Ordering::Equal);
+    }
+    if (matches!(a, Py::Complex(..)) || matches!(b, Py::Complex(..)))
+        && let (Some((a1, b1)), Some((a2, b2))) = (complex_parts(a), complex_parts(b))
+    {
+        return a1 == a2 && b1 == b2;
     }
     match (a, b) {
         (Py::None, Py::None) | (Py::Ellipsis, Py::Ellipsis) => true,
@@ -640,6 +654,7 @@ fn write_repr(v: &Py, out: &mut String, seen: &mut Vec<usize>, _top: bool) {
         Py::Bool(false) => out.push_str("False"),
         Py::Int(i) => out.push_str(&i.to_string()),
         Py::Float(f) => out.push_str(&py_float_repr(*f)),
+        Py::Complex(r, i) => out.push_str(&complex_repr(*r, *i)),
         Py::Str(s) => out.push_str(&py_repr_str(s)),
         Py::Bytes(b) => out.push_str(&bytes_repr(b)),
         Py::List(l) => {
@@ -890,20 +905,60 @@ pub(crate) fn unrepresentable_kind(v: &Py, depth: usize) -> Option<&'static str>
     }
     match v {
         Py::Bytes(_) => Some("bytes"),
+        Py::Complex(..) => Some("complex"),
         Py::Builtin(_) | Py::Type(_) | Py::Method(_) | Py::Proc(_) => Some("function"),
         Py::Iter(_) | Py::Range(..) => Some("iterator"),
         Py::Exc(_) => Some("exception"),
         Py::Slice(_) => Some("slice"),
         Py::Ellipsis => Some("ellipsis"),
         Py::Ast(_) => Some("object"),
-        Py::List(l) => l.borrow().iter().find_map(|x| unrepresentable_kind(x, depth + 1)),
+        Py::List(l) => l
+            .borrow()
+            .iter()
+            .find_map(|x| unrepresentable_kind(x, depth + 1)),
         Py::Tuple(t) => t.iter().find_map(|x| unrepresentable_kind(x, depth + 1)),
-        Py::Set(s) => s.borrow().values().find_map(|x| unrepresentable_kind(x, depth + 1)),
-        Py::Dict(d) => d
+        Py::Set(s) => s
             .borrow()
             .values()
-            .find_map(|(_, x)| unrepresentable_kind(x, depth + 1)),
-        Py::Obj(o) => o.borrow().values().find_map(|x| unrepresentable_kind(x, depth + 1)),
+            .find_map(|x| unrepresentable_kind(x, depth + 1)),
+        Py::Dict(d) => d.borrow().values().find_map(|(k, x)| {
+            if k.is_none() {
+                return Some("dict with a None key");
+            }
+            unrepresentable_kind(x, depth + 1)
+        }),
+        Py::Obj(o) => o
+            .borrow()
+            .values()
+            .find_map(|x| unrepresentable_kind(x, depth + 1)),
         _ => None,
     }
+}
+
+/// A number as `(real, imag)`.
+pub(crate) fn complex_parts(v: &Py) -> Option<(f64, f64)> {
+    match v {
+        Py::Complex(r, i) => Some((*r, *i)),
+        Py::Int(i) => Some((*i as f64, 0.0)),
+        Py::Bool(b) => Some((*b as i64 as f64, 0.0)),
+        Py::Float(f) => Some((*f, 0.0)),
+        _ => None,
+    }
+}
+
+/// `repr(complex)`.
+pub(crate) fn complex_repr(r: f64, i: f64) -> String {
+    let part = |x: f64| {
+        let s = py_float_repr(x);
+        s.strip_suffix(".0").map_or(s.clone(), str::to_string)
+    };
+    if r == 0.0 && r.is_sign_positive() {
+        return format!("{}j", part(i));
+    }
+    let sign = if i.is_sign_negative() || i.is_nan() && false {
+        ""
+    } else {
+        "+"
+    };
+    format!("({}{sign}{}j)", part(r), part(i))
 }

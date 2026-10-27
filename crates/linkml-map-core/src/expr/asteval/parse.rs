@@ -2118,7 +2118,20 @@ pub(super) fn decode_str(body: &str, raw: bool) -> PResult<String> {
                 i += 8;
                 out.push(char::from_u32(v).ok_or("illegal Unicode character")?);
             }
-            'N' => return err("\\N{...} escapes are not supported"),
+            'N' => {
+                if chars.get(i) != Some(&'{') {
+                    return err("malformed \\N character escape");
+                }
+                let Some(end) = chars[i..].iter().position(|&c| c == '}') else {
+                    return err("malformed \\N character escape");
+                };
+                let name: String = chars[i + 1..i + end].iter().collect();
+                let Some(c) = unicode_names2::character(&name) else {
+                    return err("unknown Unicode character name");
+                };
+                out.push(c);
+                i += end + 1;
+            }
             other => {
                 out.push('\\');
                 out.push(other);
@@ -2248,11 +2261,19 @@ fn parse_fstring_chars(
                 // Keep the escape for decode_str, but a `\N{...}` consumes its braces.
                 lit.push('\\');
                 if let Some(&nx) = chars.get(i + 1) {
-                    if nx == 'N' && chars.get(i + 2) == Some(&'{') {
-                        return err("\\N{...} escapes are not supported");
-                    }
                     lit.push(nx);
                     i += 2;
+                    if nx == 'N' && chars.get(i) == Some(&'{') {
+                        // `\N{NAME}`: the braces belong to the escape.
+                        while i < n && chars[i] != '}' {
+                            lit.push(chars[i]);
+                            i += 1;
+                        }
+                        if i < n {
+                            lit.push('}');
+                            i += 1;
+                        }
+                    }
                 } else {
                     i += 1;
                 }

@@ -102,7 +102,7 @@ const INT_METHODS: &[&str] = &[
     "conjugate",
     "is_integer",
 ];
-const FLOAT_METHODS: &[&str] = &["as_integer_ratio", "conjugate", "is_integer"];
+const FLOAT_METHODS: &[&str] = &["as_integer_ratio", "conjugate", "hex", "is_integer"];
 const RANGE_METHODS: &[&str] = &["count", "index"];
 const EXC_METHODS: &[&str] = &["add_note", "with_traceback"];
 
@@ -141,6 +141,8 @@ pub(crate) fn get_attr(obj: &Py, name: &str) -> PyRes<Py> {
         (Py::Int(_) | Py::Bool(_), "imag") => return Ok(Py::Int(0)),
         (Py::Int(_) | Py::Bool(_), "denominator") => return Ok(Py::Int(1)),
         (Py::Float(_), "real") => return Ok(obj.clone()),
+        (Py::Complex(r, _), "real") => return Ok(Py::Float(*r)),
+        (Py::Complex(_, i), "imag") => return Ok(Py::Float(*i)),
         (Py::Float(_), "imag") => return Ok(Py::Float(0.0)),
         (Py::Range(a, _, _), "start") => return Ok(Py::Int(*a)),
         (Py::Range(_, b, _), "stop") => return Ok(Py::Int(*b)),
@@ -230,14 +232,17 @@ fn opt_int(v: Option<&Py>) -> PyRes<Option<i64>> {
 
 /// Resolve `start`/`end` slice arguments against a length (char counts).
 fn clamp_range(start: Option<i64>, end: Option<i64>, len: i64) -> (i64, i64) {
-    let norm = |v: Option<i64>, d: i64| -> i64 {
+    // `ADJUST_INDICES`: a start beyond the length stays (so the range is empty
+    // and nothing matches, not even the empty string).
+    let norm = |v: Option<i64>, d: i64, cap: bool| -> i64 {
         match v {
             None => d,
             Some(x) if x < 0 => (x + len).max(0),
-            Some(x) => x.min(len),
+            Some(x) if cap => x.min(len),
+            Some(x) => x,
         }
     };
-    (norm(start, 0), norm(end, len))
+    (norm(start, 0, false), norm(end, len, true))
 }
 
 fn kwarg_or_pos(args: &[Py], kwargs: &Kwargs, pos: usize, name: &str) -> Option<Py> {
@@ -289,6 +294,7 @@ fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
             Ok(Py::tuple(vec![Py::Int(int_of(recv)?), Py::Int(1)]))
         }
         (Py::Float(f), "conjugate") => Ok(Py::Float(*f)),
+        (Py::Float(f), "hex") => Ok(Py::str(float_hex(*f))),
         (Py::Float(f), "is_integer") => Ok(Py::Bool(f.is_finite() && f.fract() == 0.0)),
         (Py::Float(f), "as_integer_ratio") => {
             if f.is_nan() {
@@ -901,6 +907,7 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             };
             let test = |p: &Py| -> PyRes<bool> {
                 match p {
+                    Py::Str(_) if a > b => Ok(false),
                     Py::Str(p) => Ok(if name == "startswith" {
                         hay.starts_with(&**p)
                     } else {
@@ -1097,7 +1104,7 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
         "encode" => Ok(Py::Bytes(sv.as_bytes().to_vec().into())),
         "expandtabs" => {
             nargs(name, &args, 0, 1)?;
-            let tab = match args.first() {
+            let tab = match kwarg_or_pos(&args, &kwargs, 0, "tabsize").as_ref() {
                 Some(v) => int_of(v)?.max(0) as usize,
                 None => 8,
             };
@@ -1134,4 +1141,31 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
 #[allow(dead_code)]
 fn _unused() {
     let _ = py_round;
+}
+
+/// `float.hex()`.
+fn float_hex(x: f64) -> String {
+    if x.is_nan() {
+        return "nan".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "inf" } else { "-inf" }.into();
+    }
+    let sign = if x.is_sign_negative() { "-" } else { "" };
+    if x == 0.0 {
+        return format!("{sign}0x0.0p+0");
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    let frac = bits & ((1u64 << 52) - 1);
+    let (lead, e) = if exp == 0 {
+        (0, -1022)
+    } else {
+        (1, exp - 1023)
+    };
+    format!(
+        "{sign}0x{lead}.{frac:013x}p{}{}",
+        if e < 0 { "-" } else { "+" },
+        e.abs()
+    )
 }

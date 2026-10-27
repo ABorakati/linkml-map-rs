@@ -152,11 +152,14 @@ Each is marked `PARITY:` in the code.
   typed `except` after a direct `raise`), and its limits (`MAX_STR_LEN`,
   `MAX_EXPONENT`, `MAX_SHIFT`, recursion). A text that does not parse is swallowed
   (`target` stays None) exactly as asteval swallows `SyntaxError`/`IndentationError`.
-  Remaining differences: integers beyond `i64` (an `OverflowError`), `complex`, sets
+  A source map is a `DynObj` for attribute access (a missing attribute is None) and
+  also iterates, subscripts and tests membership like the dict it may be upstream (the
+  engine's `Value` cannot tell the two apart). Remaining differences: integers beyond `i64` (an `OverflowError`), sets
   and tuples leave the block as lists, dict keys as strings, objects that have no
-  `Value` form (functions, iterators, bytes) leave as their `repr`, `id()`/`hash()` of
+  `Value` form (functions, iterators, bytes, complex numbers) are an
+  "unrepresentable value" error, `id()`/`hash()` of
   strings, CPython's hash-order iteration of sets, `open()` always raising
-  `FileNotFoundError`, `dir(obj)`, `match` and `\N{...}` escapes. A runaway loop stops at a
+  `FileNotFoundError`. A runaway loop stops at a
   step limit where upstream hangs.
 - **Errors are classified by variant, not by Python exception class.**
   `ExprError::Eval` stands for upstream's `InvalidExpression`/`TypeError`/`ValueError`

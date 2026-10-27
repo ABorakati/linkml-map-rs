@@ -564,9 +564,22 @@ impl<'a> Interp<'a> {
         let multi = rest.len() > 1;
         let mut results: Vec<bool> = Vec::new();
         let mut ret = false;
+        let mut lnode = left;
         for (op, rnode) in rest {
             let rval = self.run_e(rnode)?;
-            ret = compare(*op, &lval, &rval)?;
+            ret = match op {
+                // PARITY: numbers are values here, not objects: two reads of the same
+                // float are taken to be one object unless one side is a literal.
+                CmpOp::Is | CmpOp::IsNot
+                    if matches!((&lval, &rval), (Py::Float(a), Py::Float(b)) if a.to_bits() == b.to_bits())
+                        && !matches!(lnode, Expr::Constant(_))
+                        && !matches!(rnode, Expr::Constant(_)) =>
+                {
+                    *op == CmpOp::Is
+                }
+                _ => compare(*op, &lval, &rval)?,
+            };
+            lnode = rnode;
             if multi {
                 results.push(ret);
                 if !results.iter().all(|b| *b) {
@@ -615,7 +628,7 @@ impl<'a> Interp<'a> {
             Const::Str(s) => Py::Str(s.clone()),
             Const::Bytes(b) => Py::Bytes(b.clone()),
             Const::Ellipsis => Py::Ellipsis,
-            Const::Complex(_) => return runtime_err("complex numbers are not supported"),
+            Const::Complex(f) => Py::Complex(0.0, *f),
         })
     }
 
