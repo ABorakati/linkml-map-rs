@@ -21,12 +21,20 @@ import ast
 import difflib
 import logging
 import math
+import threading
 import uuid
 from collections.abc import Iterable, Mapping
+from functools import lru_cache
 from typing import Any
 
 import inflection
-from simpleeval import EvalWithCompoundTypes, InvalidExpression, NameNotDefined
+from simpleeval import (
+    DISALLOW_FUNCTIONS,
+    EvalWithCompoundTypes,
+    FeatureNotAvailable,
+    InvalidExpression,
+    NameNotDefined,
+)
 from slugify import slugify as _slugify_lib
 
 logger = logging.getLogger(__name__)
@@ -394,6 +402,13 @@ FUNCTIONS: dict[str, Any] = {
     "is_numeric": _is_numeric,
 }
 
+#: Names injected into the unrestricted-eval namespace by ``ObjectTransformer``
+#: that are neither source slots nor tables. The restricted evaluator does not
+#: bind them, so a qualified ``{src.x}`` must not be flagged as an unknown
+#: reference — it resolves in the unrestricted fallback (or warns/nulls in
+#: restricted mode). Shared with normalization-time reference checking.
+INJECTED_EVAL_NAMES: frozenset[str] = frozenset({"src", "target", "uuid5"})
+
 
 def _maybe_coerce_numeric(left: Any, right: Any) -> tuple[Any, Any]:  # noqa: ANN401
     """
@@ -428,6 +443,67 @@ def _maybe_coerce_numeric(left: Any, right: Any) -> tuple[Any, Any]:  # noqa: AN
     return left, right
 
 
+def _coerce_like(s: str, num: int | float) -> int | float | None:  # noqa: ANN401
+    """Convert numeric string ``s`` to ``num``'s type, falling back to float.
+
+    Returns ``None`` when ``s`` is not numeric-looking.
+
+    >>> _coerce_like("71", 365)
+    71
+    >>> _coerce_like("3.14", 2)
+    3.14
+    >>> _coerce_like("abc", 2) is None
+    True
+    """
+    try:
+        return type(num)(s)
+    except (ValueError, TypeError):
+        return _try_numeric(s)
+
+
+def _maybe_coerce_arithmetic(left: Any, right: Any) -> tuple[Any, Any]:  # noqa: ANN401
+    """
+    Coerce a numeric-string operand so an arithmetic operator evaluates numerically.
+
+    Tabular loaders keep genuinely string-typed columns as strings even when the
+    values look numeric (see linkml/linkml-map#285). Without coercion, ``*`` would
+    apply Python's string semantics -- ``"71" * 365`` repeats the string 365 times
+    instead of computing ``25915`` -- silently corrupting output rather than erroring.
+
+    When exactly one operand is a number and the other a numeric-looking string, the
+    string is converted to a number (matching the number's type when it parses
+    cleanly, else ``float``). Two strings (so ``"a" + "b"`` still concatenates) and a
+    number paired with a non-numeric string are returned unchanged.
+
+    >>> _maybe_coerce_arithmetic('71', 365)
+    (71, 365)
+    >>> _maybe_coerce_arithmetic(365, '71')
+    (365, 71)
+    >>> _maybe_coerce_arithmetic('3.14', 2)
+    (3.14, 2)
+    >>> _maybe_coerce_arithmetic('a', 'b')
+    ('a', 'b')
+    >>> _maybe_coerce_arithmetic(2, 'abc')
+    (2, 'abc')
+    >>> _maybe_coerce_arithmetic(True, '1')
+    (True, '1')
+    """
+    if isinstance(left, str) and isinstance(right, int | float) and not isinstance(right, bool):
+        coerced = _coerce_like(left, right)
+        if coerced is not None:
+            return coerced, right
+    elif isinstance(right, str) and isinstance(left, int | float) and not isinstance(left, bool):
+        coerced = _coerce_like(right, left)
+        if coerced is not None:
+            return left, coerced
+    return left, right
+
+
+def _warn_non_numeric(op, left: Any, right: Any) -> None:  # noqa: ANN001, ANN401
+    """Log that an operator got a non-numeric operand and is returning None."""
+    logger.warning("Non-numeric operand in %s: %r, %r; returning None", op.__name__, left, right)
+
+
 def _null_propagating(op):  # noqa: ANN001, ANN202
     """Wrap a binary operator with null propagation and numeric coercion fallback.
 
@@ -450,7 +526,41 @@ def _null_propagating(op):  # noqa: ANN001, ANN202
         except (TypeError, ValueError):
             left_n, right_n = _try_numeric(left), _try_numeric(right)
             if left_n is None or right_n is None:
-                logger.warning(f"Non-numeric operand in {op.__name__}: {left!r}, {right!r}; returning None")
+                _warn_non_numeric(op, left, right)
+                return None
+            return op(left_n, right_n)
+
+    return wrapper
+
+
+def _null_propagating_arithmetic(op):  # noqa: ANN001, ANN202
+    """Wrap an arithmetic operator with null propagation and numeric-string coercion.
+
+    A number paired with a string is always a numeric context: the string is
+    coerced to a number, or the result is None (with a warning) when it is not
+    numeric-looking. Crucially this never falls through to Python's string
+    semantics -- ``"71" * 365`` computes ``25915`` and ``"abc" * 10`` returns
+    None, rather than repeating the string (see linkml/linkml-map#285).
+
+    Two strings keep native semantics, so ``"a" + "b"`` still concatenates; if the
+    native op then fails (e.g. ``"a" - "b"``), numeric coercion is retried.
+    """
+
+    def wrapper(left: Any, right: Any) -> Any:  # noqa: ANN401
+        if left is None or right is None:
+            return None
+        left, right = _maybe_coerce_arithmetic(left, right)
+        # After coercion, a lone string opposite a number is non-numeric: treat it
+        # as a failed numeric op rather than letting ``*`` repeat the string.
+        if isinstance(left, str) != isinstance(right, str):
+            _warn_non_numeric(op, left, right)
+            return None
+        try:
+            return op(left, right)
+        except (TypeError, ValueError):
+            left_n, right_n = _try_numeric(left), _try_numeric(right)
+            if left_n is None or right_n is None:
+                _warn_non_numeric(op, left, right)
                 return None
             return op(left_n, right_n)
 
@@ -532,6 +642,7 @@ class LinkMLEvaluator(EvalWithCompoundTypes):
         # default dedupes within a single expression eval (mostly a no-op
         # since a given name appears once per expr, but cheap and safe).
         self._warned_unbound: set[str] = warned_unbound if warned_unbound is not None else set()
+        self._comprehension_targets: list[str] = []
         super().__init__(**kwargs)
         for op_type in (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE):
             self.operators[op_type] = _coercing(self.operators[op_type])
@@ -551,7 +662,7 @@ class LinkMLEvaluator(EvalWithCompoundTypes):
             ast.BitOr,
             ast.BitAnd,
         ):
-            self.operators[op_type] = _null_propagating(self.operators[op_type])
+            self.operators[op_type] = _null_propagating_arithmetic(self.operators[op_type])
         for op_type in (ast.USub, ast.UAdd, ast.Invert):
             self.operators[op_type] = _null_propagating_unary(self.operators[op_type])
 
@@ -631,14 +742,71 @@ class LinkMLEvaluator(EvalWithCompoundTypes):
             raise TypeError(msg)
         return self._eval(e)
 
+    def _eval_comprehension(self, node: ast.ListComp | ast.GeneratorExp | ast.DictComp) -> Any:  # noqa: ANN401
+        """
+        Track the names bound by this comprehension for ``_eval_attribute``'s diagnostics.
+
+        simpleeval binds comprehension targets in a closure-local scope reachable
+        only through the ``ast.Name`` handler it swaps into ``self.nodes`` for the
+        duration of the comprehension. The root lookup in ``_eval_attribute``
+        deliberately bypasses that dispatch (see there), so a loop variable is
+        otherwise indistinguishable from a typo. Recording the bound names lets the
+        error name the real cause without mislabelling a genuine typo that merely
+        appears inside a comprehension.
+        """
+        bound = [
+            element.id
+            for generator in node.generators
+            for element in ast.walk(generator.target)
+            if isinstance(element, ast.Name)
+        ]
+        self._comprehension_targets.extend(bound)
+        try:
+            return super()._eval_comprehension(node)
+        finally:
+            del self._comprehension_targets[len(self._comprehension_targets) - len(bound) :]
+
     def _eval_attribute(self, node: ast.Attribute) -> Any:  # noqa: ANN401
         """
         Override attribute access to distribute over collections.
 
         If the object is a list, ``obj.attr`` returns ``[item.attr for item in obj]``.
         If the object is a dict, it distributes over values.
+
+        A qualified reference ``{Name.attr}`` whose *root* name is genuinely
+        unknown (no such source slot, join alias, or function) is a broken
+        reference — a typo or a missing/renamed table — and fails loud even in
+        non-strict mode. This is distinct from a *bare* ``{col}`` absent from a
+        row (legitimate SQL null) and from a root that resolves to ``None`` (a
+        sparse-join miss or an absent schema slot), both of which stay null.
         """
-        obj = self._eval(node.value)
+        if isinstance(node.value, ast.Name) and node.value.id not in INJECTED_EVAL_NAMES:
+            try:
+                # Resolve the root via the base evaluator so an unknown name
+                # surfaces as NameNotDefined instead of being swallowed by the
+                # warn-and-null override in ``_eval_name``.
+                obj = super()._eval_name(node.value)
+            except NameNotDefined:
+                ref = f"{node.value.id}.{node.attr}"
+                if node.value.id in self._comprehension_targets:
+                    # The name is bound by an enclosing comprehension, not missing
+                    # from the schema, so the unknown-reference wording below would
+                    # send the author hunting for a typo that isn't there.
+                    msg = (
+                        f"Attribute access on comprehension-bound {node.value.id!r} in {ref!r} "
+                        f"is not supported. Building records in an expression bypasses the "
+                        f"range, cardinality, and datatype coercion applied to derived objects; "
+                        f"declare a class_derivation keyed on the source range class and reduce "
+                        f"the slot to populated_from instead."
+                    )
+                else:
+                    msg = (
+                        f"Expression references unknown {node.value.id!r} in {ref!r}: "
+                        f"no such source class, join, or slot. Typo or stale reference?"
+                    )
+                raise NameError(msg) from None
+        else:
+            obj = self._eval(node.value)
         return _distributed_getattr(obj, node.attr)
 
 
@@ -687,6 +855,91 @@ def _make_evaluator(
     )
 
 
+#: Compound-type constructors that ``EvalWithCompoundTypes`` injects into the
+#: function namespace at construction time. Materialized here so the reusable
+#: evaluator's function set can be rebuilt without depending on that init-time
+#: mutation (see :func:`_resolve_functions`).
+_COMPOUND_TYPE_FUNCTIONS: dict[str, Any] = {"list": list, "tuple": tuple, "dict": dict, "set": set}
+
+#: Function namespace for expressions with no caller-supplied functions.
+_DEFAULT_FUNCTIONS: dict[str, Any] = {**FUNCTIONS, **_COMPOUND_TYPE_FUNCTIONS}
+
+
+@lru_cache(maxsize=512)
+def _parse_cached(expr: str) -> ast.stmt:
+    """Parse an expression string into an AST node, cached by expression text.
+
+    Expression strings are static per ``slot_derivation.expr`` but evaluated
+    once per row, so caching the parse collapses N-row re-parses into one.
+    Mirrors :meth:`simpleeval.SimpleEval.parse`; the returned node is reused
+    read-only across rows and evaluators, which is safe because simpleeval's
+    AST walk never mutates nodes.
+    """
+    return LinkMLEvaluator.parse(expr)
+
+
+def _resolve_functions(functions: dict[str, Any] | None) -> dict[str, Any]:
+    """Build the full function namespace for an evaluation.
+
+    Reproduces the layering ``EvalWithCompoundTypes.__init__`` applies:
+    caller functions override the built-ins, and the compound-type
+    constructors override both.
+    """
+    if functions:
+        return {**FUNCTIONS, **functions, **_COMPOUND_TYPE_FUNCTIONS}
+    return _DEFAULT_FUNCTIONS
+
+
+def _assert_functions_allowed(functions: dict[str, Any]) -> None:
+    """Reject caller functions that simpleeval forbids (e.g. ``eval``, ``exec``).
+
+    ``SimpleEval.__init__`` runs this check on construction; the reusable
+    evaluator only builds once, so the check is repeated here on every call to
+    preserve that behavior for caller-supplied functions (the built-ins are
+    known-safe).
+    """
+    for f in functions.values():
+        if f in DISALLOW_FUNCTIONS:
+            msg = f"This function {f} is a really bad idea."
+            raise FeatureNotAvailable(msg)
+
+
+#: Per-thread pool of reusable evaluators, keyed by ``strict``. Thread-local so
+#: concurrent transforms never share mutable ``names`` state.
+_evaluator_pool = threading.local()
+
+
+def _get_reusable_evaluator(
+    names: Any,  # noqa: ANN401
+    functions: dict[str, Any],
+    *,
+    strict: bool,
+    warned_unbound: set[str] | None,
+) -> LinkMLEvaluator:
+    """Return a per-thread evaluator configured for this call.
+
+    The evaluator's expensive-to-build parts (the operator-override dict and
+    node dispatch table) are independent of the row data, the bound names, the
+    function set, and ``strict`` mode, so a single instance is reused across
+    rows and only its mutable attributes are reset per call. This collapses the
+    per-row ``LinkMLEvaluator``/``SimpleEval`` construction cost to one build
+    per ``strict`` value per thread.
+    """
+    cache = getattr(_evaluator_pool, "by_strict", None)
+    if cache is None:
+        cache = _evaluator_pool.by_strict = {}
+    evaluator = cache.get(strict)
+    if evaluator is None:
+        evaluator = cache[strict] = _make_evaluator(
+            names=names, functions=functions, strict=strict, warned_unbound=warned_unbound
+        )
+        return evaluator
+    evaluator.names = names
+    evaluator.functions = functions
+    evaluator._warned_unbound = warned_unbound if warned_unbound is not None else set()
+    return evaluator
+
+
 def eval_expr_with_mapping(
     expr: str,
     mapping: Mapping,
@@ -700,6 +953,11 @@ def eval_expr_with_mapping(
 
     This function is equivalent to eval_expr where ``**kwargs`` has been
     switched to a Mapping (e.g. a dictionary). See eval_expr for details.
+
+    The parsed AST is cached by expression string and the underlying evaluator
+    is reused across calls (per thread, per ``strict`` value), so a repeated
+    expression is neither re-parsed nor re-constructs its evaluator on every
+    call — only the variable bindings change.
 
     :param expr: The expression string to evaluate.
     :param mapping: Variable bindings for the expression.
@@ -715,9 +973,11 @@ def eval_expr_with_mapping(
     """
     if expr == "None":
         return None
-    merged = {**FUNCTIONS, **functions} if functions else None
-    evaluator = _make_evaluator(names=mapping, functions=merged, strict=strict, warned_unbound=warned_unbound)
-    return evaluator.eval(expr)
+    if functions:
+        _assert_functions_allowed(functions)
+    resolved = _resolve_functions(functions)
+    evaluator = _get_reusable_evaluator(names=mapping, functions=resolved, strict=strict, warned_unbound=warned_unbound)
+    return evaluator.eval(expr, previously_parsed=_parse_cached(expr))
 
 
 def eval_expr(expr: str, **kwargs: Any) -> Any:  # noqa: ANN401
