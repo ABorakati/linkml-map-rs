@@ -76,7 +76,22 @@ pub struct FixtureCase {
     pub transform_path: PathBuf,
     /// The source class name to use (derived from input filename stem).
     pub source_class_hint: Option<String>,
+    /// Whether upstream runs this fixture with `unrestricted_eval` on. Off for
+    /// everything but [`UNRESTRICTED_FIXTURES`].
+    pub unrestricted_eval: bool,
 }
+
+/// Fixture directories upstream only reproduces with `unrestricted_eval`.
+///
+/// Upstream's tests build `ObjectTransformer()` (restricted) throughout; the
+/// exception is `personinfo_basic`, whose spec begins "Run this spec with
+/// `linkml-map map-data --unrestricted-eval`" because its Agent derivations use
+/// `src.` accessors, statement blocks and comprehensions that the safe
+/// evaluator does not provide (`tests/test_cli/test_cli.py::test_map_data` passes
+/// the flag; `test_map_data_without_unrestricted_eval_fails` pins the failure
+/// without it; `tests/test_transformer/test_object_transformer.py` builds its
+/// personinfo transformer with `unrestricted_eval=True`).
+pub const UNRESTRICTED_FIXTURES: &[&str] = &["personinfo_basic"];
 
 // ─── Discovery ────────────────────────────────────────────────────────────────
 
@@ -175,6 +190,7 @@ pub fn discover_fixtures(root: &Path) -> Vec<FixtureCase> {
                 source_schema_path: source_schema_path.clone(),
                 transform_path: transform_path.clone(),
                 source_class_hint,
+                unrestricted_eval: UNRESTRICTED_FIXTURES.contains(&fixture_name.as_str()),
             });
         }
     }
@@ -418,7 +434,8 @@ fn run_case_inner(case: &FixtureCase) -> anyhow::Result<RunResult> {
     let source_provider_ref: Option<&dyn SchemaProvider> =
         source_provider.as_ref().map(|p| p as &dyn SchemaProvider);
 
-    let engine = ObjectTransformer::new(spec, source_provider_ref, None);
+    let engine = ObjectTransformer::new(spec, source_provider_ref, None)
+        .with_unrestricted_eval(case.unrestricted_eval);
 
     // Use the container-aware entry: it builds an FK ObjectIndex from the whole
     // input first, then maps. For non-FK specs this is identical to

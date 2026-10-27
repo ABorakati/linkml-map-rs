@@ -46,8 +46,7 @@ use crate::{
     },
     error::{Error, Result},
     expr::{
-        Bindings, ExprResult, ParsedExpr, eval_expr_with_mapping, eval_expr_with_mapping_strict,
-        eval_parsed, eval_parsed_strict, parse_expr,
+        Bindings, EvalMode, ExprResult, ParsedExpr, eval_enum_parsed, eval_parsed_gated, parse_expr,
     },
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
@@ -139,6 +138,11 @@ pub struct ObjectTransformer<'s> {
     /// `slot()` references instead of silently yielding null (#232). Default
     /// false (lax). Set via [`with_strict_exprs`].
     strict: bool,
+    /// When true, `expr:` may use the unrestricted (asteval-style) evaluator:
+    /// statement blocks with `src`, and the fallback for an expression the
+    /// restricted evaluator rejects. Default false (restricted), as upstream
+    /// `unrestricted_eval`. Set via [`with_unrestricted_eval`].
+    unrestricted_eval: bool,
     /// Optional shared target-schema lookup table (target slot datatypes).
     /// Built once per plan and borrowed by every per-row engine; see
     /// [`ObjectTransformer::with_target_coercions`].
@@ -173,6 +177,7 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            unrestricted_eval: false,
             target_coercions: None,
             local_target_coercions: OnceLock::new(),
             content_ids: None,
@@ -199,6 +204,7 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            unrestricted_eval: false,
             target_coercions: None,
             local_target_coercions: OnceLock::new(),
             content_ids: None,
@@ -248,6 +254,29 @@ impl<'s> ObjectTransformer<'s> {
         self
     }
 
+    /// Enable `unrestricted_eval`: `expr:` blocks of Python statements run in
+    /// the asteval-style interpreter with the source object bound as `src`, and
+    /// an expression the restricted evaluator rejects (an upstream
+    /// `InvalidExpression`/`TypeError`/`ValueError`) yields null instead of
+    /// failing the row. Default off, as upstream: the restricted evaluator
+    /// evaluates one expression over the source slots, with no `src`, and
+    /// refuses statements and attribute access on comprehension variables.
+    /// Mirrors upstream `Transformer.unrestricted_eval`; only enable it for
+    /// trusted specs.
+    pub fn with_unrestricted_eval(mut self, unrestricted: bool) -> Self {
+        self.unrestricted_eval = unrestricted;
+        self
+    }
+
+    /// The evaluation mode set by [`with_strict_exprs`] and
+    /// [`with_unrestricted_eval`].
+    fn eval_mode(&self) -> EvalMode {
+        EvalMode {
+            strict: self.strict,
+            unrestricted: self.unrestricted_eval,
+        }
+    }
+
     /// Transform a single source object.
     ///
     /// `source_type` names the LinkML class of `source_obj`.  When `None` the
@@ -277,6 +306,26 @@ impl<'s> ObjectTransformer<'s> {
             source_obj,
             &source_type,
             None,
+            Some(class_derivation),
+        )
+    }
+
+    /// [`ObjectTransformer::map_object_with_derivation`] with a pre-built
+    /// [`ObjectIndex`]: the FK-pipeline entry point for a streaming block that
+    /// names its own class derivation (see [`ObjectTransformer::map_object_with_index`]).
+    pub fn map_object_with_derivation_and_index(
+        &self,
+        source_obj: &Value,
+        source_type: Option<&str>,
+        class_derivation: &ClassDerivation,
+        index: &ObjectIndex,
+    ) -> Result<Value> {
+        let source_type = self.resolve_source_type(source_type)?;
+        let idx_ref = if index.is_empty() { None } else { Some(index) };
+        self.map_object_with_type_and_derivation(
+            source_obj,
+            &source_type,
+            idx_ref,
             Some(class_derivation),
         )
     }
@@ -1123,6 +1172,22 @@ impl<'s> ObjectTransformer<'s> {
 
     // ── Expression evaluation ─────────────────────────────────────────────────
 
+    /// Mirror of `ObjectTransformer._eval_expr`: evaluate `expr` (pre-parsed as
+    /// `cached`, when a compiled cache holds it) under this engine's strict and
+    /// unrestricted settings. See [`eval_parsed_gated`].
+    fn eval_gated(
+        &self,
+        cached: Option<&ParsedExpr>,
+        expr: &str,
+        bindings: &Bindings,
+    ) -> ExprResult<Value> {
+        match cached {
+            Some(parsed) => eval_parsed_gated(parsed, bindings, self.eval_mode()),
+            None => parse_expr(expr)
+                .and_then(|parsed| eval_parsed_gated(&parsed, bindings, self.eval_mode())),
+        }
+    }
+
     fn eval_expr_for_slot(
         &self,
         expr: &str,
@@ -1184,18 +1249,11 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
-        // Bind the whole source object as `src`, mirroring the asteval
-        // `usersyms={"src": ctxt_obj, ...}` contract used by linkml-map's
-        // multi-statement (`expr:`) blocks. Multi-statement specs read
-        // `src.<slot>`; single-expression specs bind slot names directly and
-        // do not need `src`, but binding it is harmless (it only shadows a
-        // literal `src` source slot, which the schemas do not define).
-        let src_obj: IndexMap<String, Value> = bindings
-            .iter()
-            .filter(|(k, _)| k.as_str() != "NULL")
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        bindings.insert("src".to_string(), Value::Map(src_obj));
+        // PARITY: no `src` binding. Upstream's `Bindings` hold the source slots,
+        // `NULL` and join aliases; `src` exists only inside an unrestricted
+        // statement block (`_unrestricted_eval`), where `eval_parsed_gated`
+        // builds it from these bindings. A single expression reading `src.x`
+        // sees an unbound name: null, or an error in strict mode.
         if let Some(attrs) = target_attrs {
             bindings.insert("__slot_values".to_string(), Value::Map(attrs.clone()));
         }
@@ -1203,15 +1261,11 @@ impl<'s> ObjectTransformer<'s> {
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
         // string parse path otherwise (identical result).
-        let result = match (
+        let result = self.eval_gated(
             self.compiled.and_then(|c| c.slot(class_name, slot_name)),
-            self.strict,
-        ) {
-            (Some(parsed), false) => eval_parsed(parsed, &bindings),
-            (Some(parsed), true) => eval_parsed_strict(parsed, &bindings),
-            (None, false) => eval_expr_with_mapping(expr, &bindings),
-            (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
-        };
+            expr,
+            &bindings,
+        );
         result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
             slot: slot_name.to_string(),
@@ -1884,14 +1938,13 @@ impl<'s> ObjectTransformer<'s> {
                 bindings.insert("NULL".to_string(), Value::Null);
                 // Cached-AST fast path mirrors the slot path; falls back to the
                 // string parse when no compiled cache is attached.
-                let evaled = match (
-                    self.compiled.and_then(|c| c.enum_exprs.get(ed_key)),
-                    self.strict,
-                ) {
-                    (Some(parsed), false) => eval_parsed(parsed, &bindings),
-                    (Some(parsed), true) => eval_parsed_strict(parsed, &bindings),
-                    (None, false) => eval_expr_with_mapping(expr, &bindings),
-                    (None, true) => eval_expr_with_mapping_strict(expr, &bindings),
+                let evaled = match self.compiled.and_then(|c| c.enum_exprs.get(ed_key)) {
+                    Some(parsed) => {
+                        eval_enum_parsed(parsed, &bindings, source_obj, self.eval_mode())
+                    }
+                    None => parse_expr(expr).and_then(|p| {
+                        eval_enum_parsed(&p, &bindings, source_obj, self.eval_mode())
+                    }),
                 };
                 match evaled {
                     Ok(v) if !v.is_null() => return Ok(v),
@@ -1900,12 +1953,10 @@ impl<'s> ObjectTransformer<'s> {
                     Ok(_) => {}
                     // PARITY: upstream transform_enum re-raises
                     // InvalidExpression/TypeError/ValueError unless
-                    // unrestricted_eval is enabled. Rust merges the restricted
-                    // and unrestricted evaluator paths (expr/eval.rs,
-                    // expr/stmt.rs), so upstream's
-                    // `if not self.unrestricted_eval: raise` collapses to an
-                    // unconditional raise here. No slot name is in scope: use
-                    // the enum name for `class` and the derivation key for `slot`.
+                    // unrestricted_eval is enabled, which `eval_enum_parsed`
+                    // models; every other error propagates either way. No slot
+                    // name is in scope: use the enum name for `class` and the
+                    // derivation key for `slot`.
                     Err(e) => {
                         return Err(Error::ExprEval {
                             class: enum_name.to_string(),
@@ -3687,6 +3738,78 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, Value::Str("ACTIVE".into()));
+    }
+
+    /// Run enum `expr:` against a one-key Map source (`color`), in the given modes.
+    fn enum_expr_result(expr: &str, strict: bool, unrestricted: bool) -> Result<Value> {
+        let mut enum_derivations: IndexMap<String, EnumDerivation> = IndexMap::new();
+        enum_derivations.insert(
+            "SimplePrimary".into(),
+            EnumDerivation {
+                name: "SimplePrimary".into(),
+                populated_from: Some("SimplePrimary".into()),
+                expr: Some(expr.into()),
+                ..Default::default()
+            },
+        );
+        let spec = TransformationSpecification {
+            enum_derivations: Some(enum_derivations),
+            ..Default::default()
+        };
+        let engine = ObjectTransformer::new(spec, None, None)
+            .with_strict_exprs(strict)
+            .with_unrestricted_eval(unrestricted);
+        let mut m = IndexMap::new();
+        m.insert("color".into(), Value::Str("light_red".into()));
+        engine.transform_enum(
+            &Value::Str("light_red".into()),
+            &["SimplePrimary".to_string()],
+            &Value::Map(m),
+        )
+    }
+
+    /// Upstream `test_enum_expr_restricted_evaluates`: restricted syntax needs no opt-in.
+    #[test]
+    fn test_enum_expr_restricted_evaluates() {
+        assert_eq!(
+            enum_expr_result("'EXPR:' + color", false, false).unwrap(),
+            Value::Str("EXPR:light_red".into())
+        );
+    }
+
+    /// Upstream `test_enum_expr_unrestricted_fallback`: an expression simpleeval
+    /// rejects (here `src` is unbound for a mapping source, so `None['color']`
+    /// is a `TypeError`) falls back to asteval only with the opt-in.
+    #[test]
+    fn test_enum_expr_unrestricted_fallback() {
+        assert_eq!(
+            enum_expr_result("target = src['color']", false, true).unwrap(),
+            Value::Str("light_red".into())
+        );
+    }
+
+    /// Upstream `test_enum_expr_restricted_raises_without_opt_in`.
+    #[test]
+    fn test_enum_expr_restricted_raises_without_opt_in() {
+        assert!(matches!(
+            enum_expr_result("target = src['color']", false, false),
+            Err(Error::ExprEval { .. })
+        ));
+    }
+
+    /// Upstream `test_enum_expr_strict_unknown_name_raises_without_fallback`:
+    /// a `NameError` is not in the catch tuple, so it never escalates.
+    #[test]
+    fn test_enum_expr_strict_unknown_name_raises_without_fallback() {
+        for unrestricted in [false, true] {
+            assert!(
+                matches!(
+                    enum_expr_result("colorr", true, unrestricted),
+                    Err(Error::ExprEval { .. })
+                ),
+                "unrestricted={unrestricted}"
+            );
+        }
     }
 
     // ── Test 14: coerce_datatype ──────────────────────────────────────────────

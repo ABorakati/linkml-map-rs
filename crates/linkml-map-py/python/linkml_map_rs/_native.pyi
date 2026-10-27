@@ -43,12 +43,19 @@ class Transformer:
         source_class: str | None = ...,
         *,
         strict: bool = ...,
+        unrestricted_eval: bool = ...,
     ) -> None:
         """Load the schema(s) and spec from file paths (``str`` or ``pathlib.Path``).
 
         A missing file raises ``PathNotFoundError``. ``strict`` mirrors upstream
         ``ObjectTransformer.strict``: an expression reference that does not
-        resolve raises instead of yielding null.
+        resolve raises instead of yielding null. ``unrestricted_eval`` mirrors
+        upstream ``ObjectTransformer.unrestricted_eval`` and defaults to
+        ``False`` (the safe, restricted evaluator): ``expr:`` blocks of Python
+        statements then run only their first statement and see no ``src``. Set it
+        to ``True`` to run such blocks with the source object as ``src``; an
+        expression the restricted evaluator rejects then yields null instead of
+        raising. Only enable it for trusted specifications.
         """
         ...
     @staticmethod
@@ -59,6 +66,7 @@ class Transformer:
         source_class: str | None = ...,
         *,
         strict: bool = ...,
+        unrestricted_eval: bool = ...,
     ) -> "Transformer":
         """Build from in-memory YAML strings (used by the `linkml_map` shim)."""
         ...
@@ -70,6 +78,7 @@ class Transformer:
         source_class: str | None = ...,
         *,
         strict: bool = ...,
+        unrestricted_eval: bool = ...,
     ) -> "Transformer":
         """Build directly from Python SchemaView / specification objects.
 
@@ -131,6 +140,7 @@ def transform_object(
     target_schema: str | os.PathLike[str] | None = ...,
     source_class: str | None = ...,
     strict: bool = ...,
+    unrestricted_eval: bool = ...,
 ) -> dict[str, Any]:
     """Transform one object; schema(s) + spec loaded on every call.
 
@@ -147,6 +157,7 @@ def transform_objects(
     target_schema: str | os.PathLike[str] | None = ...,
     source_class: str | None = ...,
     strict: bool = ...,
+    unrestricted_eval: bool = ...,
 ) -> list[dict[str, Any]]:
     """Transform a batch; schema(s) + spec loaded once for the batch.
 
