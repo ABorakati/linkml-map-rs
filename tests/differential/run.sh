@@ -49,7 +49,11 @@ if [ "$build" = 1 ]; then (cd "$repo" && cargo build --release -p linkml-map-cli
 status=0
 
 if [ "$do_examples" = 1 ]; then
-  args=(--upstream-dir "$UPSTREAM_DIR" --report "${report:-$here/EXAMPLES_REPORT.md}")
+  # Record every map_object call upstream's own pytest suite makes, and replay those too.
+  cap="$(mktemp -d)"
+  (cd "$UPSTREAM_DIR" && CAPTURE_DIR="$cap" PYTHONPATH="$here" "$PY" -m pytest -p capture_plugin tests -q -p no:cacheprovider -x \
+      --deselect tests/test_compiler/test_graphviz_compiler.py >/dev/null 2>&1) || echo "note: capturing upstream test inputs failed; continuing" >&2
+  args=(--upstream-dir "$UPSTREAM_DIR" --report "${report:-$here/EXAMPLES_REPORT.md}" --captured "$cap")
   [ "$gate" = 1 ] && args+=(--fail-on-diff)
   "$PY" "$here/examples_sweep.py" "${args[@]}" > /dev/null || status=1
   echo "examples sweep report: ${report:-$here/EXAMPLES_REPORT.md}"

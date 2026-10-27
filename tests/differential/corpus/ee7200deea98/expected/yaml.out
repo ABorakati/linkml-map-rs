@@ -1,0 +1,12 @@
+tags_pf:
+- y
+tags_expr:
+- y
+tags_value:
+- a
+amt_pf: 5.0
+amt_expr: 5.0
+amt_value: 5.0
+count_value: 7
+label_expr: '2'
+amt_text: '5.0'

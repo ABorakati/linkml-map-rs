@@ -1,0 +1,60 @@
+name: agent
+description: Minimal agent target schema for LinkML-Map testing, based on Person from
+  [schema.org](http://schema.org)
+id: https://example.org/linkml/scaffold/agent
+imports:
+- linkml:types
+license: https://creativecommons.org/publicdomain/zero/1.0/
+prefixes:
+  agent:
+    prefix_prefix: agent
+    prefix_reference: https://example.org/linkml/scaffold/agent/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+  OMOP:
+    prefix_prefix: OMOP
+    prefix_reference: https://athena.ohdsi.org/search-terms/terms/
+default_prefix: agent
+default_range: string
+enums:
+  SexEnum:
+    name: SexEnum
+    permissible_values:
+      OMOP:8532:
+        text: OMOP:8532
+        meaning: OMOP:8532
+        title: FEMALE
+        aliases:
+        - F
+        - female
+      OMOP:8507:
+        text: OMOP:8507
+        meaning: OMOP:8507
+        title: MALE
+        aliases:
+        - M
+        - male
+slots:
+  id:
+    name: id
+    range: string
+  label:
+    name: label
+    range: string
+classes:
+  Element:
+    name: Element
+    description: A generic grouping for any identifiable entity
+    slots:
+    - id
+    - label
+  Agent:
+    name: Agent
+    description: An agent (person, animal, digital, or fictional).
+    is_a: Element
+    attributes:
+      sex:
+        name: sex
+        range: SexEnum
+source_file: /home/user/upstream/linkml-map/tests/scaffold/target/agent.yaml

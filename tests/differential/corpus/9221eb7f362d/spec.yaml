@@ -1,0 +1,29 @@
+id: scaffold-mapping
+title: Minimal scaffold mapping
+prefixes:
+  src:
+    key: src
+    value: https://example.org/test-source-scaffold/
+  tgt:
+    key: tgt
+    value: https://example.org/test-target-scaffold/
+source_schema:
+  name: https://example.org/test-source-scaffold
+target_schema:
+  name: https://example.org/test-target-scaffold
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    label:
+      name: label
+      populated_from: name
+    _src_name:
+      name: _src_name
+      expr: '{name}'
+      hide: true
+    asteval_label:
+      name: asteval_label
+      expr: 'target = (lambda v: v.upper())(slot(''_src_name''))'

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "could not convert string to float: 'five'; class_derivation=StructuredSample (from StringSample); slot_derivation=depth"
+}

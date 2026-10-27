@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "compiling plan: loading spec /tmp/claude-0/cap2/549c49e209bb/spec.yaml: parsing spec /tmp/claude-0/cap2/549c49e209bb/spec.yaml: invalid type: sequence, expected a map"
+}

@@ -1,0 +1,17 @@
+source_schema:
+  name: https://example.org/source
+target_schema:
+  name: https://example.org/target
+class_derivations:
+- name: Output
+  populated_from: Record
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    tag:
+      name: tag
+      populated_from: tag
+    tags:
+      name: tags
+      populated_from: tags

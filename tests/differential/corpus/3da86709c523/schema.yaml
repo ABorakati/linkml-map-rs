@@ -1,0 +1,58 @@
+name: container
+description: Container schema for cross-class FK lookup testing.
+id: https://example.org/linkml/scaffold/container
+imports:
+- linkml:types
+prefixes:
+  container:
+    prefix_prefix: container
+    prefix_reference: https://example.org/linkml/scaffold/container/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: container
+default_range: string
+classes:
+  Container:
+    name: Container
+    attributes:
+      persons:
+        name: persons
+        range: Person
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      organizations:
+        name: organizations
+        range: Organization
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+    tree_root: true
+  Person:
+    name: Person
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string
+      org_id:
+        name: org_id
+        range: Organization
+  Organization:
+    name: Organization
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string
+      city:
+        name: city
+        range: string
+source_file: /home/user/upstream/linkml-map/tests/scaffold_container/source/container.yaml

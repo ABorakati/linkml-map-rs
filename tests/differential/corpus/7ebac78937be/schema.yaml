@@ -1,0 +1,86 @@
+name: person
+description: Minimal person schema for LinkML-Map testing, based on [schema.org](http://schema.org)
+id: https://example.org/linkml/scaffold/person
+imports:
+- linkml:types
+license: https://creativecommons.org/publicdomain/zero/1.0/
+prefixes:
+  person:
+    prefix_prefix: person
+    prefix_reference: https://example.org/linkml/scaffold/person
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: person
+default_range: string
+slots:
+  id:
+    name: id
+    identifier: true
+    range: string
+  name:
+    name: name
+    range: string
+  status_code:
+    name: status_code
+    range: string
+  visit_code:
+    name: visit_code
+    range: string
+  role_code:
+    name: role_code
+    range: string
+  height_cm:
+    name: height_cm
+    range: float
+    unit:
+      ucum_code: cm
+  depth_cm:
+    name: depth_cm
+    range: float
+    unit:
+      ucum_code: cm
+  width_cm:
+    name: width_cm
+    range: string
+    unit:
+      ucum_code: cm
+  coded_cm:
+    name: coded_cm
+    range: string
+    unit:
+      ucum_code: cm
+  missing_cm:
+    name: missing_cm
+    range: float
+    unit:
+      ucum_code: cm
+classes:
+  NamedThing:
+    name: NamedThing
+    description: A generic grouping for any identifiable entity
+    slots:
+    - id
+    - name
+  Person:
+    name: Person
+    description: A person (alive, dead, undead, or fictional).
+    is_a: NamedThing
+    slots:
+    - status_code
+    - visit_code
+    - role_code
+    - height_cm
+    - depth_cm
+    - width_cm
+    - coded_cm
+    - missing_cm
+    attributes:
+      gender:
+        name: gender
+        range: string
+      genders:
+        name: genders
+        range: string
+        multivalued: true
+source_file: /home/user/upstream/linkml-map/tests/scaffold/source/person.yaml

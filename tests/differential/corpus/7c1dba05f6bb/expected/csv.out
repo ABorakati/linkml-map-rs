@@ -1,0 +1,2 @@
+id,label,age,primary_email,secondary_email,gender,driving_since,first_known_event,death_date,current_address__address_of,current_address__street,current_address__city,has_familial_relationships
+P:001,fred bloggs,33 years,fred.bloggs@example.com,None,None,2014-03-31,1990-01-01,None,foo,1 oak street,oaktown,[{'type': 'SIBLING_OF', 'related_to': 'P:002'}, {'type': 'CHILD_OF', 'related_to': 'P:003'}]

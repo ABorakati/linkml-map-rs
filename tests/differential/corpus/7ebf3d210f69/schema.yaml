@@ -1,0 +1,44 @@
+name: test
+id: https://example.org/test
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/test/
+default_range: string
+classes:
+  Org:
+    name: Org
+    from_schema: https://example.org/test
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/test
+        identifier: true
+        domain_of:
+        - Org
+        - Person
+      title:
+        name: title
+        from_schema: https://example.org/test
+        domain_of:
+        - Org
+  Person:
+    name: Person
+    from_schema: https://example.org/test
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/test
+        identifier: true
+        domain_of:
+        - Org
+        - Person
+      name:
+        name: name
+        from_schema: https://example.org/test
+        domain_of:
+        - Person
+source_file: /tmp/pytest-of-root/pytest-13/test_entity_filter_single_obje0/schema.yaml

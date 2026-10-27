@@ -1,0 +1,14 @@
+id: inheriting
+class_derivations:
+- name: Record
+  slot_derivations:
+    id:
+      name: id
+      expr: '''R-'' + {participant}'
+- name: Measurement
+  is_a: Record
+  populated_from: Row
+  slot_derivations:
+    observation_type:
+      name: observation_type
+      populated_from: observation_type

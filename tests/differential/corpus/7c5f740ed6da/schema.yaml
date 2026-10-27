@@ -1,0 +1,22 @@
+name: source
+id: https://example.org/source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/source/
+classes:
+  Person:
+    name: Person
+    attributes:
+      name:
+        name: name
+        range: string
+      given_name:
+        name: given_name
+        range: string
+      family_name:
+        name: family_name
+        range: string

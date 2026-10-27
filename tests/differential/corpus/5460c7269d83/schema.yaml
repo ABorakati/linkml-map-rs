@@ -1,0 +1,35 @@
+name: eav-source
+id: https://example.org/eav
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/eav/
+classes:
+  Measurement:
+    name: Measurement
+    attributes:
+      att:
+        name: att
+        range: string
+      val:
+        name: val
+        range: float
+      unit:
+        name: unit
+        range: string
+        required: false
+  MeasurementContainer:
+    name: MeasurementContainer
+    attributes:
+      id:
+        name: id
+        range: string
+      measurements:
+        name: measurements
+        range: Measurement
+        multivalued: true
+        inlined: true
+    tree_root: true

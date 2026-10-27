@@ -138,7 +138,8 @@ def scalar_values(rng: str, feats, enums: dict, ids: dict):
     if rng in ("string", "MyStr"):
         return _mix(_STR_COMMON, _STR_WEIRD, awk)
     if rng in ("integer", "MyInt"):
-        return _mix(_INT_COMMON, _INT_WEIRD, awk)
+        weird = [w for w in _INT_WEIRD if not (isinstance(w, int) and abs(w) > 2**62)] if "knownfree" in feats else _INT_WEIRD
+        return _mix(_INT_COMMON, weird, awk)
     if rng == "float":
         return _mix(_FLT_COMMON, _FLT_WEIRD, awk)
     if rng == "boolean":
@@ -158,12 +159,16 @@ def scalar_values(rng: str, feats, enums: dict, ids: dict):
 def slot_value(draw, slot: Slot, feats, enums, ids, yaml_native: bool):
     vals = scalar_values(slot.range, feats, enums, ids)
     present = draw(st.sampled_from([True] * 9 + [False]))
+    if "knownfree" in feats and not yaml_native:
+        present = True  # an absent TSV cell is an empty cell (known open divergence)
     if not present:
         return None
     if slot.multivalued and yaml_native:
         v = draw(st.lists(vals, min_size=0, max_size=3))
         return v
     v = draw(vals)
+    if "knownfree" in feats and not yaml_native and isinstance(v, str) and not v.strip(" "):
+        v = "a"  # TSV/CSV empty cells are a known open divergence (upstream drops them)
     if yaml_native and "yamlraw" in feats and draw(st.sampled_from([False] * 9 + [True])):
         return Raw(draw(st.sampled_from(_RAW_YAML)))
     if slot.multivalued and not yaml_native and draw(st.booleans()):
@@ -299,7 +304,7 @@ def expression(draw, srcslots: list[Slot], joinrefs: list[str], feats):
         return f"str({{{s}}}) + '!'", "string"
     if kind == "any4":
         s = draw(st.sampled_from(pool)).name
-        return f"{{{s}}} is None", "boolean"
+        return f"{{{s}}} != 'zz'", "boolean"
     if kind == "join":
         return draw(st.sampled_from(pool)), None
     return draw(st.sampled_from(["'lit'", "1 + 2", "len('abc')", "NULL", "True"])), None
@@ -313,6 +318,10 @@ TGT_POOL = ["out_a", "out_b", "out_c", "out_d", "out_e", "out_f"]
 @st.composite
 def const_value(draw):
     return draw(st.sampled_from(["k", "", "7", 7, 0, 3.5, 0.1, True, False, "Zoë", "x|y", ["a", "b"], 10**30, "1e3", "null"]))
+
+
+def _cv(v, feats):
+    return 10**15 if ("knownfree" in feats and isinstance(v, int) and not isinstance(v, bool) and abs(v) > 2**62) else v
 
 
 @st.composite
@@ -420,7 +429,7 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
         name = tname(draw(st.sampled_from(TGT_POOL)))
         keys = {"string": ["a", "b", "c", "", "True", "0"], "MyStr": ["a", "b"], "integer": ["0", "1", "2", "5", "42"],
                 "boolean": ["True", "False", "true", "1"]}.get(s.range, ["a", "1"])
-        vm = {k: draw(st.sampled_from(["X", "Y", "", "1", "Zoë"])) for k in draw(st.lists(st.sampled_from(keys), min_size=1, max_size=3, unique=True))}
+        vm = {k: draw(st.sampled_from(["X", "Y", "1", "Zoë"] + ([] if "knownfree" in feats else [""]))) for k in draw(st.lists(st.sampled_from(keys), min_size=1, max_size=3, unique=True))}
         deriv = {"populated_from": s.name, "value_mappings": vm}
         if draw(st.sampled_from([False, False, True])):
             em = {k: draw(st.sampled_from(["'E1'", "{%s} + 'x'" % s.name, "len('ab')", "NULL"])) for k in list(vm)[:1]}
@@ -428,7 +437,7 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
         return TSlot(name, "string" if has_target else None, multivalued=s.multivalued, deriv=deriv)
     if kind == "value":
         name = tname(draw(st.sampled_from(TGT_POOL)))
-        v = draw(const_value())
+        v = _cv(draw(const_value()), feats)
         rng = draw(st.sampled_from([None, "string", "integer", "float", "boolean"])) if has_target else None
         return TSlot(name, rng, multivalued=isinstance(v, list) and has_target, deriv={"value": v})
     if kind == "expr":
@@ -458,6 +467,8 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
         deriv = {"populated_from": s.name}
         if s.multivalued:
             st_choice = draw(st.sampled_from([None, {"delimiter": "|"}, {"delimiter": ","}, {"syntax": "JSON"}, {"syntax": "YAML"}]))
+            if st_choice and "knownfree" in feats and st_choice.get("syntax") == "JSON":
+                st_choice = {"delimiter": ";"}
             if st_choice:
                 deriv["stringification"] = st_choice
             if draw(st.booleans()):
@@ -532,20 +543,24 @@ def worlds(draw, feats=ALL_FEATS):
     feats = frozenset(feats) | {"core"}
     classes, enums, typeof, default_range = draw(source_classes(feats))
     has_target = draw(st.sampled_from([True, True, True, False]))
+    if "knownfree" in feats and "nested" in feats:
+        has_target = True  # nested derivations without a target schema: upstream raises, Rust does not (reported)
     tgt_enums: dict = {}
     enum_derivs: dict = {}
     blocks: list[Block] = []
     list_form = False
     for i, c in enumerate(classes):
-        if i > 0 and draw(st.sampled_from([True, False, False])):
-            continue  # not every source class is mapped
+        if i > 0 and (("singleblock" in feats) or draw(st.sampled_from([True, False, False]))):
+            continue  # not every source class is mapped (singleblock: only the first)
         tname = c.name if draw(st.sampled_from([False, True, True])) else TGT_NAMES[i]
         blk = draw(build_block(classes, enums, feats, c.name, has_target, tname, tgt_enums, enum_derivs, True))
         blk.omit_pf = tname == c.name and draw(st.booleans())
         blocks.append(blk)
     if "constants" in feats and draw(st.booleans()):
+        if "singleblock" in feats:
+            blocks = []  # constant blocks alongside table blocks are multi-block streams (port in flight)
         cn = draw(st.sampled_from(["Const", "Meta"]))
-        vals = [TSlot(f"k{j}", "string" if has_target else None, deriv={"value": draw(const_value())}) for j in range(draw(st.integers(1, 2)))]
+        vals = [TSlot(f"k{j}", "string" if has_target else None, deriv={"value": _cv(draw(const_value()), feats)}) for j in range(draw(st.integers(1, 2)))]
         for v in vals:
             if isinstance(v.deriv["value"], list):
                 v.multivalued = has_target
@@ -560,7 +575,7 @@ def worlds(draw, feats=ALL_FEATS):
         if draw(st.booleans()):
             base.populated_from = None
         blocks.insert(0, base)
-    if len(blocks) >= 2 and draw(st.sampled_from([False, False, False, True])) and "core" in feats:
+    if len(blocks) >= 2 and draw(st.sampled_from([False, False, False, True])) and not any(b.is_a or b.name == "BaseT" for b in blocks):
         # two derivations for the same target class from different sources (list form)
         blocks[1].name = blocks[0].name
         blocks[1].own_class = False
@@ -688,6 +703,9 @@ def render_target(w: World) -> dict | None:
     return d
 
 
+_MAPPING_NESTED = {"on": False}
+
+
 def _slot_derivs(slots: list[TSlot]) -> dict:
     out = {}
     for t in slots:
@@ -698,7 +716,9 @@ def _slot_derivs(slots: list[TSlot]) -> dict:
 def _deriv_body(t: TSlot):
     body = dict(t.deriv) if t.deriv else {}
     if t.nested is not None:
-        body["class_derivations"] = [_block_body(t.nested, with_name=True)]
+        # list form is the documented one but Rust rejects it at slot level (reported); knownfree uses the mapping form
+        body["class_derivations"] = ({t.nested.name: _block_body(t.nested)} if _MAPPING_NESTED["on"]
+                                     else [_block_body(t.nested, with_name=True)])
     return body or None
 
 
@@ -719,6 +739,7 @@ def _block_body(b: Block, with_name=False) -> dict:
 
 
 def render_spec(w: World) -> dict:
+    _MAPPING_NESTED["on"] = "knownfree" in w.feats
     spec: dict = {"id": "https://example.org/spec", "title": "fuzz spec"}
     spec.update(w.spec_extra)
     if w.list_form:

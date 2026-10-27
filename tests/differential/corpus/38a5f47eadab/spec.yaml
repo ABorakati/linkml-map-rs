@@ -1,0 +1,14 @@
+class_derivations:
+- name: Rec
+  populated_from: Rec
+  slot_derivations:
+    id:
+      name: id
+    color:
+      name: color
+      populated_from: color
+enum_derivations:
+  TColor:
+    name: TColor
+    populated_from: Color
+    expr: '''X:'' + src'

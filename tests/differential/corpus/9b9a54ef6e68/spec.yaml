@@ -1,0 +1,39 @@
+id: target-schema-range
+class_derivations:
+- name: Measurement
+  populated_from: Row
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    count:
+      name: count
+      populated_from: count
+    ratio:
+      name: ratio
+      populated_from: ratio
+    ratio_text:
+      name: ratio_text
+      populated_from: ratio
+      range: string
+    amount:
+      name: amount
+      populated_from: amount
+    flag:
+      name: flag
+      populated_from: flag
+    score:
+      name: score
+      populated_from: score
+    color:
+      name: color
+      populated_from: color
+    site:
+      name: site
+      populated_from: site
+    note:
+      name: note
+      populated_from: note
+    counts:
+      name: counts
+      populated_from: counts

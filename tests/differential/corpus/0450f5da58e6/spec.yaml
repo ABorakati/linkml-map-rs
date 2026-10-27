@@ -1,0 +1,16 @@
+id: decimal-range
+class_derivations:
+- name: Measurement
+  populated_from: Row
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    value_decimal:
+      name: value_decimal
+      populated_from: value
+      range: decimal
+    values_decimal:
+      name: values_decimal
+      populated_from: values
+      range: decimal

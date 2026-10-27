@@ -1,0 +1,49 @@
+name: target
+id: https://example.org/target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: target
+default_range: string
+classes:
+  Measurement:
+    name: Measurement
+    attributes:
+      id:
+        name: id
+        identifier: true
+        required: true
+      associated_participant:
+        name: associated_participant
+      associated_visit:
+        name: associated_visit
+      observation_type:
+        name: observation_type
+      method_type:
+        name: method_type
+      tags:
+        name: tags
+        multivalued: true
+      steps:
+        name: steps
+        list_elements_ordered: true
+        multivalued: true
+      value_quantity:
+        name: value_quantity
+        range: Quantity
+        inlined: true
+  Quantity:
+    name: Quantity
+    attributes:
+      id:
+        name: id
+        identifier: true
+        required: true
+      value_decimal:
+        name: value_decimal
+        range: decimal
+      unit:
+        name: unit

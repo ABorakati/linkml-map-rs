@@ -117,11 +117,21 @@ def run_rust(args: list[str], timeout: int = TIMEOUT) -> Run:
 
 
 def rust_error_message(err: str) -> str:
-    lines = [ln for ln in err.splitlines() if ln.strip()]
-    for ln in lines:
+    """The anyhow error chain (``Error: a`` + ``Caused by: 0: b``) flattened to ``a: b``; click's ``Error: msg`` also works."""
+    lines = [ln.rstrip() for ln in err.splitlines()]
+    msg, causes = "", []
+    for i, ln in enumerate(lines):
         if ln.startswith("Error:"):
-            return ln[len("Error:") :].strip()
-    return lines[-1].strip() if lines else ""
+            msg = ln[len("Error:"):].strip()
+            for c in lines[i + 1:]:
+                m = re.match(r"^\s+\d+:\s*(.*)$", c)
+                if m:
+                    causes.append(m.group(1))
+            break
+    if not msg:
+        nz = [ln.strip() for ln in lines if ln.strip()]
+        return nz[-1] if nz else ""
+    return ": ".join([msg, *causes])
 
 
 _INPROC = {}

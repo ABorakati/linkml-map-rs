@@ -1,0 +1,7 @@
+class_derivations:
+- name: WideRecord
+  populated_from: MeasurementContainer
+  pivot_operation:
+    direction: UNMELT
+    variable_slot: att
+    value_slot: val

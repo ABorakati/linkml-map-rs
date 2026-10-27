@@ -243,6 +243,13 @@ coercion, collections, expressions, joins, enums, inheritance, stringification,
 unit conversion); expected values are Python's own. See
 [`tests/COMPLIANCE_REPORT.md`](tests/COMPLIANCE_REPORT.md).
 
+**Differential testing.** [`tests/differential/`](tests/differential) runs real upstream `linkml-map` and the Rust CLI
+side by side: a deterministic sweep of every upstream example (all output formats, `derive-schema`, `validate-spec`)
+and a Hypothesis generator of schemas, specs and awkward data. Divergences are shrunk and kept as
+`tests/differential/corpus/<hash>/` cases (with upstream's expected output) that `cargo test -p linkml-map-cli --test
+differential_corpus` replays without Python; known gaps carry an `expected_divergence.md`. The `differential` CI job
+runs it on every PR (time-boxed) and weekly (longer). See [`tests/differential/README.md`](tests/differential/README.md).
+
 ## Feature coverage
 
 **Implemented:** type coercion, list↔dict collections, the expression language

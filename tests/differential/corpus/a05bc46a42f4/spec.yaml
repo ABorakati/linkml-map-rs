@@ -1,0 +1,65 @@
+class_derivations:
+- name: Light
+  populated_from: Light
+  slot_derivations:
+    id:
+      name: id
+    color:
+      name: color
+      populated_from: color
+    colors:
+      name: colors
+      populated_from: colors
+- name: Container
+  populated_from: Container
+  slot_derivations:
+    lights:
+      name: lights
+      populated_from: lights
+enum_derivations:
+  SimplePrimary:
+    name: SimplePrimary
+    populated_from: PrimaryColors
+    expr: '''EXPR:'' + color'
+    permissible_value_derivations:
+      red:
+        name: red
+        populated_from:
+        - light_red
+        - dark_red
+      green:
+        name: green
+        populated_from:
+        - light_green
+        - dark_green
+      blue:
+        name: blue
+        populated_from:
+        - light_blue
+        - dark_blue
+  SimpleSecondary:
+    name: SimpleSecondary
+    populated_from: SecondaryColors
+    permissible_value_derivations:
+      cyan:
+        name: cyan
+        populated_from:
+        - light_cyan
+        - dark_cyan
+      magenta:
+        name: magenta
+        populated_from:
+        - light_magenta
+        - dark_magenta
+  MissingnessTarget:
+    name: MissingnessTarget
+    populated_from: Missingness
+    permissible_value_derivations:
+      na:
+        name: na
+        populated_from:
+        - not_available
+      oth:
+        name: oth
+        populated_from:
+        - other

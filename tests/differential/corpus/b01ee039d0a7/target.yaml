@@ -1,0 +1,78 @@
+name: lights-target
+id: https://example.org/lights-target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/lights-target/
+enums:
+  SimplePrimary:
+    name: SimplePrimary
+    from_schema: https://example.org/lights-target
+    permissible_values:
+      red:
+        text: red
+      green:
+        text: green
+      blue:
+        text: blue
+  SimpleSecondary:
+    name: SimpleSecondary
+    from_schema: https://example.org/lights-target
+    permissible_values:
+      cyan:
+        text: cyan
+      magenta:
+        text: magenta
+  MissingnessTarget:
+    name: MissingnessTarget
+    from_schema: https://example.org/lights-target
+    permissible_values:
+      na:
+        text: na
+      oth:
+        text: oth
+classes:
+  Light:
+    name: Light
+    from_schema: https://example.org/lights-target
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/lights-target
+        identifier: true
+        domain_of:
+        - Light
+        range: string
+      color:
+        name: color
+        from_schema: https://example.org/lights-target
+        domain_of:
+        - Light
+        any_of:
+        - range: SimplePrimary
+        - range: SimpleSecondary
+        - range: MissingnessTarget
+      colors:
+        name: colors
+        from_schema: https://example.org/lights-target
+        domain_of:
+        - Light
+        multivalued: true
+        any_of:
+        - range: SimplePrimary
+        - range: SimpleSecondary
+        - range: MissingnessTarget
+  Container:
+    name: Container
+    from_schema: https://example.org/lights-target
+    attributes:
+      lights:
+        name: lights
+        from_schema: https://example.org/lights-target
+        range: Light
+        multivalued: true
+        inlined_as_list: true
+    tree_root: true

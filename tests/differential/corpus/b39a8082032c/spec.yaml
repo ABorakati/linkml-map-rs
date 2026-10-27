@@ -1,0 +1,36 @@
+id: scaffold-mapping
+title: Minimal scaffold mapping
+prefixes:
+  src:
+    key: src
+    value: https://example.org/test-source-scaffold/
+  tgt:
+    key: tgt
+    value: https://example.org/test-target-scaffold/
+source_schema:
+  name: https://example.org/test-source-scaffold
+target_schema:
+  name: https://example.org/test-target-scaffold
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    label:
+      name: label
+      populated_from: name
+    _status:
+      name: _status
+      value_mappings:
+        A:
+          key: A
+          value: Active
+        I:
+          key: I
+          value: Inactive
+      populated_from: status_code
+      hide: true
+    status_label:
+      name: status_label
+      expr: '''Status: '' + slot(''_status'')'

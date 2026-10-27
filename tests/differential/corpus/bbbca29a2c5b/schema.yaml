@@ -1,0 +1,42 @@
+name: nested-source
+id: https://example.org/nested-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/nested-source/
+classes:
+  Sample:
+    name: Sample
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      env_broad_scale:
+        name: env_broad_scale
+        range: ControlledIdentifiedTermValue
+        inlined: true
+    tree_root: true
+  ControlledIdentifiedTermValue:
+    name: ControlledIdentifiedTermValue
+    attributes:
+      term:
+        name: term
+        range: Term
+        inlined: true
+      has_raw_value:
+        name: has_raw_value
+        range: string
+  Term:
+    name: Term
+    attributes:
+      id:
+        name: id
+        identifier: true
+        range: string
+      name:
+        name: name
+        range: string

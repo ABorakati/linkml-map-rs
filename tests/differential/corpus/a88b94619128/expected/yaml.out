@@ -1,0 +1,15 @@
+id: 9b10c101-9ba6-58d0-8ad7-c95c1c79143b
+associated_participant: P1
+associated_visit: V1
+observation_type: OBA:VT0000184
+method_type: lipid assay
+tags:
+- fasting
+- exam 1
+steps:
+- spin
+- draw
+value_quantity:
+  id: 199f65b6-2954-565e-912a-b814c2568cd9
+  value_decimal: 52.3
+  unit: mg/dL

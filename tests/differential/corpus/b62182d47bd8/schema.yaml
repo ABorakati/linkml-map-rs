@@ -1,0 +1,22 @@
+name: decimal_source
+id: https://example.org/decimal-source
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: decimal_source
+default_range: string
+classes:
+  Row:
+    name: Row
+    attributes:
+      id:
+        name: id
+        identifier: true
+      value:
+        name: value
+      values:
+        name: values
+        multivalued: true

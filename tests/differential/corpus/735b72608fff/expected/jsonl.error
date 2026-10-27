@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Unrestricted expression uses an undefined name: target = age * 2\n         ^^^^\nNameError: name 'age' is not defined. Statements read slots as src.<slot>.; class_derivation=P (from Person); slot_derivation=v"
+}

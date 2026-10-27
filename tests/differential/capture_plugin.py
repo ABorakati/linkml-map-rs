@@ -38,7 +38,7 @@ def _dump_spec(spec) -> str | None:
     if spec is None:
         return None
     try:
-        d = spec.model_dump(mode="json", exclude_none=True)
+        d = spec.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
     except Exception:  # noqa: BLE001
         return None
     return yaml.safe_dump(d, sort_keys=False, allow_unicode=True)

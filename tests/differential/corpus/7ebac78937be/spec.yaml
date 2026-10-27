@@ -1,0 +1,125 @@
+id: scaffold-mapping
+title: Minimal scaffold mapping
+prefixes:
+  src:
+    key: src
+    value: https://example.org/test-source-scaffold/
+  tgt:
+    key: tgt
+    value: https://example.org/test-target-scaffold/
+source_schema:
+  name: https://example.org/test-source-scaffold
+target_schema:
+  name: https://example.org/test-target-scaffold
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    label:
+      name: label
+      populated_from: name
+    study_name:
+      name: study_name
+      value: Framingham Heart Study
+    location:
+      name: location
+      value: Framingham
+    uuid_id:
+      name: uuid_id
+      expr: uuid5("https://example.org/Agent", {id})
+    name_length:
+      name: name_length
+      expr: strlen({name})
+    name_length_copy:
+      name: name_length_copy
+      expr: slot('name_length')
+    _hidden_name:
+      name: _hidden_name
+      expr: '{name}'
+      hide: true
+    greeting:
+      name: greeting
+      expr: '''Hello, '' + slot(''_hidden_name'') + ''!'''
+    _status:
+      name: _status
+      value_mappings:
+        A:
+          key: A
+          value: Active
+        I:
+          key: I
+          value: Inactive
+      populated_from: status_code
+      hide: true
+    status_label:
+      name: status_label
+      expr: '''Status: '' + slot(''_status'')'
+    visit_id:
+      name: visit_id
+      expression_mappings:
+        '1':
+          key: '1'
+          value: uuid5('https://example.org/visit', {id} + '_SCREENING')
+        '7':
+          key: '7'
+          value: uuid5('https://example.org/visit', {id} + '_BASELINE')
+      populated_from: visit_code
+    role_label:
+      name: role_label
+      value_mappings:
+        A:
+          key: A
+          value: Admin
+        U:
+          key: U
+          value: User
+      populated_from: role_code
+    sex:
+      name: sex
+      value_mappings:
+        f:
+          key: f
+          value: FEMALE
+        m:
+          key: m
+          value: MALE
+      populated_from: gender
+    sex_literal:
+      name: sex_literal
+      value: https://athena.ohdsi.org/search-terms/terms/8507
+    sex_expr:
+      name: sex_expr
+      expr: case(({id} == 'P:001', 'female'), (True, 'male'))
+    sexes:
+      name: sexes
+      populated_from: genders
+    height_m:
+      name: height_m
+      populated_from: height_cm
+      unit_conversion:
+        target_unit: m
+    depth_struct:
+      name: depth_struct
+      populated_from: depth_cm
+      unit_conversion:
+        target_unit: m
+        target_unit_slot: unit_converted
+        target_magnitude_slot: value_converted
+    width_m:
+      name: width_m
+      populated_from: width_cm
+      unit_conversion:
+        target_unit: m
+    coded_m:
+      name: coded_m
+      populated_from: coded_cm
+      unit_conversion:
+        target_unit: m
+        none_if_non_numeric: true
+    missing_m:
+      name: missing_m
+      populated_from: missing_cm
+      unit_conversion:
+        target_unit: m

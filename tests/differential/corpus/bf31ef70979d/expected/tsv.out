@@ -1,0 +1,2 @@
+associated_participant	associated_visit	observation_type	method_type	tags	steps
+P1	V1	OBA:VT0000184	lipid assay	['fasting', 'exam 1']	['draw', 'spin']

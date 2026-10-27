@@ -1,0 +1,52 @@
+class_derivations:
+- name: FlatEvent
+  populated_from: Acquisition
+  slot_derivations:
+    event_id:
+      name: event_id
+      populated_from: id
+    event_type:
+      name: event_type
+      value: Acquisition
+    name:
+      name: name
+    started_at:
+      name: started_at
+      populated_from: started_at_time
+    ended_at:
+      name: ended_at
+      populated_from: ended_at_time
+- name: FlatEvent
+  populated_from: QualityCheck
+  slot_derivations:
+    event_id:
+      name: event_id
+      populated_from: id
+    event_type:
+      name: event_type
+      value: QualityCheck
+    name:
+      name: name
+    started_at:
+      name: started_at
+      populated_from: started_at_time
+    ended_at:
+      name: ended_at
+      populated_from: ended_at_time
+- name: FlatEvent
+  populated_from: Assembly
+  slot_derivations:
+    event_id:
+      name: event_id
+      populated_from: id
+    event_type:
+      name: event_type
+      value: Assembly
+    name:
+      name: name
+    started_at:
+      name: started_at
+      populated_from: started_at_time
+    ended_at:
+      name: ended_at
+      populated_from: ended_at_time

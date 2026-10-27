@@ -1,0 +1,95 @@
+name: container
+description: Container schema for cross-class FK lookup testing.
+id: https://example.org/linkml/scaffold/container
+imports:
+- linkml:types
+prefixes:
+  container:
+    prefix_prefix: container
+    prefix_reference: https://example.org/linkml/scaffold/container/
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: container
+default_range: string
+classes:
+  Container:
+    name: Container
+    from_schema: https://example.org/linkml/scaffold/container
+    attributes:
+      persons:
+        name: persons
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Container
+        range: Person
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      organizations:
+        name: organizations
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Container
+        range: Organization
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+    tree_root: true
+  Person:
+    name: Person
+    from_schema: https://example.org/linkml/scaffold/container
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/linkml/scaffold/container
+        identifier: true
+        domain_of:
+        - Person
+        - Organization
+        range: string
+      name:
+        name: name
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Person
+        - Organization
+        range: string
+      org_id:
+        name: org_id
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Person
+        range: Organization
+      missing_org_id:
+        name: missing_org_id
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Person
+        range: Organization
+  Organization:
+    name: Organization
+    from_schema: https://example.org/linkml/scaffold/container
+    attributes:
+      id:
+        name: id
+        from_schema: https://example.org/linkml/scaffold/container
+        identifier: true
+        domain_of:
+        - Person
+        - Organization
+        range: string
+      name:
+        name: name
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Person
+        - Organization
+        range: string
+      city:
+        name: city
+        from_schema: https://example.org/linkml/scaffold/container
+        domain_of:
+        - Organization
+        range: string
+source_file: /home/user/upstream/linkml-map/tests/scaffold_container/source/container.yaml

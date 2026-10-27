@@ -1,0 +1,8 @@
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    name:
+      name: name

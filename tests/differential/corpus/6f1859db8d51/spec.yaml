@@ -1,0 +1,33 @@
+id: scaffold-mapping
+title: Minimal scaffold mapping
+prefixes:
+  src:
+    key: src
+    value: https://example.org/test-source-scaffold/
+  tgt:
+    key: tgt
+    value: https://example.org/test-target-scaffold/
+source_schema:
+  name: https://example.org/test-source-scaffold
+target_schema:
+  name: https://example.org/test-target-scaffold
+class_derivations:
+- name: Agent
+  populated_from: Person
+  slot_derivations:
+    id:
+      name: id
+    label:
+      name: label
+      populated_from: name
+    result:
+      name: result
+      value_mappings:
+        A:
+          key: A
+          value: literal_wins
+      expression_mappings:
+        A:
+          key: A
+          value: '''expression_loses'''
+      populated_from: code

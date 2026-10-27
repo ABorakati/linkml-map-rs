@@ -1,0 +1,2 @@
+id	associated_participant	associated_visit	observation_type	method_type	tags	steps	value_quantity__id	value_quantity__value_decimal	value_quantity__unit
+3290835c-de0b-51a0-89de-0de594d9e5ba	P1	V2	OBA:VT0000184	lipid assay	['fasting', 'exam 1']	['draw', 'spin']	199f65b6-2954-565e-912a-b814c2568cd9	52.3	mg/dL

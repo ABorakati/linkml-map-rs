@@ -1,0 +1,28 @@
+id: content-id
+mint_ids: true
+class_derivations:
+- name: Measurement
+  populated_from: Row
+  slot_derivations:
+    associated_participant:
+      name: associated_participant
+      populated_from: participant
+    associated_visit:
+      name: associated_visit
+      populated_from: visit
+    observation_type:
+      name: observation_type
+      populated_from: observation_type
+    method_type:
+      name: method_type
+      populated_from: method
+    tags:
+      name: tags
+      populated_from: tags
+    steps:
+      name: steps
+      populated_from: steps
+    _note:
+      name: _note
+      populated_from: note
+      hide: true

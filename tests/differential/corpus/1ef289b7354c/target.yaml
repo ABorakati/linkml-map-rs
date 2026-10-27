@@ -1,0 +1,11 @@
+name: target
+id: https://example.org/target
+default_prefix: https://example.org/target/
+classes:
+  Agent:
+    name: Agent
+    attributes:
+      id:
+        name: id
+      name:
+        name: name

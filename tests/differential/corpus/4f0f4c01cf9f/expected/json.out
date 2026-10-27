@@ -1,0 +1,7 @@
+{
+  "id": "samp003",
+  "name": "Stream water",
+  "depth_value": 2.5,
+  "elev_value": 300.0,
+  "elev_unit": "ft"
+}

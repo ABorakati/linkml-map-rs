@@ -1,0 +1,9 @@
+class_derivations:
+- name: P
+  populated_from: Person
+  slot_derivations:
+    v:
+      name: v
+      expr: 'x = src.age * 2
+
+        target = x + 1'

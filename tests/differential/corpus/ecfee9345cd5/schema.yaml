@@ -1,0 +1,42 @@
+name: people
+id: https://example.org/people
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/people/
+default_range: string
+classes:
+  Person:
+    name: Person
+    attributes:
+      id:
+        name: id
+        identifier: true
+      friend:
+        name: friend
+        range: Person
+      address:
+        name: address
+        range: Address
+        inlined: true
+      events:
+        name: events
+        range: Event
+        multivalued: true
+        inlined_as_list: true
+  Address:
+    name: Address
+    attributes:
+      city:
+        name: city
+  Event:
+    name: Event
+    attributes:
+      kind:
+        name: kind
+      year:
+        name: year
+        range: integer

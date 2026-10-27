@@ -1,0 +1,17 @@
+source_schema:
+  name: https://example.org/source
+target_schema:
+  name: https://example.org/target
+class_derivations:
+- name: Output
+  populated_from: my record
+  slot_derivations:
+    id:
+      name: id
+      populated_from: record_id
+    name:
+      name: name
+      expr: label + ' (copy)'
+    source:
+      name: source
+      expr: source_ref

@@ -1,0 +1,2 @@
+id,count,ratio,ratio_text,amount,flag,score,color,site,note,counts
+r1,7,1.5,1.5,52.30,false,0.10,red,S1,42,['1', '2']

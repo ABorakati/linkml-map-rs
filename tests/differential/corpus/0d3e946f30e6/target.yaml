@@ -1,0 +1,13 @@
+name: target
+id: https://example.org/target
+default_prefix: https://example.org/target/
+classes:
+  FlatPerson:
+    name: FlatPerson
+    attributes:
+      id:
+        name: id
+      name:
+        name: name
+      org_name:
+        name: org_name

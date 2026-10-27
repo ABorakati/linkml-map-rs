@@ -1,0 +1,35 @@
+id: denormalize-mapping
+title: denormalize mappings
+prefixes:
+  foo:
+    key: foo
+    value: foo
+source_schema:
+  name: s1
+target_schema:
+  name: s2
+class_derivations:
+- name: MappingSet
+  populated_from: MappingSet
+  slot_derivations:
+    mappings:
+      name: mappings
+      populated_from: mappings
+- name: Mapping
+  populated_from: Mapping
+  slot_derivations:
+    subject_id:
+      name: subject_id
+      expr: subject.id
+    subject_name:
+      name: subject_name
+      expr: subject.name
+    object_id:
+      name: object_id
+      expr: object.id
+    object_name:
+      name: object_name
+      expr: object.name
+    predicate_id:
+      name: predicate_id
+      populated_from: predicate

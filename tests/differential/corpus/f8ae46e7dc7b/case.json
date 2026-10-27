@@ -1,0 +1,15 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/WideRecord-001.yaml",
+  "source_type": "WideRecord",
+  "target_schema": "target.yaml",
+  "flags": [],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

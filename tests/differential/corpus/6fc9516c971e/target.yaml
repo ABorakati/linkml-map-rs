@@ -1,0 +1,20 @@
+name: target
+id: https://example.org/target
+imports:
+- linkml:types
+prefixes:
+  linkml:
+    prefix_prefix: linkml
+    prefix_reference: https://w3id.org/linkml/
+default_prefix: https://example.org/target/
+default_range: string
+classes:
+  Output:
+    name: Output
+    attributes:
+      id:
+        name: id
+      name:
+        name: name
+      source:
+        name: source

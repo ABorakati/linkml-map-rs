@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "'unknown' is not a permissible value of enum SexEnum; class_derivation=Agent (from Person); slot_derivation=sex"
+}

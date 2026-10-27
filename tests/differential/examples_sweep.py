@@ -48,6 +48,8 @@ def discover(up: Path) -> list[dict]:
                         st = parts[-2] if len(parts) >= 2 else None
                         if d.name == "fair_mappings_metadata":
                             st = "TransformationSpecification"
+                        if (d / "instructions.yaml").exists():
+                            st = None  # upstream's MultiFileTransformer then resolves the tree_root class
                         inputs.append((f"data/{f.name}", f, st))
                     elif f.suffix in (".tsv", ".csv"):
                         inputs.append((f"data/{f.name}", f, f.stem))
@@ -137,6 +139,32 @@ def file_mode_check(up: Path, mode: str, rows_out: list[dict]) -> None:
                     rows_out.append({"fixture": fx["name"], "input": label, "fmt": fmt, "res": r})
 
 
+def captured_sweep(cdir: Path, mode: str) -> list[dict]:
+    """Run every case recorded by ``capture_plugin.py`` (inputs/specs that upstream's own pytest suite exercised)."""
+    out = []
+    for d in sorted(p for p in cdir.iterdir() if (p / "case.json").is_file()):
+        meta = json.loads((d / "case.json").read_text())
+        case = H.Case(root=str(d), schema=meta["schema"], spec=meta["spec"], input=meta["input"], source_type=meta["source_type"],
+                      target_schema=meta.get("target_schema"), flags=meta.get("flags", []))
+        out.append({"dir": d.name, "origin": meta.get("origin", ""), "results": H.compare_case(case, mode)})
+    return out
+
+
+def render_captured(caps) -> str:
+    tally: dict = {}
+    for c in caps:
+        for r in c["results"]:
+            tally[r.kind] = tally.get(r.kind, 0) + 1
+    out = ["", "## Cases captured from upstream's own test-suite", "",
+           f"{len(caps)} distinct map_object invocations x {len(H.FORMATS)} formats: " + ", ".join(f"{k}: {v}" for k, v in sorted(tally.items())), "",
+           "| case | origin test | divergent formats |", "|---|---|---|"]
+    for c in caps:
+        bad = [f"{r.fmt}:{SYMBOLS[r.kind]}" for r in c["results"] if not r.ok]
+        if bad:
+            out.append(f"| {c['dir']} | {c['origin'].split(' ')[0].replace('tests/', '')} | {' '.join(bad)} |")
+    return "\n".join(out) + "\n"
+
+
 def render(rows, other, files) -> str:
     out = ["# Examples sweep: upstream linkml-map vs linkml-tr-rs", ""]
     out += ["Legend: ok = byte-identical; E(s|o|d) = both failed (messages same/overlap/differ); DIFF = both succeeded, bytes differ;",
@@ -190,23 +218,44 @@ def detail(rows, other, files) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--upstream-dir", type=Path, default=DEFAULT_UPSTREAM)
-    ap.add_argument("--upstream-mode", default="subprocess", choices=["subprocess", "inproc"])
+    ap.add_argument("--upstream-mode", default="inproc", choices=["subprocess", "inproc"])
     ap.add_argument("--report", type=Path)
     ap.add_argument("--no-file-mode", action="store_true")
+    ap.add_argument("--captured", type=Path, help="directory written by capture_plugin.py")
     ap.add_argument("--fail-on-diff", action="store_true", help="exit 1 if any cell is not ok/E (CI gate)")
-    ap.add_argument("--allow", action="append", default=[], help="fixture-name substring whose divergences do not fail the gate")
+    ap.add_argument("--allow-file", type=Path, default=Path(__file__).with_name("known_sweep_divergences.txt"),
+                    help="cells (key|kind) already known to diverge; only others fail --fail-on-diff")
+    ap.add_argument("--write-allow", type=Path, help="write the current divergent cells as the allow-list")
     a = ap.parse_args()
     rows, other = sweep(a.upstream_dir, a.upstream_mode)
     files: list[dict] = []
     if not a.no_file_mode:
         file_mode_check(a.upstream_dir, a.upstream_mode, files)
     text = render(rows, other, files) + "\n## Divergence detail\n\n" + detail(rows, other, files) + "\n"
+    caps = captured_sweep(a.captured, a.upstream_mode) if a.captured else []
+    if caps:
+        text += render_captured(caps)
     if a.report:
         a.report.write_text(text)
     print(text)
-    bad = [x for r in rows for x in r["results"] if not x.ok] + [o["res"] for o in other if not o["res"].ok] + [f["res"] for f in files if not f["res"].ok]
-    print(f"\nsweep: {len(bad)} divergent cells", file=sys.stderr)
-    return 1 if (bad and a.fail_on_diff) else 0
+    cells: list[tuple[str, H.FormatResult]] = []
+    for r in rows:
+        cells += [(f"map-data|{r['fixture']}|{r['input']}|{r['eval']}|{x.fmt}", x) for x in r["results"]]
+    cells += [(f"{o['cmd']}|{o['fixture']}", o["res"]) for o in other]
+    cells += [(f"file|{f['fixture']}|{f['input']}|{f['fmt']}", f["res"]) for f in files]
+    # captured upstream-test cases are reported above but gated by the committed corpus replay (cargo test), not here
+    bad = [(k, x) for k, x in cells if not x.ok]
+    if a.write_allow:
+        a.write_allow.write_text("# known divergent sweep cells (regenerate: examples_sweep.py --write-allow FILE)\n"
+                                 + "".join(f"{k}|{x.kind}\n" for k, x in sorted(bad)))
+    allow = set()
+    if a.allow_file and a.allow_file.exists():
+        allow = {ln.strip() for ln in a.allow_file.read_text().splitlines() if ln.strip() and not ln.startswith("#")}
+    new = [(k, x) for k, x in bad if f"{k}|{x.kind}" not in allow]
+    print(f"\nsweep: {len(bad)} divergent cells, {len(new)} not in allow-list", file=sys.stderr)
+    for k, x in new[:50]:
+        print(f"  NEW {k} [{x.kind}]", file=sys.stderr)
+    return 1 if (new and a.fail_on_diff) else 0
 
 
 if __name__ == "__main__":

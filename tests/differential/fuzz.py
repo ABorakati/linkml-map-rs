@@ -68,9 +68,18 @@ def full_signature(results):
     return "|".join(parts)
 
 
+def msg_shape(msg: str) -> str:
+    """Message with paths, numbers and quoted names abstracted, so equal causes share a signature."""
+    m = re.sub(r"/[^\s:'\"]+", "P", msg or "")
+    m = re.sub(r"'[^']*'|\"[^\"]*\"", "Q", m)
+    m = re.sub(r"\d+", "#", m)
+    return m[:90]
+
+
 def coarse_signature(results):
     # group formats: a divergence that appears in every format is one signature
-    kinds = sorted({(r.kind, (r.up.exc_class or "") if not r.up.ok else "", (r.rs.exc_class or "") if not r.rs.ok else "", diff_hint(r))
+    kinds = sorted({(r.kind, ((r.up.exc_class or "") + msg_shape(r.up.exc_msg)) if not r.up.ok else "",
+                     ((r.rs.exc_class or "") + msg_shape(r.rs.exc_msg)) if not r.rs.ok else "", diff_hint(r))
                     for r in H.divergences(results)})
     return ";".join("/".join(k) for k in kinds)
 
@@ -94,9 +103,12 @@ class Campaign:
             for sig in known_signatures(CORPUS):
                 self.seen[sig] = "known"
 
+    fmts = ["yaml", "json"]
+
     def evaluate(self, w) -> list[H.FormatResult]:
         with H.tmp_case_dir() as d:
             case = gen.write_world(w, d)
+            case.formats = list(self.fmts)  # search on a subset of formats; the saved case is re-run on all five
             self.runs += 1
             return H.compare_case(case, self.mode)
 
@@ -133,11 +145,12 @@ class Campaign:
         while budget_left() and self.runs < a.examples and len(found) < a.max_found:
             prof = profiles[rounds % len(profiles)]
             rounds += 1
-            feats = PROFILES[prof]
+            feats = PROFILES[prof] | ({"knownfree", "singleblock"} if a.avoid_known else set())
             per_find = min(a.per_find, max(50, a.examples - self.runs))
             st = settings(max_examples=per_find, database=None, deadline=None, derandomize=False,
                           suppress_health_check=list(HealthCheck), phases=[Phase.generate, Phase.shrink], verbosity=Verbosity.quiet)
             rng = random.Random(f"{rnd_seed}-{rounds}")
+            self.fmts = ["yaml", "json", ["jsonl", "tsv", "csv"][rounds % 3]]
             try:
                 w = hyp_find(gen.worlds(feats), self.predicate, settings=st, random=rng)
             except NoSuchExample:
@@ -156,6 +169,40 @@ class Campaign:
         return found
 
 
+def promote_passing(a, n: int) -> list[Path]:
+    """Save ``n`` generated cases on which both engines agree on non-trivial output, as regression guards for the replay test."""
+    corpus = Path(a.corpus) if a.corpus else CORPUS
+    saved: list[Path] = []
+    mode = a.upstream_mode
+    seen_hashes: set[str] = set()
+
+    def good(w) -> bool:
+        with H.tmp_case_dir() as d:
+            case = gen.write_world(w, d)
+            res = H.compare_case(case, mode)
+            if not all(r.kind == "match" for r in res):
+                return False
+            if len(res[1].up.out) < 120:  # json output: demand some real content
+                return False
+            return H.case_hash(case) not in seen_hashes
+
+    for i in range(n):
+        prof = ["all", "joins", "enums", "expr", "nested", "multivalued"][i % 6]
+        st = settings(max_examples=600, database=None, deadline=None, suppress_health_check=list(HealthCheck),
+                      phases=[Phase.generate])
+        try:
+            w = hyp_find(gen.worlds(PROFILES[prof] | {"knownfree"}), good, settings=st, random=random.Random(f"promote-{a.seed}-{i}"))
+        except NoSuchExample:
+            continue
+        with H.tmp_case_dir() as d:
+            case = gen.write_world(w, d)
+            res = H.compare_case(case, mode)
+            seen_hashes.add(H.case_hash(case))
+            saved.append(H.save_corpus_case(case, res, corpus, note="promoted passing case (regression guard)",
+                                            seed=f"fuzz.py --promote seed={a.seed} profile={prof}"))
+    return saved
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--examples", type=int, default=1000, help="total example budget (engine runs of a generated case)")
@@ -167,11 +214,15 @@ def main() -> int:
     ap.add_argument("--max-found", type=int, default=60)
     ap.add_argument("--only-kind", action="append", default=[], help="only chase these divergence kinds (output_diff, rust_error, ...)")
     ap.add_argument("--upstream-mode", default="inproc", choices=["inproc", "subprocess"])
+    ap.add_argument("--avoid-known", action="store_true", help="avoid generating inputs that hit already-reported open divergences (empty TSV cells, JSON stringification of non-ASCII, ...)")
+    ap.add_argument("--promote", type=int, default=0, help="also save N agreeing, non-trivial cases as regression guards")
     ap.add_argument("--known-from-corpus", action="store_true", help="do not re-report signatures already in the corpus (CI gate mode)")
     a = ap.parse_args()
     H.require_upvenv()
     c = Campaign(a)
     found = c.run()
+    if a.promote:
+        print("promoted:", [p.name for p in promote_passing(a, a.promote)])
     print(json.dumps([str(f.name) for f in found]))
     return 0
 

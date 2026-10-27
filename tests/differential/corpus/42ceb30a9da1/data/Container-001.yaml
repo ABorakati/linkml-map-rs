@@ -1,0 +1,11 @@
+lights:
+- id: l1
+  color: light_red
+  colors:
+  - light_red
+  - dark_green
+  - not_available
+- id: l2
+  color: light_cyan
+  colors:
+  - light_magenta
