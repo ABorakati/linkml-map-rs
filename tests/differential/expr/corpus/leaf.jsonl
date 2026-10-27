@@ -131,10 +131,10 @@
 {"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "d673704548ad5535"}], "upstream": {"ok": "-2.853267456530855e+108"}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "40a3f5ae147ae148"}], "upstream": {"ok": "2554.84"}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "6e0a57ecc1e62e20"}], "upstream": {"ok": "1.1903086166720032e+222"}, "status": "pass", "class": "leaf-agree", "reason": ""}
-{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430b3b42902d2a1a"}], "upstream": {"ok": "958122680493379.2"}, "status": "divergence", "class": "leaf:float_repr:value", "reason": "shortest-repr ties: Python rounds half to even (x.2), Rust's `{:e}` rounds half up (x.3)"}
-{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430b47c2cf8e13d2"}], "upstream": {"ok": "959840800326266.2"}, "status": "divergence", "class": "leaf:float_repr:value", "reason": "shortest-repr ties: Python rounds half to even (x.2), Rust's `{:e}` rounds half up (x.3)"}
-{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430f75b8d3d2a472"}], "upstream": {"ok": "1106895120782478.2"}, "status": "divergence", "class": "leaf:float_repr:value", "reason": "shortest-repr ties: Python rounds half to even (x.2), Rust's `{:e}` rounds half up (x.3)"}
-{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430a54aec581f312"}], "upstream": {"ok": "926432376143458.2"}, "status": "divergence", "class": "leaf:float_repr:value", "reason": "shortest-repr ties: Python rounds half to even (x.2), Rust's `{:e}` rounds half up (x.3)"}
+{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430b3b42902d2a1a"}], "upstream": {"ok": "958122680493379.2"}, "status": "pass", "class": "leaf:float_repr:value"}
+{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430b47c2cf8e13d2"}], "upstream": {"ok": "959840800326266.2"}, "status": "pass", "class": "leaf:float_repr:value"}
+{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430f75b8d3d2a472"}], "upstream": {"ok": "1106895120782478.2"}, "status": "pass", "class": "leaf:float_repr:value"}
+{"leaf": "float_repr", "ref": "float_repr", "args": [{"$f": "430a54aec581f312"}], "upstream": {"ok": "926432376143458.2"}, "status": "pass", "class": "leaf:float_repr:value"}
 {"leaf": "float_repr_io", "ref": "float_repr_io", "args": [{"$f": "c08e1d126e978d50"}], "upstream": {"ok": "-963.634"}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "float_repr_io", "ref": "float_repr_io", "args": [{"$f": "678b51e56da39e3d"}], "upstream": {"ok": "6.086203788284923e+190"}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "float_repr_io", "ref": "float_repr_io", "args": [{"$f": "41211d9c49d4705c"}], "upstream": {"ok": "560846.1441989052"}, "status": "pass", "class": "leaf-agree", "reason": ""}
@@ -516,10 +516,10 @@
 {"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "4100bb0e00000000"}], "upstream": {"ok": "137057.75"}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "3186305c02b5c169"}], "upstream": {"ok": "4.018711869286447e-70"}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "40e32a40d990bffa"}], "upstream": {"ok": "39250.02655827995"}, "status": "pass", "class": "leaf-agree", "reason": ""}
-{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "430846afd8ec95f2"}], "upstream": {"ok": "854140064207550.2"}, "status": "divergence", "class": "leaf:str_float:value", "reason": "shortest-repr ties: Python rounds half to even, Rust half up"}
-{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "4306b76bd9424aa2"}], "upstream": {"ok": "799265415252308.2"}, "status": "divergence", "class": "leaf:str_float:value", "reason": "shortest-repr ties: Python rounds half to even, Rust half up"}
-{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "4312ab72ab26d389"}], "upstream": {"ok": "1313764641715426.2"}, "status": "divergence", "class": "leaf:str_float:value", "reason": "shortest-repr ties: Python rounds half to even, Rust half up"}
-{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "42e889c545ffea54"}], "upstream": {"ok": "215839994281810.62"}, "status": "divergence", "class": "leaf:str_float:value", "reason": "shortest-repr ties: Python rounds half to even, Rust half up"}
+{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "430846afd8ec95f2"}], "upstream": {"ok": "854140064207550.2"}, "status": "pass", "class": "leaf:str_float:value"}
+{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "4306b76bd9424aa2"}], "upstream": {"ok": "799265415252308.2"}, "status": "pass", "class": "leaf:str_float:value"}
+{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "4312ab72ab26d389"}], "upstream": {"ok": "1313764641715426.2"}, "status": "pass", "class": "leaf:str_float:value"}
+{"leaf": "fn:str", "ref": "str_float", "args": [{"$f": "42e889c545ffea54"}], "upstream": {"ok": "215839994281810.62"}, "status": "pass", "class": "leaf:str_float:value"}
 {"leaf": "fn:bool", "ref": "bool", "args": ["⁇ǂ"], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:bool", "ref": "bool", "args": [{"a": "ǰ1", "": true}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:bool", "ref": "bool", "args": [{"$f": "4072126666666666"}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}

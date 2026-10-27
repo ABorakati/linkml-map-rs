@@ -259,7 +259,10 @@ fn leaf_inner(name: &str, args: &[Value]) -> Result<Value, LeafErr> {
             let text = s(args, 0).map_err(bad)?;
             match Decimal::parse_python(text) {
                 Ok(d) => {
-                    let n = d.normalize();
+                    // Python's `normalize()` raises `decimal.Overflow` past Emax.
+                    let n = d
+                        .normalize()
+                        .map_err(|e| ("Overflow".to_owned(), format!("{e:?}")))?;
                     let mut m = IndexMap::new();
                     m.insert("sci".into(), Value::Str(d.to_sci_string()));
                     m.insert("fixed".into(), Value::Str(d.to_fixed_string()));
