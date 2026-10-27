@@ -1718,3 +1718,26 @@ async fn populated_from_join_without_its_table_fails_only_for_a_key() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["sample_id"], "S001");
 }
+
+/// `LookupIndex` runs `_parse_numeric` over every cell of a joined CSV/TSV row,
+/// whatever the column's range (`site_name` is a string here): `"007"` reads as 7.
+/// The key is still matched as text, so `007` finds its row.
+#[tokio::test]
+async fn joined_table_cells_are_parsed_numerically() {
+    let case = Case::new(INHERITANCE_SOURCE, None);
+    case.write_data("samples.tsv", "sample_id\tsite\nS1\t007\nS2\tB\n");
+    case.write_data("sites.tsv", "site_code\tsite_name\n007\t007\nB\t1_0.5\n");
+    let spec = format!(
+        "  Sample:
+    populated_from: samples
+{JOIN_BLOCK}{CHILD_SLOTS}"
+    );
+    let rows = case.run(&spec, &Run::default()).await.unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            json!({"sample_id": "S1", "site": 7}),
+            json!({"sample_id": "S2", "site": 10.5}),
+        ]
+    );
+}

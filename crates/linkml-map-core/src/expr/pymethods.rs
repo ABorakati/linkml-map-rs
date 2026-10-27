@@ -15,16 +15,13 @@
 //! (see [`ExprError::unrepresentable`]). Mutating methods of lists and dicts
 //! are never reachable (attribute access distributes over them).
 //!
-//! PARITY: `str.casefold()` folds the characters whose full case folding
-//! differs from lowercasing that matter in practice (`ß`, final sigma, the
-//! ligatures), not the whole `CaseFolding.txt`.
+//! `str.casefold()` reads CPython's full case folding from the generated tables.
 
 use super::error::{ExprError, ExprResult};
 use super::eval::type_name;
 use super::pyformat;
 use super::pystr;
-use super::pytables::{CASE_IGNORABLE, TITLECASE_LETTERS};
-use super::pyunicode;
+use super::pytables::{self, CASE_IGNORABLE, LOWERCASE, TITLECASE_LETTERS, UPPERCASE};
 use crate::value::Value;
 
 /// What `getattr(scalar, name)` finds.
@@ -1201,7 +1198,7 @@ pub(super) fn is_alpha(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphabetic()
     } else {
-        in_ranges(pyunicode::ALPHA, c)
+        in_ranges(pytables::ALPHA, c)
     }
 }
 
@@ -1210,7 +1207,7 @@ pub(super) fn is_identifier_start(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphabetic() || c == '_'
     } else {
-        in_ranges(pyunicode::XID_START, c)
+        in_ranges(pytables::XID_START, c)
     }
 }
 
@@ -1219,7 +1216,7 @@ pub(super) fn is_identifier_continue(c: char) -> bool {
     if c.is_ascii() {
         c.is_ascii_alphanumeric() || c == '_'
     } else {
-        in_ranges(pyunicode::XID_CONTINUE, c)
+        in_ranges(pytables::XID_CONTINUE, c)
     }
 }
 
@@ -1238,20 +1235,18 @@ fn str_predicate(s: &str, name: &str) -> bool {
         }
         "isdigit" => {
             !s.is_empty()
-                && all(|c| c.is_ascii_digit() || (!c.is_ascii() && in_ranges(pyunicode::DIGIT, c)))
+                && all(|c| c.is_ascii_digit() || (!c.is_ascii() && in_ranges(pytables::DIGIT, c)))
         }
         "isnumeric" => {
             !s.is_empty()
-                && all(|c| {
-                    c.is_ascii_digit() || (!c.is_ascii() && in_ranges(pyunicode::NUMERIC, c))
-                })
+                && all(|c| c.is_ascii_digit() || (!c.is_ascii() && in_ranges(pytables::NUMERIC, c)))
         }
         "isalnum" => {
             !s.is_empty()
                 && all(|c| {
                     is_alpha(c)
                         || c.is_ascii_digit()
-                        || (!c.is_ascii() && in_ranges(pyunicode::NUMERIC, c))
+                        || (!c.is_ascii() && in_ranges(pytables::NUMERIC, c))
                 })
         }
         "isspace" => !s.is_empty() && all(pystr::is_py_space),
@@ -1259,7 +1254,7 @@ fn str_predicate(s: &str, name: &str) -> bool {
             if c.is_ascii() {
                 (' '..='~').contains(&c)
             } else {
-                !in_ranges(pyunicode::NON_PRINTABLE, c)
+                !in_ranges(pytables::NON_PRINTABLE, c)
             }
         }),
         "isidentifier" => {
@@ -1269,10 +1264,10 @@ fn str_predicate(s: &str, name: &str) -> bool {
         "islower" => {
             let mut cased = false;
             for c in s.chars() {
-                if c.is_uppercase() || is_titlecase(c) {
+                if is_upper(c) || is_titlecase(c) {
                     return false;
                 }
-                if c.is_lowercase() {
+                if is_lower(c) {
                     cased = true;
                 }
             }
@@ -1281,10 +1276,10 @@ fn str_predicate(s: &str, name: &str) -> bool {
         "isupper" => {
             let mut cased = false;
             for c in s.chars() {
-                if c.is_lowercase() || is_titlecase(c) {
+                if is_lower(c) || is_titlecase(c) {
                     return false;
                 }
-                if c.is_uppercase() {
+                if is_upper(c) {
                     cased = true;
                 }
             }
@@ -1294,13 +1289,13 @@ fn str_predicate(s: &str, name: &str) -> bool {
             // istitle
             let (mut cased, mut previous_cased) = (false, false);
             for c in s.chars() {
-                if c.is_uppercase() || is_titlecase(c) {
+                if is_upper(c) || is_titlecase(c) {
                     if previous_cased {
                         return false;
                     }
                     previous_cased = true;
                     cased = true;
-                } else if c.is_lowercase() {
+                } else if is_lower(c) {
                     if !previous_cased {
                         return false;
                     }
@@ -1316,7 +1311,15 @@ fn str_predicate(s: &str, name: &str) -> bool {
 }
 
 fn is_cased(c: char) -> bool {
-    c.is_lowercase() || c.is_uppercase() || is_titlecase(c)
+    pystr::is_cased(c)
+}
+
+fn is_upper(c: char) -> bool {
+    in_ranges(UPPERCASE, c)
+}
+
+fn is_lower(c: char) -> bool {
+    in_ranges(LOWERCASE, c)
 }
 
 /// `str.swapcase()`: lowercase letters become their full uppercase mapping,
@@ -1333,10 +1336,10 @@ fn swapcase(s: &str) -> String {
             let final_sigma =
                 before.is_some_and(|&p| is_cased(p)) && !after.is_some_and(|&n| is_cased(n));
             out.push(if final_sigma { '\u{3c2}' } else { '\u{3c3}' });
-        } else if c.is_uppercase() {
-            out.extend(c.to_lowercase());
-        } else if c.is_lowercase() {
-            out.extend(c.to_uppercase());
+        } else if is_upper(c) {
+            pystr::push_lower_char(&mut out, c);
+        } else if is_lower(c) {
+            pystr::push_upper(&mut out, c);
         } else {
             out.push(c);
         }
@@ -1347,20 +1350,7 @@ fn swapcase(s: &str) -> String {
 fn casefold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        match c {
-            '\u{df}' | '\u{1e9e}' => out.push_str("ss"),
-            '\u{3c2}' => out.push('\u{3c3}'),
-            '\u{17f}' => out.push('s'),
-            '\u{149}' => out.push_str("\u{2bc}n"),
-            '\u{1f0}' => out.push_str("j\u{30c}"),
-            '\u{fb00}' => out.push_str("ff"),
-            '\u{fb01}' => out.push_str("fi"),
-            '\u{fb02}' => out.push_str("fl"),
-            '\u{fb03}' => out.push_str("ffi"),
-            '\u{fb04}' => out.push_str("ffl"),
-            '\u{fb05}' | '\u{fb06}' => out.push_str("st"),
-            _ => out.extend(c.to_lowercase()),
-        }
+        pystr::push_casefold(&mut out, c);
     }
     out
 }

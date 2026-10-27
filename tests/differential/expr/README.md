@@ -45,6 +45,29 @@ $PY chars.py                        # every code point through casing/repr/slugi
 
 `--mask a,b,c` disables grammar features that are already known to diverge so the
 campaign can see what they hide (`rawint bigint slice strstyle fstr lambda method
-matmul setdisp stmt is tuple in div pow bitwise strescape numstr-unicode methodattr
-numattr`). `--profile clean` is the mask set that currently yields no divergences;
+matmul setdisp stmt is tuple pow bitwise strescape numstr-unicode methodattr
+numattr`; `in`, `div`, `strescape` and `numstr-unicode` are fixed and no longer masked). `--profile clean` is the mask set that currently yields no divergences;
 shrink it as divergences are fixed.
+
+## Value semantics decided by this harness
+
+* **Map attributes.** The engine binds a nested map as upstream's `DynObj` (missing
+  key is `None`); only a dict built inside the expression (`{...}`, a dict
+  comprehension, `dict(...)`) distributes over its values like a plain `dict`.
+  `Value::Map` cannot tell a bound `any`-ranged dict from a `DynObj`, so that rarer
+  flavour is not reproduced. The campaign accepts a Rust result that matches
+  either flavour; stored `agree.jsonl` expectations are the `DynObj` one where the
+  two differ. Truthiness is the remaining gap (class `dynobj-truthiness`): an empty
+  bound map is falsy in Rust, a `DynObj` is always truthy.
+* **Unicode data** for `repr`, `isprintable`, case mapping, `Cased`, decimal digits
+  and whitespace is generated from CPython 3.13 (Unicode 15.1) by
+  `crates/linkml-map-core/tools/gen_pytables.py`, not taken from Rust's `char`.
+  To follow another Python version run the script with that interpreter (for
+  3.14, Unicode 16.0) and redirect it to `crates/linkml-map-core/src/expr/pytables.rs`;
+  `chars.py` should then show no differing code point.
+* **`sorted`** reproduces CPython 3.13's `count_run` and binary insertion exactly
+  for fewer than 64 items (so NaNs land where CPython puts them); longer lists use
+  a stable merge sort.
+* **Not ported:** big integers (`int(1e22)`), `text-unidecode`'s tables
+  (Artistic/GPL, so `slugify` keeps `deunicode`), list-vs-tuple affixes of
+  `startswith`/`endswith`.

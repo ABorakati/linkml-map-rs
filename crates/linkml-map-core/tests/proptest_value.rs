@@ -146,7 +146,8 @@ fn decimal_non_finite_literals_are_reported_as_such() {
             "{text}"
         );
     }
-    for text in ["", " ", "e5", ".", "1e", "1__0", "_1", "1_", "0x10", "1,5"] {
+    // (`Decimal("1__0")` and `Decimal("_1")` are valid: CPython drops every `_`.)
+    for text in ["", " ", "e5", ".", "1e", "_", "1 _", "0x10", "1,5"] {
         assert_eq!(
             Decimal::parse_python(text),
             Err(DecimalError::Invalid),

@@ -466,6 +466,15 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         Ast::Attribute { value, attr } => {
             let obj = attribute_receiver(value, attr, vars)?;
+            // PARITY: a dict built by the expression itself is a real `dict`, not a
+            // `DynObj`: `_distributed_getattr` distributes over its values.
+            if is_dict_construction(value)
+                && let Value::Map(m) = obj.as_ref()
+                && !attr.starts_with('_')
+            {
+                let items = m.values().map(|v| distributed_getattr(v, attr));
+                return items.collect::<ExprResult<Vec<_>>>().map(Value::List);
+            }
             distributed_getattr(&obj, attr)
         }
 
@@ -654,15 +663,11 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
 // --- attribute distribution (mirrors _distributed_getattr) ---
 
 thread_local! {
-    /// When set, attribute access on a `Map` uses *object* semantics:
-    /// a missing key returns [`Value::Null`] (Python `DynObj.__getattr__`),
-    /// instead of distributing over the map's values.
+    /// True while a statement block (the `asteval`-style interpreter) runs: names
+    /// and `{x}` follow asteval rather than simpleeval (see [`with_object_attr_mode`]).
     ///
-    /// The multi-statement (`asteval`-style) program path binds `src` to a
-    /// single object whose attributes are read via native `getattr`, where a
-    /// missing attribute yields `None`. The single-expression path keeps the
-    /// historical dict-value distribution (off by default). See
-    /// [`with_object_attr_mode`].
+    /// Attribute access no longer depends on it: a `Map` is a `DynObj` in both
+    /// evaluators (see [`distributed_getattr`]).
     static OBJECT_ATTR_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -683,6 +688,17 @@ pub(super) fn object_attr_mode_enabled() -> bool {
     OBJECT_ATTR_MODE.with(|c| c.get())
 }
 
+/// Whether `node` builds a plain Python `dict` (a display, a comprehension or
+/// `dict(...)`), as opposed to reading a bound value.
+fn is_dict_construction(node: &Ast) -> bool {
+    match node {
+        Ast::Dict(_) => true,
+        Ast::Comp(c) => c.kind == super::parser::CompKind::Dict,
+        Ast::Call { func, .. } => func == "dict",
+        _ => false,
+    }
+}
+
 pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
         // PARITY: a `NameError` upstream (`_distributed_getattr`), which
@@ -701,25 +717,15 @@ pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> 
             }
             Ok(Value::List(out))
         }
-        Value::Map(m) => {
-            // A present key resolves directly in both modes (object.attr).
-            if let Some(v) = m.get(attr) {
-                return Ok(v.clone());
-            }
-            // Missing key:
-            //  * object mode (multi-statement `src.attr`): return None, exactly
-            //    like Python's `DynObj.__getattr__` (vars(self).get(p, None)).
-            //  * default (single-expr) mode: distribute over the map's values,
-            //    matching `_distributed_getattr` over a bare dict.
-            if object_attr_mode_enabled() {
-                return Ok(Value::Null);
-            }
-            let mut out = Vec::with_capacity(m.len());
-            for v in m.values() {
-                out.push(distributed_getattr(v, attr)?);
-            }
-            Ok(Value::List(out))
-        }
+        // PARITY: a bound map is a `DynObj` (`dynamic_object` builds one for every
+        // class-ranged value and `DynObj(**row)` for a joined row), and
+        // `DynObj.__getattr__` is `vars(self).get(p, None)`: a missing key is
+        // None, never a distribution over the values. Upstream's plain-`dict`
+        // flavour (a value whose slot range is not a class, e.g. `range: Any`)
+        // would distribute over its values and so raise `AttributeError` on a
+        // scalar value; `Value` cannot tell the two apart and models the far
+        // commoner `DynObj`.
+        Value::Map(m) => Ok(m.get(attr).cloned().unwrap_or(Value::Null)),
         Value::Null => Ok(Value::Null),
         // A scalar's attributes are those of the Python object (`s.upper`,
         // `x.real`); a missing one is an `AttributeError` upstream, which
@@ -843,6 +849,16 @@ fn eval_compare(
     Ok(result)
 }
 
+/// `_try_numeric`: the number an operand retries as. Unlike
+/// [`Value::try_numeric`] a `Decimal` is not numeric here (`_try_numeric` only
+/// accepts `int`, `float` and `str`).
+fn retry_numeric(v: &Value) -> Option<f64> {
+    match v {
+        Value::Decimal(_) => None,
+        other => other.try_numeric(),
+    }
+}
+
 fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Value> {
     match op {
         CmpOp::Eq | CmpOp::NotEq => {
@@ -880,12 +896,26 @@ fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Val
             if left.is_null() || right.is_null() {
                 return Ok(Value::Null);
             }
-            let contained = membership(left, right)?;
-            Ok(Value::Bool(if op == CmpOp::In {
-                contained
-            } else {
-                !contained
-            }))
+            match membership(left, right) {
+                Ok(contained) => Ok(Value::Bool(if op == CmpOp::In {
+                    contained
+                } else {
+                    !contained
+                })),
+                // `_null_propagating` catches the `TypeError` of `"a" in 5` and
+                // retries on `_try_numeric` operands: a non-numeric one gives
+                // None (with a warning); when both are numeric the operator
+                // raises its `TypeError` again from inside the handler.
+                Err(e @ ExprError::Eval(_)) => {
+                    if retry_numeric(left).is_some() && retry_numeric(right).is_some() {
+                        Err(e)
+                    } else {
+                        warn_non_numeric(cmp_symbol(op), left, right);
+                        Ok(Value::Null)
+                    }
+                }
+                Err(e) => Err(e),
+            }
         }
     }
 }
@@ -907,6 +937,9 @@ fn ordering_compare(op: CmpOp, l: &Value, r: &Value) -> ExprResult<Value> {
             }
         }
         (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
+        // Lists order lexicographically (the first position whose items differ
+        // decides, else the length), as `list_richcompare` does.
+        (Value::List(_), Value::List(_)) => builtins::py_cmp(l, r, cmp_symbol(op))?,
         _ => {
             return Err(ExprError::Eval(format!(
                 "'{}' not supported between instances of '{}' and '{}'",
@@ -976,6 +1009,11 @@ pub(super) fn membership(needle: &Value, haystack: &Value) -> ExprResult<bool> {
         Value::List(items) => Ok(items.iter().any(|item| item.py_eq(needle))),
         Value::Map(m) => match needle {
             Value::Str(k) => Ok(m.contains_key(k)),
+            // Hashing the needle comes first: a list or dict is a `TypeError`.
+            Value::List(_) | Value::Map(_) => Err(ExprError::Eval(format!(
+                "unhashable type: '{}'",
+                type_name(needle)
+            ))),
             _ => Ok(false),
         },
         other => Err(ExprError::Eval(format!(
@@ -1041,7 +1079,7 @@ fn coerce_str_to_type_of(s: &str, target: &Value) -> Option<Value> {
 }
 /// decimal point).
 fn parse_python_int(s: &str) -> Option<i64> {
-    s.trim().parse::<i64>().ok()
+    super::pystr::int_from_str(s)
 }
 
 // --- arithmetic numeric-string coercion (mirrors upstream #285) ---
@@ -1209,8 +1247,10 @@ fn binop_name(op: BinOp) -> &'static str {
 }
 
 /// Attempt the operation with native (non-coerced) semantics.
-/// Returns `Ok(Some(v))` on success, `Ok(None)`/`Err` to signal the Python
-/// `TypeError`/`ValueError` retry path.
+/// Returns `Ok(Some(v))` on success, `Ok(None)` to signal the Python
+/// `TypeError`/`ValueError` retry path. An `Err` is an exception that leaves the
+/// operator wrapper altogether (including `ZeroDivisionError`, which only
+/// `TypeError` and `ValueError` handlers would catch).
 fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Option<Value>> {
     use Value::*;
 
@@ -1345,6 +1385,10 @@ fn repeat_list(items: &[Value], n: &Value) -> ExprResult<Option<Value>> {
     if (items.len() as i128) * (count as i128) > MAX_STRING_LENGTH as i128 {
         return Err(too_long());
     }
+    // Nothing to repeat (and no point looping `count` times over nothing).
+    if items.is_empty() {
+        return Ok(Some(Value::List(Vec::new())));
+    }
     let mut out = Vec::with_capacity(items.len() * count);
     for _ in 0..count {
         out.extend(items.iter().cloned());
@@ -1397,20 +1441,22 @@ fn int_binary(op: BinOp, a: i64, b: i64) -> ExprResult<Option<Value>> {
         BinOp::Div => {
             // Python `/` always yields float.
             if b == 0 {
-                return Ok(None); // ZeroDivisionError → retry path (will also fail → None)
+                return Err(ExprError::zero_division("division by zero"));
             }
             Value::Float(int_truediv(a, b))
         }
         BinOp::FloorDiv => {
             if b == 0 {
-                return Ok(None);
+                return Err(ExprError::zero_division(
+                    "integer division or modulo by zero",
+                ));
             }
             // `-2**63 // -1` is 2**63.
             Value::Int(python_floordiv_int(a, b).ok_or_else(ExprError::big_int)?)
         }
         BinOp::Mod => {
             if b == 0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("integer modulo by zero"));
             }
             Value::Int(python_mod_int(a, b))
         }
@@ -1510,19 +1556,19 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
         BinOp::Mul => Value::Float(a * b),
         BinOp::Div => {
             if b == 0.0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("float division by zero"));
             }
             Value::Float(a / b)
         }
         BinOp::FloorDiv => {
             if b == 0.0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("float floor division by zero"));
             }
             Value::Float(python_floordiv_float(a, b))
         }
         BinOp::Mod => {
             if b == 0.0 {
-                return Ok(None);
+                return Err(ExprError::zero_division("float modulo by zero"));
             }
             Value::Float(python_mod_float(a, b))
         }
@@ -1547,7 +1593,7 @@ fn float_binary(op: BinOp, a: f64, b: f64) -> ExprResult<Option<Value>> {
 fn numeric_binary_f64(op: BinOp, a: f64, b: f64) -> ExprResult<Value> {
     match float_binary(op, a, b)? {
         Some(v) => Ok(v),
-        None => Ok(Value::Null), // e.g. div-by-zero or bitwise on floats
+        None => Ok(Value::Null), // bitwise on floats
     }
 }
 

@@ -31,47 +31,8 @@ use linkml_map_core::value::Value;
 /// assert_eq!(py_float_repr(172.5), "172.5");
 /// ```
 pub fn py_float_repr(f: f64) -> String {
-    if f.is_nan() {
-        return "nan".to_owned();
-    }
-    if f.is_infinite() {
-        return if f < 0.0 { "-inf" } else { "inf" }.to_owned();
-    }
-    // `{:e}` yields the shortest round-trip digits, e.g. "-1.2345e-7".
-    let sci = format!("{f:e}");
-    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let negative = mantissa.starts_with('-');
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    let decpt = exp + 1;
-    let mut out = String::with_capacity(digits.len() + 8);
-    if negative {
-        out.push('-');
-    }
-    if -4 < decpt && decpt <= 16 {
-        if decpt <= 0 {
-            out.push_str("0.");
-            out.extend(std::iter::repeat_n('0', decpt.unsigned_abs() as usize));
-            out.push_str(&digits);
-        } else if digits.len() <= decpt as usize {
-            out.push_str(&digits);
-            out.extend(std::iter::repeat_n('0', decpt as usize - digits.len()));
-            out.push_str(".0");
-        } else {
-            out.push_str(&digits[..decpt as usize]);
-            out.push('.');
-            out.push_str(&digits[decpt as usize..]);
-        }
-    } else {
-        out.push_str(&digits[..1]);
-        if digits.len() > 1 {
-            out.push('.');
-            out.push_str(&digits[1..]);
-        }
-        let e = decpt - 1;
-        let _ = write!(out, "e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs());
-    }
-    out
+    // One implementation for the whole workspace: the expression evaluator's.
+    linkml_map_core::pyfmt::py_float_repr(f)
 }
 
 // ─── JSON (simplejson.dumps) ─────────────────────────────────────────────────
@@ -257,38 +218,9 @@ fn py_bool(b: bool) -> &'static str {
     if b { "True" } else { "False" }
 }
 
-/// Python `repr(str)`: single quotes unless the text holds `'` but no `"`.
+/// Python `repr(str)` (see [`linkml_map_core::pyfmt::py_repr_str`]).
 fn py_str_repr(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if c.is_control() => {
-                let n = c as u32;
-                if n <= 0xff {
-                    let _ = write!(out, "\\x{n:02x}");
-                } else {
-                    let _ = write!(out, "\\u{n:04x}");
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
+    linkml_map_core::pyfmt::py_repr_str(s)
 }
 
 // ─── Null / empty stripping ──────────────────────────────────────────────────

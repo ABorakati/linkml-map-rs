@@ -63,6 +63,13 @@ impl ExprError {
         Self::Uncaught("maximum recursion depth exceeded".into())
     }
 
+    /// `ZeroDivisionError` from `/`, `//` or `%`. `_null_propagating_arithmetic`
+    /// only catches `TypeError` and `ValueError`, and neither does `_eval_expr`,
+    /// so it aborts the row in both evaluation modes.
+    pub(crate) fn zero_division(message: &str) -> Self {
+        Self::Uncaught(message.into())
+    }
+
     /// A result Python produces that [`crate::value::Value`] cannot hold: a
     /// bound method (`s.upper`), `bytes`, a complex number, `Ellipsis`, a
     /// function. Upstream succeeds there, so this is not a rejection: it
