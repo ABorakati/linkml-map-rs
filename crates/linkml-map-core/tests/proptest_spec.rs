@@ -81,7 +81,6 @@ proptest! {
 
     /// Run the engine over arbitrary records with an arbitrary (loadable) spec.
     #[test]
-    #[allow(clippy::redundant_clone)]
     fn engine_never_panics_on_arbitrary_specs(
         json in arb_structured_spec(),
         record in arb_record(),

@@ -91,10 +91,10 @@ fn apply(root: &mut Json, path: &[Seg], m: &Mutation, all: &[Vec<Seg>]) {
             }
         }
         Mutation::Rename(new) => {
-            if let (Seg::Key(k), Some(Json::Object(o))) = (last, get_mut(root, parent_path)) {
-                if let Some(v) = o.shift_remove(k) {
-                    o.insert(new.clone(), v);
-                }
+            if let (Seg::Key(k), Some(Json::Object(o))) = (last, get_mut(root, parent_path))
+                && let Some(v) = o.shift_remove(k)
+            {
+                o.insert(new.clone(), v);
             }
         }
         Mutation::Retype(v) => {

@@ -337,3 +337,14 @@ proptest! {
         }
     }
 }
+
+/// `parse_python` rejects an exponent outside `i32` (documented), but `to_sci_string` spells
+/// the *adjusted* exponent, which exceeds `i32` for a value parsed with an exponent near
+/// `i32::MAX`: the value cannot be read back from its own `str()`. Python's `Decimal` has
+/// no such gap (`Emax` is 999999999999999999).
+#[test]
+#[ignore = "bug: Decimal::parse_python(d.to_sci_string()) fails for `10e2147483647` (adjusted exponent 2147483648 is outside i32)"]
+fn decimal_sci_string_of_extreme_exponent_parses_back() {
+    let d = Decimal::parse_python("10e2147483647").unwrap();
+    Decimal::parse_python(&d.to_sci_string()).expect("str(Decimal) parses");
+}
