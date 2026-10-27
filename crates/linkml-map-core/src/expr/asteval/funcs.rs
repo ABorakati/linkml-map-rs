@@ -558,6 +558,7 @@ fn py_hash(v: &Py) -> PyRes<i64> {
         Py::Bool(b) => *b as i64,
         Py::Int(i) => hash_int(*i as i128),
         Py::Float(f) => hash_float(*f),
+        Py::Str(s) if s.is_empty() => 0,
         Py::Str(s) => {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in s.bytes() {

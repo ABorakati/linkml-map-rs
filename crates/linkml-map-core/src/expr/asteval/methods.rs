@@ -1101,7 +1101,31 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
             };
             Ok(Py::Bool(r))
         }
-        "encode" => Ok(Py::Bytes(sv.as_bytes().to_vec().into())),
+        "encode" => {
+            nargs(name, &args, 0, 2)?;
+            let enc = kwarg_or_pos(&args, &kwargs, 0, "encoding");
+            if let Some(e) = &enc {
+                let Py::Str(e) = e else {
+                    return type_err(format!(
+                        "encode() argument 'encoding' must be str, not {}",
+                        e.type_name()
+                    ));
+                };
+                let norm = e.to_ascii_lowercase().replace('_', "-");
+                if !matches!(norm.as_str(), "utf-8" | "utf8" | "u8") {
+                    return Err(exc("LookupError", format!("unknown encoding: {e}")));
+                }
+            }
+            if let Some(e) = kwarg_or_pos(&args, &kwargs, 1, "errors")
+                && !matches!(e, Py::Str(_))
+            {
+                return type_err(format!(
+                    "encode() argument 'errors' must be str, not {}",
+                    e.type_name()
+                ));
+            }
+            Ok(Py::Bytes(sv.as_bytes().to_vec().into()))
+        }
         "expandtabs" => {
             nargs(name, &args, 0, 1)?;
             let tab = match kwarg_or_pos(&args, &kwargs, 0, "tabsize").as_ref() {
