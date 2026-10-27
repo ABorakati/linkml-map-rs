@@ -440,7 +440,7 @@ impl<'a> Interp<'a> {
         }
         let mut s = PySet::new();
         for x in items {
-            s.insert(hkey(&x)?, x);
+            set_add(&mut s, hkey(&x)?, x);
         }
         Ok(Py::Set(rf(s)))
     }
@@ -452,7 +452,7 @@ impl<'a> Interp<'a> {
         for (k, v) in items {
             let key = self.run_opt(k.as_ref())?;
             let val = self.run_e(v)?;
-            d.insert(hkey(&key)?, (key, val));
+            dict_set(&mut d, hkey(&key)?, key, val);
         }
         Ok(Py::Dict(rf(d)))
     }
@@ -525,7 +525,7 @@ impl<'a> Interp<'a> {
         let mut s = PySet::new();
         if let Py::List(l) = r {
             for x in l.borrow().iter() {
-                s.insert(hkey(x)?, x.clone());
+                set_add(&mut s, hkey(x)?, x.clone());
             }
         }
         Ok(Py::Set(rf(s)))
@@ -696,6 +696,10 @@ impl<'a> Interp<'a> {
                     return Err(ex);
                 }
                 let func_name = match &f {
+                    Py::Builtin("type") => "_type".to_string(),
+                    Py::Builtin("open") => "_open".to_string(),
+                    Py::Builtin("uuid5") => "_uuid5".to_string(),
+                    Py::Builtin("print") => "_printer".to_string(),
                     Py::Builtin(n) | Py::Type(n) => (*n).to_string(),
                     Py::Method(m) => m.1.to_string(),
                     Py::Proc(p) => p.name.clone(),
@@ -816,7 +820,7 @@ impl<'a> Interp<'a> {
         if let Some(kw) = &p.def.params.kwarg {
             let mut d = PyDict::new();
             for (k, v) in kwargs.drain(..) {
-                d.insert(HKey::Str(k.as_str().into()), (Py::str(k.as_str()), v));
+                dict_set(&mut d, HKey::Str(k.as_str().into()), Py::str(k.as_str()), v);
             }
             symlocals.push((kw.clone(), Py::Dict(rf(d))));
         } else if !kwargs.is_empty() {
@@ -1004,7 +1008,7 @@ impl<'a> Interp<'a> {
                         Comp::Dict(k, v) => {
                             let key = self.run_e(k)?;
                             let val = self.run_e(v)?;
-                            out_dict.insert(hkey(&key)?, (key, val));
+                            dict_set(out_dict, hkey(&key)?, key, val);
                         }
                     }
                 }

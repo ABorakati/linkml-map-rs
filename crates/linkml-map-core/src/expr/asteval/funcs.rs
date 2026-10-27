@@ -74,10 +74,22 @@ where
 fn check_args(name: &str, args: &[Py], min: usize, max: usize) -> PyRes<()> {
     let n = args.len();
     if n < min || n > max {
-        let msg = if min == max {
+        let msg = if name == "type" && (n != 1) {
+            if n == 0 {
+                "_type() missing 1 required positional argument: 'x'".to_string()
+            } else {
+                format!("_type() takes 1 positional argument but {n} were given")
+            }
+        } else if is_math(name) && min == max {
+            format!(
+                "math.{name}() takes exactly {} argument{} ({n} given)",
+                if min == 1 { "one".to_string() } else { min.to_string() },
+                if min == 1 { "" } else { "s" }
+            )
+        } else if min == max {
             format!(
                 "{name}() takes exactly {} argument{} ({n} given)",
-                min,
+                if min == 1 { "one".to_string() } else { min.to_string() },
                 if min == 1 { "" } else { "s" }
             )
         } else if n < min {
@@ -89,6 +101,16 @@ fn check_args(name: &str, args: &[Py], min: usize, max: usize) -> PyRes<()> {
     }
     let _ = arity::<()>;
     Ok(())
+}
+
+fn is_math(name: &str) -> bool {
+    matches!(
+        name,
+        "acos" | "acosh" | "asin" | "asinh" | "atan" | "atan2" | "atanh" | "ceil" | "copysign"
+            | "cos" | "cosh" | "degrees" | "exp" | "fabs" | "factorial" | "floor" | "fmod" | "frexp"
+            | "fsum" | "hypot" | "isinf" | "isnan" | "ldexp" | "log" | "log10" | "log1p" | "modf"
+            | "pow" | "radians" | "sin" | "sinh" | "sqrt" | "tan" | "tanh" | "trunc"
+    )
 }
 
 fn no_kwargs(name: &str, kwargs: &Kwargs) -> PyRes<()> {
@@ -207,7 +229,11 @@ pub(crate) fn call_builtin(
             match (q, r) {
                 (Ok(q), Ok(r)) => Ok(Py::tuple(vec![q, r])),
                 (Err(e), _) | (_, Err(e)) => {
-                    if e.class == "TypeError" {
+                    if e.class == "ZeroDivisionError"
+                        && (matches!(args[0], Py::Float(_)) || matches!(args[1], Py::Float(_)))
+                    {
+                        zero_div_msg("float divmod()")
+                    } else if e.class == "TypeError" {
                         type_err(format!(
                             "unsupported operand type(s) for divmod(): '{}' and '{}'",
                             args[0].type_name(),
@@ -322,22 +348,47 @@ fn py_hash(v: &Py) -> PyRes<i64> {
         let h = if neg { -h } else { h };
         if h == -1 { -2 } else { h }
     }
+    // `_Py_HashDouble`
+    fn hash_float(x: f64) -> i64 {
+        if x.is_nan() {
+            return 0;
+        }
+        if x.is_infinite() {
+            return if x > 0.0 { 314159 } else { -314159 };
+        }
+        const BITS: i32 = 61;
+        if x == 0.0 {
+            return 0;
+        }
+        let (mut m, mut e) = {
+            let (m, e) = frexp(x.abs());
+            (m, e)
+        };
+        let mut hx: u64 = 0;
+        while m != 0.0 {
+            hx = ((hx << 28) & ((1u64 << BITS) - 1)) | (hx >> (BITS - 28));
+            m *= 268_435_456.0; // 2**28
+            e -= 28;
+            let y = m as u64;
+            m -= y as f64;
+            hx += y;
+            if hx >= (1u64 << BITS) {
+                hx -= 1u64 << BITS;
+            }
+        }
+        let e = if e >= 0 { e % BITS } else { BITS - 1 - ((-1 - e) % BITS) };
+        hx = ((hx << e) & ((1u64 << BITS) - 1)) | (hx >> (BITS - e));
+        let mut h = hx as i64;
+        if x < 0.0 {
+            h = -h;
+        }
+        if h == -1 { -2 } else { h }
+    }
     Ok(match v {
         Py::None => 0xFCA8_6420,
         Py::Bool(b) => *b as i64,
         Py::Int(i) => hash_int(*i as i128),
-        Py::Float(f) => {
-            if f.is_nan() {
-                0
-            } else if f.is_infinite() {
-                if *f > 0.0 { 314159 } else { -314159 }
-            } else if f.fract() == 0.0 && f.abs() < 1.7e38 {
-                hash_int(*f as i128)
-            } else {
-                // Not the exact CPython value for non-integral floats.
-                (f.to_bits() % (MOD as u64)) as i64
-            }
-        }
+        Py::Float(f) => hash_float(*f),
         Py::Str(s) => {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in s.bytes() {
@@ -347,11 +398,22 @@ fn py_hash(v: &Py) -> PyRes<i64> {
             h as i64
         }
         Py::Tuple(t) => {
-            let mut h: i64 = 0x345678;
+            // The xxHash-based tuple hash of CPython 3.8+.
+            const P1: u64 = 11_400_714_785_074_694_791;
+            const P2: u64 = 14_029_467_366_897_019_727;
+            const P5: u64 = 2_870_177_450_012_600_261;
+            let mut acc: u64 = P5;
             for x in t.iter() {
-                h = h.wrapping_mul(1_000_003).wrapping_add(py_hash(x)?);
+                let lane = py_hash(x)? as u64;
+                acc = acc.wrapping_add(lane.wrapping_mul(P2));
+                acc = acc.rotate_left(31);
+                acc = acc.wrapping_mul(P1);
             }
-            h
+            acc = acc.wrapping_add((t.len() as u64) ^ (P5 ^ 3_527_539));
+            if acc == u64::MAX {
+                return Ok(1_546_275_796);
+            }
+            acc as i64
         }
         other => {
             hkey(other)?;
@@ -669,6 +731,10 @@ fn sum_floats(mut it: Cursor, acc: Py, pending: Option<Py>) -> PyRes<Py> {
 
 // --- math ---------------------------------------------------------------------
 
+fn zero_div_msg<T>(msg: &str) -> PyRes<T> {
+    Err(exc("ZeroDivisionError", msg))
+}
+
 fn domain<T>() -> PyRes<T> {
     value_err("math domain error")
 }
@@ -778,10 +844,11 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
                     "floor" => f.floor(),
                     _ => f.trunc(),
                 }),
-                other => type_err(format!(
-                    "type {} doesn't define __{name}__ method",
+                other if name == "trunc" => type_err(format!(
+                    "type {} doesn't define __trunc__ method",
                     other.type_name()
                 )),
+                other => type_err(format!("must be real number, not {}", other.type_name())),
             }
         }
         "factorial" => {
@@ -814,15 +881,7 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
             if x == 0.0 || !x.is_finite() {
                 return Ok(Py::tuple(vec![Py::Float(x), Py::Int(0)]));
             }
-            let mut e = x.abs().log2().floor() as i32 + 1;
-            let mut m = x / 2f64.powi(e);
-            if m.abs() >= 1.0 {
-                m /= 2.0;
-                e += 1;
-            } else if m.abs() < 0.5 {
-                m *= 2.0;
-                e -= 1;
-            }
+            let (m, e) = frexp(x);
             Ok(Py::tuple(vec![Py::Float(m), Py::Int(e as i64)]))
         }
         "ldexp" => {
@@ -1042,7 +1101,7 @@ pub(crate) fn call_type(
             let mut s = PySet::new();
             if let Some(x) = args.first() {
                 for item in to_vec(x)? {
-                    s.insert(hkey(&item)?, item);
+                    set_add(&mut s, hkey(&item)?, item);
                 }
             }
             Ok(Py::Set(rf(s)))
@@ -1231,13 +1290,13 @@ fn build_dict(args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
                             pair.len()
                         ));
                     }
-                    d.insert(hkey(&pair[0])?, (pair[0].clone(), pair[1].clone()));
+                    dict_set(&mut d, hkey(&pair[0])?, pair[0].clone(), pair[1].clone());
                 }
             }
         }
     }
     for (k, v) in kwargs {
-        d.insert(HKey::Str(k.as_str().into()), (Py::str(k.as_str()), v));
+        dict_set(&mut d, HKey::Str(k.as_str().into()), Py::str(k.as_str()), v);
     }
     Ok(Py::Dict(rf(d)))
 }

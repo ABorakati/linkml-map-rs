@@ -41,7 +41,7 @@ fn unsupported_operand<T>(sym: &str, a: &Py, b: &Py) -> PyRes<T> {
 /// A float modulo with Python's sign convention.
 pub(crate) fn float_mod(x: f64, y: f64) -> PyRes<f64> {
     if y == 0.0 {
-        return zero_div("float modulo");
+        return zero_div("float modulo by zero");
     }
     let mut m = x % y;
     if m != 0.0 {
@@ -424,7 +424,7 @@ fn bitop(op: BinOp, a: &Py, b: &Py) -> PyRes<Py> {
             }
             BinOp::BitOr => {
                 for (k, v) in x.iter().chain(y.iter()) {
-                    out.insert(k.clone(), v.clone());
+                    set_add(&mut out, k.clone(), v.clone());
                 }
             }
             _ => {
@@ -751,7 +751,15 @@ pub(crate) fn getitem(obj: &Py, key: &Py) -> PyRes<Py> {
                     slice_positions(a, b, c).into_iter().map(|i| chars[i as usize]).collect::<String>(),
                 ));
             }
-            let i = index_of(key, "string")?;
+            let i = match is_int_like(key) {
+                Some(i) => i,
+                None => {
+                    return type_err(format!(
+                        "string indices must be integers, not '{}'",
+                        key.type_name()
+                    ));
+                }
+            };
             let idx = if i < 0 { i + chars.len() as i64 } else { i };
             if idx < 0 || idx >= chars.len() as i64 {
                 return Err(exc("IndexError", "string index out of range"));

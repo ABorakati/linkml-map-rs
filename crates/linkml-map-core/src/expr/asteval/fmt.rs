@@ -224,6 +224,9 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
     let ty = s.ty.unwrap_or('d');
     match ty {
         'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%' => return format_float_spec(i as f64, s),
+        _ if s.precision.is_some() => {
+            return value_err("Precision not allowed in integer format specifier");
+        }
         'd' | 'n' | 'b' | 'o' | 'x' | 'X' | 'c' => {}
         other => {
             return value_err(format!(

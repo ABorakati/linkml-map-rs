@@ -159,6 +159,8 @@ impl Py {
             Py::Slice(_) => "slice".into(),
             Py::Iter(it) => it.borrow().kind.into(),
             Py::Obj(_) => "DynObj".into(),
+            Py::Builtin("type" | "open" | "uuid5" | "slot") => "function".into(),
+            Py::Builtin("print") => "method".into(),
             Py::Builtin(_) => "builtin_function_or_method".into(),
             Py::Type(_) => "type".into(),
             Py::Method(_) => "builtin_function_or_method".into(),
@@ -792,3 +794,34 @@ pub(crate) fn plain_from_value(v: &crate::value::Value) -> Py {
     }
 }
 
+
+/// `d[key] = val`: an existing key keeps its original object (`d[1.0] = x` on
+/// `{1: y}` leaves the key `1`).
+pub(crate) fn dict_set(d: &mut PyDict, h: HKey, key: Py, val: Py) {
+    match d.get_mut(&h) {
+        Some(entry) => entry.1 = val,
+        None => {
+            d.insert(h, (key, val));
+        }
+    }
+}
+
+/// `s.add(x)`: an equal element already present stays.
+pub(crate) fn set_add(s: &mut PySet, h: HKey, v: Py) {
+    s.entry(h).or_insert(v);
+}
+
+/// `math.frexp`: mantissa in `[0.5, 1)` and the binary exponent.
+pub(crate) fn frexp(x: f64) -> (f64, i32) {
+    if x == 0.0 || !x.is_finite() {
+        return (x, 0);
+    }
+    let bits = x.to_bits();
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    if exp == 0 {
+        let (m, e) = frexp(x * 2f64.powi(54));
+        return (m, e - 54);
+    }
+    let m = f64::from_bits((bits & !(0x7ffu64 << 52)) | (1022u64 << 52));
+    (m, exp - 1022)
+}

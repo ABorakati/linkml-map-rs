@@ -438,7 +438,7 @@ fn dict_method(recv: &Py, d: &Rf<PyDict>, name: &str, args: Vec<Py>, kwargs: Kwa
                 }
             }
             for (k, v) in kwargs {
-                d.borrow_mut().insert(HKey::Str(k.as_str().into()), (Py::str(k.as_str()), v));
+                dict_set(&mut d.borrow_mut(), HKey::Str(k.as_str().into()), Py::str(k.as_str()), v);
             }
             Ok(Py::None)
         }
@@ -446,7 +446,7 @@ fn dict_method(recv: &Py, d: &Rf<PyDict>, name: &str, args: Vec<Py>, kwargs: Kwa
             nargs(name, &args, 1, 2)?;
             let mut out = PyDict::new();
             for k in to_vec(&args[0])? {
-                out.insert(hkey(&k)?, (k, args.get(1).cloned().unwrap_or(Py::None)));
+                { let h = hkey(&k)?; dict_set(&mut out, h, k, args.get(1).cloned().unwrap_or(Py::None)); }
             }
             Ok(Py::Dict(rf(out)))
         }
@@ -463,7 +463,7 @@ fn set_items(v: &Py) -> PyRes<PySet> {
         Py::Set(s) => return Ok(s.borrow().clone()),
         other => {
             for x in to_vec(other)? {
-                out.insert(hkey(&x)?, x);
+                set_add(&mut out, hkey(&x)?, x);
             }
         }
     }
@@ -503,7 +503,7 @@ fn set_method(s: &Rf<PySet>, name: &str, args: Vec<Py>) -> PyRes<Py> {
             let mut out = s.borrow().clone();
             for a in &args {
                 for (k, v) in set_items(a)? {
-                    out.insert(k, v);
+                    set_add(&mut out, k, v);
                 }
             }
             if name == "update" {
