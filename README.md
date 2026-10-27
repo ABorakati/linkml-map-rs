@@ -294,11 +294,44 @@ aggregation / pivot (melt/unmelt)**, target-schema derivation, content-hash
 identifier minting (see [Identifiers](#identifiers)), Parquet/DuckDB output
 (`columnar` feature), and the inverse (round-trip) transformer.
 
-> **v0.6.0 parity:** tracks upstream linkml-map v0.6.0. The deprecated
-> `sources`, `derived_from`, `object_derivations`, and top-level
-> `slot_derivations` forms have been **removed** — use `populated_from` and
-> slot-level `class_derivations`. `source_schema`/`target_schema` are structured
-> `SchemaReference` objects (a bare string still parses as the schema name).
+> **v0.6.0 parity:** tracks upstream linkml-map v0.6.0. Specs load as upstream's
+> pydantic model does: an unknown field is an error at any level
+> (`extra="forbid"`), derivation sections may be mappings or lists (including the
+> compact `- Name: {...}` form), and `copy_directives` entries take their
+> `element_name` from the mapping key. The deprecated `sources`,
+> `object_derivations` and `derived_from` still load, as upstream: PV `sources` becomes
+> `populated_from`, `object_derivations` are flattened into slot-level
+> `class_derivations`, and `validate-spec` warns about them. `source_schema` /
+> `target_schema` are structured `SchemaReference` objects (`name`, `version`,
+> `schema_uri`, `source_file`; a bare string still parses as the schema name).
+
+**Errors follow upstream.** Where upstream raises, so does the engine, with a non-zero
+exit: a slot derivation whose `populated_from` (or same-name copy) is not a slot of the
+source class, a derived slot the target class lacks, a nested `class_derivations` slot
+with no target schema, an enum-ranged slot without exactly one `enum_derivation`, and a
+join with a key value but no lookup table (`map-data` of a single object, a join table
+with no file, or a YAML join table: upstream's `LookupIndex` reads CSV/TSV/JSON only).
+An `expr:` the parser rejects is reported when a row first evaluates it, so a spec
+whose only fault is such an expression still runs over zero rows.
+
+### `validate-spec`
+
+```bash
+linkml-tr-rs validate-spec spec.yaml [more.yaml dir/ ...] \
+  [--source-schema S.yaml] [--target-schema T.yaml] [--strict] [--no-warnings]
+linkml-tr-rs validate-spec --merge [--entity NAME] [--emit-spec FILE|-] specs/
+linkml-tr-rs validate-spec --list-entities specs/
+```
+
+As upstream's `validate-spec`: each file is checked on its own (a directory expands to its
+`.yaml`/`.yml` files) and reported as `<path>: ok` or `<path>: ok (with warnings)` on
+**stdout**, with the findings under a `<path>:` header on **stderr**; the exit status is 1
+when a file has an error (or any warning under `--strict`). Schemas come from the options or
+from the spec's `source_schema` / `target_schema` (a path, relative to the spec, or a URL).
+`--merge` validates the merged spec (`Merged spec: ok`), `--list-entities` prints the merged
+class-derivation names, and `--emit-spec` writes the resolved spec. The earlier
+`-T spec.yaml` spelling still works. The structural layer is the datamodel's
+deserialisation, so a structural error carries serde's text rather than jsonschema's.
 
 **Streaming tabular input** (`.tsv`/`.csv` or a directory of tables) works as
 upstream's `transform_spec`: every class derivation is a *block*, visited in spec

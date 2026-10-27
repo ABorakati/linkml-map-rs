@@ -110,30 +110,33 @@ where
 
 /// A reference to a schema, by name and/or location. v0.6.0 replaces the plain
 /// string `source_schema`/`target_schema` (#215). Mirrors Python
-/// `SchemaReference`.
+/// `SchemaReference` (`name`, `version`, `schema_uri`, `source_file`;
+/// pydantic `extra="forbid"`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SchemaReference {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_stringish_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub version: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_path: Option<String>,
+    pub schema_uri: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+    pub source_file: Option<String>,
 }
 
 impl SchemaReference {
-    /// The usable path/identifier for loading: prefers `local_path`, falling
-    /// back to `name`, then `url`.
+    /// The usable path/identifier for loading: `source_file`, falling back to
+    /// `name` (upstream `validator._resolve_schema_path`).
     pub fn path(&self) -> Option<&str> {
-        self.local_path
-            .as_deref()
-            .or(self.name.as_deref())
-            .or(self.url.as_deref())
+        self.source_file.as_deref().or(self.name.as_deref())
     }
 }
 
@@ -211,6 +214,7 @@ pub enum PivotDirectionType {
 ///
 /// Mirrors Python `SpecificationComponent`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SpecificationComponent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -234,6 +238,7 @@ pub struct SpecificationComponent {
 ///
 /// Mirrors Python `KeyVal`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct KeyVal {
     pub key: String,
 
@@ -245,6 +250,7 @@ pub struct KeyVal {
 ///
 /// Mirrors Python `UnitConversionConfiguration`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct UnitConversionConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_unit: Option<String>,
@@ -293,6 +299,7 @@ pub struct UnitConversionConfiguration {
 ///
 /// Mirrors Python `Offset`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Offset {
     pub offset_value: f64,
     pub offset_field: String,
@@ -305,6 +312,7 @@ pub struct Offset {
 ///
 /// Mirrors Python `StringificationConfiguration`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct StringificationConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delimiter: Option<String>,
@@ -327,6 +335,7 @@ pub struct StringificationConfiguration {
 ///
 /// Mirrors Python `Inverse`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Inverse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot_name: Option<String>,
@@ -345,6 +354,7 @@ pub struct TransformationOperation;
 ///
 /// Mirrors Python `AggregationOperation`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AggregationOperation {
     pub operator: AggregationType,
 
@@ -359,6 +369,7 @@ pub struct AggregationOperation {
 ///
 /// Mirrors Python `GroupingOperation`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct GroupingOperation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub null_handling: Option<InvalidValueHandlingStrategy>,
@@ -368,6 +379,7 @@ pub struct GroupingOperation {
 ///
 /// Mirrors Python `PivotOperation`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PivotOperation {
     pub direction: PivotDirectionType,
 
@@ -424,6 +436,7 @@ fn default_slot_name_template() -> String {
 ///
 /// Mirrors Python `AliasedClass`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AliasedClass {
     pub alias: String,
 
@@ -446,6 +459,7 @@ pub struct AliasedClass {
 ///
 /// Mirrors Python `CopyDirective`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CopyDirective {
     pub element_name: String,
 
@@ -469,7 +483,7 @@ pub struct CopyDirective {
 ///
 /// Mirrors Python `Agent`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "PascalCase")]
+#[serde(tag = "type", rename_all = "PascalCase", deny_unknown_fields)]
 pub enum Agent {
     #[serde(rename = "Agent")]
     Agent {
@@ -514,8 +528,17 @@ pub enum Agent {
 ///
 /// Mirrors Python `SlotDerivation`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SlotDerivation {
     pub name: String,
+
+    /// Deprecated upstream (use `populated_from`); accepted so legacy specs load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<String>>,
+
+    /// Deprecated upstream and ignored by the runtime; accepted so legacy specs load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub populated_from: Option<String>,
@@ -632,8 +655,12 @@ pub struct SlotDerivation {
 ///
 /// Mirrors Python `PermissibleValueDerivation`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PermissibleValueDerivation {
     pub name: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression_mappings: Option<IndexMap<String, KeyVal>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expr: Option<String>,
@@ -703,8 +730,16 @@ pub struct PermissibleValueDerivation {
 ///
 /// Mirrors Python `EnumDerivation`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct EnumDerivation {
     pub name: String,
+
+    /// Deprecated upstream (use `populated_from`); accepted so legacy specs load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression_mappings: Option<IndexMap<String, KeyVal>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub populated_from: Option<String>,
@@ -770,6 +805,7 @@ pub struct EnumDerivation {
 /// Settings applied to every class derivation that targets one class, unless
 /// the derivation sets its own. Mirrors Python `ClassDefault` (upstream #342).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ClassDefault {
     /// Name of the class in the target schema.
     #[serde(default)]
@@ -843,8 +879,16 @@ where
 ///
 /// Mirrors Python `ClassDerivation`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ClassDerivation {
     pub name: String,
+
+    /// Deprecated upstream (use `populated_from`); accepted so legacy specs load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression_mappings: Option<IndexMap<String, KeyVal>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub populated_from: Option<String>,
@@ -919,6 +963,7 @@ pub struct ClassDerivation {
 ///
 /// Mirrors Python `TransformationSpecification`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TransformationSpecification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -1029,6 +1074,135 @@ pub struct TransformationSpecification {
     pub comments: Option<Vec<String>>,
 }
 
+/// `spec_normalizer._expand_compact_keys`: turn `{Name: {body}}` / `{Name: null}` list
+/// items into `{name: Name, ...body}` in place (items already carrying `name` as their
+/// sole key, or not shaped that way, are left alone).
+fn expand_compact_keys(items: &mut [serde_json::Value]) {
+    use serde_json::Value;
+    for item in items {
+        let Value::Object(map) = item else { continue };
+        if map.len() != 1 {
+            continue;
+        }
+        let Some((key, body)) = map.iter().next() else {
+            continue;
+        };
+        if key == "name" || !matches!(body, Value::Object(_) | Value::Null) {
+            continue;
+        }
+        let mut expanded = match body {
+            Value::Object(o) => o.clone(),
+            _ => serde_json::Map::new(),
+        };
+        expanded
+            .entry("name")
+            .or_insert_with(|| Value::String(key.clone()));
+        *item = Value::Object(expanded);
+    }
+}
+
+/// Accept the list form of a name-keyed collection, as upstream's `ReferenceValidator`
+/// does: a list of `{<key_field>: ..., ...}` items becomes the mapping keyed by that
+/// field. Items without a string key field are dropped, a repeated key keeps the last.
+fn list_to_map(node: &mut serde_json::Value, key_field: &str, compact_keys: bool) {
+    use serde_json::Value;
+    let Value::Array(items) = node else { return };
+    if compact_keys {
+        expand_compact_keys(items);
+    }
+    let keyed: serde_json::Map<String, Value> = items
+        .drain(..)
+        .filter_map(|item| {
+            let key = item.get(key_field)?.as_str()?.to_owned();
+            Some((key, item))
+        })
+        .collect();
+    *node = Value::Object(keyed);
+}
+
+/// Normalise the list forms upstream accepts wherever a derivation section may be a
+/// mapping or a list (`spec_normalizer._pre_shape_expand_compact_keys` plus
+/// `ReferenceValidator`'s dict/list canonicalisation): compact-key items in every
+/// `class_derivations` list, and `slot_derivations`, `enum_derivations`,
+/// `permissible_value_derivations`, `joins` and `copy_directives` given as lists.
+fn expand_list_forms(root: &mut serde_json::Value) {
+    use serde_json::Value;
+
+    fn class_derivation(cd: &mut Value) {
+        let Value::Object(map) = cd else { return };
+        if let Some(sds) = map.get_mut("slot_derivations") {
+            list_to_map(sds, "name", true);
+            slot_derivations(sds);
+        }
+        if let Some(joins) = map.get_mut("joins") {
+            list_to_map(joins, "alias", false);
+        }
+        if let Some(dirs) = map.get_mut("copy_directives") {
+            list_to_map(dirs, "element_name", false);
+        }
+    }
+
+    fn slot_derivations(sds: &mut Value) {
+        let Value::Object(map) = sds else { return };
+        for sd in map.values_mut() {
+            let Value::Object(sd) = sd else { continue };
+            if let Some(cds) = sd.get_mut("class_derivations") {
+                match cds {
+                    Value::Array(items) => {
+                        expand_compact_keys(items);
+                        items.iter_mut().for_each(class_derivation);
+                    }
+                    Value::Object(by_name) => by_name.values_mut().for_each(class_derivation),
+                    _ => {}
+                }
+            }
+            // The deprecated nested form, flattened later by `flatten_object_derivations`.
+            if let Some(Value::Array(ods)) = sd.get_mut("object_derivations") {
+                for od in ods {
+                    let Value::Object(od) = od else { continue };
+                    match od.get_mut("class_derivations") {
+                        Some(Value::Array(items)) => {
+                            expand_compact_keys(items);
+                            items.iter_mut().for_each(class_derivation);
+                        }
+                        Some(Value::Object(by_name)) => {
+                            by_name.values_mut().for_each(class_derivation);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let Value::Object(obj) = root else { return };
+    match obj.get_mut("class_derivations") {
+        Some(Value::Array(items)) => {
+            expand_compact_keys(items);
+            items.iter_mut().for_each(class_derivation);
+        }
+        Some(Value::Object(by_name)) => by_name.values_mut().for_each(class_derivation),
+        _ => {}
+    }
+    if let Some(eds) = obj.get_mut("enum_derivations") {
+        list_to_map(eds, "name", true);
+        if let Value::Object(map) = eds {
+            for ed in map.values_mut() {
+                if let Some(pvds) = ed.get_mut("permissible_value_derivations") {
+                    list_to_map(pvds, "name", true);
+                }
+            }
+        }
+    }
+    if let Some(sds) = obj.get_mut("slot_derivations") {
+        list_to_map(sds, "name", true);
+        slot_derivations(sds);
+    }
+    if let Some(dirs) = obj.get_mut("copy_directives") {
+        list_to_map(dirs, "element_name", false);
+    }
+}
+
 /// Normalise a LinkML-map spec JSON value (derived from YAML) in-place.
 ///
 /// Upstream `linkml-map` specs utilize YAML mapping shortcuts that do not map
@@ -1044,6 +1218,7 @@ pub struct TransformationSpecification {
 /// - `prefixes`: mapping of string values -> mapping of `KeyVal` maps (`{key: string, value: string}`).
 /// - `creator` / `author` / `reviewer`: inject default agent `type` -> `"Agent"` if missing.
 pub fn normalise_spec_json(root: &mut serde_json::Value) {
+    expand_list_forms(root);
     if let Some(obj) = root.as_object_mut() {
         // ── class_derivations: top-level mapping -> Vec ────────────────────────
         if let Some(cd) = obj.get_mut("class_derivations")
@@ -1103,13 +1278,14 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
                             if pv_val.is_null() {
                                 *pv_val = serde_json::json!({});
                             }
-                            if let Some(po) = pv_val.as_object_mut()
-                                && !po.contains_key("name")
-                            {
-                                po.insert(
-                                    "name".into(),
-                                    serde_json::Value::String(pv_name.clone()),
-                                );
+                            if let Some(po) = pv_val.as_object_mut() {
+                                if !po.contains_key("name") {
+                                    po.insert(
+                                        "name".into(),
+                                        serde_json::Value::String(pv_name.clone()),
+                                    );
+                                }
+                                migrate_pv_sources(po);
                             }
                         }
                     }
@@ -1149,6 +1325,7 @@ pub fn normalise_spec_json(root: &mut serde_json::Value) {
         }
     }
 
+    inject_copy_directive_names(root);
     collapse_any_lists(root);
 }
 
@@ -1219,6 +1396,96 @@ fn collapse_any_lists(node: &mut serde_json::Value) {
     }
 }
 
+/// `spec_normalizer._migrate_pv_sources_to_populated_from`: move the deprecated
+/// `sources` of a permissible-value derivation into `populated_from` (unless that is
+/// already set), wrapping a scalar into a one-element list, and drop `sources`.
+fn migrate_pv_sources(pv: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::Value;
+    let Some(sources) = pv.remove("sources") else {
+        return;
+    };
+    if !crate::validate::py_truthy(&sources)
+        || pv
+            .get("populated_from")
+            .is_some_and(crate::validate::py_truthy)
+    {
+        return;
+    }
+    pv.insert(
+        "populated_from".into(),
+        match sources {
+            Value::Array(items) => Value::Array(items),
+            scalar => Value::Array(vec![scalar]),
+        },
+    );
+}
+
+/// `spec_normalizer._flatten_ods_in_class_deriv` for one slot derivation: flatten the
+/// deprecated `object_derivations` into the slot's `class_derivations` list and drop
+/// the key. An empty `object_derivations` is simply dropped.
+fn flatten_object_derivations(slot: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::Value;
+    let Some(Value::Array(ods)) = slot.remove("object_derivations") else {
+        return;
+    };
+    if ods.is_empty() {
+        return;
+    }
+    let mut flattened = Vec::new();
+    for od in ods {
+        let Value::Object(od) = od else { continue };
+        match od.get("class_derivations") {
+            Some(Value::Object(by_name)) => {
+                for (name, body) in by_name {
+                    let mut entry = match body {
+                        Value::Object(o) => o.clone(),
+                        _ => serde_json::Map::new(),
+                    };
+                    entry
+                        .entry("name")
+                        .or_insert_with(|| Value::String(name.clone()));
+                    flattened.push(Value::Object(entry));
+                }
+            }
+            Some(Value::Array(items)) => flattened.extend(items.iter().cloned()),
+            _ => {}
+        }
+    }
+    slot.insert("class_derivations".into(), Value::Array(flattened));
+}
+
+/// Mimic `ReferenceValidator`'s dict normalisation of `copy_directives`: the mapping
+/// key becomes the identifier `element_name` (`copy_directives: {"*": {copy_all: true}}`).
+/// Applied wherever `copy_directives` can occur; free-form content is not searched.
+fn inject_copy_directive_names(node: &mut serde_json::Value) {
+    use serde_json::Value;
+    match node {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                match key.as_str() {
+                    "copy_directives" => {
+                        if let Value::Object(directives) = value {
+                            for (element, directive) in directives.iter_mut() {
+                                if directive.is_null() {
+                                    *directive = serde_json::json!({});
+                                }
+                                if let Value::Object(d) = directive {
+                                    d.entry("element_name")
+                                        .or_insert_with(|| Value::String(element.clone()));
+                                }
+                            }
+                        }
+                    }
+                    "overrides" | "target_definition" => {}
+                    _ => inject_copy_directive_names(value),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(inject_copy_directive_names),
+        _ => {}
+    }
+}
+
 /// Normalise the body of a single class derivation in place: walk its
 /// `slot_derivations`, injecting names and recursing into any slot-level
 /// `class_derivations` (v0.6.0 nested objects). The class's own `name` is
@@ -1261,6 +1528,7 @@ fn normalise_slot_derivations(sdm: &mut serde_json::Map<String, serde_json::Valu
         if let Some(so) = slot_val.as_object_mut() {
             so.entry("name")
                 .or_insert_with(|| serde_json::Value::String(slot_name.clone()));
+            flatten_object_derivations(so);
             normalise_keyval_mapping(so, "value_mappings");
             normalise_keyval_mapping(so, "expression_mappings");
             // Slot-level nested class_derivations are a list (`- name: Project
@@ -1411,14 +1679,14 @@ mod tests {
     fn test_schema_reference_string_or_object() {
         // Object form: full SchemaReference fields parse.
         let json = r#"{
-          "source_schema": { "name": "src", "local_path": "schemas/src.yaml" },
+          "source_schema": { "name": "src", "source_file": "schemas/src.yaml" },
           "target_schema": "tgt.yaml"
         }"#;
         let spec: TransformationSpecification = serde_json::from_str(json).unwrap();
         let src = spec.source_schema.unwrap();
         assert_eq!(src.name.as_deref(), Some("src"));
-        assert_eq!(src.local_path.as_deref(), Some("schemas/src.yaml"));
-        // path() prefers local_path.
+        assert_eq!(src.source_file.as_deref(), Some("schemas/src.yaml"));
+        // path() prefers source_file.
         assert_eq!(src.path(), Some("schemas/src.yaml"));
         // String form falls back to name.
         let tgt = spec.target_schema.unwrap();
@@ -1482,6 +1750,99 @@ mod tests {
             value_mappings.get("short").unwrap().value,
             Some(serde_json::json!("dwarf"))
         );
+    }
+
+    // ── upstream spec loading: pydantic `extra="forbid"`, list forms, deprecated fields ──
+
+    fn load(yaml: &str) -> Result<TransformationSpecification, serde_json::Error> {
+        let mut v: serde_json::Value = serde_yaml_ng::from_str(yaml).unwrap();
+        normalise_spec_json(&mut v);
+        serde_json::from_value(v)
+    }
+
+    /// `ConfiguredBaseModel` is `extra="forbid"`: an unknown field fails the load, at any
+    /// level (`transformer_model.py`; `test_spec_validation` style).
+    #[test]
+    fn unknown_fields_are_rejected_at_every_level() {
+        for yaml in [
+            "id: x\nbogus: 1\n",
+            "class_derivations:\n  A:\n    bogus: 1\n",
+            "class_derivations:\n  A:\n    slot_derivations:\n      s: {bogus: 2}\n",
+            "enum_derivations:\n  E:\n    bogus: 3\n",
+            "enum_derivations:\n  E:\n    permissible_value_derivations:\n      P: {bogus: 3}\n",
+            "class_derivations:\n  A:\n    joins:\n      J: {bogus: 4}\n",
+            "source_schema: {name: s, bogus: 1}\n",
+            "class_derivations:\n  A:\n    slot_derivations:\n      s:\n        stringification: {bogus: 1}\n",
+        ] {
+            let err = load(yaml).unwrap_err().to_string();
+            assert!(err.contains("unknown field `bogus`"), "{yaml}: {err}");
+        }
+    }
+
+    /// The legacy `attic/transform-s1-to-s2.yaml` form: `copy_directives` keyed by the
+    /// element name (`"*"`), whose `element_name` is the mapping key.
+    #[test]
+    fn copy_directives_take_element_name_from_the_key() {
+        let spec = load(
+            "class_derivations:\n  A:\n    copy_directives:\n      \"*\":\n        copy_all: true\n      B:\n",
+        )
+        .unwrap();
+        let dirs = spec.class_derivations.unwrap()[0]
+            .copy_directives
+            .clone()
+            .unwrap();
+        assert_eq!(dirs["*"].element_name, "*");
+        assert_eq!(dirs["*"].copy_all, Some(true));
+        assert_eq!(dirs["B"].element_name, "B");
+    }
+
+    /// `_expand_compact_keys` and `ReferenceValidator`: list forms with compact keys.
+    #[test]
+    fn list_forms_and_compact_keys_load() {
+        let spec = load(
+            "class_derivations:\n  - A:\n      populated_from: P\n      slot_derivations:\n        - name: s\n          populated_from: t\n        - u: {expr: '1'}\n  - name: B\n\
+             enum_derivations:\n  - E:\n      permissible_value_derivations:\n        - X: {populated_from: x}\n",
+        )
+        .unwrap();
+        let cds = spec.class_derivations.unwrap();
+        assert_eq!(
+            cds.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["A", "B"]
+        );
+        let sds = cds[0].slot_derivations.as_ref().unwrap();
+        assert_eq!(sds["s"].populated_from.as_deref(), Some("t"));
+        assert_eq!(sds["u"].expr.as_deref(), Some("1"));
+        let ed = &spec.enum_derivations.unwrap()["E"];
+        assert_eq!(
+            ed.permissible_value_derivations.as_ref().unwrap()["X"].populated_from,
+            Some(vec!["x".to_owned()])
+        );
+    }
+
+    /// `_migrate_pv_sources_to_populated_from` and `_flatten_object_derivations`.
+    #[test]
+    fn deprecated_fields_are_migrated_at_load() {
+        let spec = load(
+            "enum_derivations:\n  E:\n    permissible_value_derivations:\n      P: {sources: q}\n      Q: {sources: [a, b]}\n      R: {sources: z, populated_from: keep}\n\
+             class_derivations:\n  A:\n    sources: [ignored]\n    slot_derivations:\n      s:\n        derived_from: [t]\n        object_derivations:\n          - class_derivations:\n              N: {populated_from: A}\n",
+        )
+        .unwrap();
+        let pvds = spec.enum_derivations.unwrap()["E"]
+            .permissible_value_derivations
+            .clone()
+            .unwrap();
+        assert_eq!(pvds["P"].populated_from, Some(vec!["q".to_owned()]));
+        assert_eq!(
+            pvds["Q"].populated_from,
+            Some(vec!["a".to_owned(), "b".to_owned()])
+        );
+        assert_eq!(pvds["R"].populated_from, Some(vec!["keep".to_owned()]));
+        let a = &spec.class_derivations.unwrap()[0];
+        let s = &a.slot_derivations.as_ref().unwrap()["s"];
+        assert_eq!(s.derived_from, Some(vec!["t".to_owned()]));
+        let nested = s.class_derivations.as_ref().unwrap();
+        assert_eq!(nested[0].name, "N");
+        assert_eq!(nested[0].populated_from.as_deref(), Some("A"));
     }
 
     #[test]

@@ -4,17 +4,15 @@
 //!
 //! - `map-data` — run the concurrent pipeline over a source data file.
 //! - `derive-schema` — derive a target schema from a transformation spec.
-//! - `validate` — read-only pre-flight check of a spec against its source/target
-//!   schemas (no transform is run).
+//! - `validate-spec` (alias `validate`) — read-only check of spec files, structurally and
+//!   against their source/target schemas (no transform is run); upstream's `validate-spec`.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use linkml_map_cli::{
-    MapDataConfig, Severity, ValidateConfig, parse_format_str, run_map_data_config_with_options,
-    run_validate_config,
-};
+use linkml_map_cli::validate_spec::{ValidateSpecOptions, run_validate_spec};
+use linkml_map_cli::{MapDataConfig, parse_format_str, run_map_data_config_with_options};
 use linkml_map_core::inference::SchemaMapper;
 use linkml_map_io::WriteOptions;
 use linkml_map_pipeline::load_transform_spec;
@@ -93,7 +91,12 @@ enum Commands {
     MapData(MapDataArgs),
     /// Derive a target schema from a transformation spec.
     DeriveSchema(DeriveSchemaArgs),
-    /// Validate a transformation spec against its source/target schemas.
+    /// Validate transformation specification YAML files.
+    ///
+    /// Checks each file against the TransformationSpecification model and, when a source
+    /// and/or target schema is given or detectable from the spec, that class names, slot
+    /// names and populated_from references resolve against them. Exits with code 1 if
+    /// any file has validation errors.
     #[command(visible_alias = "validate-spec")]
     Validate(ValidateArgs),
 }
@@ -210,8 +213,9 @@ struct MapDataArgs {
     /// multi-table mode: each file is a named table matched by filename stem, every
     /// class derivation streams its own table in spec order (one with no file is
     /// skipped), and every table referenced by a spec `joins:` block is loaded into
-    /// a lookup index so `{Table.col}` join references resolve. Joined tables absent
-    /// from the directory resolve to null.
+    /// a lookup index (CSV, TSV or JSON tables only, as upstream) so `{Table.col}` join
+    /// references resolve. A row whose join key has a value fails when the joined table
+    /// has no file, as upstream; a row with no key value resolves to null.
     #[arg(value_name = "INPUT")]
     input: String,
 }
@@ -237,22 +241,56 @@ struct DeriveSchemaArgs {
 
 #[derive(Parser, Debug)]
 struct ValidateArgs {
-    /// Transformation specification YAML file (-T / --specification).
-    #[arg(short = 'T', long = "specification", value_name = "SPEC_YAML")]
-    spec: String,
+    /// Transformation specification YAML files or directories of them (as upstream:
+    /// `validate-spec SPEC_FILES...`). Each is validated on its own; with --merge they
+    /// are merged into one spec first.
+    #[arg(value_name = "SPEC_FILES", required_unless_present = "specification")]
+    spec_files: Vec<String>,
 
-    /// Source LinkML schema YAML file (optional).
-    /// Validation can run source-only, target-only, or both.
+    /// A spec file (the earlier Rust spelling of the positional `SPEC_FILES`; repeatable).
+    #[arg(
+        short = 'T',
+        long = "specification",
+        value_name = "SPEC_YAML",
+        hide = true
+    )]
+    specification: Vec<String>,
+
+    /// Source LinkML schema YAML file. Overrides the spec's own `source_schema`
+    /// (auto-detected from paths and URLs only). Validation can run source-only,
+    /// target-only, or both.
     #[arg(short = 's', long = "source-schema", value_name = "SCHEMA_YAML")]
     source_schema: Option<String>,
 
-    /// Target LinkML schema YAML file (optional).
+    /// Target LinkML schema YAML file. Overrides the spec's own `target_schema`.
     #[arg(long = "target-schema", value_name = "TARGET_YAML")]
     target_schema: Option<String>,
 
-    /// Treat unresolved expression references as errors instead of warnings.
+    /// Treat warnings as errors (and unresolved expression references as errors).
     #[arg(long = "strict", default_value_t = false)]
     strict: bool,
+
+    /// Suppress warning output.
+    #[arg(long = "no-warnings", default_value_t = false)]
+    no_warnings: bool,
+
+    /// Merge all spec files into one before validating. Supports directories.
+    #[arg(long = "merge", default_value_t = false)]
+    merge: bool,
+
+    /// With --merge, validate only this class derivation.
+    #[arg(long = "entity", value_name = "NAME")]
+    entity: Option<String>,
+
+    /// With --merge, write the resolved (merged and filtered) spec to this path;
+    /// `-` for stdout.
+    #[arg(long = "emit-spec", value_name = "FILE")]
+    emit_spec: Option<String>,
+
+    /// Print the class_derivation names of the merged spec (sorted, one per line) and
+    /// exit, skipping schema-binding validation.
+    #[arg(long = "list-entities", default_value_t = false)]
+    list_entities: bool,
 }
 
 // ── Subcommand dispatch ───────────────────────────────────────────────────────
@@ -312,39 +350,58 @@ fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> Result<()> {
     Ok(())
 }
 
+/// `validate-spec`: upstream `cli.py::validate_spec_cmd` (see `linkml_map_cli::validate_spec`).
 fn dispatch_validate(args: ValidateArgs) -> Result<()> {
-    // Nothing to check against — exit cleanly with a hint rather than an error.
-    if args.source_schema.is_none() && args.target_schema.is_none() {
+    let mut spec_files = args.spec_files;
+    spec_files.extend(args.specification);
+    // click's `Path(exists=True)`: a usage error (exit status 2), checked before anything runs.
+    let missing = [
+        (
+            "SPEC_FILES...",
+            spec_files.iter().map(String::as_str).collect::<Vec<_>>(),
+        ),
+        (
+            "--source-schema",
+            args.source_schema.as_deref().into_iter().collect(),
+        ),
+        (
+            "--target-schema",
+            args.target_schema.as_deref().into_iter().collect(),
+        ),
+    ]
+    .into_iter()
+    .find_map(|(name, paths)| {
+        paths
+            .into_iter()
+            .find(|p| !std::path::Path::new(p).exists())
+            .map(|p| (name, p.to_owned()))
+    });
+    if let Some((name, path)) = missing {
         eprintln!(
-            "linkml-tr-rs validate: no --source-schema or --target-schema given; \
-             nothing to check the spec against."
+            "Usage: linkml-tr-rs validate-spec [OPTIONS] SPEC_FILES...\n\
+             Try 'linkml-tr-rs validate-spec --help' for help.\n\n\
+             Error: Invalid value for '{name}': Path '{path}' does not exist."
         );
-        return Ok(());
+        std::process::exit(2);
     }
-
-    let messages = run_validate_config(ValidateConfig {
-        spec: args.spec,
+    let opts = ValidateSpecOptions {
+        spec_files,
         source_schema: args.source_schema,
         target_schema: args.target_schema,
         strict: args.strict,
-    })?;
-
-    let (mut errors, mut warnings, mut infos) = (0usize, 0usize, 0usize);
-    for msg in &messages {
-        println!("{msg}");
-        match msg.severity {
-            Severity::Error => errors += 1,
-            Severity::Warning => warnings += 1,
-            Severity::Info => infos += 1,
-        }
-    }
-
-    eprintln!("{errors} error(s), {warnings} warning(s), {infos} info(s)");
-
-    // Non-zero exit on any error makes this usable in CI/scripts; warnings and
-    // info do not affect the exit code.
-    if errors > 0 {
-        std::process::exit(1);
+        no_warnings: args.no_warnings,
+        merge: args.merge,
+        entity: args.entity,
+        emit_spec: args.emit_spec,
+        list_entities: args.list_entities,
+    };
+    let code = run_validate_spec(
+        &opts,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    );
+    if code != 0 {
+        std::process::exit(code);
     }
     Ok(())
 }
@@ -411,13 +468,45 @@ mod tests {
         let cli = args.unwrap();
         match cli.command {
             Commands::Validate(v) => {
-                assert_eq!(v.spec, "spec.yaml");
+                assert_eq!(v.specification, ["spec.yaml"]);
                 assert_eq!(v.source_schema.unwrap(), "source.yaml");
                 assert_eq!(v.target_schema.unwrap(), "target.yaml");
                 assert!(v.strict);
             }
             _ => panic!("expected Validate, got something else"),
         }
+    }
+
+    /// Upstream's `validate-spec SPEC_FILES... [options]`: positional files (several),
+    /// the merge options and the warning switches.
+    #[test]
+    fn test_validate_spec_upstream_surface() {
+        let args = Cli::try_parse_from([
+            "linkml-tr-rs",
+            "validate-spec",
+            "a.yaml",
+            "dir/",
+            "--merge",
+            "--entity",
+            "Person",
+            "--emit-spec",
+            "-",
+            "--no-warnings",
+            "--list-entities",
+            "--source-schema",
+            "s.yaml",
+        ])
+        .unwrap();
+        match args.command {
+            Commands::Validate(v) => {
+                assert_eq!(v.spec_files, ["a.yaml", "dir/"]);
+                assert!(v.merge && v.no_warnings && v.list_entities && !v.strict);
+                assert_eq!(v.entity.as_deref(), Some("Person"));
+                assert_eq!(v.emit_spec.as_deref(), Some("-"));
+            }
+            _ => panic!("expected Validate"),
+        }
+        assert!(Cli::try_parse_from(["linkml-tr-rs", "validate-spec"]).is_err());
     }
 
     /// Each of `-q`, `--quiet`, `-v`, `--verbose` placed BEFORE a subcommand

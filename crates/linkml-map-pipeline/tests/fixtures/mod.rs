@@ -77,7 +77,10 @@ pub fn type_coercion() -> Fixture {
         name: "type_coercion",
         spec: d.join("transform/type_coercion.transform.yaml"),
         source_schema: d.join("source/type_coercion.yaml"),
-        target_schema: Some(d.join("target/target.yaml")),
+        // PARITY: upstream raises on every row with the example's target schema (its
+        // `MyRecord` has no `id_as_url`: `induced_slot` fails, `ValueError`), as does the
+        // engine, so this fixture runs without a target schema.
+        target_schema: None,
         data_row: Value::from(&load_yaml(d.join("data/MyRecord-001.yaml"))),
         class: "MyRecord",
         unrestricted: false,

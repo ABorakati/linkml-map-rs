@@ -5,6 +5,8 @@
 
 use std::path::Path;
 
+pub mod validate_spec;
+
 use anyhow::Result;
 use linkml_map_core::schema::SchemaProvider;
 use linkml_map_core::validate::validate_spec_semantics;

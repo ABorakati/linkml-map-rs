@@ -87,11 +87,12 @@ def test_register_join_table_resolves_join(tmp_path: pathlib.Path) -> None:
         source_class="Patient",
     )
 
-    # Before registering the joined table, the join alias binds to Null (a
-    # sparse-join miss) so the declared `populated_from: "demo.age"` yields
-    # None rather than erroring — prove that's the pre-registration baseline.
-    baseline = t.transform({"pid": "P:1"})
-    assert baseline == {"pid": "P:1", "age": None, "city": None}
+    # Before registering the joined table there is no lookup index: upstream's
+    # `_resolve_joined_row` raises ValueError for a row whose join key has a value
+    # (`Join configured for 'demo' but lookup_index has not been initialized`); a row
+    # with no key value is a plain miss (None).
+    with pytest.raises(ValueError, match="lookup_index has not been initialized"):
+        t.transform({"pid": "P:1"})
 
     t.register_join_table(
         "demographics",
