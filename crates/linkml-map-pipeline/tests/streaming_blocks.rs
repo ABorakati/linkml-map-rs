@@ -1835,7 +1835,10 @@ async fn join_with_only_a_class_named_table_fails_for_a_key() {
 #[tokio::test]
 async fn aliased_join_table_may_be_csv_or_json() {
     for (name, content) in [
-        ("loc.csv", "site_code,site_name\nSITE_A,From the alias table\n"),
+        (
+            "loc.csv",
+            "site_code,site_name\nSITE_A,From the alias table\n",
+        ),
         (
             "loc.json",
             r#"[{"site_code": "SITE_A", "site_name": "From the alias table"}]"#,
@@ -1845,10 +1848,7 @@ async fn aliased_join_table_may_be_csv_or_json() {
         case.write_data("samples.tsv", SAMPLES_TSV);
         case.write_data("sites.tsv", SITES_BY_CLASS);
         case.write_data(name, content);
-        let rows = case
-            .run(ALIASED_JOIN_BLOCK, &Run::default())
-            .await
-            .unwrap();
+        let rows = case.run(ALIASED_JOIN_BLOCK, &Run::default()).await.unwrap();
         assert_eq!(rows[0]["site_name"], "From the alias table", "{name}");
     }
 }
@@ -1924,4 +1924,50 @@ async fn single_file_self_join_on_the_per_row_path_fails() {
         format!("{err:#}").contains("Cannot search for files when loader is in single-file mode."),
         "{err:#}"
     );
+}
+
+/// Two join names over one `class_named` are two joins of two tables (`a.tsv`, `b.tsv`):
+/// their different lookup keys are no conflict, which upstream compares by join name only.
+#[tokio::test]
+async fn join_names_sharing_a_class_named_do_not_conflict() {
+    let spec = r#"  FlatSample:
+    populated_from: samples
+    joins:
+      by_code:
+        class_named: sites
+        source_key: site_code
+        lookup_key: site_code
+      by_name:
+        class_named: sites
+        source_key: name
+        lookup_key: site_name
+    slot_derivations:
+      sample_id:
+        populated_from: sample_id
+      site_name:
+        expr: "{by_code.site_name} + '/' + {by_name.site_code}"
+"#;
+    for per_row in [false, true] {
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data(
+            "samples.tsv",
+            "sample_id\tname\tsite_code\nS001\tNb\tSITE_A\n",
+        );
+        case.write_data("by_code.tsv", "site_code\tsite_name\nSITE_A\tNa\n");
+        case.write_data("by_name.tsv", "site_code\tsite_name\nSITE_B\tNb\n");
+        let spec = if per_row {
+            spec.replace(
+                "    slot_derivations:",
+                "      pad:\n        join_on: site_code\n    slot_derivations:",
+            )
+        } else {
+            spec.to_owned()
+        };
+        let rows = case.run(&spec, &Run::default()).await.unwrap();
+        assert_eq!(
+            rows,
+            vec![json!({"sample_id": "S001", "site_name": "Na/SITE_B"})],
+            "per_row={per_row}"
+        );
+    }
 }
