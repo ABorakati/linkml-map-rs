@@ -672,7 +672,14 @@ impl<'s> ObjectTransformer<'s> {
         // PARITY: `transform_block_via_join` hands `map_object` a `MergedRow` of the
         // primary row with the rows of all the block's joins (`primary = class_deriv
         // .populated_from or class_deriv.name`).
-        let prejoin = (self.prejoined && class_derivation.is_some()).then(|| {
+        // Only a nested `class_derivations` can tell the difference, so a block without one
+        // skips the lookups.
+        let has_nested = || {
+            slot_derivations
+                .values()
+                .any(|slot_deriv| slot_deriv.class_derivations.is_some())
+        };
+        let prejoin = (self.prejoined && class_derivation.is_some() && has_nested()).then(|| {
             let primary = class_deriv
                 .populated_from
                 .as_deref()
@@ -1692,6 +1699,10 @@ impl<'s> ObjectTransformer<'s> {
                 .collect()
         });
         if unknown.is_empty() {
+            return Ok(());
+        }
+        // A name the expression reads is text in it: skip the tokenising otherwise.
+        if !whole_row && !unknown.iter().any(|key| expr.contains(key.as_str())) {
             return Ok(());
         }
         let names = if whole_row {
