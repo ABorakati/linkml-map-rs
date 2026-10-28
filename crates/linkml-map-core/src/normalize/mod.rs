@@ -37,6 +37,7 @@
 pub mod constant_blocks;
 pub mod expression_locations;
 pub mod inheritance;
+pub mod join_conflicts;
 pub mod join_utils;
 
 use std::collections::BTreeSet;

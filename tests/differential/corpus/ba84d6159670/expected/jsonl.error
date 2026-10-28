@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Join configured for 'Order' but lookup_index has not been initialized; class_derivation=Inner (from Person); slot_derivation=out_a (from Order.id)"
+}

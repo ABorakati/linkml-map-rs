@@ -259,6 +259,23 @@ pub fn leaf_case(name: &str, args_json: &[J]) -> Outcome {
     })
 }
 
+/// leaf.py calls the builtin directly with Python values, so a dict argument is a
+/// plain `dict`, not the `DynObj` upstream wraps a bound record in. Binding a
+/// `Value::Map` would give it record semantics (always truthy, `.attr` reads a key),
+/// so convert every map, at any depth, to the dict an expression would build.
+fn as_plain_dicts(v: &Value) -> Value {
+    match v {
+        Value::Map(m) => Value::Dict(Box::new(linkml_map_core::value::PyDict::from_map(
+            &m.iter()
+                .map(|(k, x)| (k.clone(), as_plain_dicts(x)))
+                .collect(),
+        ))),
+        Value::List(items) => Value::List(items.iter().map(as_plain_dicts).collect()),
+        Value::Tuple(items) => Value::Tuple(items.iter().map(as_plain_dicts).collect()),
+        other => other.clone(),
+    }
+}
+
 type LeafErr = (String, String);
 
 fn bad(e: String) -> LeafErr {
@@ -271,7 +288,7 @@ fn leaf_inner(name: &str, args: &[Value]) -> Result<Value, LeafErr> {
         let mut vars: Bindings = IndexMap::new();
         let mut names = Vec::new();
         for (i, a) in args.iter().enumerate() {
-            vars.insert(format!("a{i}"), a.clone());
+            vars.insert(format!("a{i}"), as_plain_dicts(a));
             names.push(format!("a{i}"));
         }
         let expr = format!("{func}({})", names.join(", "));
