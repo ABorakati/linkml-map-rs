@@ -732,6 +732,9 @@ fn write_repr(v: &Py, out: &mut String, seen: &mut Vec<usize>, _top: bool) {
         Py::Bool(true) => out.push_str("True"),
         Py::Bool(false) => out.push_str("False"),
         Py::Int(i) => out.push_str(&i.to_string()),
+        // Past the 4300-digit limit `repr` raises (see `check_str_digits`); this
+        // linear-time spelling only serves messages.
+        Py::BigInt(n) if n.magnitude().bits() > 14_400 => out.push_str(&format!("{:#x}", &**n)),
         Py::BigInt(n) => out.push_str(&n.to_string()),
         Py::Float(f) => out.push_str(&py_float_repr(*f)),
         Py::Complex(r, i) => out.push_str(&complex_repr(*r, *i)),

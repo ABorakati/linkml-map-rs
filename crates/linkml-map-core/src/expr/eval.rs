@@ -1394,6 +1394,9 @@ fn render(v: &Value, repr: bool, checked: bool) -> Result<String, pynum::NumErro
         Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
         Value::Int(i) => i.to_string(),
         Value::BigInt(n) if checked => pynum::big_to_string(n)?,
+        // Where `str()` would raise (see `checked`), a linear-time hexadecimal
+        // spelling: the decimal one of a huge number takes quadratic time.
+        Value::BigInt(n) if n.magnitude().bits() > 14_400 => format!("{:#x}", &**n),
         Value::BigInt(n) => n.to_string(),
         Value::Float(f) => format_py_float(*f),
         Value::Complex(z) => pynum::complex::repr(**z),

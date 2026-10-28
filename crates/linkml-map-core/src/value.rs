@@ -317,6 +317,23 @@ impl From<IndexMap<String, Value>> for Value {
     }
 }
 
+/// The string standing for an integer beyond `u64` inside a `serde_json::Value`
+/// tree: its digits between U+0001 and U+0003 (the placeholder the JSON writers
+/// replace with a plain number, see `linkml-map-io::serialization`).
+fn bigint_sentinel(n: &BigInt) -> String {
+    format!("\u{1}{n}\u{3}")
+}
+
+/// The integer a [`bigint_sentinel`] string stands for.
+fn bigint_from_sentinel(s: &str) -> Option<BigInt> {
+    let digits = s.strip_prefix('\u{1}')?.strip_suffix('\u{3}')?;
+    let body = digits.strip_prefix('-').unwrap_or(digits);
+    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<BigInt>().ok()
+}
+
 /// Convert a `serde_json::Value` reference into a [`Value`].
 /// Non-finite floats (NaN/±Inf) cannot appear in JSON but are mapped to `Value::Float`
 /// with the raw `f64` value if somehow constructed.
@@ -334,7 +351,10 @@ impl From<&serde_json::Value> for Value {
                     Value::Float(n.as_f64().unwrap_or(f64::NAN))
                 }
             }
-            serde_json::Value::String(s) => Value::Str(s.clone()),
+            serde_json::Value::String(s) => match bigint_from_sentinel(s) {
+                Some(n) => Value::BigInt(Box::new(n)),
+                None => Value::Str(s.clone()),
+            },
             serde_json::Value::Array(arr) => Value::List(arr.iter().map(Value::from).collect()),
             serde_json::Value::Object(map) => Value::Map(
                 map.iter()
@@ -360,10 +380,12 @@ impl From<&Value> for serde_json::Value {
             // Lossless generic form: the exact text as a string. Exact numeric
             // output is the writers' job (see linkml-map-io).
             Value::Decimal(d) => serde_json::Value::String(d.to_sci_string()),
-            // A number while it fits `u64`, else the digits in a string.
+            // A number while it fits `u64`; beyond that `serde_json::Value` has no
+            // number to hold it, so the digits travel in a sentinel string that
+            // `From<&serde_json::Value>` reads back (and the JSON writers restore).
             Value::BigInt(n) => match u64::try_from(&**n) {
                 Ok(u) => serde_json::Value::Number(u.into()),
-                Err(_) => serde_json::Value::String(n.to_string()),
+                Err(_) => serde_json::Value::String(bigint_sentinel(n)),
             },
             Value::Complex(z) => serde_json::Value::String(pynum::complex::repr(**z)),
             // Generic form only; JSON *output* refuses these like upstream does.
@@ -641,5 +663,21 @@ mod tests {
             serde_json::from_str::<Value>(&text).unwrap(),
             Value::Str(_)
         ));
+    }
+
+    #[test]
+    fn a_big_integer_survives_a_generic_json_tree() {
+        let digits = "1000000000000000000000000000000";
+        let big = Value::from_bigint(digits.parse::<BigInt>().unwrap());
+        let json = serde_json::Value::from(&big);
+        assert!(matches!(json, serde_json::Value::String(_)));
+        assert_eq!(Value::from(&json), big);
+        let neg = Value::from_bigint(format!("-{digits}").parse::<BigInt>().unwrap());
+        assert_eq!(Value::from(&serde_json::Value::from(&neg)), neg);
+        // An ordinary string that merely looks similar stays a string.
+        for s in [digits, "\u{1}12x\u{3}", "\u{1}\u{3}", "\u{1}-\u{3}"] {
+            let j = serde_json::Value::String(s.to_owned());
+            assert_eq!(Value::from(&j), Value::Str(s.to_owned()));
+        }
     }
 }

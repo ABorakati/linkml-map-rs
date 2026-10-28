@@ -43,18 +43,52 @@ pub fn parse_json_bytes(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     }
 }
 
-/// Whether `bytes` has a run of 19 or more ASCII digits, the cheap test that
-/// decides if the precise reader is worth running.
+/// Whether `bytes` may hold an integer literal beyond `i64`: first the cheap
+/// test (a run of 19 or more ASCII digits anywhere), and only then the exact
+/// one, which skips strings and fractions and exponents.
 fn may_hold_big_integer(bytes: &[u8]) -> bool {
     let mut run = 0u32;
     for &b in bytes {
         if b.is_ascii_digit() {
             run += 1;
             if run >= 19 {
-                return true;
+                return has_big_integer_literal(bytes);
             }
         } else {
             run = 0;
+        }
+    }
+    false
+}
+
+/// Whether `bytes` has, outside a string, an integer literal (no fraction, no
+/// exponent) of 19 or more digits.
+fn has_big_integer_literal(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                while i < bytes.len()
+                    && matches!(bytes[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                {
+                    i += 1;
+                }
+                let token = &bytes[start..i];
+                let digits = token.iter().filter(|b| b.is_ascii_digit()).count();
+                let integral = token.iter().all(|b| b.is_ascii_digit() || *b == b'-');
+                if integral && digits >= 19 {
+                    return true;
+                }
+            }
+            _ => i += 1,
         }
     }
     false
@@ -307,6 +341,22 @@ mod tests {
                 assert_eq!(a, b, "{text}");
             }
         }
+    }
+
+    #[test]
+    fn long_digit_strings_and_floats_take_the_serde_path() {
+        for text in [
+            r#"{"id": "1234567890123456789012", "n": 5}"#,
+            r#"{"a": "x\"1234567890123456789012", "b": 0.1234567890123456789012}"#,
+            "[1.2345678901234567890123e5, 12345678901234567890.5]",
+        ] {
+            assert!(!has_big_integer_literal(text.as_bytes()), "{text}");
+            assert!(parse_json(text).is_ok(), "{text}");
+        }
+        assert!(has_big_integer_literal(b"[1, 12345678901234567890]"));
+        assert!(has_big_integer_literal(
+            b"{\"a\": \"x\", \"b\": -12345678901234567890}"
+        ));
     }
 
     #[test]
