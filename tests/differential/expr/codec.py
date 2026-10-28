@@ -36,6 +36,8 @@ def encode(v: Any, depth: int = 0) -> Any:
         return v if I64_MIN <= v <= I64_MAX else {"$i": str(v)}
     if isinstance(v, float):
         return {"$f": f2h(v)}
+    if isinstance(v, complex):
+        return {"$c": [f2h(v.real), f2h(v.imag)]}
     if isinstance(v, list):
         return [encode(x, depth + 1) for x in v]
     if isinstance(v, tuple):
@@ -75,6 +77,8 @@ def canon(j: Any) -> Any:
             return ("f", "nan" if math.isnan(f) else j["$f"])
         if "$i" in j:
             return ("i", int(j["$i"]))
+        if "$c" in j:
+            return ("c", *("nan" if math.isnan(h2f(h)) else h for h in j["$c"]))
         if "$dec" in j:
             return ("dec", j["$dec"])
         if "$temporal" in j:
@@ -115,6 +119,8 @@ def show(j: Any) -> str:
         return repr(h2f(j["$f"]))
     if "$i" in j:
         return j["$i"]
+    if "$c" in j:
+        return repr(complex(h2f(j["$c"][0]), h2f(j["$c"][1])))
     if "$dec" in j:
         return f"Decimal({j['$dec']!r})"
     if "$temporal" in j:

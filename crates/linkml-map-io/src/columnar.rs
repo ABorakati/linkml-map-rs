@@ -25,7 +25,13 @@ fn contains_decimal(value: &Value) -> bool {
         Value::Decimal(_) => true,
         Value::List(items) => items.iter().any(contains_decimal),
         Value::Map(map) => map.values().any(contains_decimal),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => false,
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Float(_)
+        | Value::Complex(_)
+        | Value::Str(_) => false,
     }
 }
 
@@ -42,7 +48,9 @@ fn decimals_as_strings(value: &Value) -> Value {
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Str(_)) => scalar.clone(),
     }
 }

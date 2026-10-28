@@ -840,7 +840,7 @@ fn parse_transform_serialize(
     row: usize,
     line: &str,
 ) -> Option<String> {
-    let v: Value = match serde_json::from_str(line) {
+    let v: Value = match linkml_map_core::value::parse_json(line) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("JSONL parse error at row {row}: {e}");

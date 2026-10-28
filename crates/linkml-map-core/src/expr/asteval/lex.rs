@@ -20,7 +20,7 @@ const MAX_LEVEL: usize = 200;
 pub(crate) enum Num {
     Int(i64),
     /// Beyond `i64`.
-    Big(String),
+    Big(crate::pynum::BigInt),
     Float(f64),
     Imag(f64),
 }
@@ -486,16 +486,9 @@ impl Lexer {
                 self.verify_end_of_number(what)?;
                 return Ok(match i64::from_str_radix(&ds, radix) {
                     Ok(v) => Num::Int(v),
-                    Err(_) => Num::Big(format!(
-                        "0{}{ds}",
-                        if radix == 16 {
-                            'x'
-                        } else if radix == 8 {
-                            'o'
-                        } else {
-                            'b'
-                        }
-                    )),
+                    Err(_) => Num::Big(
+                        crate::pynum::parse_digits(&ds, radix).map_err(|e| e.to_string())?,
+                    ),
                 });
             }
         }
@@ -575,7 +568,9 @@ impl Lexer {
         }
         Ok(match text.parse::<i64>() {
             Ok(v) => Num::Int(v),
-            Err(_) => Num::Big(text.trim_start_matches('0').to_string()),
+            Err(_) => Num::Big(crate::pynum::parse_digits(&text, 10).map_err(|e| {
+                format!("{e} - Consider hexadecimal for huge integer literals to avoid decimal conversion limits.")
+            })?),
         })
     }
 

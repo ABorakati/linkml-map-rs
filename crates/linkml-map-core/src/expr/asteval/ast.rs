@@ -26,13 +26,13 @@ pub(crate) enum Const {
     None,
     Bool(bool),
     Int(i64),
-    /// An integer literal beyond `i64`; its decimal digits.
-    BigInt(String),
+    /// An integer literal beyond `i64`.
+    BigInt(crate::pynum::BigInt),
     Float(f64),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
     Ellipsis,
-    /// `1j`: complex numbers are not modelled.
+    /// `1j`: the imaginary part.
     Complex(f64),
 }
 

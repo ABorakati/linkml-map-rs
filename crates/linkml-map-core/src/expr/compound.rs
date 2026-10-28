@@ -126,6 +126,9 @@ enum SetKey<'a> {
     Null,
     Int(i64),
     Float(u64),
+    /// An integer beyond `i64`, or an integral float that large.
+    Big(crate::pynum::BigInt),
+    Complex(u64, u64),
     Str(&'a str),
 }
 
@@ -134,6 +137,8 @@ fn set_key(v: &Value) -> ExprResult<SetKey<'_>> {
         // Integral floats equal the int; `-0.0 == 0.0`.
         if f.fract() == 0.0 && f.abs() < 9.0e18 {
             SetKey::Int(f as i64)
+        } else if f.is_finite() && f.fract() == 0.0 {
+            SetKey::Big(crate::pynum::float_to_bigint(f))
         } else {
             SetKey::Float(f.to_bits())
         }
@@ -142,7 +147,11 @@ fn set_key(v: &Value) -> ExprResult<SetKey<'_>> {
         Value::Null => Ok(SetKey::Null),
         Value::Bool(b) => Ok(SetKey::Int(i64::from(*b))),
         Value::Int(i) => Ok(SetKey::Int(*i)),
+        Value::BigInt(n) => Ok(SetKey::Big((**n).clone())),
         Value::Float(f) => Ok(float(*f)),
+        // A complex with no imaginary part is its real part.
+        Value::Complex(z) if z.im == 0.0 => Ok(float(z.re)),
+        Value::Complex(z) => Ok(SetKey::Complex(z.re.to_bits(), z.im.to_bits())),
         Value::Decimal(d) => Ok(float(d.to_f64())),
         Value::Temporal(_) => Err(ExprError::Eval(format!(
             "unsupported set element of type '{}'",

@@ -11,8 +11,10 @@
 //! strings, `date.__format__` aside) is an evaluation error here too.
 
 use super::error::{ExprError, ExprResult};
-use super::eval::{py_repr, py_str, type_name};
+use super::eval::{try_py_repr, try_py_str, type_name};
+use crate::pynum::{self, BigInt};
 use crate::value::Value;
+use num_traits::{Signed, ToPrimitive};
 
 /// The widest field or precision accepted, to bound the allocation a spec such
 /// as `>99999999999` would make (CPython raises `MemoryError` or fills memory).
@@ -153,12 +155,13 @@ impl Spec {
 /// The `ValueError`s and `TypeError`s of CPython's formatters.
 pub(super) fn format_value(value: &Value, spec: &str) -> ExprResult<String> {
     if spec.is_empty() {
-        return Ok(py_str(value));
+        return try_py_str(value);
     }
     match value {
         Value::Str(s) => format_str(s, spec),
-        Value::Bool(b) => format_int(i128::from(*b), spec),
-        Value::Int(i) => format_int(i128::from(*i), spec),
+        Value::Bool(b) => format_int(&BigInt::from(*b), spec),
+        Value::Int(i) => format_int(&BigInt::from(*i), spec),
+        Value::BigInt(n) => format_int(n, spec),
         Value::Float(f) => format_float(*f, spec),
         other => Err(value_error(format!(
             "unsupported format string passed to {}.__format__",
@@ -252,11 +255,14 @@ fn zero_padded_grouped(
     grouped
 }
 
-fn format_int(value: i128, spec_text: &str) -> ExprResult<String> {
+fn format_int(value: &BigInt, spec_text: &str) -> ExprResult<String> {
     let spec = Spec::parse(spec_text, '>', "int")?;
     let ty = spec.ty.unwrap_or('d');
     if matches!(ty, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%') {
-        return format_float(value as f64, spec_text);
+        // `float(value)` raises `OverflowError` for an integer out of range.
+        let float = pynum::big_to_f64(value)
+            .ok_or_else(|| ExprError::Uncaught(pynum::INT_TOO_LARGE_FOR_FLOAT.into()))?;
+        return format_float(float, spec_text);
     }
     if !matches!(ty, 'b' | 'o' | 'x' | 'X' | 'd' | 'n' | 'c') {
         return Err(value_error(format!(
@@ -289,22 +295,24 @@ fn format_int(value: i128, spec_text: &str) -> ExprResult<String> {
                 "Alternate form (#) not allowed with integer format specifier 'c'",
             ));
         }
-        let c = u32::try_from(value)
-            .ok()
+        let c = value
+            .to_u32()
             .and_then(char::from_u32)
             .ok_or_else(|| value_error("%c arg not in range(0x110000)"))?;
         return Ok(spec.pad("", &c.to_string()));
     }
-    let magnitude = value.unsigned_abs();
+    let magnitude = value.magnitude();
     let digits = match ty {
-        'b' => format!("{magnitude:b}"),
-        'o' => format!("{magnitude:o}"),
-        'x' => format!("{magnitude:x}"),
-        'X' => format!("{magnitude:X}"),
-        _ => magnitude.to_string(),
+        'b' => magnitude.to_str_radix(2),
+        'o' => magnitude.to_str_radix(8),
+        'x' => magnitude.to_str_radix(16),
+        'X' => magnitude.to_str_radix(16).to_uppercase(),
+        // Decimal conversion has CPython's digit limit.
+        _ => pynum::big_to_string(&BigInt::from(magnitude.clone()))
+            .map_err(|e| value_error(e.to_string()))?,
     };
     let mut prefix = String::new();
-    if value < 0 {
+    if value.is_negative() {
         prefix.push('-');
     } else if let Some(sign @ ('+' | ' ')) = spec.sign {
         prefix.push(sign);
@@ -620,9 +628,9 @@ fn render_field(
     let value = lookup_field(name, args, kwargs, auto)?;
     let value = match conversion {
         None => value,
-        Some('r') => Value::Str(py_repr(&value)),
-        Some('s') => Value::Str(py_str(&value)),
-        Some('a') => Value::Str(ascii_escape(&py_repr(&value))),
+        Some('r') => Value::Str(try_py_repr(&value)?),
+        Some('s') => Value::Str(try_py_str(&value)?),
+        Some('a') => Value::Str(ascii_escape(&try_py_repr(&value)?)),
         Some(c) => {
             return Err(value_error(format!("Unknown conversion specifier {c}")));
         }

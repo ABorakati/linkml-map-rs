@@ -904,6 +904,13 @@ pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Int(i) => serde_json::Value::Number((*i).into()),
+        // An integer beyond `i64` travels like a decimal: a placeholder string
+        // restored to its digits after serialising.
+        Value::BigInt(n) => serde_json::Value::String(crate::serialization::bigint_placeholder(n)),
+        // Lenient, as in `pycompat::write_json`: the `str()` text.
+        Value::Complex(z) => serde_json::Value::String(
+            linkml_map_core::pynum::complex::repr(**z),
+        ),
         Value::Float(f) => {
             let n = serde_json::Number::from_f64(*f)
                 .with_context(|| format!("non-finite float: {}", f))?;

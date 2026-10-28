@@ -216,6 +216,7 @@ fn value_as_id_string(v: &Value) -> Option<String> {
     match v {
         Value::Str(s) => Some(s.clone()),
         Value::Int(i) => Some(i.to_string()),
+        Value::BigInt(n) => Some(n.to_string()),
         _ => None,
     }
 }

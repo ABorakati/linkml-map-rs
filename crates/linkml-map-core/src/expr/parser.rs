@@ -117,8 +117,9 @@ pub enum BoolOp {
 pub enum Ast {
     Int(i64),
     Float(f64),
-    /// An imaginary literal (`1j`); evaluating it reports an unrepresentable
-    /// value, as [`Value`](crate::value::Value) has no complex numbers.
+    /// An integer literal beyond `i64`.
+    BigInt(Box<crate::pynum::BigInt>),
+    /// An imaginary literal (`1j`): the value of the imaginary part.
     Imag(f64),
     Str(String),
     /// A `b'..'` literal (unrepresentable when evaluated).
@@ -237,6 +238,7 @@ impl Ast {
         }
         match self {
             Ast::Int(_)
+            | Ast::BigInt(_)
             | Ast::Float(_)
             | Ast::Imag(_)
             | Ast::Str(_)
@@ -1040,6 +1042,7 @@ impl Parser {
         match self.next() {
             Token::Int(i) => Ok(Ast::Int(i)),
             Token::Float(f) => Ok(Ast::Float(f)),
+            Token::BigInt(n) => Ok(Ast::BigInt(n)),
             Token::Imag(f) => Ok(Ast::Imag(f)),
             first @ (Token::Str(_) | Token::Bytes(_) | Token::FStr(_)) => self.parse_strings(first),
             Token::True => Ok(Ast::Bool(true)),

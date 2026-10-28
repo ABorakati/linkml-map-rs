@@ -12,6 +12,7 @@ pub mod error;
 pub mod eval;
 pub mod gate;
 pub mod lexer;
+mod numeric;
 pub mod parser;
 mod pyformat;
 mod pymethods;
@@ -38,6 +39,7 @@ pub use eval::{
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
 pub use pystr::int_literal as python_int_literal;
+pub use pystr::int_value_from_str as python_int_value;
 
 #[cfg(test)]
 mod tests {

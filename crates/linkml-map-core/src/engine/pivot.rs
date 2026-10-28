@@ -186,8 +186,9 @@ fn attribute_error_get(v: &Value) -> Error {
         match v {
             Value::Null => "NoneType",
             Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
+            Value::Int(_) | Value::BigInt(_) => "int",
             Value::Float(_) => "float",
+            Value::Complex(_) => "complex",
             Value::Decimal(_) => "Decimal",
             Value::Temporal(t) => t.type_name(),
             Value::Str(_) => "str",

@@ -97,6 +97,9 @@ impl Node {
             Value::Null => Node::None,
             Value::Bool(b) => Node::Bool(*b),
             Value::Int(i) => Node::Int(*i),
+            // Schemas and specs carry no integer beyond `i64`; keep its digits.
+            Value::BigInt(n) => Node::Str(n.to_string()),
+            Value::Complex(z) => Node::Str(crate::pynum::complex::repr(**z)),
             Value::Float(f) => Node::Float(*f),
             // A decimal only arises from engine coercion, never from a schema or spec.
             Value::Decimal(d) => Node::Str(d.to_sci_string()),

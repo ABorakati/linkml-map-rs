@@ -26,7 +26,6 @@
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
-use linkml_map_core::decimal::Decimal;
 use linkml_map_core::value::Value;
 
 /// `csv.field_size_limit()`'s default; a longer field raises `csv.Error`.
@@ -317,15 +316,10 @@ impl DictReader {
 }
 
 /// `int(text)`: surrounding whitespace, an optional sign, decimal digits (Unicode
-/// ones too) with single underscores between them. Integers beyond `i64` become an
-/// exact [`Value::Decimal`] (Python's `int` is unbounded and [`Value`] has no big
-/// integer; a decimal with exponent zero prints identically).
+/// ones too) with single underscores between them; any size up to Python's
+/// 4300-digit limit (a longer literal is a `ValueError`, so not an `int`).
 fn py_int(text: &str) -> Option<Value> {
-    let digits = linkml_map_core::expr::python_int_literal(text)?;
-    match digits.parse::<i64>() {
-        Ok(i) => Some(Value::Int(i)),
-        Err(_) => Decimal::parse_python(&digits).ok().map(Value::Decimal),
-    }
+    linkml_map_core::expr::python_int_value(text)
 }
 
 /// `float(text)` (see [`linkml_map_core::value::parse_python_float`]); `inf` and
@@ -452,10 +446,15 @@ mod tests {
         ] {
             assert_eq!(parse_numeric(text), Value::Str(text.to_owned()), "{text:?}");
         }
-        // Beyond i64: Python's unbounded int, held as an exact decimal.
+        // Beyond i64: Python's unbounded int.
         assert!(matches!(
             parse_numeric("123456789012345678901234567890"),
-            Value::Decimal(_)
+            Value::BigInt(_)
+        ));
+        // `int()` refuses more than 4300 digits, so `float()` reads it.
+        assert!(matches!(
+            parse_numeric(&"1".repeat(4301)),
+            Value::Float(f) if f.is_infinite()
         ));
     }
 

@@ -154,9 +154,10 @@ Each is marked `PARITY:` in the code.
   (`target` stays None) exactly as asteval swallows `SyntaxError`/`IndentationError`.
   A source map is a `DynObj` for attribute access (a missing attribute is None) and
   also iterates, subscripts and tests membership like the dict it may be upstream (the
-  engine's `Value` cannot tell the two apart). Remaining differences: integers beyond `i64` (an `OverflowError`), sets
+  engine's `Value` cannot tell the two apart). Integers are unbounded and `complex` is
+  modelled (see "Integers and complex numbers" below). Remaining differences: sets
   and tuples leave the block as lists, dict keys as strings, objects that have no
-  `Value` form (functions, iterators, bytes, complex numbers) are an
+  `Value` form (functions, iterators, bytes) are an
   "unrepresentable value" error, `id()`/`hash()` of
   strings, CPython's hash-order iteration of sets, `open()` always raising
   `FileNotFoundError`. A runaway loop stops at a
@@ -194,18 +195,28 @@ Each is marked `PARITY:` in the code.
 - **Two ported constant-block tests adjusted.** Upstream drives `transform_spec`,
   which has no identifier pre-check; the Rust pipeline mirrors the CLI's
   `_require_identifiers`, so the tests set `mint_ids` or drop the target schema.
-- **Integers are `i64`, never wrapped.** Python has big integers; an `int` result outside
-  `i64` (`i + 1` at the maximum, `2**63`, `1 << 100`, `-(-2**63)`, `int(1e30)`) is an
-  `Eval` error ("big integers are not supported"), so `2**63 - 1` fails where Python
-  gives `9223372036854775807`. An integer literal outside `i64` is still read as a float.
-  The simpleeval limits (`MAX_POWER`, `MAX_SHIFT`, `MAX_STRING_LENGTH`) are mirrored.
+- **Integers and complex numbers (round 4).** `Value::Int(i64)` is the fast path and
+  `Value::BigInt` holds Python's arbitrary-precision `int` beyond it; a result that fits
+  `i64` is always normalised back to `Int` (`crates/linkml-map-core/src/pynum`). Literals,
+  `+ - * // % **`, shifts and bitwise operators (simpleeval's `MAX_POWER`/`MAX_SHIFT`/
+  `MAX_SHIFT_BASE` mirrored exactly), `abs`, `int`/`round`/`floor`/`ceil`/`sum`, correctly
+  rounded `int / int`, CPython's exact `int`/`float` comparison, `float(int)` with its
+  `OverflowError`, `hash`, `str`/`repr`/`format` (with the 4300-digit limit of CPython 3.13,
+  `ValueError`) are all computed exactly. Data reads keep big integers (JSON via
+  `value::parse_json`, YAML, TSV `_parse_numeric`, PyO3 `int`), and the writers print their
+  digits. `Value::Complex` covers `1j` literals, `(-8) ** 0.5`, complex arithmetic (CPython's
+  own division and power algorithms), `abs`, `.real`/`.imag`/`.conjugate()`, `repr`, and
+  `TypeError` (a null in the null-propagating wrapper) for ordering. The asteval port's `Py`
+  has the same integers. Remaining differences: `complex.__format__` with a format spec,
+  `range()` with bounds beyond `i64`, `int.to_bytes`, and an output a Python writer would
+  abort on (a complex number in JSON, an integer of more than 4300 digits anywhere) is
+  written in full instead.
 - **Expression depth.** More than 200 open brackets is a lexer error (CPython's
   `MAXLEVEL`), more than 99 nested statement blocks an indentation error, and an
   expression tree deeper than 496 nodes an uncaught `RecursionError`
   (`expr::parser::MAX_AST_DEPTH`; measured against v0.6.0-rc1, the figure depends on the
   caller's stack depth). Upstream raises at evaluation time, so a conditional expression
   whose deep branch is never taken evaluates there but is refused here.
-- **Complex results** (`(-8) ** 0.5`) are an `Eval` error: `Value` has no complex type.
 
 ## Suggested upstream issues (not filed)
 
@@ -281,15 +292,14 @@ The complete, grouped list (including everything found by the later fuzzing roun
   apply (`str.format` is refused, a list has its own methods, `**` in a dict display
   is a `None` key, nothing unpacks with `*`). Remaining differences (`PARITY:` in
   `expr/syntax.rs`, `expr/pymethods.rs`, `expr/pyformat.rs`): results with no `Value`
-  (`bytes`, complex numbers, `...`, functions and bound methods such as `s.upper`
+  (`bytes`, `...`, functions and bound methods such as `s.upper`
   or a bare `upper`) raise an "unrepresentable" error where upstream succeeds; a
   list method called in a statement block does not mutate the binding; a tuple of
   affixes for `startswith` is recognised by how it is written (`(..)` or `tuple(..)`)
-  because `Value` has no tuple; a lone-surrogate escape (`'\ud800'`) and an integer
-  literal beyond `i64` cannot be held; `str.casefold` folds the common special
+  because `Value` has no tuple; a lone-surrogate escape (`'\ud800'`) cannot be held; `str.casefold` folds the common special
   cases, not all of `CaseFolding.txt`; `'{0.__class__}'.format(..)` is refused.
-- **`Value` has no tuple, set, bytes or big-integer variant**, so for example
-  `is_list((1, 2))` is true, and integer results beyond `i64` raise.
+- **`Value` has no tuple, set or bytes variant**, so for example
+  `is_list((1, 2))` is true.
 - **Joined/dotted `populated_from` values** are not coerced to the target range.
 - **`type: Agent`.** linkml 1.12's `transformer_model` drops the abstract `Agent`
   from the `creator`/`author`/`reviewer` union; Rust still accepts and injects

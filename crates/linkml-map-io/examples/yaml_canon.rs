@@ -30,6 +30,8 @@ fn canon(out: &mut String, v: &Value) {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
+        Value::BigInt(n) => out.push_str(&n.to_string()),
+        Value::Complex(z) => out.push_str(&linkml_map_core::pynum::complex::repr(**z)),
         Value::Float(f) => out.push_str(&py_float_repr(*f)),
         Value::Decimal(d) => out.push_str(&d.to_sci_string()),
         Value::Temporal(t) => {

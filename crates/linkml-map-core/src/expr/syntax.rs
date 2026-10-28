@@ -9,10 +9,13 @@
 //! [`super::asteval`], not here.
 
 use super::error::{ExprError, ExprResult};
-use super::eval::{Bindings, attribute_receiver, distributed_getattr, eval_ast, py_str, type_name};
+use super::eval::{
+    Bindings, attribute_receiver, distributed_getattr, eval_ast, try_py_str, type_name,
+};
 use super::parser::{Ast, CmpOp, FPart};
 use super::pyformat::format_value;
 use super::pymethods::{self, Lookup};
+use crate::pynum::complex::Complex64;
 use crate::value::Value;
 
 /// `simpleeval.MAX_STRING_LENGTH`.
@@ -23,7 +26,7 @@ pub(super) fn eval_syntax(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
     let unavailable =
         |what: &str| ExprError::Eval(format!("Sorry, {what} is not available in this evaluator"));
     match node {
-        Ast::Imag(_) => Err(ExprError::unrepresentable("complex")),
+        Ast::Imag(im) => Ok(Value::from_complex(Complex64::new(0.0, *im))),
         Ast::Bytes(_) => Err(ExprError::unrepresentable("bytes")),
         Ast::Ellipsis => Err(ExprError::unrepresentable("ellipsis")),
         Ast::FString(parts) => join_fstring(parts, vars).map(Value::Str),
@@ -142,7 +145,12 @@ fn call_value(
 /// of the (not callable) value it is.
 fn is_callable(receiver: &Value, attr: &str) -> ExprResult<Result<(), &'static str>> {
     match receiver {
-        Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
+        Value::Str(_)
+        | Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Complex(_)
+        | Value::Float(_)
+        | Value::Bool(_) => {
             if attr.starts_with('_') {
                 // The private-name check of `_distributed_getattr`.
                 distributed_getattr(receiver, attr)?;
@@ -220,6 +228,13 @@ pub(super) fn subscript_slice(
             None | Some(Value::Null) => Ok(None),
             Some(Value::Int(i)) => Ok(Some(i128::from(i))),
             Some(Value::Bool(b)) => Ok(Some(i128::from(b))),
+            // A bound beyond `i64` clamps like any other out-of-range one; this
+            // stands in for it without changing which positions are picked.
+            Some(Value::BigInt(n)) => Ok(Some(if n.sign() == num_bigint::Sign::Minus {
+                -(1 << 100)
+            } else {
+                1 << 100
+            })),
             Some(_) => Err(ExprError::Eval(
                 "slice indices must be integers or None or have an __index__ method".into(),
             )),
@@ -321,6 +336,8 @@ fn is_identical(left_node: &Ast, left: &Value, right_node: &Ast, right: &Value) 
             (a.is_empty() && b.is_empty() && empty_tuples) || (left == right && same_reference())
         }
         (Value::Map(_), Value::Map(_))
+        | (Value::BigInt(_), Value::BigInt(_))
+        | (Value::Complex(_), Value::Complex(_))
         | (Value::Decimal(_), Value::Decimal(_))
         | (Value::Temporal(_), Value::Temporal(_)) => left == right && same_reference(),
         _ => false,
@@ -402,7 +419,7 @@ fn join_fstring(parts: &[FPart], vars: &Bindings) -> ExprResult<String> {
                     None => None,
                 };
                 let text = match spec {
-                    None => py_str(&value),
+                    None => try_py_str(&value)?,
                     Some(spec) => format_with_spec(&value, &spec)?,
                 };
                 if text.chars().count() > MAX_STRING_LENGTH {

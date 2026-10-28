@@ -18,7 +18,7 @@
 //! (if any) and whether it was plain.
 
 use super::{Tag, resolve_implicit};
-use crate::decimal::Decimal;
+use crate::pynum::{self, BigInt};
 use crate::temporal::Temporal;
 use crate::value::Value;
 
@@ -77,6 +77,7 @@ fn effective_tag(tag: Option<&str>, text: &str, implicit: bool) -> String {
                 Tag::Timestamp => "timestamp",
                 Tag::Value => "value",
                 Tag::Yaml => "yaml",
+                Tag::PythonComplex => "python/complex",
             };
             format!("{TAG_PREFIX}{name}")
         }
@@ -139,54 +140,55 @@ fn construct_yaml_bool(text: &str) -> Result<Value, LoadError> {
     }
 }
 
-/// An integer built in `i128`, narrowed to [`Value::Int`] or, beyond `i64`
-/// (Python's `int` is unbounded), an exact [`Value::Decimal`].
-fn int_value(n: i128) -> Value {
-    match i64::try_from(n) {
-        Ok(i) => Value::Int(i),
-        Err(_) => {
-            Decimal::parse_python(&n.to_string()).map_or(Value::Str(n.to_string()), Value::Decimal)
-        }
-    }
-}
-
 /// Python's `int(text, base)` for the digits the constructor passes it.
-fn parse_radix(digits: &str, base: u32, original: &str) -> Result<i128, LoadError> {
+fn parse_radix(digits: &str, base: u32, original: &str) -> Result<BigInt, LoadError> {
     // Python's `int(text, base)` also accepts surrounding whitespace.
-    i128::from_str_radix(digits.trim(), base).map_err(|_| {
+    let trimmed = digits.trim();
+    let invalid = || {
         LoadError::Value(format!(
             "ValueError: invalid literal for int() with base {base}: {original:?}"
         ))
-    })
+    };
+    let (negative, body) = match trimmed.as_bytes().first() {
+        Some(b'-') => (true, &trimmed[1..]),
+        Some(b'+') => (false, &trimmed[1..]),
+        _ => (false, trimmed),
+    };
+    if body.is_empty() || !body.chars().all(|c| c.to_digit(base).is_some()) {
+        return Err(invalid());
+    }
+    // More than 4300 decimal digits is the `ValueError` of `int()`.
+    pynum::parse_signed_digits(negative, body, base)
+        .map_err(|e| LoadError::Value(format!("ValueError: {e}")))
 }
 
 /// `construct_yaml_int`.
 fn construct_yaml_int(text: &str) -> Result<Value, LoadError> {
     let value = text.replace('_', "");
-    let (sign, value) = match value.as_bytes().first() {
-        Some(b'-') => (-1i128, &value[1..]),
-        Some(b'+') => (1, &value[1..]),
-        _ => (1, value.as_str()),
+    let (negative, value) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value.as_str()),
     };
     let n = if value == "0" {
-        0
+        BigInt::default()
     } else if let Some(rest) = value.strip_prefix("0b") {
-        sign * parse_radix(rest, 2, text)?
+        parse_radix(rest, 2, text)?
     } else if let Some(rest) = value.strip_prefix("0x") {
-        sign * parse_radix(rest, 16, text)?
+        parse_radix(rest, 16, text)?
     } else if value.starts_with('0') {
-        sign * parse_radix(value, 8, text)?
+        parse_radix(value, 8, text)?
     } else if value.contains(':') {
         // Sexagesimal: base-60 digits, most significant first.
-        let mut total = 0i128;
+        let mut total = BigInt::default();
         for part in value.split(':') {
             total = total * 60 + parse_radix(part, 10, text)?;
         }
-        sign * total
+        total
     } else {
-        sign * parse_radix(value, 10, text)?
+        parse_radix(value, 10, text)?
     };
-    Ok(int_value(n))
+    Ok(Value::from_bigint(if negative { -n } else { n }))
 }
 
 /// Python `float(text)` for the spellings the float resolver admits (and the
@@ -319,12 +321,20 @@ mod tests {
     }
 
     #[test]
-    fn integers_beyond_i64_are_exact_decimals() {
-        let Value::Decimal(d) = plain("123456789012345678901234567890") else {
-            panic!("decimal expected");
+    fn integers_beyond_i64_are_exact_big_integers() {
+        let Value::BigInt(n) = plain("123456789012345678901234567890") else {
+            panic!("big integer expected");
         };
-        assert_eq!(d.to_sci_string(), "123456789012345678901234567890");
+        assert_eq!(n.to_string(), "123456789012345678901234567890");
         assert_eq!(plain("-9223372036854775808"), Value::Int(i64::MIN));
+        assert!(matches!(plain("-9223372036854775809"), Value::BigInt(_)));
+        assert!(matches!(plain("0x10000000000000000"), Value::BigInt(_)));
+        // `int()` refuses more than 4300 decimal digits (a `ValueError`).
+        let long = "1".repeat(4301);
+        assert!(matches!(
+            construct_scalar(None, &long, true),
+            Err(LoadError::Value(m)) if m.contains("Exceeds the limit")
+        ));
     }
 
     #[test]

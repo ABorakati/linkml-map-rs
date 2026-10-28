@@ -16,8 +16,9 @@
 //! * a key missing from some JSON rows is a `NULL` cell.
 //!
 //! Not modelled: DuckDB's date and timestamp detection for string columns (a
-//! timestamp reads back as `2020-01-01 10:00:00`), integers beyond 64 bits, and
-//! a file DuckDB reads in more than one sample.
+//! timestamp reads back as `2020-01-01 10:00:00`), the `HUGEINT`/`DOUBLE` split
+//! of integers beyond 64 bits (they print as their digits), and a file DuckDB
+//! reads in more than one sample.
 
 use linkml_map_core::{pyfmt::py_float_repr, value::Value};
 use linkml_map_io::parse_numeric;
@@ -57,7 +58,10 @@ impl Ty {
         match v {
             Value::Null => Self::Null,
             Value::Bool(_) => Self::Bool,
-            Value::Int(_) | Value::Decimal(_) => Self::Int,
+            Value::Int(_) | Value::BigInt(_) | Value::Decimal(_) => Self::Int,
+            // PARITY (approximate): DuckDB infers `HUGEINT` for an integer beyond 64
+            // bits (and `DOUBLE` beyond 128); both print as the digits here.
+            Value::Complex(_) => Self::Str,
             Value::Float(_) => Self::Double,
             Value::Str(_) | Value::Temporal(_) => Self::Str,
             Value::List(items) => Self::List(Box::new(
@@ -101,6 +105,11 @@ fn render(v: &Value, ty: &Ty, nested: bool) -> String {
         (Value::Bool(b), _) => b.to_string(),
         (Value::Int(i), Ty::Double) => py_float_repr(*i as f64),
         (Value::Int(i), _) => i.to_string(),
+        (Value::BigInt(n), Ty::Double) => py_float_repr(
+            linkml_map_core::pynum::big_to_f64(n).unwrap_or(f64::INFINITY),
+        ),
+        (Value::BigInt(n), _) => n.to_string(),
+        (Value::Complex(z), _) => linkml_map_core::pynum::complex::repr(**z),
         (Value::Decimal(d), _) => d.to_sci_string(),
         (Value::Float(f), _) => py_float_repr(*f),
         (Value::Str(s), _) if nested => quote_nested(s),

@@ -7,6 +7,7 @@ use super::funcs::{Caller, Kwargs, py_round, sort_items};
 use super::ops::*;
 use super::value::*;
 use crate::expr::pystr;
+use crate::pynum::{self, BigInt};
 
 const STR_METHODS: &[&str] = &[
     "capitalize",
@@ -102,6 +103,7 @@ const INT_METHODS: &[&str] = &[
     "conjugate",
     "is_integer",
 ];
+const COMPLEX_METHODS: &[&str] = &["conjugate"];
 const FLOAT_METHODS: &[&str] = &["as_integer_ratio", "conjugate", "hex", "is_integer"];
 const RANGE_METHODS: &[&str] = &["count", "index"];
 const EXC_METHODS: &[&str] = &["add_note", "with_traceback"];
@@ -114,8 +116,9 @@ fn table(v: &Py) -> &'static [&'static str] {
         Py::Set(_) => SET_METHODS,
         Py::Tuple(_) => TUPLE_METHODS,
         Py::Bytes(_) => BYTES_METHODS,
-        Py::Int(_) | Py::Bool(_) => INT_METHODS,
+        Py::Int(_) | Py::BigInt(_) | Py::Bool(_) => INT_METHODS,
         Py::Float(_) => FLOAT_METHODS,
+        Py::Complex(..) => COMPLEX_METHODS,
         Py::Range(..) => RANGE_METHODS,
         Py::Exc(_) => EXC_METHODS,
         _ => &[],
@@ -131,15 +134,14 @@ pub(crate) fn get_attr(obj: &Py, name: &str) -> PyRes<Py> {
     }
     // Data attributes.
     match (obj, name) {
-        (Py::Int(_) | Py::Bool(_), "real" | "numerator") => {
-            return Ok(Py::Int(match obj {
-                Py::Int(i) => *i,
-                Py::Bool(b) => *b as i64,
-                _ => 0,
-            }));
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "real" | "numerator") => {
+            return Ok(match obj {
+                Py::Bool(b) => Py::Int(*b as i64),
+                other => other.clone(),
+            });
         }
-        (Py::Int(_) | Py::Bool(_), "imag") => return Ok(Py::Int(0)),
-        (Py::Int(_) | Py::Bool(_), "denominator") => return Ok(Py::Int(1)),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "imag") => return Ok(Py::Int(0)),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "denominator") => return Ok(Py::Int(1)),
         (Py::Float(_), "real") => return Ok(obj.clone()),
         (Py::Complex(r, _), "real") => return Ok(Py::Float(*r)),
         (Py::Complex(_, i), "imag") => return Ok(Py::Float(*i)),
@@ -216,6 +218,12 @@ fn int_of(v: &Py) -> PyRes<i64> {
     match v {
         Py::Int(i) => Ok(*i),
         Py::Bool(b) => Ok(*b as i64),
+        // A slice-style bound beyond `i64` clamps.
+        Py::BigInt(n) => Ok(if n.sign() == num_bigint::Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        }),
         other => type_err(format!(
             "'{}' object cannot be interpreted as an integer",
             other.type_name()
@@ -270,7 +278,9 @@ pub(crate) fn call_method(
         Py::Tuple(t) => seq_method(name, t.to_vec(), args),
         Py::Range(..) => seq_method(name, to_vec(recv)?, args),
         Py::Bytes(b) => bytes_method(b, name, args),
-        Py::Int(_) | Py::Bool(_) | Py::Float(_) => num_method(recv, name),
+        Py::Int(_) | Py::BigInt(_) | Py::Bool(_) | Py::Float(_) | Py::Complex(..) => {
+            num_method(recv, name)
+        }
         Py::Exc(e) => match name {
             "with_traceback" => Ok(Py::Exc(e.clone())),
             _ => Ok(Py::None),
@@ -280,19 +290,28 @@ pub(crate) fn call_method(
 }
 
 fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
+    let int_value = |v: &Py| match v {
+        Py::Bool(b) => Some(BigInt::from(*b)),
+        Py::Int(i) => Some(BigInt::from(*i)),
+        Py::BigInt(n) => Some((**n).clone()),
+        _ => None,
+    };
     match (recv, name) {
-        (Py::Int(_) | Py::Bool(_), "conjugate") => Ok(Py::Int(int_of(recv)?)),
-        (Py::Int(_) | Py::Bool(_), "bit_length") => {
-            let i = int_of(recv)?;
-            Ok(Py::Int(64 - i.unsigned_abs().leading_zeros() as i64))
+        (Py::Complex(r, i), "conjugate") => Ok(Py::Complex(*r, -*i)),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "conjugate") => {
+            Ok(Py::from_big(int_value(recv).unwrap_or_default()))
         }
-        (Py::Int(_) | Py::Bool(_), "bit_count") => {
-            Ok(Py::Int(int_of(recv)?.unsigned_abs().count_ones() as i64))
-        }
-        (Py::Int(_) | Py::Bool(_), "is_integer") => Ok(Py::Bool(true)),
-        (Py::Int(_) | Py::Bool(_), "as_integer_ratio") => {
-            Ok(Py::tuple(vec![Py::Int(int_of(recv)?), Py::Int(1)]))
-        }
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "bit_length") => Ok(Py::from_big(
+            BigInt::from(pynum::bit_length(&int_value(recv).unwrap_or_default())),
+        )),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "bit_count") => Ok(Py::from_big(
+            BigInt::from(pynum::bit_count(&int_value(recv).unwrap_or_default())),
+        )),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "is_integer") => Ok(Py::Bool(true)),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "as_integer_ratio") => Ok(Py::tuple(vec![
+            Py::from_big(int_value(recv).unwrap_or_default()),
+            Py::Int(1),
+        ])),
         (Py::Float(f), "conjugate") => Ok(Py::Float(*f)),
         (Py::Float(f), "hex") => Ok(Py::str(float_hex(*f))),
         (Py::Float(f), "is_integer") => Ok(Py::Bool(f.is_finite() && f.fract() == 0.0)),
@@ -303,17 +322,30 @@ fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
             if f.is_infinite() {
                 return overflow_err("cannot convert Infinity to integer ratio");
             }
-            let (mut num, mut den) = (*f, 1i64);
-            let mut k = 0;
-            while num.fract() != 0.0 && k < 1100 {
-                num *= 2.0;
-                den = den.checked_mul(2).map_or_else(
-                    || overflow_err("integer result out of range (big integers are not supported)"),
-                    Ok,
-                )?;
-                k += 1;
+            // The exact fraction: the mantissa over a power of two, in lowest terms.
+            let bits = f.to_bits();
+            let raw_exp = ((bits >> 52) & 0x7ff) as i32;
+            let fraction = bits & ((1u64 << 52) - 1);
+            if *f == 0.0 {
+                return Ok(Py::tuple(vec![Py::Int(0), Py::Int(1)]));
             }
-            Ok(Py::tuple(vec![Py::Int(num as i64), Py::Int(den)]))
+            let (mut mantissa, mut exp) = if raw_exp == 0 {
+                (fraction, -1074)
+            } else {
+                (fraction | (1u64 << 52), raw_exp - 1075)
+            };
+            let trailing = mantissa.trailing_zeros() as i32;
+            mantissa >>= trailing;
+            exp += trailing;
+            let numerator = BigInt::from(mantissa) * if *f < 0.0 { -1 } else { 1 };
+            if exp >= 0 {
+                Ok(Py::tuple(vec![Py::from_big(numerator << exp as usize), Py::Int(1)]))
+            } else {
+                Ok(Py::tuple(vec![
+                    Py::from_big(numerator),
+                    Py::from_big(BigInt::from(1) << (-exp) as usize),
+                ]))
+            }
         }
         _ => Err(exc("AttributeError", format!("no method {name}"))),
     }

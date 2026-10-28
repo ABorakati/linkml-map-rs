@@ -38,7 +38,7 @@ resource.setrlimit(resource.RLIMIT_AS, (6 * 2**30, 6 * 2**30))
 
 # Every grammar feature that currently produces a known divergence; shrink this as they are fixed.
 CLEAN_MASK = set(
-    "bigint setdisp tuple pow bitwise".split()
+    "setdisp tuple pow bitwise".split()
 )
 PENDING_SYNTAX: set[str] = set()  # exprsyntax port merged (d46df82); nothing pending there any more
 

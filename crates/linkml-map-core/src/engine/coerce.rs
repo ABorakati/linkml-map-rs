@@ -23,7 +23,7 @@ use crate::{
     error::{Error, Result},
     expr::{
         ExprError,
-        eval::{py_float, py_int, py_repr, py_str},
+        eval::{py_float, py_int, py_repr, py_str, try_py_str},
     },
     pyfmt::py_repr_str,
     schema::{SchemaProvider, coercible_datatype},
@@ -372,14 +372,14 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
         },
         // `isinstance(True, int)` holds, so a bool stays a bool.
         "integer" => match &v {
-            Value::Int(_) | Value::Bool(_) => Ok(v),
+            Value::Int(_) | Value::BigInt(_) | Value::Bool(_) => Ok(v),
             // `int(Decimal)` truncates toward zero.
             Value::Decimal(d) => {
                 let fixed = d.to_fixed_string();
                 let int_part = fixed.split_once('.').map_or(fixed.as_str(), |(i, _)| i);
                 int_part
-                    .parse::<i64>()
-                    .map(Value::Int)
+                    .parse::<crate::pynum::BigInt>()
+                    .map(Value::from_bigint)
                     .map_err(|e| fail(&v, e.to_string()))
             }
             Value::Float(f) if f.is_nan() => {
@@ -398,7 +398,10 @@ fn coerce_scalar(v: Value, target_range: &str) -> Result<Value> {
         },
         "string" => match &v {
             Value::Str(_) => Ok(v),
-            other => Ok(Value::Str(py_str(other))),
+            // `str(v)`: an integer of more than 4300 digits is a `ValueError`.
+            other => try_py_str(other)
+                .map(Value::Str)
+                .map_err(|e| fail(&v, expr_cause(e))),
         },
         // PARITY: transformer.py::_coerce_datatype passes an unknown range
         // through silently since f299f3a (it warned at 0469da7).

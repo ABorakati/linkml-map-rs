@@ -1233,7 +1233,11 @@ fn python_parity_cases() {
     );
     c.ok(r#"floor(2.5)"#, json!({"names": [1.2, -1.2]}), json!(2));
     c.ok(r#"floor(-2.5)"#, json!({"names": [1.2, -1.2]}), json!(-3));
-    c.err(r#"floor(1e19)"#, json!({"names": [1.2, -1.2]})); // Python returns a big integer
+    c.ok(
+        r#"floor(1e19)"#,
+        json!({"names": [1.2, -1.2]}),
+        json!(10000000000000000000_u64),
+    );
     c.err(r#"floor('a')"#, json!({"names": [1.2, -1.2]})); // TypeError
     c.ok(
         r#"floor([1.5, 2.5, None])"#,
@@ -1269,7 +1273,11 @@ fn python_parity_cases() {
     );
     c.ok(r#"ceil(2.5)"#, json!({"names": [1.2, -1.2]}), json!(3));
     c.ok(r#"ceil(-2.5)"#, json!({"names": [1.2, -1.2]}), json!(-2));
-    c.err(r#"ceil(1e19)"#, json!({"names": [1.2, -1.2]})); // Python returns a big integer
+    c.ok(
+        r#"ceil(1e19)"#,
+        json!({"names": [1.2, -1.2]}),
+        json!(10000000000000000000_u64),
+    );
     c.err(r#"ceil('a')"#, json!({"names": [1.2, -1.2]})); // TypeError
     c.ok(
         r#"ceil([1.5, 2.5, None])"#,
@@ -1297,7 +1305,8 @@ fn python_parity_cases() {
     c.ok(r#"round(7)"#, json!({}), json!(7));
     c.ok(r#"round(True)"#, json!({}), json!(1));
     c.ok(r#"round(1e15)"#, json!({}), json!(1000000000000000_i64));
-    c.err(r#"round(2.5e300)"#, json!({})); // Python returns a big integer
+    // An integer beyond `u64` is compared by its `str()`.
+    c.ok(r#"str(round(2.5e300))"#, json!({}), json!("2500000000000000131261900638011050621761171452770397887289635288779506144972270489465928437701119660109261109582209695442356308088401076439111980461966767457120968002316439509344575584486970225148422383087426999862702797597419102200186631856950356236448146972050142107095289173680490967163648501350400"));
     c.err(r#"round('1.5')"#, json!({})); // TypeError
     c.ok(r#"round([1.5, 2.5])"#, json!({}), json!([2, 2]));
     c.ok(r#"round(2.675, 2)"#, json!({}), json!(2.67));
@@ -1348,7 +1357,11 @@ fn python_parity_cases() {
     c.ok(r#"round(True, -1)"#, json!({}), json!(0));
     c.ok(r#"round(99, -2)"#, json!({}), json!(100));
     c.ok(r#"round(-5, -1)"#, json!({}), json!(0));
-    c.err(r#"round(6000000000000000000, -19)"#, json!({})); // Python returns a big integer
+    c.ok(
+        r#"round(6000000000000000000, -19)"#,
+        json!({}),
+        json!(10000000000000000000_u64),
+    );
     c.ok(r#"round(5000000000000000000, -19)"#, json!({}), json!(0));
     c.ok(r#"round(7, -30)"#, json!({}), json!(0));
     c.ok(r#"round(3.14159, 3)"#, json!({}), json!(3.142));
@@ -1380,8 +1393,20 @@ fn python_parity_cases() {
     c.ok(r#"int([1])"#, json!({}), json!([1]));
     c.err(r#"int('0x10')"#, json!({})); // ValueError
     c.ok(r#"int('１２')"#, json!({}), json!(12));
-    c.err(r#"int(1e19)"#, json!({})); // Python returns a big integer
-    c.err(r#"int('99999999999999999999')"#, json!({})); // Python returns a big integer
+    c.ok(r#"int(1e19)"#, json!({}), json!(10000000000000000000_u64));
+    c.ok(
+        r#"str(int('99999999999999999999'))"#,
+        json!({}),
+        json!("99999999999999999999"),
+    );
+    // ValueError: the 4300-digit limit of `int()`, and of `str()` of the result.
+    c.err(&format!("int('{}')", "1".repeat(4301)), json!({}));
+    c.ok(
+        &format!("len(str(int('{}')))", "1".repeat(4300)),
+        json!({}),
+        json!(4300),
+    );
+    c.err(&format!("str({})", "9".repeat(4300) + "0"), json!({}));
     c.ok(r#"int([' 1', '2', 3.7])"#, json!({}), json!([1, 2, 3]));
     c.ok(r#"int('ff', 16)"#, json!({}), json!(255));
     c.ok(r#"int('0xff', 16)"#, json!({}), json!(255));
@@ -1579,9 +1604,7 @@ fn python_parity_cases() {
         json!({}),
         json!(9.3e+18),
     );
-    // `2**63` is a big integer in Python (so `2**63 - 1` is the largest i64); here it
-    // is an error rather than a wrapped number.
-    c.err(r#"max([2**63 - 1, 9.3e18])"#, json!({}));
+    c.ok(r#"max([2**63 - 1, 9.3e18])"#, json!({}), json!(9.3e+18));
     c.ok(
         r#"min([2**62, 4.611686018427388e18])"#,
         json!({}),
@@ -1684,10 +1707,11 @@ fn python_parity_cases() {
     c.err(r#"sum([1], [1])"#, json!({"names": [1.5, 2.5, 3.0]})); // TypeError
     c.err(r#"sum([[1]], 0)"#, json!({"names": [1.5, 2.5, 3.0]})); // TypeError
     c.err(r#"sum([1.5, 'a'])"#, json!({"names": [1.5, 2.5, 3.0]})); // TypeError
-    c.err(
+    c.ok(
         r#"sum([9223372036854775807, 1])"#,
         json!({"names": [1.5, 2.5, 3.0]}),
-    ); // Python returns a big integer
+        json!(9223372036854775808_u64),
+    );
     c.ok(
         r#"sum([9223372036854775807, 1.0])"#,
         json!({"names": [1.5, 2.5, 3.0]}),

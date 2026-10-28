@@ -35,6 +35,11 @@ pub fn decimal_placeholder(d: &Decimal) -> String {
     format!("{START}{}{END}", d.to_sci_string())
 }
 
+/// The placeholder string standing for the integer `n` (digits, as `int.__repr__`).
+pub fn bigint_placeholder(n: &linkml_map_core::pynum::BigInt) -> String {
+    format!("{START}{n}{END}")
+}
+
 /// How a serialiser spells the placeholder's three control characters.
 struct Escapes {
     start: &'static str,

@@ -19,7 +19,7 @@
 //! What a Python value becomes:
 //!
 //! * `datetime.date` / `datetime.datetime` are [`Value::Temporal`].
-//! * Integers beyond `i64` are an exact [`Value::Decimal`].
+//! * Integers beyond `i64` are an exact [`Value::BigInt`].
 //! * A mapping key that is not a string is kept as the text a JSON/YAML
 //!   writer prints for it (`1`, `true`, `null`, `1.5`, `2024-01-01`).
 //!   PARITY: upstream keeps the key's type, so PyYAML writes `1: a` where this
@@ -311,6 +311,8 @@ fn key_of(value: &Value) -> Result<KeyKind, LoadError> {
         Value::Null => "null".to_owned(),
         Value::Bool(b) => b.to_string(),
         Value::Int(i) => i.to_string(),
+        Value::BigInt(n) => n.to_string(),
+        Value::Complex(z) => linkml_map_core::pynum::complex::repr(**z),
         Value::Float(f) if f.is_nan() => "NaN".to_owned(),
         Value::Float(f) if f.is_infinite() => {
             if *f > 0.0 { "Infinity" } else { "-Infinity" }.to_owned()

@@ -110,6 +110,9 @@ enum Tag {
     Timestamp,
     Value,
     Yaml,
+    /// `tag:yaml.org,2002:python/complex`, which only the full `yaml.Dumper`
+    /// (not `SafeDumper`) knows; never the resolution of a plain scalar.
+    PythonComplex,
 }
 
 impl Tag {
@@ -125,6 +128,7 @@ impl Tag {
             Tag::Timestamp => "!!timestamp",
             Tag::Value => "!!value",
             Tag::Yaml => "!!yaml",
+            Tag::PythonComplex => "!!python/complex",
         }
     }
 }
@@ -405,6 +409,20 @@ fn represent_float(f: f64) -> String {
     }
 }
 
+/// `Representer.represent_complex`: `%r` of the parts, the zero part dropped.
+fn represent_complex(z: crate::pynum::complex::Complex64) -> String {
+    use crate::pyfmt::py_float_repr;
+    if z.im == 0.0 {
+        py_float_repr(z.re)
+    } else if z.re == 0.0 {
+        format!("{}j", py_float_repr(z.im))
+    } else if z.im > 0.0 {
+        format!("{}+{}j", py_float_repr(z.re), py_float_repr(z.im))
+    } else {
+        format!("{}{}j", py_float_repr(z.re), py_float_repr(z.im))
+    }
+}
+
 /// The scalar node for a non-collection value: `(value, tag)`.
 fn represent_scalar(value: &Value) -> (Cow<'_, str>, Tag) {
     match value {
@@ -412,7 +430,10 @@ fn represent_scalar(value: &Value) -> (Cow<'_, str>, Tag) {
         Value::Bool(true) => (Cow::Borrowed("true"), Tag::Bool),
         Value::Bool(false) => (Cow::Borrowed("false"), Tag::Bool),
         Value::Int(i) => (Cow::Owned(i.to_string()), Tag::Int),
+        // `represent_int`: `str(data)`.
+        Value::BigInt(n) => (Cow::Owned(n.to_string()), Tag::Int),
         Value::Float(f) => (Cow::Owned(represent_float(*f)), Tag::Float),
+        Value::Complex(z) => (Cow::Owned(represent_complex(**z)), Tag::PythonComplex),
         // upstream `_represent_decimal`: `format(d, 'f')`, tagged float when it
         // has a decimal point and int otherwise.
         Value::Decimal(d) => {
