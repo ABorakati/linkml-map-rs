@@ -1,0 +1,12 @@
+id: https://example.org/spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {populated_from: id}
+      inner:
+        class_derivations:
+          Inner:
+            populated_from: Country
+            slot_derivations:
+              a: {populated_from: name}

@@ -1,0 +1,25 @@
+id: https://example.org/spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    joins:
+      Org: {source_key: org_id, lookup_key: id}
+      Country: {source_key: country_id, lookup_key: id}
+    slot_derivations:
+      id: {populated_from: id}
+      inner:
+        class_derivations:
+          Inner:
+            populated_from: Org
+            joins:
+              Country: {source_key: country_id, lookup_key: id}
+            slot_derivations:
+              sz: {populated_from: size}
+              deep:
+                class_derivations:
+                  Deep:
+                    populated_from: Country
+                    slot_derivations:
+                      nm: {expr: '{name}'}
+                      lbl: {expr: '{Org.label}'}
+                      pl: {expr: '{Person.label}'}

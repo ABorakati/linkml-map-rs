@@ -1,0 +1,4 @@
+{"id": "p1", "inner": {"a": "Norway", "b": "cl1", "c": "pl1"}}
+{"id": "p2", "inner": {"a": "Sweden", "b": "cl2", "c": "pl2"}}
+{"id": "p3", "inner": {"a": "Norway", "b": "cl1", "c": "pl3"}}
+{"id": "p4", "inner": {"a": "Sweden", "b": "cl2", "c": "pl4"}}

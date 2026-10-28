@@ -1,0 +1,20 @@
+id: p1
+inner:
+  deep:
+    lbl: ol1
+    nm: Norway
+    pl: pl1
+  sz: 5
+---
+id: p2
+inner:
+  deep:
+    lbl: ol2
+    nm: Sweden
+    pl: pl2
+  sz: 7
+---
+id: p3
+---
+id: p4
+---

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Column 'label' is ambiguous — it exists in both the parent and nested source tables. Use dot notation (e.g., 'TableName.label') to disambiguate.; class_derivation=Deep (from Org); slot_derivation=nm (from label)"
+}
