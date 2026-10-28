@@ -7,7 +7,7 @@ exclude = ["fuzz"]
 # cargo build --lib -p linkml-map-py  also works (skips Python linking)
 
 [workspace.package]
-version = "0.1.43"
+version = "0.1.44"
 edition = "2024"
 license = "Apache-2.0"
 
