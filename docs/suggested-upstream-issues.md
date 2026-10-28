@@ -82,6 +82,12 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 
 ## Join engine and lookup index
 
+- `_perform_join_resolution` tests `field_path in class_induced_slots(joined_class)`, comparing a string with
+  `SlotDefinition` objects, so it is always false and joined values are never range-, cardinality-, datatype- or
+  enum-coerced.
+- `_resolve_joined_row` queries `lookup_index.lookup_row(table_name=<join alias>)`, so a join's `class_named` has no
+  effect on which table is read.
+- `DynObj.__getattr__` returns `None` for every missing attribute, hiding typos such as `Person.x` or `src.x`.
 - The set-based join engine's row order depends on DuckDB internals (a `LEFT JOIN` probe returns matches first,
   caches small outputs, and changes order with several joins and with file size). An `ORDER BY` on the primary row
   number would make it deterministic and equal to the per-row fallback.
