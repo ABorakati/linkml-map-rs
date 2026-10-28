@@ -1533,8 +1533,9 @@ impl<'s> ObjectTransformer<'s> {
                         Value::BigInt(n) => n.to_string(),
                         _ => return None,
                     };
-                    let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
-                    li.lookup_row(table, &key_str)
+                    // PARITY: the table is the join name, never `class_named`
+                    // (see `unresolved_join`).
+                    li.lookup_row(alias, &key_str)
                         .map(|r| Value::Map(r.clone()))
                 });
                 bindings.insert(alias.clone(), row.unwrap_or(Value::Null));
@@ -1568,7 +1569,7 @@ impl<'s> ObjectTransformer<'s> {
             if key.is_null() {
                 continue;
             }
-            let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
+            let table = alias.as_str();
             let failure = match self.lookup_index.as_deref() {
                 None => JoinFailure::NoIndex(Error::Python(format!(
                     "ValueError: Join configured for {alias:?} but lookup_index has not been initialized"
@@ -2279,7 +2280,7 @@ impl<'s> ObjectTransformer<'s> {
             // Null / absent / non-scalar key ⇒ no join possible ⇒ miss.
             _ => return Ok(true),
         };
-        let table = ac.class_named.as_deref().unwrap_or(nested_source);
+        let table = nested_source;
         // PARITY: `_resolve_joined_row` (see `resolve_populated_from_raw`): with a key
         // value, no index at all (or no such table in it) raises; only a registered
         // table without a matching row is a miss.
@@ -2728,7 +2729,7 @@ fn resolve_aggregation_source(
         if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
             && let Some(ac) = joins.get(alias)
         {
-            let table = ac.class_named.as_deref().unwrap_or(alias);
+            let table = alias;
             let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
             if let Some(key_val) = key_val {
                 let key_str = match key_val {

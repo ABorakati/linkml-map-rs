@@ -952,8 +952,9 @@ pub async fn run_pipeline_with_options(
                 config.source_format,
             )
             .with_context(|| format!("loading source {}", config.source_path))?;
-        // Join tables are looked up in a directory only.
-        (steps, source_is_dir.then_some(loader), false)
+        // PARITY: `transform_spec` registers a block's joins `if join_name in data_loader`
+        // in single-file mode too, where only the file's own table is "in" the loader.
+        (steps, Some(loader), false)
     } else {
         let format = config
             .source_format
