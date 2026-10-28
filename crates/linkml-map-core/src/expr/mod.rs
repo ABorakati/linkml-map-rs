@@ -33,12 +33,12 @@ mod syntax;
 
 pub(crate) use builtins::py_order;
 pub use error::{ExprError, ExprResult};
-pub(crate) use eval::with_declared_slots;
 pub use eval::{
     Bindings, DeclaredSlots, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr,
     eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict,
     expression_asts, parse_expr,
 };
+pub(crate) use eval::{with_ambiguous_names, with_declared_slots};
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
 pub use pystr::int_literal as python_int_literal;

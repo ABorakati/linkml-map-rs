@@ -25,6 +25,7 @@
 pub mod coerce;
 pub mod content_id;
 pub mod lookup_index;
+mod merged_row;
 pub mod object_index;
 mod pivot;
 mod populated_from;
@@ -56,12 +57,13 @@ use crate::{
     error::{Error, Result},
     expr::{
         Bindings, DeclaredSlots, EvalMode, ExprResult, ParsedExpr, eval_enum_parsed,
-        eval_parsed_gated, parse_expr, with_declared_slots,
+        eval_parsed_gated, parse_expr, with_ambiguous_names, with_declared_slots,
     },
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
 };
 use coerce::{TargetSlot, coerce_datatype};
+use merged_row::MergedRow;
 
 // ── Compiled expr cache ───────────────────────────────────────────────
 
@@ -254,13 +256,16 @@ fn resolve_class_derivation(
 /// [`ObjectTransformer::eval_expr_for_slot`]). Local to one pass over a row's
 /// slot derivations, so the engine itself stays `Send + Sync`.
 #[derive(Default)]
-struct RowBindings(
+struct RowBindings<'m>(
     std::cell::RefCell<Option<Bindings>>,
     /// The row's keys that are not slots of the source type (see
     /// [`ObjectTransformer::check_row_names`]), found once per row.
     std::cell::OnceCell<Vec<String>>,
     /// The slots the source type declares (see [`SourceSlots`]), looked up once per row.
     std::cell::OnceCell<Option<Arc<DeclaredSlots>>>,
+    /// The merge of the parent and joined rows, when the row is a nested
+    /// derivation's over a join (see [`merged_row`]).
+    Option<&'m MergedRow<'m>>,
 );
 
 /// Why [`ObjectTransformer::unresolved_join`] cannot resolve a join alias.
@@ -687,13 +692,19 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        merged: Option<&MergedRow<'_>>,
     ) -> Result<Value> {
         let empty_map = IndexMap::new();
         let slot_derivations = class_deriv.slot_derivations.as_ref().unwrap_or(&empty_map);
 
         let mut tgt_attrs: IndexMap<String, Value> =
             IndexMap::with_capacity(slot_derivations.len());
-        let row = RowBindings::default();
+        let row = RowBindings(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            merged,
+        );
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
             let v = self
@@ -814,6 +825,7 @@ impl<'s> ObjectTransformer<'s> {
                 source_type,
                 class_deriv,
                 index,
+                row.3,
             )?;
             // PARITY: `_nullify_missing_values` runs on the raw value, before
             // the mappings, offset and range coercion.
@@ -845,19 +857,19 @@ impl<'s> ObjectTransformer<'s> {
             //    ClassDerivation, then decide multivalued/scalar from the TARGET
             //    slot (mirrors Python `_derive_nested_objects` which calls
             //    `target_schemaview.induced_slot`).
-            let v = self.derive_nested_objects(
-                slot_deriv,
-                source_map,
-                source_type,
-                class_deriv,
-                index,
-            )?;
+            let v =
+                self.derive_nested_objects(slot_deriv, source_map, class_deriv, index, row.3)?;
             (v, None)
         } else {
             // 5. Implicit same-name copy.
+            // PARITY: `induced_slot` first, then the read: an ambiguous column raises
+            // only once the source type is known to declare it.
+            let ssd = self.require_source_slot(slot_name, source_type)?;
+            if row.3.is_some_and(|m| m.is_ambiguous(slot_name)) {
+                return Err(merged_row::ambiguous_column_error(slot_name));
+            }
             let raw = source_map.get(slot_name).cloned().unwrap_or(Value::Null);
             let raw = apply_missing_values(raw, slot_deriv);
-            let ssd = self.require_source_slot(slot_name, source_type)?;
             (raw, ssd)
         };
 
@@ -1487,6 +1499,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        merged: Option<&MergedRow<'_>>,
     ) -> Bindings {
         // Sized for the slots and the three injected names.
         let mut bindings: Bindings = IndexMap::with_capacity(source_map.len() + 3);
@@ -1526,6 +1539,12 @@ impl<'s> ObjectTransformer<'s> {
                 // Without a `LookupIndex` (single-object input) a row with no
                 // key value is still `None`; a row with one is
                 // [`Self::unresolved_join`].
+                // A merged row that holds the join's row hands it over (the pre-joined
+                // fast path of `_resolve_joined_row`).
+                if let Some(joined) = merged.and_then(|m| m.table(alias)) {
+                    bindings.insert(alias.clone(), Value::Map(joined.clone()));
+                    continue;
+                }
                 let row = self.lookup_index.as_deref().and_then(|li| {
                     let key_str = match source_map.get(join_source_key(ac)?)? {
                         Value::Str(s) => s.clone(),
@@ -1558,10 +1577,15 @@ impl<'s> ObjectTransformer<'s> {
         expr: &str,
         source_map: &IndexMap<String, Value>,
         class_deriv: &ClassDerivation,
+        merged: Option<&MergedRow<'_>>,
     ) -> Option<JoinFailure> {
         let joins = class_deriv.joins.as_ref()?;
         let mut names = None;
         for (alias, ac) in joins {
+            // The merged row holds the join's row: nothing to look up.
+            if merged.is_some_and(|m| m.table(alias).is_some()) {
+                continue;
+            }
             let Some(key) = join_source_key(ac).and_then(|k| source_map.get(k)) else {
                 continue;
             };
@@ -1664,8 +1688,29 @@ impl<'s> ObjectTransformer<'s> {
         // The row's bindings are built by the row's first `expr:` slot and kept
         // for the rest: only `__slot_values` changes from slot to slot.
         let mut cell = row.0.borrow_mut();
-        let bindings = cell
-            .get_or_insert_with(|| self.row_bindings(source_map, source_type, class_deriv, index));
+        let bindings = cell.get_or_insert_with(|| {
+            self.row_bindings(source_map, source_type, class_deriv, index, row.3)
+        });
+
+        // PARITY: `Bindings.__getitem__` binds a table of the merged row to its
+        // original row (`DynObj(**rows_by_table[name])`), after join aliases and
+        // ambiguous columns, ahead of the row's own columns and the self-reference
+        // below. It is bound when the expression names it, as a row's worth of clone
+        // is not worth paying for every expression.
+        if let Some(m) = row.3 {
+            for (table, original) in m.tables() {
+                if !bindings.contains_key(*table)
+                    && !m.is_ambiguous(table)
+                    && expr.contains(table)
+                    && !class_deriv
+                        .joins
+                        .as_ref()
+                        .is_some_and(|j| j.contains_key(*table))
+                {
+                    bindings.insert((*table).to_string(), Value::Map((*original).clone()));
+                }
+            }
+        }
 
         // PARITY: `Bindings.__getitem__` binds the source type's own name to the
         // row (`DynObj(**source_obj)`) when the row has no such key, so `Person.name`
@@ -1698,7 +1743,7 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
-        if let Some(failure) = self.unresolved_join(expr, source_map, class_deriv) {
+        if let Some(failure) = self.unresolved_join(expr, source_map, class_deriv, row.3) {
             // A statement block never resolves a join alias (it reads `src`), and
             // one that does not parse fails before any name is read.
             let parsed = cached.cloned().or_else(|| parse_expr(expr).ok());
@@ -1710,9 +1755,16 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
         let declared = row.2.get_or_init(|| self.declared_slots(source_type));
-        let result = with_declared_slots(declared.as_ref(), || {
-            self.eval_gated(cached, expr, bindings)
-        });
+        let eval = || {
+            with_declared_slots(declared.as_ref(), || {
+                self.eval_gated(cached, expr, bindings)
+            })
+        };
+        // PARITY: reading an ambiguous column of a merged row raises (see `merged_row`).
+        let result = match row.3.and_then(|m| m.ambiguous.as_ref()) {
+            Some(names) => with_ambiguous_names(names, eval),
+            None => eval(),
+        };
         result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
             slot: slot_name.to_string(),
@@ -2138,9 +2190,9 @@ impl<'s> ObjectTransformer<'s> {
         &self,
         slot_deriv: &SlotDerivation,
         source_map: &IndexMap<String, Value>,
-        source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        merged: Option<&MergedRow<'_>>,
     ) -> Result<Value> {
         let cls_derivations = match &slot_deriv.class_derivations {
             Some(v) => v,
@@ -2148,33 +2200,75 @@ impl<'s> ObjectTransformer<'s> {
         };
 
         let mut derived: Vec<Value> = Vec::new();
+        // `parent_source = parent_class_deriv.populated_from or parent_class_deriv.name`.
+        let parent_source = class_deriv
+            .populated_from
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(class_deriv.name.as_str());
 
         for cls_deriv in cls_derivations {
-            // `populated_from` on the ClassDerivation tells us which source
-            // class to use.  When absent, fall back to the outer source_type
-            // (same-class derivation).
-            let effective_source_type = cls_deriv.populated_from.as_deref().unwrap_or(source_type);
+            // `nested_source = cls_derivation.populated_from`; `source_type=cls_derivation
+            // .populated_from or parent_source` below.
+            let nested_source = cls_deriv
+                .populated_from
+                .as_deref()
+                .filter(|s| !s.is_empty());
 
-            // PARITY: object_transformer.py::_derive_nested_objects (a19eb095, #217).
-            // When a nested class_derivation joins to a *different* table and no
-            // row matches the join key (sparse miss), upstream does `continue`
-            // (`if joined_row is None: ... continue`): it appends no object for
-            // that derivation. The enclosing slot is then assigned `None`
-            // (singular) or `[]` (multivalued) below — the target key is
-            // RETAINED with a null/empty value. This keeps "no joined row exists"
-            // distinguishable from "a joined row exists whose field is null",
-            // and only `hide` ever removes the key. This supersedes the earlier
-            // local #266 behaviour, which over-broadly dropped ANY hollow nested
-            // object (including genuine same-table `{slot: null}` objects that
-            // upstream retains).
-            if self.nested_join_misses(cls_deriv, source_map, class_deriv)? {
-                continue;
-            }
-
-            // Recursively transform the same source map using the nested
-            // ClassDerivation.
-            let nested =
-                self.map_object_internal(source_map, effective_source_type, cls_deriv, index)?;
+            let nested = match nested_source {
+                Some(nested_source) if nested_source != parent_source => {
+                    let spec = class_deriv
+                        .joins
+                        .as_ref()
+                        .and_then(|joins| joins.get(nested_source));
+                    let Some(spec) = spec else {
+                        return Err(self.no_implicit_join(cls_deriv, parent_source, nested_source));
+                    };
+                    // PARITY: object_transformer.py::_derive_nested_objects (a19eb095, #217).
+                    // When a nested class_derivation joins to a *different* table and no
+                    // row matches the join key (sparse miss), upstream does `continue`
+                    // (`if joined_row is None: ... continue`): it appends no object for
+                    // that derivation. The enclosing slot is then assigned `None`
+                    // (singular) or `[]` (multivalued) below — the target key is
+                    // RETAINED with a null/empty value. This keeps "no joined row exists"
+                    // distinguishable from "a joined row exists whose field is null",
+                    // and only `hide` ever removes the key. This supersedes the earlier
+                    // local #266 behaviour, which over-broadly dropped ANY hollow nested
+                    // object (including genuine same-table `{slot: null}` objects that
+                    // upstream retains).
+                    let Some(joined_row) =
+                        self.resolve_joined_row(nested_source, source_map, merged, class_deriv)?
+                    else {
+                        continue;
+                    };
+                    // `join_key, _ = join_keys(join_spec)`: the parent-side key, which the
+                    // merge keeps unmarked.
+                    let join_key = join_source_key(spec).unwrap_or_default();
+                    let merged_row = MergedRow::merge(
+                        source_map,
+                        merged,
+                        joined_row,
+                        join_key,
+                        parent_source,
+                        nested_source,
+                    );
+                    self.map_object_internal(
+                        &merged_row.map,
+                        nested_source,
+                        cls_deriv,
+                        index,
+                        Some(&merged_row),
+                    )?
+                }
+                // The nested derivation reads the parent row as it is (a merge stays one).
+                _ => self.map_object_internal(
+                    source_map,
+                    nested_source.unwrap_or(parent_source),
+                    cls_deriv,
+                    index,
+                    merged,
+                )?,
+            };
             derived.push(nested);
         }
 
@@ -2230,70 +2324,29 @@ impl<'s> ObjectTransformer<'s> {
         }
     }
 
-    /// True when `nested` joins to a different table than its parent and the
-    /// join finds no matching row (a sparse join miss).
-    ///
-    /// Mirrors Python `ObjectTransformer._resolve_joined_row(...) is None` as
-    /// used by `_derive_nested_objects` at a19eb095 (#217): the miss condition
-    /// is `source_obj.get(source_key) is None` (no key on the parent row) or the
-    /// `LookupIndex` finding no row for that key.  Returns `false` for
-    /// same-table nested derivations and when no join spec exists — those are
-    /// resolved normally and never collapsed.
-    fn nested_join_misses(
+    /// The failure `_derive_nested_objects` raises for a nested class derivation
+    /// populated from another table than its parent when the parent declares no join
+    /// to it: the reason comes from the shared `resolve_join`.
+    fn no_implicit_join(
         &self,
         nested: &ClassDerivation,
-        source_map: &IndexMap<String, Value>,
-        parent_class_deriv: &ClassDerivation,
-    ) -> Result<bool> {
-        let parent_source = parent_class_deriv
-            .populated_from
-            .as_deref()
-            .unwrap_or(parent_class_deriv.name.as_str());
-        let Some(nested_source) = nested.populated_from.as_deref() else {
-            return Ok(false);
+        parent_source: &str,
+        nested_source: &str,
+    ) -> Error {
+        let reason = match self.source_schema {
+            Some(schema) => {
+                crate::normalize::join_utils::resolve_join(schema, parent_source, nested_source)
+                    .reason
+                    .unwrap_or_default()
+            }
+            None => String::new(),
         };
-        if nested_source == parent_source {
-            return Ok(false);
-        }
-        // Join spec is keyed by the nested source (mirrors upstream
-        // `parent_class_deriv.joins[nested_source]`).
-        let Some(ac) = parent_class_deriv
-            .joins
-            .as_ref()
-            .and_then(|j| j.get(nested_source))
-        else {
-            // No join spec: upstream raises rather than collapsing. The error is
-            // surfaced by the normal resolution path; do not treat as a miss.
-            return Ok(false);
-        };
-        // Python: source_key = spec.source_key or spec.join_on. Missing key spec
-        // is a config error handled elsewhere — not a miss.
-        let Some(source_key) = join_source_key(ac) else {
-            return Ok(false);
-        };
-        // Python: key_val = source_obj.get(source_key); if key_val is None: None.
-        let key_str = match source_map.get(source_key) {
-            Some(Value::Str(s)) => s.clone(),
-            Some(Value::Int(i)) => i.to_string(),
-            Some(Value::BigInt(n)) => n.to_string(),
-            // Null / absent / non-scalar key ⇒ no join possible ⇒ miss.
-            _ => return Ok(true),
-        };
-        let table = ac.class_named.as_deref().unwrap_or(nested_source);
-        // PARITY: `_resolve_joined_row` (see `resolve_populated_from_raw`): with a key
-        // value, no index at all (or no such table in it) raises; only a registered
-        // table without a matching row is a miss.
-        let Some(li) = self.lookup_index.as_deref() else {
-            return Err(Error::Python(format!(
-                "ValueError: Join configured for {nested_source:?} but lookup_index has not been initialized"
-            )));
-        };
-        if !li.is_registered(table) {
-            return Err(Error::Python(format!(
-                "duckdb.CatalogException: Catalog Error: Table with name {table} does not exist!"
-            )));
-        }
-        Ok(li.lookup_row(table, &key_str).is_none())
+        Error::Python(format!(
+            "TransformationError: Nested class {:?} has populated_from={nested_source:?} which \
+             differs from parent populated_from={parent_source:?}, but no implicit join could be \
+             synthesized: {reason}. Add an explicit joins: block.",
+            nested.name
+        ))
     }
 
     // ── Cardinality coercion ──────────────────────────────────────────────────
