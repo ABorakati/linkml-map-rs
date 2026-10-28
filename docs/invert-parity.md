@@ -25,7 +25,12 @@ spell it that way). `-T` may be repeated and may name directories, as upstream (
 * `dump_inverted_spec`: `dump_output(spec, "yaml")` is `yaml_dumper.dumps(model)`, i.e.
   `yaml.dump(remove_empty_items(model.model_dump()), SafeDumper, sort_keys=False)`: pydantic field order,
   `None` and empty containers dropped, `False` and `""` kept.
-* `crates/linkml-map-cli/src/invert.rs` and the `invert` subcommand.
+* `crates/linkml-map-cli/src/invert.rs` and the `invert` subcommand, including the part of upstream's
+  `_pre_flight_validate` that can raise. It is meant to be informational, but `validate_spec_semantics`
+  calls `source_sv.class_induced_slots(cls)` for every source class the spec reads (populated_from, the
+  identity fallback, nested derivations, `joins`, dotted references), so a source class whose slots do not
+  resolve ends the run with a `ValueError` before anything is inverted. `preflight_source_classes` replays
+  those calls in `validator.py`'s order.
 
 ## Upstream behaviours reproduced (`// PARITY:` in the code)
 
@@ -60,11 +65,18 @@ invert_upstream_parity` replays them):
 * `inputs/fuzz/`: Hypothesis-generated pairs (`fuzz.py --emit N --seed S`); `fuzz.py --run N --seed S` runs
   a live differential campaign against the release binary.
 
-Every pair runs strict and `--no-strict`.
+Every pair runs strict and `--no-strict`: 280 pairs, 560 cases, 179 of which end in an upstream exception
+(`NonInvertibleSpecificationError`, `AttributeError`, `ValueError`, pydantic `ValidationError`).
+
+A live campaign (`fuzz.py --run N --seed S`, 150 worlds at seed 777001 and 200 at 777002, both modes) found no
+mismatch; so did the general differential run (`tests/differential/run.sh --fuzz ... --time-budget 600`).
 
 ## Divergences left
 
 * Error *text* other than the three exception types above differs (Python tracebacks vs one line).
+* The target schema's side of the pre-flight check is not reproduced: upstream loads it when the spec's
+  `target_schema` names a path that exists relative to the working directory, and its `class_induced_slots`
+  failures would end the run.
 * `SchemaView` imports: only relative files and `linkml:` metamodel imports resolve (as for `derive-schema`).
 * Schemas are read as YAML 1.2 (`derive-schema` shares this).
 * `str.isalnum()` vs Rust `char::is_alphanumeric` for the `\w` test on exotic combining marks.
