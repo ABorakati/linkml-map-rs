@@ -80,6 +80,9 @@ class Block:
     mint_ids: bool | None = None
     omit_pf: bool = False
     own_class: bool = True
+    #: join name -> class whose table file is also written under the join name (a join reads the table named by its
+    #: *join name*, never by ``class_named``).
+    alias_files: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -342,6 +345,7 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
     srcslots = _induced(w_classes, src)
     names = [c.name for c in w_classes]
     joins = None
+    alias_files: dict[str, str] = {}
     joinrefs: list[str] = []
     jslots = [s for s in srcslots if s.range in names and "joins" in feats]
     if jslots and draw(st.booleans()):
@@ -349,12 +353,20 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
         for js in jslots[:2]:
             how = draw(st.sampled_from(["explicit", "explicit", "join_on"]))
             tgt_id = _induced(w_classes, js.range)[0].name
+            # A join named like its class (the table is the class's file), or named otherwise with the schema class in
+            # ``class_named``: with a table file of the join's name (it is what is read) or without (it fails).
+            amode = draw(st.sampled_from(["same"] * 4 + ["alias_file"] * 2 + ["alias_nofile"])) if nested_depth == 0 else "same"
+            alias = js.range if amode == "same" else f"j_{js.range}"
             if how == "explicit":
-                joins[js.range] = {"source_key": js.name, "lookup_key": tgt_id}
+                joins[alias] = {"source_key": js.name, "lookup_key": tgt_id}
             else:
-                joins[js.range] = {"join_on": js.name} if js.name == tgt_id else {"source_key": js.name, "lookup_key": tgt_id}
+                joins[alias] = {"join_on": js.name} if js.name == tgt_id else {"source_key": js.name, "lookup_key": tgt_id}
+            if amode != "same":
+                joins[alias]["class_named"] = js.range
+            if amode == "alias_file":
+                alias_files[alias] = js.range
             for oc in _induced(w_classes, js.range):
-                joinrefs.append(f"{{{js.range}.{oc.name}}}")
+                joinrefs.append(f"{{{alias}.{oc.name}}}")
     tslots: list[TSlot] = []
     used: set[str] = set()
     n = draw(st.integers(1, 4))
@@ -395,7 +407,7 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
     if not tslots:
         tslots.append(TSlot("out_a", "string", deriv={"value": "k"}))
     mint = draw(st.sampled_from([None, None, None, True, False])) if "mint" in feats else None
-    return Block(tgt_name, src, tslots, joins=joins, mint_ids=mint)
+    return Block(tgt_name, src, tslots, joins=joins, mint_ids=mint, alias_files=alias_files)
 
 
 def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats, has_target, tgt_enums, enum_derivs, used,
@@ -812,6 +824,13 @@ def write_world(w: World, root: Path) -> H.Case:
     data.mkdir(exist_ok=True)
     kind = w.input_kind
     cols = {c.name: [s.name for s in _induced(w.classes, c.name)] for c in w.classes}
+    # The table a join is named after holds the class table's rows with their text changed (the key column apart), so
+    # reading the class's file instead of the join's shows in the output.
+    alias_files = {a: c for b in w.blocks for a, c in b.alias_files.items()}
+    alias_rows = {
+        c: [{k: ("J:" + v if isinstance(v, str) and k != cols[c][0] else v) for k, v in r.items()} for r in w.rows[c]]
+        for c in set(alias_files.values())
+    }
     raw = "rawtsv" in w.feats
     inp = "data"
     if kind in ("tsv_dir", "csv_dir"):
@@ -819,6 +838,8 @@ def write_world(w: World, root: Path) -> H.Case:
         for c in w.classes:
             if w.rows[c.name] or True:
                 (data / f"{c.name}.{ext}").write_text(render_tsv(w.rows[c.name], cols[c.name], delim, raw and kind == "tsv_dir"))
+        for a, c in alias_files.items():
+            (data / f"{a}.{ext}").write_text(render_tsv(alias_rows[c], cols[c], delim, raw and kind == "tsv_dir"))
     elif kind == "tsv_file":
         c = w.source_type or w.classes[0].name
         (data / f"{c}.tsv").write_text(render_tsv(w.rows[c], cols[c], "\t", raw))
@@ -826,9 +847,13 @@ def write_world(w: World, root: Path) -> H.Case:
     elif kind == "yaml_dir":
         for c in w.classes:
             (data / f"{c.name}.yaml").write_text(render_yaml_rows(w.rows[c.name]))
+        for a, c in alias_files.items():
+            (data / f"{a}.yaml").write_text(render_yaml_rows(alias_rows[c]))
     elif kind == "json_dir":
         for c in w.classes:
             (data / f"{c.name}.json").write_text(_json.dumps([_plain(r) for r in w.rows[c.name]], ensure_ascii=False))
+        for a, c in alias_files.items():
+            (data / f"{a}.json").write_text(_json.dumps([_plain(r) for r in alias_rows[c]], ensure_ascii=False))
     elif kind == "yaml_single":
         c = w.source_type or w.classes[0].name
         r = w.rows[c][0]
