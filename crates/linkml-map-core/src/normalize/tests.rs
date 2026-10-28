@@ -497,3 +497,283 @@ fn expression_mapping_reference_synthesizes_join() {
         Some("subject_id")
     );
 }
+
+// ── conflicting join specs (`engine._collect_all_joins`, `join_engine._collect_joins`) ──
+
+mod join_conflicts {
+    use super::*;
+    use crate::normalize::inheritance::with_inherited_fields;
+    use crate::normalize::join_conflicts::{check_block_joins, collect_all_joins, join_keys};
+
+    fn join(
+        alias: &str,
+        source: Option<&str>,
+        lookup: Option<&str>,
+        on: Option<&str>,
+    ) -> AliasedClass {
+        AliasedClass {
+            alias: alias.into(),
+            source_key: source.map(Into::into),
+            lookup_key: lookup.map(Into::into),
+            join_on: on.map(Into::into),
+            ..Default::default()
+        }
+    }
+
+    fn with_joins(mut cd: ClassDerivation, joins: Vec<AliasedClass>) -> ClassDerivation {
+        cd.joins = Some(joins.into_iter().map(|j| (j.alias.clone(), j)).collect());
+        cd
+    }
+
+    /// A nested class derivation of `Measurement` rows holding `slot`.
+    fn nested(joins: Vec<AliasedClass>, slot: SlotDerivation) -> SlotDerivation {
+        let inner = with_joins(cd("Inner", "Measurement", vec![slot]), joins);
+        SlotDerivation {
+            name: "inner".into(),
+            class_derivations: Some(vec![inner]),
+            ..Default::default()
+        }
+    }
+
+    fn err_of(cd: &ClassDerivation, engine: bool) -> String {
+        check_block_joins(cd, engine).unwrap_err().to_string()
+    }
+
+    const TAIL: &str = "Use distinct join names to join a table more than one way.";
+
+    /// The fuzz-found case (corpus `e9cef3e8dd37`): a top-level explicit join, and the
+    /// nested `populated_from: Reading.id` synthesising a second, differently keyed one.
+    #[test]
+    fn explicit_join_vs_nested_implicit_join() {
+        let mut spec = spec_with(vec![with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(vec![], sd_pf("score", "Reading.score"))],
+            ),
+            vec![join("Reading", Some("id"), Some("id"), None)],
+        )]);
+        synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
+        let expected =
+            "Conflicting join specs for 'Reading': ('id', 'id') vs ('subject_id', 'subject_id')."
+                .to_owned();
+        // Only the engine route (`join_engine._collect_joins`) advises distinct names.
+        assert_eq!(err_of(result_cd(&spec), true), format!("{expected} {TAIL}"));
+        assert_eq!(err_of(result_cd(&spec), false), expected);
+    }
+
+    #[test]
+    fn explicit_joins_at_two_levels() {
+        let cd = with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(
+                    vec![join("Reading", Some("method"), Some("id"), None)],
+                    sd("x"),
+                )],
+            ),
+            vec![join("Reading", Some("subject_id"), Some("id"), None)],
+        );
+        assert_eq!(
+            err_of(&cd, false),
+            "Conflicting join specs for 'Reading': ('subject_id', 'id') vs ('method', 'id')."
+        );
+    }
+
+    /// Only the lookup key differs; and the names are compared, not the tables.
+    #[test]
+    fn lookup_key_alone_conflicts() {
+        let cd = with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(
+                    vec![join("Reading", Some("id"), Some("subject_id"), None)],
+                    sd("x"),
+                )],
+            ),
+            vec![join("Reading", Some("id"), Some("id"), None)],
+        );
+        assert!(err_of(&cd, false).contains("('id', 'id') vs ('id', 'subject_id')"));
+    }
+
+    #[test]
+    fn identical_duplicates_are_accepted() {
+        let cd = with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(
+                    // `join_on` is shorthand for both keys: the same spec.
+                    vec![join("Reading", None, None, Some("subject_id"))],
+                    sd("x"),
+                )],
+            ),
+            vec![join(
+                "Reading",
+                Some("subject_id"),
+                Some("subject_id"),
+                None,
+            )],
+        );
+        check_block_joins(&cd, true).unwrap();
+        check_block_joins(&cd, false).unwrap();
+        // The spec is then collected once.
+        assert_eq!(
+            collect_all_joins(&cd).unwrap().get("Reading"),
+            Some(&("subject_id", "subject_id"))
+        );
+    }
+
+    /// An explicit join and the one synthesised from the same reference agree.
+    #[test]
+    fn synthesised_duplicate_of_the_inferred_key_is_accepted() {
+        let mut spec = spec_with(vec![with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(vec![], sd_pf("score", "Reading.score"))],
+            ),
+            vec![join(
+                "Reading",
+                Some("subject_id"),
+                Some("subject_id"),
+                None,
+            )],
+        )]);
+        synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
+        check_block_joins(result_cd(&spec), true).unwrap();
+    }
+
+    /// Distinct join names may point at one table, however they are keyed.
+    #[test]
+    fn distinct_names_do_not_conflict() {
+        let mut other = join("Reading2", Some("id"), Some("id"), None);
+        other.class_named = Some("Reading".into());
+        let cd = with_joins(
+            cd("Result", "Measurement", vec![sd("x")]),
+            vec![
+                join("Reading", Some("subject_id"), Some("subject_id"), None),
+                other,
+            ],
+        );
+        check_block_joins(&cd, true).unwrap();
+        check_block_joins(&cd, false).unwrap();
+    }
+
+    /// `class_named` and `alias` are not part of the compared tuple.
+    #[test]
+    fn class_named_is_not_compared() {
+        let mut named = join("Reading", Some("id"), Some("id"), None);
+        named.class_named = Some("Elsewhere".into());
+        let cd = with_joins(
+            cd("Result", "Measurement", vec![nested(vec![named], sd("x"))]),
+            vec![join("Reading", Some("id"), Some("id"), None)],
+        );
+        check_block_joins(&cd, true).unwrap();
+    }
+
+    /// `_collect_joins` compares the raw pairs and prints `None`; `_collect_all_joins`
+    /// raises `join_keys`' error for the unresolved side first.
+    #[test]
+    fn unresolved_side_is_none_on_the_engine_route_only() {
+        let cd = with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(
+                    vec![join("Reading", Some("id"), Some("id"), None)],
+                    sd("x"),
+                )],
+            ),
+            vec![join("Reading", None, Some("id"), None)],
+        );
+        assert_eq!(
+            err_of(&cd, true),
+            format!("Conflicting join specs for 'Reading': (None, 'id') vs ('id', 'id'). {TAIL}")
+        );
+        assert_eq!(
+            err_of(&cd, false),
+            "Join 'Reading' must specify 'join_on' or both 'source_key' and 'lookup_key'"
+        );
+    }
+
+    /// Empty strings are falsy in Python's `a or b`.
+    #[test]
+    fn empty_key_falls_back_to_join_on() {
+        let spec = join("R", Some(""), Some("id"), Some("sid"));
+        assert_eq!(join_keys(&spec).unwrap(), ("sid", "id"));
+        assert!(join_keys(&join("R", Some(""), Some("id"), None)).is_err());
+    }
+
+    #[test]
+    fn names_are_python_reprs() {
+        let cd = with_joins(
+            cd(
+                "Result",
+                "Measurement",
+                vec![nested(
+                    vec![join("it's", Some("b"), Some("b"), None)],
+                    sd("x"),
+                )],
+            ),
+            vec![join("it's", Some("a"), Some("a"), None)],
+        );
+        assert!(err_of(&cd, false).starts_with("Conflicting join specs for \"it's\": "));
+    }
+
+    /// An inherited join of the same name never conflicts: the child's entry wins
+    /// (`curr_v.update({**v, **curr_v})`), but joins inside an inherited nested
+    /// derivation are walked like any other.
+    #[test]
+    fn inherited_joins() {
+        let parent = with_joins(
+            cd("Base", "Measurement", vec![sd("x")]),
+            vec![join(
+                "Reading",
+                Some("subject_id"),
+                Some("subject_id"),
+                None,
+            )],
+        );
+        let mut child = with_joins(
+            cd("Result", "Measurement", vec![sd("y")]),
+            vec![join("Reading", Some("id"), Some("id"), None)],
+        );
+        child.is_a = Some("Base".into());
+        let all = vec![child.clone(), parent];
+        let merged = with_inherited_fields(&child, &all).unwrap();
+        check_block_joins(&merged, true).unwrap();
+        assert_eq!(
+            collect_all_joins(&merged).unwrap().get("Reading"),
+            Some(&("id", "id"))
+        );
+
+        // The parent's slot derivation holds a nested join the child contradicts.
+        let parent = cd(
+            "Base",
+            "Measurement",
+            vec![nested(
+                vec![join(
+                    "Reading",
+                    Some("subject_id"),
+                    Some("subject_id"),
+                    None,
+                )],
+                sd("x"),
+            )],
+        );
+        let mut child = with_joins(
+            cd("Result", "Measurement", vec![sd("y")]),
+            vec![join("Reading", Some("id"), Some("id"), None)],
+        );
+        child.is_a = Some("Base".into());
+        let all = vec![child.clone(), parent];
+        let merged = with_inherited_fields(&child, &all).unwrap();
+        assert_eq!(
+            err_of(&merged, false),
+            "Conflicting join specs for 'Reading': ('id', 'id') vs ('subject_id', 'subject_id')."
+        );
+    }
+}
