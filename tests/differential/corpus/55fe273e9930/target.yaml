@@ -1,0 +1,18 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+
+classes:
+  Inner:
+    attributes:
+      iid: {range: string, identifier: true}
+      out: {range: integer}
+  Agent:
+    attributes:
+      id: {range: string, identifier: true}
+      inner: {range: Inner, inlined: true}

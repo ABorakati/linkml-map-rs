@@ -1,0 +1,20 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+
+classes:
+  Container:
+    tree_root: true
+    attributes:
+      persons: {range: FlatPerson, multivalued: true, inlined_as_list: true}
+  FlatPerson:
+    attributes:
+      id: {range: string, identifier: true}
+      org_name: {range: string}
+      org_size: {range: integer}
+      out: {range: integer}

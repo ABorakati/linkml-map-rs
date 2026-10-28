@@ -42,7 +42,7 @@ use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::{
         CompiledExprs, ContentIds, LookupIndex, ObjectIndex, ObjectTransformer,
-        ResolvedDerivations, TargetCoercions,
+        ResolvedDerivations, SourceSlots, TargetCoercions,
     },
     normalize::constant_blocks::{Block, classify_blocks},
     schema::{RangeKind, SchemaProvider},
@@ -198,6 +198,10 @@ pub struct CompiledPlan {
     /// Class derivations resolved (and `is_a` / `mixins` merged) once per source
     /// type, shared (by borrow) into every per-row engine.
     resolved_derivations: ResolvedDerivations,
+    /// The slots each source class declares, resolved once and shared (by borrow)
+    /// into every per-row engine: an `expr:` reads a declared slot the row lacks
+    /// as null.
+    source_slots: SourceSlots,
     /// Strict mode, applied to every per-row engine. See [`PipelineConfig::strict`].
     strict: bool,
     /// Unrestricted evaluation, applied to every per-row engine. See
@@ -225,6 +229,24 @@ pub struct CompiledPlan {
     /// Emit records whose identifier is neither derived nor minted instead of
     /// failing (`--continue-on-error`; see [`CompiledPlan::missing_identifiers`]).
     emit_without_identifiers: bool,
+}
+
+/// Whether any slot derivation of `cd` (nested class derivations included) has a
+/// dotted `expr:` or `populated_from:`.
+fn class_derivation_reads_dotted_path(cd: &linkml_map_core::datamodel::ClassDerivation) -> bool {
+    cd.slot_derivations
+        .iter()
+        .flat_map(|sds| sds.values())
+        .any(|sd| {
+            let dotted = |text: &Option<String>| text.as_deref().is_some_and(|t| t.contains('.'));
+            dotted(&sd.expr)
+                || dotted(&sd.populated_from)
+                || sd
+                    .class_derivations
+                    .iter()
+                    .flatten()
+                    .any(class_derivation_reads_dotted_path)
+        })
 }
 
 impl CompiledPlan {
@@ -349,6 +371,10 @@ impl CompiledPlan {
         // `mixins` ancestors merged) ONCE, so the per-row engines only look it up.
         let resolved_derivations = ResolvedDerivations::build(&spec);
 
+        // Resolve the slots each source class declares ONCE, for the `expr:`
+        // bindings (upstream `Bindings._schema_slots`).
+        let source_slots = SourceSlots::build(source_provider.as_ref());
+
         // Classify every block once, as upstream `transform_spec` does before it
         // streams anything: merge `is_a`/`mixins`, then tell constants-only
         // blocks (emitted once, reading no input) from row blocks.
@@ -385,6 +411,7 @@ impl CompiledPlan {
             compiled_exprs,
             target_coercions,
             resolved_derivations,
+            source_slots,
             strict: false,
             unrestricted_eval: false,
             source_class,
@@ -578,6 +605,7 @@ impl CompiledPlan {
         }
         engine = engine
             .with_resolved_derivations(&self.resolved_derivations)
+            .with_source_slots(&self.source_slots)
             .with_strict_exprs(self.strict)
             .with_unrestricted_eval(self.unrestricted_eval);
         if let Some(ids) = &self.content_ids {
@@ -642,18 +670,13 @@ impl CompiledPlan {
     /// `ObjectIndex`, and fan out per-row transforms sharing `Arc<ObjectIndex>`.
     /// When `false`, the streaming non-FK path is used unchanged.
     pub fn requires_object_index(&self) -> bool {
-        // Fast path: no expr: slots → no FK access possible.
+        // Fast path: no dotted `expr:` or `populated_from:` → no FK access possible
+        // (`populated_from: org_id.name` reads through the index like `{org_id.name}`).
         let has_dot_expr = self
             .spec
             .class_derivations
-            .as_ref()
-            .map(|cds| {
-                cds.iter()
-                    .filter_map(|cd| cd.slot_derivations.as_ref())
-                    .flat_map(|sds| sds.values())
-                    .any(|sd| sd.expr.as_deref().map(|e| e.contains('.')).unwrap_or(false))
-            })
-            .unwrap_or(false);
+            .as_deref()
+            .is_some_and(|cds| cds.iter().any(class_derivation_reads_dotted_path));
 
         if !has_dot_expr {
             return false;

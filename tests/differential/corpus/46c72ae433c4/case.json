@@ -1,0 +1,17 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/Person-001.yaml",
+  "source_type": "Student",
+  "target_schema": null,
+  "flags": [
+    "--strict"
+  ],
+  "formats": [
+    "yaml",
+    "json",
+    "jsonl",
+    "tsv",
+    "csv"
+  ]
+}

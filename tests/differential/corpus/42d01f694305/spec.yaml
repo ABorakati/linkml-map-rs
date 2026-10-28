@@ -1,0 +1,8 @@
+
+id: https://example.org/spec
+class_derivations:
+  Agent:
+    populated_from: Student
+    slot_derivations:
+      id: {populated_from: id}
+      out: {expr: '{age} + 1 if {school} else {age}'}

@@ -1,0 +1,14 @@
+
+id: https://example.org/spec
+class_derivations:
+  Container:
+    populated_from: Container
+    slot_derivations:
+      persons: {populated_from: persons}
+  FlatPerson:
+    populated_from: Person
+    slot_derivations:
+      id: {populated_from: id}
+      out:
+        populated_from: Person.code
+        range: integer
