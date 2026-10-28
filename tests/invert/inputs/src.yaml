@@ -1,0 +1,102 @@
+id: https://example.org/inv/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/inv/
+default_prefix: ex
+default_range: string
+imports:
+  - linkml:types
+  - ./src_common
+slots:
+  id: {identifier: true}
+  name: {}
+  full name: {range: string}
+  age: {range: integer}
+  weight:
+    range: float
+    unit: {ucum_code: kg}
+  mass_sym:
+    range: float
+    unit: {symbol: lb, ucum_code: "[lb_av]"}
+  mass_iec:
+    range: float
+    unit: {iec61360code: "0112/2///62720#UAA", symbol: kgm}
+  mass_iec_only:
+    range: float
+    unit: {iec61360code: "0112/2///62720#UAA"}
+  mass_abbr:
+    range: float
+    unit: {abbreviation: kk}
+  mass_none:
+    range: float
+  measured:
+    range: float
+    unit: {ucum_code: m}
+  height:
+    is_a: measured
+  quantity:
+    range: Quantity
+  tags: {multivalued: true}
+  friends: {range: Person, multivalued: true, inlined_as_list: true}
+  by_id: {range: Person, multivalued: true, inlined: true}
+  one: {range: Person}
+  refs: {range: Person, multivalued: true}
+  keyed: {range: Keyed, multivalued: true, inlined: true}
+  inl_nokey: {range: NoId, multivalued: true, inlined: true}
+  inl_single: {range: Person, inlined: true}
+  status: {range: Status}
+  colour: {range: Colour}
+  home: {range: Address}
+  homes: {range: Address, multivalued: true, inlined: true}
+  magnitude: {range: float}
+  unit_label: {range: string}
+  multi_ident: {range: Twin, multivalued: true, inlined: true}
+classes:
+  Base:
+    abstract: true
+    slots: [id]
+  Aged:
+    mixin: true
+    slots: [age]
+    slot_usage:
+      age: {range: float}
+  Person:
+    is_a: Base
+    mixins: [Aged]
+    slots: [name, full name, weight, mass_sym, mass_iec, mass_iec_only, mass_abbr, mass_none, height,
+            tags, friends, by_id, one, refs, keyed, inl_nokey, inl_single, status, colour, home, homes,
+            quantity, multi_ident]
+    slot_usage:
+      tags: {multivalued: false}
+      name: {required: true}
+    attributes:
+      nickname: {range: string}
+      nick_list: {multivalued: true}
+      weight_attr:
+        range: float
+        unit: {symbol: stone}
+  Employee:
+    is_a: Person
+    slot_usage:
+      friends: {inlined_as_list: false, inlined: true}
+      age: {range: integer}
+  Keyed:
+    slots: [name]
+    attributes:
+      k: {key: true}
+  NoId:
+    slots: [name]
+  Twin:
+    attributes:
+      b_id: {identifier: true}
+      a_id: {identifier: true}
+      k: {key: true}
+  Quantity:
+    slots: [magnitude, unit_label]
+enums:
+  Status:
+    permissible_values:
+      A: {}
+      B: {}
+      C: {}

@@ -1,0 +1,6 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      label: {populated_from: nonexistent}
+      other: {populated_from: name}

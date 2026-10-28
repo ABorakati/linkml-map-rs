@@ -1,0 +1,6 @@
+class_derivations:
+  A:
+    populated_from: Fine
+    slot_derivations:
+      x: {expr: "{UsesUndefined.ok} + 1"}
+      y: {populated_from: ok}

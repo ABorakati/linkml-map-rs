@@ -1,0 +1,66 @@
+class_derivations:
+- name: Container
+  populated_from: Container
+  slot_derivations:
+    persons:
+      name: persons
+      populated_from: agents
+      cast_collection_as: MultiValuedList
+- name: Entity
+  populated_from: Entity
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    name:
+      name: name
+      populated_from: label
+    primary_email:
+      name: primary_email
+      populated_from: primary_email
+    'NULL':
+      name: 'NULL'
+      populated_from: secondary_email
+    None:
+      name: None
+      populated_from: gender
+    current_address:
+      name: current_address
+      populated_from: current_address
+    has_familial_relationships:
+      name: has_familial_relationships
+      populated_from: has_familial_relationships
+      cast_collection_as: MultiValuedList
+- name: Address
+  populated_from: Address
+  slot_derivations:
+    street:
+      name: street
+      populated_from: street
+    city:
+      name: city
+      populated_from: city
+- name: FamilialRelationship
+  populated_from: FamilialRelationship
+  slot_derivations:
+    type:
+      name: type
+      populated_from: type
+    related_to:
+      name: related_to
+      populated_from: related_to
+enum_derivations:
+  FamilialRelationshipType:
+    name: FamilialRelationshipType
+    populated_from: FamilialRelationshipType
+    permissible_value_derivations:
+      SIBLING_OF:
+        name: SIBLING_OF
+        populated_from:
+        - SIBLING_OF
+      CHILD_OF:
+        name: CHILD_OF
+        populated_from:
+        - CHILD_OF

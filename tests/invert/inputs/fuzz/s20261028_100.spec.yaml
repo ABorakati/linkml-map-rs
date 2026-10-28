@@ -1,0 +1,60 @@
+class_derivations:
+- name: Target2
+  populated_from: Alpha
+  slot_derivations:
+    t1:
+      populated_from: g
+      range: Alpha
+      unit_conversion:
+        target_unit: ''
+        source_unit_slot: ''
+        source_magnitude_slot: ''
+        target_unit_slot: tu
+        source_unit: m
+        target_unit_scheme: ucum_code
+        none_if_non_numeric: true
+      stringification:
+        reversed: true
+        syntax: JSON
+        over_slots:
+        - g
+    a:
+      populated_from: a
+      expr: bare_name
+      range: Mode
+      unit_conversion:
+        target_unit: ''
+        source_unit: m
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+        none_if_non_numeric: false
+      hide: true
+      value_mappings:
+        x:
+          key: x
+          value: y
+      cast_collection_as: SingleValued
+    b:
+      range: Mode
+      stringification:
+        delimiter: ','
+        reversed: false
+      hide: true
+      value_mappings:
+        x:
+          key: x
+          value: y
+      cast_collection_as: SingleValued
+enum_derivations:
+  Kind:
+    populated_from: Ghost
+    hide: true
+    permissible_value_derivations:
+      X:
+        populated_from:
+        - P
+      P:
+        populated_from: []
+      Z:
+        populated_from:
+        - Q

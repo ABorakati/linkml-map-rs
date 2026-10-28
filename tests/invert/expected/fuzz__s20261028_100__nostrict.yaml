@@ -1,0 +1,29 @@
+class_derivations:
+- name: Alpha
+  populated_from: Target2
+  slot_derivations:
+    g:
+      name: g
+      populated_from: t1
+      range: date
+      unit_conversion:
+        target_unit: m
+        target_unit_scheme: symbol
+      stringification:
+        reversed: false
+        over_slots:
+        - g
+        syntax: JSON
+enum_derivations:
+  Ghost:
+    name: Ghost
+    populated_from: Kind
+    permissible_value_derivations:
+      P:
+        name: P
+        populated_from:
+        - P
+      Q:
+        name: Q
+        populated_from:
+        - Z

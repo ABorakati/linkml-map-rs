@@ -1,0 +1,37 @@
+id: https://example.org/fz
+name: fz
+slots:
+  e:
+    range: Kind
+    key: true
+    unit:
+      symbol: kg
+  b:
+    range: string
+    multivalued: true
+    key: true
+    unit:
+      abbreviation: kg
+      iec61360code: ''
+      descriptive_name: u1
+    is_a: e
+classes:
+  Alpha:
+    slots:
+    - b
+    slot_usage:
+      b:
+        range: Kind
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

@@ -1,0 +1,3 @@
+class_derivations:
+- name: Beta
+  populated_from: Gamma

@@ -1,0 +1,45 @@
+id: https://example.org/fz
+name: fz
+default_range: string
+slots:
+  c:
+    range: Alpha
+    inlined: true
+  x-y:
+    range: Alpha
+    inlined_as_list: true
+    identifier: true
+    unit:
+      abbreviation: kg
+    is_a: c
+classes:
+  Alpha:
+    attributes:
+      att1: {}
+  Beta:
+    mixins:
+    - Alpha
+    attributes:
+      att1:
+        identifier: true
+        unit:
+          ucum_code: u1
+      att2:
+        range: Alpha
+        multivalued: true
+        key: true
+        unit:
+          abbreviation: cm
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

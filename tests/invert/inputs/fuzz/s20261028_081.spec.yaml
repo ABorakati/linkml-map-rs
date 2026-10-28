@@ -1,0 +1,42 @@
+class_derivations:
+- name: Target2
+  slot_derivations:
+    t3: null
+    c:
+      populated_from: k
+      expr: 'k
+
+        '
+      range: string
+      unit_conversion:
+        target_unit: g
+        source_unit_slot: ''
+        source_magnitude_slot: m
+        target_unit_slot: tu
+        target_magnitude_slot: tm
+        source_unit: m
+- name: Target1
+  populated_from: Alpha
+  slot_derivations:
+    t2:
+      unit_conversion:
+        source_magnitude_slot: m
+        target_magnitude_slot: tm
+        source_unit_scheme: symbol
+      stringification:
+        delimiter: ''
+        reversed: true
+        syntax: TURTLE
+      hide: true
+enum_derivations:
+  Kind:
+    populated_from: Ghost
+    hide: true
+    permissible_value_derivations:
+      P:
+        populated_from: P
+      X:
+        populated_from:
+        - R
+        expr: y
+      Y: null

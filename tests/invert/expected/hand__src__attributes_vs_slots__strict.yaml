@@ -1,0 +1,18 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    nickname:
+      name: nickname
+      populated_from: n
+      range: string
+    nick_list:
+      name: nick_list
+      populated_from: l
+    weight_attr:
+      name: weight_attr
+      populated_from: w
+      unit_conversion:
+        target_unit: stone
+        target_unit_scheme: symbol
+        source_unit: g

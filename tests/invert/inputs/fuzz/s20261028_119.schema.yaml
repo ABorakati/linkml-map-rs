@@ -1,0 +1,51 @@
+id: https://example.org/fz
+name: fz
+slots:
+  a:
+    range: string
+    key: true
+    unit:
+      symbol: u1
+      descriptive_name: cm
+      iec61360code: cm
+  e:
+    range: string
+    multivalued: true
+  c:
+    range: Alpha
+    identifier: true
+    unit:
+      iec61360code: u1
+      ucum_code: s
+      symbol: ''
+  b:
+    range: Mode
+    unit:
+      ucum_code: cm
+      symbol: cm
+  full name:
+    range: date
+    multivalued: true
+    unit:
+      ucum_code: cm
+      symbol: cm
+  g:
+    range: string
+classes:
+  Alpha:
+    attributes:
+      k:
+        multivalued: true
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

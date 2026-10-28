@@ -1,0 +1,16 @@
+enum_derivations:
+  Status:
+    name: Status
+    populated_from: Status
+    permissible_value_derivations:
+      A:
+        name: A
+        populated_from:
+        - A
+      C:
+        name: C
+        populated_from:
+        - B
+  Colour:
+    name: Colour
+    populated_from: Hue

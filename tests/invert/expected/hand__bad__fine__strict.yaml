@@ -1,0 +1,8 @@
+class_derivations:
+- name: Fine
+  populated_from: A
+  slot_derivations:
+    ok:
+      name: ok
+      populated_from: x
+      range: string

@@ -1,0 +1,49 @@
+class_derivations:
+- name: Target2
+  populated_from: Target2
+  slot_derivations:
+    t3:
+      name: t3
+      populated_from: t3
+    ? 'k
+
+      '
+    : name: 'k
+
+        '
+      populated_from: c
+      range: integer
+      unit_conversion:
+        source_unit: g
+        target_magnitude_slot: m
+- name: Alpha
+  populated_from: Target1
+  slot_derivations:
+    ? 'k
+
+      '
+    : name: 'k
+
+        '
+      populated_from: t2
+      range: integer
+      unit_conversion:
+        source_unit: g
+        target_magnitude_slot: m
+enum_derivations:
+  Ghost:
+    name: Ghost
+    populated_from: Kind
+    permissible_value_derivations:
+      P:
+        name: P
+        populated_from:
+        - P
+      R:
+        name: R
+        populated_from:
+        - X
+      Y:
+        name: Y
+        populated_from:
+        - Y

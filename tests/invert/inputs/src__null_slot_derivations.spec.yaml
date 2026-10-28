@@ -1,0 +1,4 @@
+class_derivations:
+  A:
+    populated_from: Person
+    slot_derivations:

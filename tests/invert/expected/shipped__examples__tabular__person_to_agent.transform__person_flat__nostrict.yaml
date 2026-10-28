@@ -1,0 +1,16 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    name:
+      name: name
+      populated_from: label
+    primary_email:
+      name: primary_email
+      populated_from: email
+    gender:
+      name: gender
+      populated_from: gender

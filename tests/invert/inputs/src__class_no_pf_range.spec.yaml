@@ -1,0 +1,6 @@
+class_derivations:
+  Person:
+    slot_derivations:
+      name: {populated_from: name, range: string}
+      age: {populated_from: age, range: integer}
+      friends: {populated_from: friends, range: Person}

@@ -1,0 +1,50 @@
+class_derivations:
+- name: Beta
+  populated_from: Beta
+  slot_derivations:
+    a:
+      populated_from: b
+      stringification:
+        delimiter: ','
+        reversed: true
+      hide: true
+      cast_collection_as: MultiValuedList
+      class_derivations:
+      - name: Nested
+        populated_from: Alpha
+        slot_derivations:
+          n:
+            populated_from: b
+- name: Beta
+  slot_derivations:
+    a:
+      populated_from: att1
+      expr: 'k
+
+        '
+      unit_conversion:
+        target_unit: g
+        target_magnitude_slot: tm
+        source_unit: m
+      hide: true
+      cast_collection_as: MultiValuedList
+      class_derivations:
+      - name: Nested
+        populated_from: Beta
+        slot_derivations:
+          n:
+            populated_from: d
+enum_derivations:
+  Mode:
+    populated_from: Kind
+    expr: x
+    hide: true
+    permissible_value_derivations:
+      S:
+        populated_from:
+        - Q
+        expr: y
+      P:
+        populated_from:
+        - S
+        - R

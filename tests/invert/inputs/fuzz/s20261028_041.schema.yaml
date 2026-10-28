@@ -1,0 +1,48 @@
+id: https://example.org/fz
+name: fz
+default_range: string
+slots:
+  c:
+    range: Alpha
+    inlined: true
+  x-y:
+    range: boolean
+    unit:
+      descriptive_name: cm
+      symbol: cm
+classes:
+  Alpha:
+    slots:
+    - c
+    slot_usage:
+      c:
+        range: boolean
+    attributes:
+      k:
+        range: date
+        multivalued: true
+        unit:
+          abbreviation: '[lb_av]'
+          ucum_code: u1
+      att1:
+        range: Alpha
+        multivalued: true
+        key: true
+        unit:
+          abbreviation: cm
+  Beta:
+    slots:
+    - c
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

@@ -1,0 +1,16 @@
+class_derivations:
+- name: C
+  populated_from: C
+  slot_derivations:
+    s1:
+      name: s1
+      populated_from: s1
+enum_derivations:
+  E:
+    name: E
+    populated_from: E
+    permissible_value_derivations:
+      A:
+        name: A
+        populated_from:
+        - B

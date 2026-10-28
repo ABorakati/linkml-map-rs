@@ -1,0 +1,11 @@
+class_derivations:
+- name: Agent
+  populated_from: Agent
+  slot_derivations:
+    weight:
+      name: weight
+      populated_from: kg
+      unit_conversion:
+        target_unit: kg
+        target_unit_scheme: ucum_code
+        source_unit: g

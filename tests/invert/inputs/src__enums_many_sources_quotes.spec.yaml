@@ -1,0 +1,5 @@
+enum_derivations:
+  Condition:
+    populated_from: Status
+    permissible_value_derivations:
+      X: {populated_from: ["it's", 'say "hi"', "both ' and \"", "tab\there", "ünï"]}

@@ -1,0 +1,7 @@
+class_derivations:
+  A:
+    populated_from: Fine
+    joins:
+      j: {class_named: UsesUndefined, join_on: ok}
+    slot_derivations:
+      x: {populated_from: ok}

@@ -1,13 +1,13 @@
 use indexmap::IndexMap;
 
-use super::TransformationSpecificationInverter;
+use super::{SchemaView, TransformationSpecificationInverter, dump_inverted_spec};
 use crate::{
     datamodel::{
         ClassDerivation, SlotDerivation, StringificationConfiguration, TransformationSpecification,
         UnitConversionConfiguration,
     },
     engine::ObjectTransformer,
-    schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef, UnitRef, UnitSystem},
+    schema::{ClassDef, InMemorySchemaBuilder, RangeKind, SlotDef},
     value::Value,
 };
 
@@ -51,19 +51,30 @@ fn slot(name: &str) -> SlotDef {
     }
 }
 
+/// A `SchemaView` over inline YAML (`SchemaView(schema_text)`).
+fn sv(yaml: &str) -> SchemaView {
+    SchemaView::from_yaml_str(yaml, None).unwrap()
+}
+
+const SCHEMA: &str = "
+id: https://example.org/t
+name: t
+default_range: string
+classes:
+  C:
+    attributes:
+      name: {}
+      s1: {}
+      height:
+        range: float
+        unit: {ucum_code: m}
+";
+
 // ── Structural: name/populated_from swap ──────────────────────────────────────
 
 #[test]
 fn invert_swaps_class_and_slot_names() {
-    let schema = InMemorySchemaBuilder::new()
-        .add_class(ClassDef {
-            name: "C".into(),
-            tree_root: false,
-            is_a: None,
-            mixins: vec![],
-        })
-        .add_slot("C", slot("name"))
-        .build();
+    let schema = sv(SCHEMA);
 
     let fwd = spec_of(vec![cd_with(
         "D",
@@ -93,7 +104,7 @@ fn invert_swaps_class_and_slot_names() {
 
 #[test]
 fn invert_bare_expr_is_reversible() {
-    let schema = InMemorySchemaBuilder::new().build();
+    let schema = sv(SCHEMA);
     let fwd = spec_of(vec![cd_with(
         "D",
         Some("C"),
@@ -114,7 +125,7 @@ fn invert_bare_expr_is_reversible() {
 
 #[test]
 fn invert_complex_expr_errors_in_strict_mode() {
-    let schema = InMemorySchemaBuilder::new().build();
+    let schema = sv(SCHEMA);
     let fwd = spec_of(vec![cd_with(
         "D",
         Some("C"),
@@ -146,7 +157,7 @@ fn invert_complex_expr_errors_in_strict_mode() {
 
 #[test]
 fn invert_stringification_toggles_reversed() {
-    let schema = InMemorySchemaBuilder::new().build();
+    let schema = sv(SCHEMA);
     let fwd = spec_of(vec![cd_with(
         "D",
         Some("C"),
@@ -173,21 +184,7 @@ fn invert_stringification_toggles_reversed() {
 
 #[test]
 fn invert_unit_conversion_reverses() {
-    let mut height = slot("height");
-    height.range = RangeKind::Type("float".into());
-    height.unit = Some(UnitRef {
-        code: "m".into(),
-        system: UnitSystem::Ucum,
-    });
-    let schema = InMemorySchemaBuilder::new()
-        .add_class(ClassDef {
-            name: "C".into(),
-            tree_root: false,
-            is_a: None,
-            mixins: vec![],
-        })
-        .add_slot("C", height)
-        .build();
+    let schema = sv(SCHEMA);
 
     let fwd = spec_of(vec![cd_with(
         "D",
@@ -227,6 +224,14 @@ fn roundtrip_rename_through_engine() {
         })
         .add_slot("Person", slot("name"))
         .build();
+    let inverter_schema = sv("
+id: https://example.org/p
+name: p
+classes:
+  Person:
+    attributes:
+      name: {}
+");
 
     // Forward: Person.name → label
     let fwd = spec_of(vec![cd_with(
@@ -253,7 +258,7 @@ fn roundtrip_rename_through_engine() {
     });
 
     // Invert and map back → recovers {name: Alice}
-    let inv = TransformationSpecificationInverter::new(&schema)
+    let inv = TransformationSpecificationInverter::new(&inverter_schema)
         .invert(&fwd)
         .unwrap();
     // The inverse reads the forward target's objects, so its source schema is the
@@ -278,7 +283,7 @@ fn roundtrip_rename_through_engine() {
 fn invert_enum_derivation_swaps_pv() {
     use crate::datamodel::{EnumDerivation, PermissibleValueDerivation};
 
-    let schema = InMemorySchemaBuilder::new().build();
+    let schema = sv(SCHEMA);
     let mut pvds = IndexMap::new();
     pvds.insert(
         "B".to_string(),
@@ -313,4 +318,100 @@ fn invert_enum_derivation_swaps_pv() {
     let pv = &ed.permissible_value_derivations.as_ref().unwrap()["A"];
     assert_eq!(pv.name, "A");
     assert_eq!(pv.populated_from, Some(vec!["B".to_string()]));
+}
+
+#[test]
+fn invert_enum_derivation_with_many_sources_is_refused() {
+    use crate::datamodel::{EnumDerivation, PermissibleValueDerivation};
+
+    let pvds = IndexMap::from([(
+        "B".to_string(),
+        PermissibleValueDerivation {
+            name: "B".into(),
+            populated_from: Some(vec!["A".into(), "it's".into()]),
+            ..Default::default()
+        },
+    )]);
+    let eds = IndexMap::from([(
+        "E".to_string(),
+        EnumDerivation {
+            name: "E".into(),
+            permissible_value_derivations: Some(pvds),
+            ..Default::default()
+        },
+    )]);
+    let fwd = TransformationSpecification {
+        enum_derivations: Some(eds),
+        ..Default::default()
+    };
+    let err = TransformationSpecificationInverter::new(&sv(SCHEMA))
+        .invert(&fwd)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Cannot invert PermissibleValueDerivation 'B': populated_from has multiple source values \
+         ['A', \"it's\"], which is not a one-to-one mapping."
+    );
+}
+
+#[test]
+fn range_without_a_source_slot_is_an_attribute_error() {
+    let fwd = spec_of(vec![cd_with(
+        "D",
+        Some("C"),
+        vec![SlotDerivation {
+            name: "x".into(),
+            range: Some("string".into()),
+            ..Default::default()
+        }],
+    )]);
+    let err = TransformationSpecificationInverter::new(&sv(SCHEMA))
+        .invert(&fwd)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "AttributeError: 'NoneType' object has no attribute 'range'"
+    );
+}
+
+#[test]
+fn dump_matches_the_pydantic_dump() {
+    let fwd = spec_of(vec![cd_with(
+        "D",
+        Some("C"),
+        vec![SlotDerivation {
+            name: "h".into(),
+            populated_from: Some("height".into()),
+            unit_conversion: Some(UnitConversionConfiguration {
+                target_unit: Some("cm".into()),
+                ..Default::default()
+            }),
+            stringification: Some(StringificationConfiguration {
+                delimiter: Some("|".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+    )]);
+    let inv = TransformationSpecificationInverter::new(&sv(SCHEMA))
+        .invert(&fwd)
+        .unwrap();
+    assert_eq!(
+        dump_inverted_spec(&inv),
+        "class_derivations:
+- name: C
+  populated_from: D
+  slot_derivations:
+    height:
+      name: height
+      populated_from: h
+      unit_conversion:
+        target_unit: m
+        target_unit_scheme: ucum_code
+        source_unit: cm
+      stringification:
+        delimiter: '|'
+        reversed: true
+"
+    );
 }

@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+pub mod invert;
 pub mod validate_spec;
 
 use anyhow::Result;

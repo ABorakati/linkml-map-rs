@@ -1,0 +1,25 @@
+class_derivations:
+- name: Alpha
+  populated_from: Beta
+- name: Beta
+  populated_from: Target1
+  slot_derivations:
+    c:
+      name: c
+      populated_from: c
+    x-y:
+      name: x-y
+      populated_from: a
+      unit_conversion:
+        target_unit: s
+        target_unit_scheme: symbol
+        source_unit: cm
+      stringification:
+        reversed: true
+        over_slots:
+        - d
+        - g
+enum_derivations:
+  Ghost:
+    name: Ghost
+    populated_from: Kind

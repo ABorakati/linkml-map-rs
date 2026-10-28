@@ -1,0 +1,17 @@
+class_derivations:
+- name: Beta
+  populated_from: ''
+enum_derivations:
+  E3:
+    expr: x
+    hide: true
+    permissible_value_derivations:
+      W: null
+      Z:
+        populated_from: []
+      S:
+        populated_from:
+        - Q
+        - P
+        - P
+        expr: y

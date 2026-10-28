@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      fn: {populated_from: full_name, range: string}
+      fn2: {populated_from: "full name", range: string}
+      fn3: {populated_from: full_name}

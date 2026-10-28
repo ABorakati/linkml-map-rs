@@ -1,0 +1,16 @@
+class_derivations:
+- name: Agent
+  populated_from: Agent
+  slot_derivations:
+    x:
+      name: x
+      populated_from: x
+enum_derivations:
+  E:
+    name: E
+    populated_from: E
+    permissible_value_derivations:
+      A:
+        name: A
+        populated_from:
+        - Q

@@ -1,0 +1,18 @@
+class_derivations:
+- name: Person
+  populated_from: Person
+  slot_derivations:
+    name:
+      name: name
+      populated_from: name
+      range: string
+    age:
+      name: age
+      populated_from: age
+      range: integer
+    friends:
+      name: friends
+      populated_from: friends
+      range: Person
+      cast_collection_as: MultiValuedList
+      dictionary_key: id

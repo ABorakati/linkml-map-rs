@@ -1,0 +1,13 @@
+class_derivations:
+- name: Person
+  populated_from: Person
+  slot_derivations:
+    name:
+      name: name
+      populated_from: name
+    age:
+      name: age
+      populated_from: age
+    id:
+      name: id
+      populated_from: id

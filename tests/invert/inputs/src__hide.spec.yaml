@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      label: {populated_from: name}
+      secret: {populated_from: age, hide: true}
+      shown: {populated_from: id, hide: false}

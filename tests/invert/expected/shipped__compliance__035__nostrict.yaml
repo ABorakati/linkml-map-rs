@@ -1,0 +1,11 @@
+class_derivations:
+- name: C
+  populated_from: D
+  slot_derivations:
+    q:
+      name: q
+      populated_from: q_in_pinknoodles
+      unit_conversion:
+        source_unit: pinknoodles
+        target_unit_slot: unit
+        target_magnitude_slot: magnitude

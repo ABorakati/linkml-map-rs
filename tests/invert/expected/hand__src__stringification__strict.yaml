@@ -1,0 +1,37 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    tags:
+      name: tags
+      populated_from: s1
+      stringification:
+        delimiter: '|'
+        reversed: true
+    nick_list:
+      name: nick_list
+      populated_from: s2
+      stringification:
+        delimiter: ','
+        reversed: false
+    lines:
+      name: lines
+      populated_from: s3
+      stringification:
+        reversed: true
+        syntax: JSON
+    friends:
+      name: friends
+      populated_from: s4
+      cast_collection_as: MultiValuedList
+      stringification:
+        reversed: true
+        over_slots:
+        - a
+        - b
+        syntax: YAML
+    name:
+      name: name
+      populated_from: s5
+      stringification:
+        reversed: true

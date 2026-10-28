@@ -1,0 +1,4257 @@
+[
+ {
+  "name": "shipped__examples__biolink__biolink-example-profile.transform__biolink-model__strict",
+  "spec": "tests/examples/biolink/transform/biolink-example-profile.transform.yaml",
+  "schema": "tests/examples/biolink/source/biolink-model.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__examples__biolink__biolink-example-profile.transform__biolink-model__nostrict",
+  "spec": "tests/examples/biolink/transform/biolink-example-profile.transform.yaml",
+  "schema": "tests/examples/biolink/source/biolink-model.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__flattening__denormalize.transform__cmdr_normalized__strict",
+  "spec": "tests/examples/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/examples/flattening/source/cmdr_normalized.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression subject.id in slot derivation: subject_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__examples__flattening__denormalize.transform__cmdr_normalized__nostrict",
+  "spec": "tests/examples/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/examples/flattening/source/cmdr_normalized.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__flattening__denormalize.transform__normalized__strict",
+  "spec": "tests/examples/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/examples/flattening/source/normalized.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression subject.id in slot derivation: subject_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__examples__flattening__denormalize.transform__normalized__nostrict",
+  "spec": "tests/examples/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/examples/flattening/source/normalized.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__measurements__qv-to-scalar.transform__quantity_value__strict",
+  "spec": "tests/examples/measurements/transform/qv-to-scalar.transform.yaml",
+  "schema": "tests/examples/measurements/source/quantity_value.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression case( ({height}.unit == 'cm', {height}.value), (True, NULL) ) in slot derivation: height_in_cm"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__examples__measurements__qv-to-scalar.transform__quantity_value__nostrict",
+  "spec": "tests/examples/measurements/transform/qv-to-scalar.transform.yaml",
+  "schema": "tests/examples/measurements/source/quantity_value.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__personinfo_basic__personinfo-to-agent.transform__personinfo__strict",
+  "spec": "tests/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml",
+  "schema": "tests/examples/personinfo_basic/source/personinfo.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression str({age_in_years}) + ' years' in slot derivation: age"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__examples__personinfo_basic__personinfo-to-agent.transform__personinfo__nostrict",
+  "spec": "tests/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml",
+  "schema": "tests/examples/personinfo_basic/source/personinfo.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__single_value_for_multivalued__greetings-to-languages.transform__greetings__strict",
+  "spec": "tests/examples/single_value_for_multivalued/transform/greetings-to-languages.transform.yaml",
+  "schema": "tests/examples/single_value_for_multivalued/source/greetings.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__examples__single_value_for_multivalued__greetings-to-languages.transform__greetings__nostrict",
+  "spec": "tests/examples/single_value_for_multivalued/transform/greetings-to-languages.transform.yaml",
+  "schema": "tests/examples/single_value_for_multivalued/source/greetings.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__tabular__person_to_agent.transform__person_flat__strict",
+  "spec": "tests/examples/tabular/transform/person_to_agent.transform.yaml",
+  "schema": "tests/examples/tabular/source/person_flat.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression str({age_in_years}) + ' years' in slot derivation: age"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__examples__tabular__person_to_agent.transform__person_flat__nostrict",
+  "spec": "tests/examples/tabular/transform/person_to_agent.transform.yaml",
+  "schema": "tests/examples/tabular/source/person_flat.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__examples__type_coercion__type_coercion.transform__type_coercion__strict",
+  "spec": "tests/examples/type_coercion/transform/type_coercion.transform.yaml",
+  "schema": "tests/examples/type_coercion/source/type_coercion.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__examples__type_coercion__type_coercion.transform__type_coercion__nostrict",
+  "spec": "tests/examples/type_coercion/transform/type_coercion.transform.yaml",
+  "schema": "tests/examples/type_coercion/source/type_coercion.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__golden__flattening__denormalize.transform__cmdr_normalized__strict",
+  "spec": "tests/golden/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/golden/flattening/source/cmdr_normalized.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression subject.id in slot derivation: subject_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__golden__flattening__denormalize.transform__cmdr_normalized__nostrict",
+  "spec": "tests/golden/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/golden/flattening/source/cmdr_normalized.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__golden__flattening__denormalize.transform__normalized__strict",
+  "spec": "tests/golden/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/golden/flattening/source/normalized.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression subject.id in slot derivation: subject_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__golden__flattening__denormalize.transform__normalized__nostrict",
+  "spec": "tests/golden/flattening/transform/denormalize.transform.yaml",
+  "schema": "tests/golden/flattening/source/normalized.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__golden__measurements__qv-to-scalar.transform__quantity_value__strict",
+  "spec": "tests/golden/measurements/transform/qv-to-scalar.transform.yaml",
+  "schema": "tests/golden/measurements/source/quantity_value.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression case( ({height}.unit == 'cm', {height}.value), (True, NULL) ) in slot derivation: height_in_cm"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__golden__measurements__qv-to-scalar.transform__quantity_value__nostrict",
+  "spec": "tests/golden/measurements/transform/qv-to-scalar.transform.yaml",
+  "schema": "tests/golden/measurements/source/quantity_value.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__golden__personinfo_basic__personinfo-to-agent.transform__personinfo__strict",
+  "spec": "tests/golden/personinfo_basic/transform/personinfo-to-agent.transform.yaml",
+  "schema": "tests/golden/personinfo_basic/source/personinfo.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression str({age_in_years}) + ' years' in slot derivation: age"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__golden__personinfo_basic__personinfo-to-agent.transform__personinfo__nostrict",
+  "spec": "tests/golden/personinfo_basic/transform/personinfo-to-agent.transform.yaml",
+  "schema": "tests/golden/personinfo_basic/source/personinfo.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__golden__type_coercion__type_coercion.transform__type_coercion__strict",
+  "spec": "tests/golden/type_coercion/transform/type_coercion.transform.yaml",
+  "schema": "tests/golden/type_coercion/source/type_coercion.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__golden__type_coercion__type_coercion.transform__type_coercion__nostrict",
+  "spec": "tests/golden/type_coercion/transform/type_coercion.transform.yaml",
+  "schema": "tests/golden/type_coercion/source/type_coercion.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__quirky_a__strict",
+  "spec": "tests/derive_schema/inputs/quirky_a.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot zeta as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__quirky_a__nostrict",
+  "spec": "tests/derive_schema/inputs/quirky_a.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot zeta as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__quirky_b__strict",
+  "spec": "tests/derive_schema/inputs/quirky_b.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot zeta as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__quirky_b__nostrict",
+  "spec": "tests/derive_schema/inputs/quirky_b.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot zeta as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__quirky_c__strict",
+  "spec": "tests/derive_schema/inputs/quirky_c.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__quirky_c__nostrict",
+  "spec": "tests/derive_schema/inputs/quirky_c.spec.yaml",
+  "schema": "tests/derive_schema/inputs/quirky.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_class_copy__strict",
+  "spec": "tests/derive_schema/inputs/rich_class_copy.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_class_copy__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_class_copy.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_copy_all__strict",
+  "spec": "tests/derive_schema/inputs/rich_copy_all.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_copy_all__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_copy_all.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_copy_exclude__strict",
+  "spec": "tests/derive_schema/inputs/rich_copy_exclude.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_copy_exclude__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_copy_exclude.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_copy_exclude_all__strict",
+  "spec": "tests/derive_schema/inputs/rich_copy_exclude_all.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_copy_exclude_all__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_copy_exclude_all.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_copy_include__strict",
+  "spec": "tests/derive_schema/inputs/rich_copy_include.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_copy_include__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_copy_include.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_copy_only__strict",
+  "spec": "tests/derive_schema/inputs/rich_copy_only.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_copy_only__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_copy_only.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_dictkey_bad__strict",
+  "spec": "tests/derive_schema/inputs/rich_dictkey_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__rich_dictkey_bad__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_dictkey_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__rich_empty__strict",
+  "spec": "tests/derive_schema/inputs/rich_empty.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_empty__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_empty.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_enum_bad__strict",
+  "spec": "tests/derive_schema/inputs/rich_enum_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_enum_bad__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_enum_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_enum_ghost__strict",
+  "spec": "tests/derive_schema/inputs/rich_enum_ghost.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_enum_ghost__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_enum_ghost.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_features__strict",
+  "spec": "tests/derive_schema/inputs/rich_features.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'ACTIVE': populated_from has multiple source values ['ACTIVE', 'ENABLED'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__rich_features__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_features.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'ACTIVE': populated_from has multiple source values ['ACTIVE', 'ENABLED'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__rich_merge__strict",
+  "spec": "tests/derive_schema/inputs/rich_merge.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_merge__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_merge.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_missing__strict",
+  "spec": "tests/derive_schema/inputs/rich_missing.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__rich_missing__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_missing.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__inputs__rich_rewire__strict",
+  "spec": "tests/derive_schema/inputs/rich_rewire.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_rewire__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_rewire.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__inputs__rich_rewire_bad__strict",
+  "spec": "tests/derive_schema/inputs/rich_rewire_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__inputs__rich_rewire_bad__nostrict",
+  "spec": "tests/derive_schema/inputs/rich_rewire_bad.spec.yaml",
+  "schema": "tests/derive_schema/inputs/rich.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__attic__transform-s1-to-s2__personinfo_s1__strict",
+  "spec": "tests/compliance/attic/transform-s1-to-s2.yaml",
+  "schema": "tests/compliance/attic/personinfo_s1.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression str({age_in_years})+' years' in slot derivation: age"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__attic__transform-s1-to-s2__personinfo_s1__nostrict",
+  "spec": "tests/compliance/attic/transform-s1-to-s2.yaml",
+  "schema": "tests/compliance/attic/personinfo_s1.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'values'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__attic__denormalize-mapping__personinfo_s1__strict",
+  "spec": "tests/compliance/attic/denormalize-mapping.yaml",
+  "schema": "tests/compliance/attic/personinfo_s1.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression subject.id in slot derivation: subject_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__attic__denormalize-mapping__personinfo_s1__nostrict",
+  "spec": "tests/compliance/attic/denormalize-mapping.yaml",
+  "schema": "tests/compliance/attic/personinfo_s1.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__000__strict",
+  "spec": "tests/derive_schema/compliance/000.spec.yaml",
+  "schema": "tests/derive_schema/compliance/000.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__000__nostrict",
+  "spec": "tests/derive_schema/compliance/000.spec.yaml",
+  "schema": "tests/derive_schema/compliance/000.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__001__strict",
+  "spec": "tests/derive_schema/compliance/001.spec.yaml",
+  "schema": "tests/derive_schema/compliance/001.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__001__nostrict",
+  "spec": "tests/derive_schema/compliance/001.spec.yaml",
+  "schema": "tests/derive_schema/compliance/001.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__002__strict",
+  "spec": "tests/derive_schema/compliance/002.spec.yaml",
+  "schema": "tests/derive_schema/compliance/002.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__002__nostrict",
+  "spec": "tests/derive_schema/compliance/002.spec.yaml",
+  "schema": "tests/derive_schema/compliance/002.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__003__strict",
+  "spec": "tests/derive_schema/compliance/003.spec.yaml",
+  "schema": "tests/derive_schema/compliance/003.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__003__nostrict",
+  "spec": "tests/derive_schema/compliance/003.spec.yaml",
+  "schema": "tests/derive_schema/compliance/003.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__004__strict",
+  "spec": "tests/derive_schema/compliance/004.spec.yaml",
+  "schema": "tests/derive_schema/compliance/004.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__004__nostrict",
+  "spec": "tests/derive_schema/compliance/004.spec.yaml",
+  "schema": "tests/derive_schema/compliance/004.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__005__strict",
+  "spec": "tests/derive_schema/compliance/005.spec.yaml",
+  "schema": "tests/derive_schema/compliance/005.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__005__nostrict",
+  "spec": "tests/derive_schema/compliance/005.spec.yaml",
+  "schema": "tests/derive_schema/compliance/005.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__006__strict",
+  "spec": "tests/derive_schema/compliance/006.spec.yaml",
+  "schema": "tests/derive_schema/compliance/006.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__006__nostrict",
+  "spec": "tests/derive_schema/compliance/006.spec.yaml",
+  "schema": "tests/derive_schema/compliance/006.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__007__strict",
+  "spec": "tests/derive_schema/compliance/007.spec.yaml",
+  "schema": "tests/derive_schema/compliance/007.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__007__nostrict",
+  "spec": "tests/derive_schema/compliance/007.spec.yaml",
+  "schema": "tests/derive_schema/compliance/007.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__008__strict",
+  "spec": "tests/derive_schema/compliance/008.spec.yaml",
+  "schema": "tests/derive_schema/compliance/008.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__008__nostrict",
+  "spec": "tests/derive_schema/compliance/008.spec.yaml",
+  "schema": "tests/derive_schema/compliance/008.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__009__strict",
+  "spec": "tests/derive_schema/compliance/009.spec.yaml",
+  "schema": "tests/derive_schema/compliance/009.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__009__nostrict",
+  "spec": "tests/derive_schema/compliance/009.spec.yaml",
+  "schema": "tests/derive_schema/compliance/009.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__010__strict",
+  "spec": "tests/derive_schema/compliance/010.spec.yaml",
+  "schema": "tests/derive_schema/compliance/010.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + s2 in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__010__nostrict",
+  "spec": "tests/derive_schema/compliance/010.spec.yaml",
+  "schema": "tests/derive_schema/compliance/010.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__011__strict",
+  "spec": "tests/derive_schema/compliance/011.spec.yaml",
+  "schema": "tests/derive_schema/compliance/011.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression {s1} + {s2} in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__011__nostrict",
+  "spec": "tests/derive_schema/compliance/011.spec.yaml",
+  "schema": "tests/derive_schema/compliance/011.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__012__strict",
+  "spec": "tests/derive_schema/compliance/012.spec.yaml",
+  "schema": "tests/derive_schema/compliance/012.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression {s1} + {s2} in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__012__nostrict",
+  "spec": "tests/derive_schema/compliance/012.spec.yaml",
+  "schema": "tests/derive_schema/compliance/012.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__013__strict",
+  "spec": "tests/derive_schema/compliance/013.spec.yaml",
+  "schema": "tests/derive_schema/compliance/013.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + s2.s3 in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__013__nostrict",
+  "spec": "tests/derive_schema/compliance/013.spec.yaml",
+  "schema": "tests/derive_schema/compliance/013.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__014__strict",
+  "spec": "tests/derive_schema/compliance/014.spec.yaml",
+  "schema": "tests/derive_schema/compliance/014.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + s2.s3.s4 in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__014__nostrict",
+  "spec": "tests/derive_schema/compliance/014.spec.yaml",
+  "schema": "tests/derive_schema/compliance/014.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__015__strict",
+  "spec": "tests/derive_schema/compliance/015.spec.yaml",
+  "schema": "tests/derive_schema/compliance/015.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + s2 in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__015__nostrict",
+  "spec": "tests/derive_schema/compliance/015.spec.yaml",
+  "schema": "tests/derive_schema/compliance/015.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__016__strict",
+  "spec": "tests/derive_schema/compliance/016.spec.yaml",
+  "schema": "tests/derive_schema/compliance/016.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + s2 in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__016__nostrict",
+  "spec": "tests/derive_schema/compliance/016.spec.yaml",
+  "schema": "tests/derive_schema/compliance/016.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__017__strict",
+  "spec": "tests/derive_schema/compliance/017.spec.yaml",
+  "schema": "tests/derive_schema/compliance/017.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression len(s1) in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__017__nostrict",
+  "spec": "tests/derive_schema/compliance/017.spec.yaml",
+  "schema": "tests/derive_schema/compliance/017.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__018__strict",
+  "spec": "tests/derive_schema/compliance/018.spec.yaml",
+  "schema": "tests/derive_schema/compliance/018.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 < s2 in slot derivation: derived"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__018__nostrict",
+  "spec": "tests/derive_schema/compliance/018.spec.yaml",
+  "schema": "tests/derive_schema/compliance/018.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__019__strict",
+  "spec": "tests/derive_schema/compliance/019.spec.yaml",
+  "schema": "tests/derive_schema/compliance/019.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__019__nostrict",
+  "spec": "tests/derive_schema/compliance/019.spec.yaml",
+  "schema": "tests/derive_schema/compliance/019.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__020__strict",
+  "spec": "tests/derive_schema/compliance/020.spec.yaml",
+  "schema": "tests/derive_schema/compliance/020.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__020__nostrict",
+  "spec": "tests/derive_schema/compliance/020.spec.yaml",
+  "schema": "tests/derive_schema/compliance/020.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__021__strict",
+  "spec": "tests/derive_schema/compliance/021.spec.yaml",
+  "schema": "tests/derive_schema/compliance/021.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__021__nostrict",
+  "spec": "tests/derive_schema/compliance/021.spec.yaml",
+  "schema": "tests/derive_schema/compliance/021.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__022__strict",
+  "spec": "tests/derive_schema/compliance/022.spec.yaml",
+  "schema": "tests/derive_schema/compliance/022.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__022__nostrict",
+  "spec": "tests/derive_schema/compliance/022.spec.yaml",
+  "schema": "tests/derive_schema/compliance/022.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__023__strict",
+  "spec": "tests/derive_schema/compliance/023.spec.yaml",
+  "schema": "tests/derive_schema/compliance/023.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__023__nostrict",
+  "spec": "tests/derive_schema/compliance/023.spec.yaml",
+  "schema": "tests/derive_schema/compliance/023.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__024__strict",
+  "spec": "tests/derive_schema/compliance/024.spec.yaml",
+  "schema": "tests/derive_schema/compliance/024.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__024__nostrict",
+  "spec": "tests/derive_schema/compliance/024.spec.yaml",
+  "schema": "tests/derive_schema/compliance/024.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__025__strict",
+  "spec": "tests/derive_schema/compliance/025.spec.yaml",
+  "schema": "tests/derive_schema/compliance/025.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__025__nostrict",
+  "spec": "tests/derive_schema/compliance/025.spec.yaml",
+  "schema": "tests/derive_schema/compliance/025.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__026__strict",
+  "spec": "tests/derive_schema/compliance/026.spec.yaml",
+  "schema": "tests/derive_schema/compliance/026.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__026__nostrict",
+  "spec": "tests/derive_schema/compliance/026.spec.yaml",
+  "schema": "tests/derive_schema/compliance/026.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__027__strict",
+  "spec": "tests/derive_schema/compliance/027.spec.yaml",
+  "schema": "tests/derive_schema/compliance/027.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__027__nostrict",
+  "spec": "tests/derive_schema/compliance/027.spec.yaml",
+  "schema": "tests/derive_schema/compliance/027.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__028__strict",
+  "spec": "tests/derive_schema/compliance/028.spec.yaml",
+  "schema": "tests/derive_schema/compliance/028.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__028__nostrict",
+  "spec": "tests/derive_schema/compliance/028.spec.yaml",
+  "schema": "tests/derive_schema/compliance/028.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__029__strict",
+  "spec": "tests/derive_schema/compliance/029.spec.yaml",
+  "schema": "tests/derive_schema/compliance/029.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__029__nostrict",
+  "spec": "tests/derive_schema/compliance/029.spec.yaml",
+  "schema": "tests/derive_schema/compliance/029.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__030__strict",
+  "spec": "tests/derive_schema/compliance/030.spec.yaml",
+  "schema": "tests/derive_schema/compliance/030.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__030__nostrict",
+  "spec": "tests/derive_schema/compliance/030.spec.yaml",
+  "schema": "tests/derive_schema/compliance/030.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__031__strict",
+  "spec": "tests/derive_schema/compliance/031.spec.yaml",
+  "schema": "tests/derive_schema/compliance/031.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__031__nostrict",
+  "spec": "tests/derive_schema/compliance/031.spec.yaml",
+  "schema": "tests/derive_schema/compliance/031.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__032__strict",
+  "spec": "tests/derive_schema/compliance/032.spec.yaml",
+  "schema": "tests/derive_schema/compliance/032.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__032__nostrict",
+  "spec": "tests/derive_schema/compliance/032.spec.yaml",
+  "schema": "tests/derive_schema/compliance/032.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__033__strict",
+  "spec": "tests/derive_schema/compliance/033.spec.yaml",
+  "schema": "tests/derive_schema/compliance/033.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__033__nostrict",
+  "spec": "tests/derive_schema/compliance/033.spec.yaml",
+  "schema": "tests/derive_schema/compliance/033.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__034__strict",
+  "spec": "tests/derive_schema/compliance/034.spec.yaml",
+  "schema": "tests/derive_schema/compliance/034.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__034__nostrict",
+  "spec": "tests/derive_schema/compliance/034.spec.yaml",
+  "schema": "tests/derive_schema/compliance/034.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__035__strict",
+  "spec": "tests/derive_schema/compliance/035.spec.yaml",
+  "schema": "tests/derive_schema/compliance/035.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__035__nostrict",
+  "spec": "tests/derive_schema/compliance/035.spec.yaml",
+  "schema": "tests/derive_schema/compliance/035.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__036__strict",
+  "spec": "tests/derive_schema/compliance/036.spec.yaml",
+  "schema": "tests/derive_schema/compliance/036.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__036__nostrict",
+  "spec": "tests/derive_schema/compliance/036.spec.yaml",
+  "schema": "tests/derive_schema/compliance/036.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__037__strict",
+  "spec": "tests/derive_schema/compliance/037.spec.yaml",
+  "schema": "tests/derive_schema/compliance/037.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__037__nostrict",
+  "spec": "tests/derive_schema/compliance/037.spec.yaml",
+  "schema": "tests/derive_schema/compliance/037.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__038__strict",
+  "spec": "tests/derive_schema/compliance/038.spec.yaml",
+  "schema": "tests/derive_schema/compliance/038.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__038__nostrict",
+  "spec": "tests/derive_schema/compliance/038.spec.yaml",
+  "schema": "tests/derive_schema/compliance/038.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__039__strict",
+  "spec": "tests/derive_schema/compliance/039.spec.yaml",
+  "schema": "tests/derive_schema/compliance/039.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__039__nostrict",
+  "spec": "tests/derive_schema/compliance/039.spec.yaml",
+  "schema": "tests/derive_schema/compliance/039.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__040__strict",
+  "spec": "tests/derive_schema/compliance/040.spec.yaml",
+  "schema": "tests/derive_schema/compliance/040.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__040__nostrict",
+  "spec": "tests/derive_schema/compliance/040.spec.yaml",
+  "schema": "tests/derive_schema/compliance/040.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__041__strict",
+  "spec": "tests/derive_schema/compliance/041.spec.yaml",
+  "schema": "tests/derive_schema/compliance/041.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__041__nostrict",
+  "spec": "tests/derive_schema/compliance/041.spec.yaml",
+  "schema": "tests/derive_schema/compliance/041.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__042__strict",
+  "spec": "tests/derive_schema/compliance/042.spec.yaml",
+  "schema": "tests/derive_schema/compliance/042.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__042__nostrict",
+  "spec": "tests/derive_schema/compliance/042.spec.yaml",
+  "schema": "tests/derive_schema/compliance/042.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__043__strict",
+  "spec": "tests/derive_schema/compliance/043.spec.yaml",
+  "schema": "tests/derive_schema/compliance/043.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__043__nostrict",
+  "spec": "tests/derive_schema/compliance/043.spec.yaml",
+  "schema": "tests/derive_schema/compliance/043.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__044__strict",
+  "spec": "tests/derive_schema/compliance/044.spec.yaml",
+  "schema": "tests/derive_schema/compliance/044.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__044__nostrict",
+  "spec": "tests/derive_schema/compliance/044.spec.yaml",
+  "schema": "tests/derive_schema/compliance/044.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__045__strict",
+  "spec": "tests/derive_schema/compliance/045.spec.yaml",
+  "schema": "tests/derive_schema/compliance/045.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1.id in slot derivation: s1_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__045__nostrict",
+  "spec": "tests/derive_schema/compliance/045.spec.yaml",
+  "schema": "tests/derive_schema/compliance/045.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__046__strict",
+  "spec": "tests/derive_schema/compliance/046.spec.yaml",
+  "schema": "tests/derive_schema/compliance/046.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1.id in slot derivation: s1_id"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__046__nostrict",
+  "spec": "tests/derive_schema/compliance/046.spec.yaml",
+  "schema": "tests/derive_schema/compliance/046.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__047__strict",
+  "spec": "tests/derive_schema/compliance/047.spec.yaml",
+  "schema": "tests/derive_schema/compliance/047.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__047__nostrict",
+  "spec": "tests/derive_schema/compliance/047.spec.yaml",
+  "schema": "tests/derive_schema/compliance/047.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__048__strict",
+  "spec": "tests/derive_schema/compliance/048.spec.yaml",
+  "schema": "tests/derive_schema/compliance/048.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "shipped__compliance__048__nostrict",
+  "spec": "tests/derive_schema/compliance/048.spec.yaml",
+  "schema": "tests/derive_schema/compliance/048.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__049__strict",
+  "spec": "tests/derive_schema/compliance/049.spec.yaml",
+  "schema": "tests/derive_schema/compliance/049.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'B': populated_from has multiple source values ['A', 'C'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__049__nostrict",
+  "spec": "tests/derive_schema/compliance/049.spec.yaml",
+  "schema": "tests/derive_schema/compliance/049.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'B': populated_from has multiple source values ['A', 'C'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__050__strict",
+  "spec": "tests/derive_schema/compliance/050.spec.yaml",
+  "schema": "tests/derive_schema/compliance/050.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'B': populated_from has multiple source values ['A', 'C'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__050__nostrict",
+  "spec": "tests/derive_schema/compliance/050.spec.yaml",
+  "schema": "tests/derive_schema/compliance/050.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'B': populated_from has multiple source values ['A', 'C'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__051__strict",
+  "spec": "tests/derive_schema/compliance/051.spec.yaml",
+  "schema": "tests/derive_schema/compliance/051.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + 1 in slot derivation: s1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__051__nostrict",
+  "spec": "tests/derive_schema/compliance/051.spec.yaml",
+  "schema": "tests/derive_schema/compliance/051.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__052__strict",
+  "spec": "tests/derive_schema/compliance/052.spec.yaml",
+  "schema": "tests/derive_schema/compliance/052.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + 1 in slot derivation: s1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__052__nostrict",
+  "spec": "tests/derive_schema/compliance/052.spec.yaml",
+  "schema": "tests/derive_schema/compliance/052.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__053__strict",
+  "spec": "tests/derive_schema/compliance/053.spec.yaml",
+  "schema": "tests/derive_schema/compliance/053.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + 1 in slot derivation: s1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__053__nostrict",
+  "spec": "tests/derive_schema/compliance/053.spec.yaml",
+  "schema": "tests/derive_schema/compliance/053.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "shipped__compliance__054__strict",
+  "spec": "tests/derive_schema/compliance/054.spec.yaml",
+  "schema": "tests/derive_schema/compliance/054.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression s1 + 1 in slot derivation: s1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "shipped__compliance__054__nostrict",
+  "spec": "tests/derive_schema/compliance/054.spec.yaml",
+  "schema": "tests/derive_schema/compliance/054.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__bad__dotted_pf__strict",
+  "spec": "tests/invert/inputs/bad__dotted_pf.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__dotted_pf__nostrict",
+  "spec": "tests/invert/inputs/bad__dotted_pf.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__expr_base__strict",
+  "spec": "tests/invert/inputs/bad__expr_base.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__expr_base__nostrict",
+  "spec": "tests/invert/inputs/bad__expr_base.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__fine__strict",
+  "spec": "tests/invert/inputs/bad__fine.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__bad__fine__nostrict",
+  "spec": "tests/invert/inputs/bad__fine.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__bad__ghost_mixin_class__strict",
+  "spec": "tests/invert/inputs/bad__ghost_mixin_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"GhostMixin\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__ghost_mixin_class__nostrict",
+  "spec": "tests/invert/inputs/bad__ghost_mixin_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"GhostMixin\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__ghost_parent_class__strict",
+  "spec": "tests/invert/inputs/bad__ghost_parent_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"GhostClass\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__ghost_parent_class__nostrict",
+  "spec": "tests/invert/inputs/bad__ghost_parent_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"GhostClass\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__identity_class__strict",
+  "spec": "tests/invert/inputs/bad__identity_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__identity_class__nostrict",
+  "spec": "tests/invert/inputs/bad__identity_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__join_class__strict",
+  "spec": "tests/invert/inputs/bad__join_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__join_class__nostrict",
+  "spec": "tests/invert/inputs/bad__join_class.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__nested_source__strict",
+  "spec": "tests/invert/inputs/bad__nested_source.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__nested_source__nostrict",
+  "spec": "tests/invert/inputs/bad__nested_source.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__range_class_with_broken_slots__strict",
+  "spec": "tests/invert/inputs/bad__range_class_with_broken_slots.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of Orphan ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__range_class_with_broken_slots__nostrict",
+  "spec": "tests/invert/inputs/bad__range_class_with_broken_slots.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of Orphan ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__slot_cycle__strict",
+  "spec": "tests/invert/inputs/bad__slot_cycle.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot: \"ghost_parent\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__slot_cycle__nostrict",
+  "spec": "tests/invert/inputs/bad__slot_cycle.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot: \"ghost_parent\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__slot_ghost_mixin__strict",
+  "spec": "tests/invert/inputs/bad__slot_ghost_mixin.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot: \"ghost_parent\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__slot_ghost_mixin__nostrict",
+  "spec": "tests/invert/inputs/bad__slot_ghost_mixin.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot: \"ghost_parent\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__slot_ghost_parent__strict",
+  "spec": "tests/invert/inputs/bad__slot_ghost_parent.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot: \"ghost_parent\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__slot_ghost_parent__nostrict",
+  "spec": "tests/invert/inputs/bad__slot_ghost_parent.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot: \"ghost_parent\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__undefined_class_slot__strict",
+  "spec": "tests/invert/inputs/bad__undefined_class_slot.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__bad__undefined_class_slot__nostrict",
+  "spec": "tests/invert/inputs/bad__undefined_class_slot.spec.yaml",
+  "schema": "tests/invert/inputs/bad.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot undefined_slot as an attribute of UsesUndefined ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__min__basic__strict",
+  "spec": "tests/invert/inputs/min__basic.spec.yaml",
+  "schema": "tests/invert/inputs/min.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__min__basic__nostrict",
+  "spec": "tests/invert/inputs/min__basic.spec.yaml",
+  "schema": "tests/invert/inputs/min.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__min__no_defaults__strict",
+  "spec": "tests/invert/inputs/min__no_defaults.spec.yaml",
+  "schema": "tests/invert/inputs/min.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__min__no_defaults__nostrict",
+  "spec": "tests/invert/inputs/min__no_defaults.spec.yaml",
+  "schema": "tests/invert/inputs/min.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__nodef__basic__strict",
+  "spec": "tests/invert/inputs/nodef__basic.spec.yaml",
+  "schema": "tests/invert/inputs/nodef.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__nodef__basic__nostrict",
+  "spec": "tests/invert/inputs/nodef__basic.spec.yaml",
+  "schema": "tests/invert/inputs/nodef.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__nodef__global_slots__strict",
+  "spec": "tests/invert/inputs/nodef__global_slots.spec.yaml",
+  "schema": "tests/invert/inputs/nodef.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__nodef__global_slots__nostrict",
+  "spec": "tests/invert/inputs/nodef__global_slots.spec.yaml",
+  "schema": "tests/invert/inputs/nodef.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__attribute_from_other_class__strict",
+  "spec": "tests/invert/inputs/src__attribute_from_other_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot nickname as an attribute of Keyed ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__attribute_from_other_class__nostrict",
+  "spec": "tests/invert/inputs/src__attribute_from_other_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot nickname as an attribute of Keyed ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__attribute_no_class__strict",
+  "spec": "tests/invert/inputs/src__attribute_no_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__attribute_no_class__nostrict",
+  "spec": "tests/invert/inputs/src__attribute_no_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__attributes_vs_slots__strict",
+  "spec": "tests/invert/inputs/src__attributes_vs_slots.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__attributes_vs_slots__nostrict",
+  "spec": "tests/invert/inputs/src__attributes_vs_slots.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__class_empty_pf__strict",
+  "spec": "tests/invert/inputs/src__class_empty_pf.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__class_empty_pf__nostrict",
+  "spec": "tests/invert/inputs/src__class_empty_pf.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__class_ghost__strict",
+  "spec": "tests/invert/inputs/src__class_ghost.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__class_ghost__nostrict",
+  "spec": "tests/invert/inputs/src__class_ghost.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__class_ghost_range__strict",
+  "spec": "tests/invert/inputs/src__class_ghost_range.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__class_ghost_range__nostrict",
+  "spec": "tests/invert/inputs/src__class_ghost_range.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__class_no_pf_range__strict",
+  "spec": "tests/invert/inputs/src__class_no_pf_range.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__class_no_pf_range__nostrict",
+  "spec": "tests/invert/inputs/src__class_no_pf_range.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__collections__strict",
+  "spec": "tests/invert/inputs/src__collections.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__collections__nostrict",
+  "spec": "tests/invert/inputs/src__collections.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__collections_inherited__strict",
+  "spec": "tests/invert/inputs/src__collections_inherited.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__collections_inherited__nostrict",
+  "spec": "tests/invert/inputs/src__collections_inherited.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__dict_form_class_derivations__strict",
+  "spec": "tests/invert/inputs/src__dict_form_class_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__dict_form_class_derivations__nostrict",
+  "spec": "tests/invert/inputs/src__dict_form_class_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__empty__strict",
+  "spec": "tests/invert/inputs/src__empty.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__empty__nostrict",
+  "spec": "tests/invert/inputs/src__empty.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__enums__strict",
+  "spec": "tests/invert/inputs/src__enums.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__enums__nostrict",
+  "spec": "tests/invert/inputs/src__enums.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__enums_and_classes__strict",
+  "spec": "tests/invert/inputs/src__enums_and_classes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__enums_and_classes__nostrict",
+  "spec": "tests/invert/inputs/src__enums_and_classes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__enums_collision__strict",
+  "spec": "tests/invert/inputs/src__enums_collision.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__enums_collision__nostrict",
+  "spec": "tests/invert/inputs/src__enums_collision.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__enums_expr_hide__strict",
+  "spec": "tests/invert/inputs/src__enums_expr_hide.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__enums_expr_hide__nostrict",
+  "spec": "tests/invert/inputs/src__enums_expr_hide.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__enums_implicit__strict",
+  "spec": "tests/invert/inputs/src__enums_implicit.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__enums_implicit__nostrict",
+  "spec": "tests/invert/inputs/src__enums_implicit.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__enums_many_sources__strict",
+  "spec": "tests/invert/inputs/src__enums_many_sources.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'X': populated_from has multiple source values ['A', 'B'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__enums_many_sources__nostrict",
+  "spec": "tests/invert/inputs/src__enums_many_sources.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'X': populated_from has multiple source values ['A', 'B'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__enums_many_sources_quotes__strict",
+  "spec": "tests/invert/inputs/src__enums_many_sources_quotes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'X': populated_from has multiple source values [\"it's\", 'say \"hi\"', 'both \\' and \"', 'tab\\there', '\u00fcn\u00ef'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__enums_many_sources_quotes__nostrict",
+  "spec": "tests/invert/inputs/src__enums_many_sources_quotes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'X': populated_from has multiple source values [\"it's\", 'say \"hi\"', 'both \\' and \"', 'tab\\there', '\u00fcn\u00ef'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__enums_single_list__strict",
+  "spec": "tests/invert/inputs/src__enums_single_list.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__enums_single_list__nostrict",
+  "spec": "tests/invert/inputs/src__enums_single_list.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__expr_bare__strict",
+  "spec": "tests/invert/inputs/src__expr_bare.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__expr_bare__nostrict",
+  "spec": "tests/invert/inputs/src__expr_bare.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__expr_complex__strict",
+  "spec": "tests/invert/inputs/src__expr_complex.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression str({age}) + ' years' in slot derivation: b"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__expr_complex__nostrict",
+  "spec": "tests/invert/inputs/src__expr_complex.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__expr_empty_and_null__strict",
+  "spec": "tests/invert/inputs/src__expr_empty_and_null.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__expr_empty_and_null__nostrict",
+  "spec": "tests/invert/inputs/src__expr_empty_and_null.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__expr_trailing_newline__strict",
+  "spec": "tests/invert/inputs/src__expr_trailing_newline.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression name\n\n in slot derivation: b"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__expr_trailing_newline__nostrict",
+  "spec": "tests/invert/inputs/src__expr_trailing_newline.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__expr_unicode_word__strict",
+  "spec": "tests/invert/inputs/src__expr_unicode_word.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a-b in slot derivation: c"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__expr_unicode_word__nostrict",
+  "spec": "tests/invert/inputs/src__expr_unicode_word.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__hide__strict",
+  "spec": "tests/invert/inputs/src__hide.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__hide__nostrict",
+  "spec": "tests/invert/inputs/src__hide.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__implicit_names__strict",
+  "spec": "tests/invert/inputs/src__implicit_names.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__implicit_names__nostrict",
+  "spec": "tests/invert/inputs/src__implicit_names.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__imports_classes__strict",
+  "spec": "tests/invert/inputs/src__imports_classes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__imports_classes__nostrict",
+  "spec": "tests/invert/inputs/src__imports_classes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__list_of_partials__strict",
+  "spec": "tests/invert/inputs/src__list_of_partials.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__list_of_partials__nostrict",
+  "spec": "tests/invert/inputs/src__list_of_partials.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__metadata_ignored__strict",
+  "spec": "tests/invert/inputs/src__metadata_ignored.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__metadata_ignored__nostrict",
+  "spec": "tests/invert/inputs/src__metadata_ignored.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__multiple_classes__strict",
+  "spec": "tests/invert/inputs/src__multiple_classes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__multiple_classes__nostrict",
+  "spec": "tests/invert/inputs/src__multiple_classes.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__nested_and_ignored__strict",
+  "spec": "tests/invert/inputs/src__nested_and_ignored.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__nested_and_ignored__nostrict",
+  "spec": "tests/invert/inputs/src__nested_and_ignored.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__null_class_derivations__strict",
+  "spec": "tests/invert/inputs/src__null_class_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValidationError",
+   "message": "1 validation error for TransformationSpecification\nclass_derivations.0\n  Input should be a valid dictionary or instance of ClassDerivation [type=model_type, input_value=None, input_type=NoneType]\n    For further information visit https://errors.pydantic.dev/2.14/v/model_type"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_class_derivations__nostrict",
+  "spec": "tests/invert/inputs/src__null_class_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValidationError",
+   "message": "1 validation error for TransformationSpecification\nclass_derivations.0\n  Input should be a valid dictionary or instance of ClassDerivation [type=model_type, input_value=None, input_type=NoneType]\n    For further information visit https://errors.pydantic.dev/2.14/v/model_type"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_entries__strict",
+  "spec": "tests/invert/inputs/src__null_entries.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__null_entries__nostrict",
+  "spec": "tests/invert/inputs/src__null_entries.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__null_enum_derivations__strict",
+  "spec": "tests/invert/inputs/src__null_enum_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'values'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_enum_derivations__nostrict",
+  "spec": "tests/invert/inputs/src__null_enum_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'values'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_pvds__strict",
+  "spec": "tests/invert/inputs/src__null_pvds.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'values'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_pvds__nostrict",
+  "spec": "tests/invert/inputs/src__null_pvds.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'values'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_slot_derivations__strict",
+  "spec": "tests/invert/inputs/src__null_slot_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'items'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__null_slot_derivations__nostrict",
+  "spec": "tests/invert/inputs/src__null_slot_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'items'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__range_no_pf__strict",
+  "spec": "tests/invert/inputs/src__range_no_pf.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__range_no_pf__nostrict",
+  "spec": "tests/invert/inputs/src__range_no_pf.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__ranges_scalar_enum__strict",
+  "spec": "tests/invert/inputs/src__ranges_scalar_enum.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__ranges_scalar_enum__nostrict",
+  "spec": "tests/invert/inputs/src__ranges_scalar_enum.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__rename__strict",
+  "spec": "tests/invert/inputs/src__rename.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__rename__nostrict",
+  "spec": "tests/invert/inputs/src__rename.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__slot_ghost__strict",
+  "spec": "tests/invert/inputs/src__slot_ghost.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot nonexistent as an attribute of Person ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__slot_ghost__nostrict",
+  "spec": "tests/invert/inputs/src__slot_ghost.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot nonexistent as an attribute of Person ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__slot_ghost_no_range__strict",
+  "spec": "tests/invert/inputs/src__slot_ghost_no_range.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot nonexistent as an attribute of Person ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__slot_ghost_no_range__nostrict",
+  "spec": "tests/invert/inputs/src__slot_ghost_no_range.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot nonexistent as an attribute of Person ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__slot_name_spaces__strict",
+  "spec": "tests/invert/inputs/src__slot_name_spaces.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__slot_name_spaces__nostrict",
+  "spec": "tests/invert/inputs/src__slot_name_spaces.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__sources_deprecated__strict",
+  "spec": "tests/invert/inputs/src__sources_deprecated.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__sources_deprecated__nostrict",
+  "spec": "tests/invert/inputs/src__sources_deprecated.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__stringification__strict",
+  "spec": "tests/invert/inputs/src__stringification.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__stringification__nostrict",
+  "spec": "tests/invert/inputs/src__stringification.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__stringification_collision__strict",
+  "spec": "tests/invert/inputs/src__stringification_collision.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__stringification_collision__nostrict",
+  "spec": "tests/invert/inputs/src__stringification_collision.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__top_level_slot_derivations__strict",
+  "spec": "tests/invert/inputs/src__top_level_slot_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__top_level_slot_derivations__nostrict",
+  "spec": "tests/invert/inputs/src__top_level_slot_derivations.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__twin_identifiers__strict",
+  "spec": "tests/invert/inputs/src__twin_identifiers.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__twin_identifiers__nostrict",
+  "spec": "tests/invert/inputs/src__twin_identifiers.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__unicode_names__strict",
+  "spec": "tests/invert/inputs/src__unicode_names.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__unicode_names__nostrict",
+  "spec": "tests/invert/inputs/src__unicode_names.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__units__strict",
+  "spec": "tests/invert/inputs/src__units.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__units__nostrict",
+  "spec": "tests/invert/inputs/src__units.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__units_empty_strings__strict",
+  "spec": "tests/invert/inputs/src__units_empty_strings.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__units_empty_strings__nostrict",
+  "spec": "tests/invert/inputs/src__units_empty_strings.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__units_ghost_class__strict",
+  "spec": "tests/invert/inputs/src__units_ghost_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"Ghost\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__units_ghost_class__nostrict",
+  "spec": "tests/invert/inputs/src__units_ghost_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"Ghost\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__units_no_class__strict",
+  "spec": "tests/invert/inputs/src__units_no_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__units_no_class__nostrict",
+  "spec": "tests/invert/inputs/src__units_no_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__units_no_pf__strict",
+  "spec": "tests/invert/inputs/src__units_no_pf.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of Person ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__units_no_pf__nostrict",
+  "spec": "tests/invert/inputs/src__units_no_pf.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of Person ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "hand__src__units_slot_not_in_class__strict",
+  "spec": "tests/invert/inputs/src__units_slot_not_in_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__units_slot_not_in_class__nostrict",
+  "spec": "tests/invert/inputs/src__units_slot_not_in_class.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "hand__src__units_structured__strict",
+  "spec": "tests/invert/inputs/src__units_structured.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": true
+ },
+ {
+  "name": "hand__src__units_structured__nostrict",
+  "spec": "tests/invert/inputs/src__units_structured.spec.yaml",
+  "schema": "tests/invert/inputs/src.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_000__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_000.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_000.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_000__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_000.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_000.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_001__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_001.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_001.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_001__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_001.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_001.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_002__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_002.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_002.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_002__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_002.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_002.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_003__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_003.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_003.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_003__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_003.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_003.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_004__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_004.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_004.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_004__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_004.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_004.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_005__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_005.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_005.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_005__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_005.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_005.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_006__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_006.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_006.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_006__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_006.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_006.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_007__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_007.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_007.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_007__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_007.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_007.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_008__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_008.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_008.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_008__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_008.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_008.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_009__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_009.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_009.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_009__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_009.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_009.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_010__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_010.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_010.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_010__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_010.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_010.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_011__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_011.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_011.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_011__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_011.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_011.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_012__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_012.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_012.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_012__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_012.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_012.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_013__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_013.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_013.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_013__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_013.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_013.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_014__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_014.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_014.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_014__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_014.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_014.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'P': populated_from has multiple source values ['S', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_015__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_015.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_015.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_015__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_015.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_015.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_016__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_016.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_016.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_016__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_016.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_016.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_017__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_017.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_017.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_017__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_017.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_017.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_018__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_018.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_018.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_018__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_018.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_018.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_019__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_019.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_019.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_019__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_019.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_019.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_020__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_020.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_020.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_020__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_020.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_020.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_021__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_021.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_021.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_021__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_021.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_021.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_022__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_022.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_022.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_022__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_022.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_022.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_023__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_023.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_023.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_023__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_023.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_023.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_024__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_024.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_024.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'S': populated_from has multiple source values ['Q', 'P', 'S'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_024__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_024.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_024.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'S': populated_from has multiple source values ['Q', 'P', 'S'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_025__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_025.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_025.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'S': populated_from has multiple source values ['Q', 'P', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_025__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_025.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_025.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'S': populated_from has multiple source values ['Q', 'P', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_026__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_026.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_026.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_026__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_026.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_026.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_027__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_027.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_027.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_027__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_027.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_027.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_028__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_028.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_028.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_028__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_028.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_028.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_029__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_029.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_029.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_029__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_029.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_029.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_030__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_030.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_030.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_030__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_030.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_030.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_031__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_031.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_031.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_031__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_031.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_031.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_032__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_032.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_032.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_032__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_032.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_032.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_033__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_033.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_033.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_033__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_033.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_033.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_034__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_034.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_034.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_034__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_034.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_034.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_035__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_035.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_035.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_035__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_035.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_035.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_036__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_036.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_036.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_036__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_036.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_036.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_037__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_037.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_037.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_037__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_037.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_037.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_038__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_038.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_038.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_038__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_038.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_038.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_039__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_039.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_039.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_039__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_039.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_039.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_040__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_040.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_040.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: t1"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_040__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_040.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_040.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_041__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_041.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_041.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_041__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_041.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_041.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_042__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_042.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_042.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_042__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_042.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_042.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_043__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_043.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_043.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_043__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_043.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_043.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_044__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_044.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_044.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_044__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_044.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_044.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_045__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_045.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_045.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_045__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_045.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_045.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_046__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_046.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_046.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_046__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_046.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_046.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_047__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_047.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_047.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_047__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_047.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_047.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_048__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_048.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_048.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_048__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_048.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_048.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_049__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_049.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_049.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_049__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_049.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_049.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_050__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_050.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_050.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_050__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_050.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_050.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_051__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_051.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_051.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_051__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_051.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_051.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_052__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_052.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_052.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: a"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_052__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_052.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_052.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot ghost_slot as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_053__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_053.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_053.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert expression a + 1 in slot derivation: a"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_053__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_053.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_053.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot ghost_slot as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_054__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_054.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_054.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_054__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_054.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_054.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_055__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_055.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_055.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_055__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_055.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_055.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_056__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_056.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_056.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_056__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_056.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_056.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_057__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_057.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_057.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_057__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_057.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_057.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_058__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_058.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_058.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_058__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_058.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_058.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_059__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_059.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_059.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'Y': populated_from has multiple source values ['R', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_059__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_059.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_059.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'Y': populated_from has multiple source values ['R', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_060__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_060.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_060.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'Y': populated_from has multiple source values ['R', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_060__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_060.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_060.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'Y': populated_from has multiple source values ['R', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_061__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_061.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_061.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_061__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_061.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_061.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_062__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_062.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_062.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_062__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_062.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_062.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_063__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_063.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_063.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_063__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_063.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_063.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_064__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_064.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_064.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot k as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_064__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_064.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_064.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot k as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_065__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_065.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_065.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot k as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_065__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_065.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_065.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot k as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_066__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_066.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_066.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot k as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_066__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_066.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_066.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot k as an attribute of Alpha ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_067__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_067.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_067.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_067__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_067.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_067.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_068__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_068.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_068.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_068__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_068.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_068.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_069__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_069.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_069.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_069__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_069.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_069.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "AttributeError",
+   "message": "'NoneType' object has no attribute 'range'"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_070__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_070.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_070.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_070__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_070.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_070.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_071__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_071.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_071.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_071__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_071.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_071.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_072__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_072.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_072.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_072__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_072.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_072.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_073__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_073.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_073.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_073__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_073.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_073.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_074__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_074.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_074.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_074__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_074.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_074.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_075__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_075.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_075.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_075__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_075.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_075.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_076__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_076.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_076.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_076__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_076.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_076.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot  as an attribute of Beta ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_077__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_077.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_077.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_077__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_077.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_077.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_078__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_078.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_078.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'Y': populated_from has multiple source values ['R', 'P', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_078__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_078.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_078.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'Y': populated_from has multiple source values ['R', 'P', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_079__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_079.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_079.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_079__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_079.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_079.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_080__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_080.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_080.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_080__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_080.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_080.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_081__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_081.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_081.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_081__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_081.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_081.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_082__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_082.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_082.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_082__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_082.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_082.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_083__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_083.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_083.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_083__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_083.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_083.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_084__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_084.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_084.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_084__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_084.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_084.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_085__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_085.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_085.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_085__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_085.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_085.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_086__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_086.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_086.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_086__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_086.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_086.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_087__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_087.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_087.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_087__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_087.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_087.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'R'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_088__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_088.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_088.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_088__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_088.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_088.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "NonInvertibleSpecificationError",
+   "message": "Cannot invert PermissibleValueDerivation 'R': populated_from has multiple source values ['R', 'P'], which is not a one-to-one mapping."
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_089__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_089.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_089.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_089__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_089.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_089.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_090__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_090.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_090.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_090__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_090.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_090.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_091__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_091.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_091.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_091__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_091.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_091.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_092__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_092.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_092.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_092__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_092.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_092.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_093__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_093.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_093.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_093__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_093.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_093.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_094__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_094.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_094.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_094__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_094.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_094.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_095__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_095.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_095.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_095__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_095.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_095.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_096__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_096.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_096.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"GhostClass\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_096__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_096.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_096.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such class: \"GhostClass\""
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_097__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_097.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_097.schema.yaml",
+  "strict": true,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_097__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_097.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_097.schema.yaml",
+  "strict": false,
+  "error": {
+   "type": "ValueError",
+   "message": "No such slot None as an attribute of None ancestors or as a slot definition in the schema"
+  },
+  "exit": 1
+ },
+ {
+  "name": "fuzz__s20261028_098__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_098.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_098.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_098__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_098.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_098.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_099__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_099.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_099.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_099__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_099.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_099.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_100__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_100.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_100.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_100__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_100.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_100.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_101__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_101.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_101.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_101__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_101.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_101.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_102__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_102.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_102.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_102__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_102.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_102.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_103__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_103.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_103.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_103__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_103.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_103.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_104__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_104.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_104.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_104__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_104.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_104.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_105__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_105.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_105.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_105__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_105.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_105.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_106__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_106.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_106.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_106__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_106.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_106.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_107__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_107.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_107.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_107__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_107.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_107.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_108__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_108.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_108.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_108__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_108.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_108.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_109__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_109.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_109.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_109__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_109.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_109.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_110__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_110.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_110.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_110__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_110.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_110.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_111__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_111.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_111.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_111__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_111.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_111.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_112__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_112.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_112.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_112__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_112.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_112.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_113__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_113.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_113.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_113__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_113.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_113.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_114__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_114.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_114.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_114__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_114.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_114.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_115__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_115.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_115.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_115__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_115.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_115.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_116__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_116.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_116.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_116__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_116.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_116.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_117__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_117.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_117.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_117__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_117.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_117.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_118__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_118.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_118.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_118__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_118.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_118.schema.yaml",
+  "strict": false
+ },
+ {
+  "name": "fuzz__s20261028_119__strict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_119.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_119.schema.yaml",
+  "strict": true
+ },
+ {
+  "name": "fuzz__s20261028_119__nostrict",
+  "spec": "tests/invert/inputs/fuzz/s20261028_119.spec.yaml",
+  "schema": "tests/invert/inputs/fuzz/s20261028_119.schema.yaml",
+  "strict": false
+ }
+]

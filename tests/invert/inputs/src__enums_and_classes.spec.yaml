@@ -1,0 +1,10 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      st: {populated_from: status, range: Status}
+enum_derivations:
+  Status:
+    populated_from: Status
+    permissible_value_derivations:
+      A: {populated_from: A}

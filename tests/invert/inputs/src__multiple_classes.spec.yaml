@@ -1,0 +1,16 @@
+class_derivations:
+  - name: A
+    populated_from: Person
+    slot_derivations:
+      x: {populated_from: name}
+  - name: A
+    populated_from: Keyed
+    slot_derivations:
+      y: {populated_from: name}
+  - name: B
+    populated_from: Address
+    slot_derivations:
+      st: {populated_from: street}
+      zp: {populated_from: zip, range: integer}
+      ln: {populated_from: lines}
+      ad: {populated_from: addr_id}

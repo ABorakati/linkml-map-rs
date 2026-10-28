@@ -1,0 +1,15 @@
+class_derivations: []
+enum_derivations:
+  Mode:
+    populated_from: Mode
+    permissible_value_derivations:
+      S:
+        populated_from: Q
+      P:
+        populated_from:
+        - P
+      R:
+        populated_from:
+        - R
+        - R
+        expr: y

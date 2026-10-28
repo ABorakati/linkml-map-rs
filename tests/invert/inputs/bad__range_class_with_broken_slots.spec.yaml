@@ -1,0 +1,5 @@
+class_derivations:
+  A:
+    populated_from: RangesToOrphan
+    slot_derivations:
+      x: {populated_from: ranged, range: Orphan}

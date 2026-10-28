@@ -1,0 +1,35 @@
+id: https://example.org/fz
+name: fz
+slots:
+  c:
+    range: float
+    unit:
+      symbol: u1
+      iec61360code: u1
+      descriptive_name: u1
+  g:
+    range: float
+classes:
+  Alpha: {}
+  Beta:
+    slots:
+    - g
+    attributes:
+      att1:
+        range: float
+        identifier: true
+      k:
+        range: boolean
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

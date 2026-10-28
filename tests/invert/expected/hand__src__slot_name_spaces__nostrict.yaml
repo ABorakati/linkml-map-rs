@@ -1,0 +1,11 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    full_name:
+      name: full_name
+      populated_from: fn3
+    full name:
+      name: full name
+      populated_from: fn2
+      range: string

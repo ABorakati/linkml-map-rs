@@ -1,0 +1,22 @@
+class_derivations:
+- name: Beta
+  populated_from: Alpha
+- name: Target1
+  populated_from: Beta
+  slot_derivations:
+    c: null
+    a:
+      populated_from: x-y
+      unit_conversion:
+        target_unit: cm
+        source_unit: m
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+      stringification:
+        over_slots:
+        - d
+        - g
+      cast_collection_as: SingleValued
+enum_derivations:
+  Kind:
+    populated_from: Ghost

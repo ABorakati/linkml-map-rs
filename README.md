@@ -275,6 +275,13 @@ and a Hypothesis generator of schemas, specs and awkward data. Divergences are s
 differential_corpus` replays without Python; known gaps carry an `expected_divergence.md`. The `differential` CI job
 runs it on every PR (time-boxed) and weekly (longer). See [`tests/differential/README.md`](tests/differential/README.md).
 
+**`invert`.** `linkml-tr-rs invert [--strict|--no-strict] -T SPEC [-T ...] [-o FILE] SCHEMA` is upstream's
+`linkml-map invert`, byte for byte: [`tests/invert/`](tests/invert) holds upstream's answers (or its exception) for
+every shipped example, the compliance combos, hand-written specs covering each branch of `inverter.py`, and
+Hypothesis-generated pairs; `cargo test -p linkml-map-cli --test invert_upstream_parity` replays them. See
+[`docs/invert-parity.md`](docs/invert-parity.md). The inverter is not part of the Python shim (upstream's
+`linkml_map/__init__.py` does not export it either).
+
 ## Feature coverage
 
 **Implemented:** type coercion, list↔dict collections, the expression language
@@ -390,7 +397,7 @@ linkml-map-core         pure-Rust transform engine (sync, Send+Sync)
 ├── schema              SchemaProvider trait + projections
 ├── expr                LinkML expression lexer/parser/evaluator
 ├── engine              ObjectTransformer, ObjectIndex (FK), units table
-└── inference           TransformationSpecificationInverter
+└── inference           TransformationSpecificationInverter (`invert`), SchemaMapper (`derive-schema`)
 
 linkml-map-schemaview   SchemaProvider over the LinkML metamodel (SchemaView)
 linkml-map-io           async streaming readers/writers (JSONL/JSON/YAML/CSV)

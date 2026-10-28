@@ -1,0 +1,19 @@
+class_derivations:
+- name: Target1
+  populated_from: Alpha
+- name: Gamma
+  populated_from: Alpha
+  slot_derivations:
+    b:
+      populated_from: e
+      expr: ''
+      range: Kind
+      hide: false
+      value_mappings:
+        x:
+          key: x
+          value: y
+enum_derivations:
+  E3:
+    populated_from: Kind
+    expr: x

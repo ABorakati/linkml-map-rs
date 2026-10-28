@@ -1,0 +1,4 @@
+enum_derivations:
+  Ghost:
+    name: Ghost
+    populated_from: E3

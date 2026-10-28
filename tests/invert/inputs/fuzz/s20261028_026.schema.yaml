@@ -1,0 +1,34 @@
+id: https://example.org/fz
+name: fz
+default_range: integer
+slots:
+  d:
+    multivalued: true
+    identifier: true
+    unit:
+      ucum_code: cm
+  a:
+    multivalued: true
+    identifier: true
+    unit:
+      abbreviation: kg
+    is_a: d
+classes:
+  Alpha:
+    attributes:
+      att1:
+        unit:
+          symbol: kg
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

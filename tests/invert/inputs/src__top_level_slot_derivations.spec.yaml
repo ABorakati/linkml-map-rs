@@ -1,0 +1,7 @@
+slot_derivations:
+  x: {populated_from: name}
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      y: {populated_from: name}

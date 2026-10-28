@@ -1,0 +1,3 @@
+class_derivations:
+- name: Person
+  populated_from: Agent

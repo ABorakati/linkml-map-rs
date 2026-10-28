@@ -1,0 +1,10 @@
+class_derivations:
+- name: C
+  populated_from: D
+  slot_derivations:
+    s1:
+      name: s1
+      populated_from: s1_verbatim
+      stringification:
+        delimiter: ','
+        reversed: true

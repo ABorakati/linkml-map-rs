@@ -1,0 +1,30 @@
+class_derivations:
+- name: Beta
+  populated_from: Target2
+  slot_derivations:
+    att2:
+      name: att2
+      populated_from: t3
+      range: Mode
+      unit_conversion:
+        source_unit: kg
+        target_unit_slot: u
+- name: Alpha
+  populated_from: Alpha
+  slot_derivations:
+    bare_name:
+      name: bare_name
+      populated_from: c
+enum_derivations:
+  Ghost:
+    name: Ghost
+    populated_from: Mode
+    permissible_value_derivations:
+      P:
+        name: P
+        populated_from:
+        - W
+      R:
+        name: R
+        populated_from:
+        - Y

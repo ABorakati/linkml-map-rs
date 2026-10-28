@@ -1,0 +1,20 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    status:
+      name: status
+      populated_from: s
+      range: Status
+    colour:
+      name: colour
+      populated_from: c
+      range: Colour
+    age:
+      name: age
+      populated_from: m
+      range: float
+    name:
+      name: name
+      populated_from: n
+      range: string

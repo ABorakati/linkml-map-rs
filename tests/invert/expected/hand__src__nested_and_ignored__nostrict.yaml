@@ -1,0 +1,15 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    home:
+      name: home
+      populated_from: addr
+      range: Address
+      dictionary_key: addr_id
+    name:
+      name: name
+      populated_from: v
+    age:
+      name: age
+      populated_from: m

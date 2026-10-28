@@ -1,0 +1,13 @@
+enum_derivations:
+  Ghost:
+    name: Ghost
+    populated_from: E3
+    permissible_value_derivations:
+      R:
+        name: R
+        populated_from:
+        - Y
+      S:
+        name: S
+        populated_from:
+        - S

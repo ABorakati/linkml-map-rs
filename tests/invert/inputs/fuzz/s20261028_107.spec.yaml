@@ -1,0 +1,12 @@
+class_derivations: []
+enum_derivations:
+  E3:
+    populated_from: Kind
+    hide: true
+    permissible_value_derivations:
+      W:
+        populated_from:
+        - Q
+      P:
+        populated_from: []
+        expr: y

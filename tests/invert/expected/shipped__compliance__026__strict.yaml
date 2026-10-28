@@ -1,0 +1,11 @@
+class_derivations:
+- name: C
+  populated_from: C
+  slot_derivations:
+    s1:
+      name: s1
+      populated_from: s1
+      unit_conversion:
+        target_unit: ml
+        target_unit_scheme: ucum_code
+        source_unit: m

@@ -1,0 +1,13 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    tags:
+      name: tags
+      populated_from: s2
+      stringification:
+        delimiter: ','
+        reversed: false
+    name:
+      name: name
+      populated_from: s4

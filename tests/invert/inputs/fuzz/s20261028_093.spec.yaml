@@ -1,0 +1,63 @@
+class_derivations:
+- name: Target1
+  slot_derivations:
+    t3:
+      expr: 'k
+
+        '
+      unit_conversion:
+        source_unit_slot: u
+        source_magnitude_slot: m
+        source_unit: m
+        source_unit_scheme: symbol
+        none_if_non_numeric: false
+      stringification:
+        delimiter: ','
+        reversed: true
+        syntax: JSON
+    t1:
+      populated_from: ghost_slot
+      expr: d
+      range: Alpha
+      unit_conversion:
+        source_magnitude_slot: ''
+        target_unit_slot: tu
+        target_magnitude_slot: tm
+        source_unit: m
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+        none_if_non_numeric: true
+      stringification:
+        over_slots:
+        - a
+        - a
+      cast_collection_as: MultiValuedDict
+- name: Gamma
+  populated_from: GhostClass
+  slot_derivations:
+    a:
+      expr: 'k
+
+        '
+      unit_conversion:
+        source_unit_slot: u
+        source_magnitude_slot: m
+        source_unit: m
+        source_unit_scheme: symbol
+        none_if_non_numeric: false
+      stringification:
+        delimiter: ','
+        reversed: true
+        syntax: JSON
+enum_derivations:
+  Kind:
+    populated_from: Mode
+    hide: true
+    permissible_value_derivations:
+      X: null
+      R:
+        populated_from: R
+      W:
+        populated_from:
+        - S
+        - P

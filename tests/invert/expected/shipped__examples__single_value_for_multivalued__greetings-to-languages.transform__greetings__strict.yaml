@@ -1,0 +1,44 @@
+class_derivations:
+- name: my_greetings
+  populated_from: my_languages
+  slot_derivations:
+    greeting:
+      name: greeting
+      populated_from: language
+      cast_collection_as: MultiValuedList
+- name: Container
+  populated_from: Container
+  slot_derivations:
+    my_greetings:
+      name: my_greetings
+      populated_from: my_languages
+      cast_collection_as: MultiValuedList
+enum_derivations:
+  greetings:
+    name: greetings
+    populated_from: languages
+    permissible_value_derivations:
+      hello:
+        name: hello
+        populated_from:
+        - English
+      bonjour:
+        name: bonjour
+        populated_from:
+        - French
+      namaste:
+        name: namaste
+        populated_from:
+        - Hindi
+      ciao:
+        name: ciao
+        populated_from:
+        - Italian
+      konnichiwa:
+        name: konnichiwa
+        populated_from:
+        - Japanese
+      hola:
+        name: hola
+        populated_from:
+        - Spanish

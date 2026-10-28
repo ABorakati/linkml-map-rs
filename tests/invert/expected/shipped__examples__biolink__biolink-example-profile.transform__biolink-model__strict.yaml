@@ -1,0 +1,37 @@
+class_derivations:
+- name: named thing
+  populated_from: NamedThing
+  slot_derivations:
+    id:
+      name: id
+      populated_from: id
+    name:
+      name: name
+      populated_from: name
+    category:
+      name: category
+      populated_from: category
+- name: gene
+  populated_from: Gene
+  slot_derivations:
+    symbol:
+      name: symbol
+      populated_from: symbol
+- name: disease
+  populated_from: Disease
+- name: phenotypic feature
+  populated_from: PhenotypicFeature
+- name: association
+  populated_from: Association
+  slot_derivations:
+    subject:
+      name: subject
+      populated_from: subject
+    predicate:
+      name: predicate
+      populated_from: predicate
+    object:
+      name: object
+      populated_from: object
+- name: gene to phenotypic feature association
+  populated_from: GeneToPhenotypicFeatureAssociation

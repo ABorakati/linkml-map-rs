@@ -1,0 +1,11 @@
+id: https://example.org/inv/nodef
+name: nodef
+slots:
+  label: {}
+  n: {range: integer}
+  weight:
+    range: float
+    unit: {ucum_code: kg}
+classes:
+  Thing:
+    slots: [label, n, weight]

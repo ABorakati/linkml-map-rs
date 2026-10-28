@@ -1,0 +1,16 @@
+class_derivations:
+- name: Person
+  populated_from: Ägent
+  slot_derivations:
+    name:
+      name: name
+      populated_from: näme
+    age:
+      name: age
+      populated_from: with space
+    id:
+      name: id
+      populated_from: 'yes'
+    tags:
+      name: tags
+      populated_from: '123'

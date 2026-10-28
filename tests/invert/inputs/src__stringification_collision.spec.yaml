@@ -1,0 +1,8 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      s1: {populated_from: tags, stringification: {delimiter: "|"}}
+      s2: {populated_from: tags, stringification: {delimiter: ",", reversed: true}}
+      s3: {populated_from: name}
+      s4: {populated_from: name}

@@ -11,7 +11,7 @@ use common::*;
 use linkml_map_core::datamodel::{TransformationSpecification, normalise_spec_json};
 use linkml_map_core::engine::content_id::ContentIds;
 use linkml_map_core::engine::{CompiledExprs, ObjectTransformer};
-use linkml_map_core::inference::TransformationSpecificationInverter;
+use linkml_map_core::inference::{SchemaView, TransformationSpecificationInverter};
 use linkml_map_core::normalize::synthesize_implicit_joins;
 use linkml_map_core::schema::SchemaProvider;
 use linkml_map_core::validate::validate_spec_semantics;
@@ -37,8 +37,13 @@ fn exercise_setup(spec: &TransformationSpecification) {
         let _ = validate_spec_semantics(&joined, Some(sv), Some(sv), strict);
         let _ = validate_spec_semantics(&joined, Some(sv), None, strict);
     }
-    let _ = TransformationSpecificationInverter::new(sv).invert(spec);
-    let _ = TransformationSpecificationInverter::non_strict(sv).invert(spec);
+    let inverter_sv = SchemaView::from_yaml_str(
+        "id: https://example.org/tiny\nname: tiny\nclasses:\n  Person:\n    attributes:\n      name: {}\n",
+        None,
+    )
+    .unwrap();
+    let _ = TransformationSpecificationInverter::new(&inverter_sv).invert(spec);
+    let _ = TransformationSpecificationInverter::non_strict(&inverter_sv).invert(spec);
 }
 
 proptest! {

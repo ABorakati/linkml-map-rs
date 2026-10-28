@@ -1,0 +1,4 @@
+enum_derivations:
+  Status:
+    name: Status
+    populated_from: Condition3

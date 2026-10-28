@@ -1,0 +1,56 @@
+id: https://example.org/fz
+name: fz
+default_range: string
+slots:
+  x-y:
+    range: Mode
+    unit:
+      iec61360code: u1
+  b:
+    range: Alpha
+    multivalued: true
+    inlined: true
+    inlined_as_list: false
+  a:
+    range: integer
+    multivalued: true
+    unit:
+      symbol: ''
+    is_a: b
+  g:
+    range: Mode
+    identifier: true
+    unit:
+      descriptive_name: u1
+      iec61360code: '[lb_av]'
+      symbol: cm
+classes:
+  Alpha:
+    slots:
+    - a
+    slot_usage:
+      a:
+        multivalued: false
+        inlined: false
+        identifier: false
+        unit:
+          symbol: kg
+    attributes:
+      att2: {}
+      att1:
+        range: boolean
+        multivalued: true
+        key: true
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

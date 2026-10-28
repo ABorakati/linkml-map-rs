@@ -1,0 +1,9 @@
+class_derivations:
+- name: R
+  populated_from: R
+- name: Container
+  populated_from: Container
+  slot_derivations:
+    r_list:
+      name: r_list
+      populated_from: r_list

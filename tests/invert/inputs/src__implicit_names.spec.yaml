@@ -1,0 +1,6 @@
+class_derivations:
+  Person:
+    slot_derivations:
+      name:
+      age:
+      id:

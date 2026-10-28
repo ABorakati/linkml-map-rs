@@ -1,0 +1,28 @@
+class_derivations:
+- name: Alpha
+  populated_from: Gamma
+  slot_derivations:
+    t3:
+      populated_from: k
+      expr: ''
+      unit_conversion:
+        target_unit: g
+        source_unit_slot: u
+        source_magnitude_slot: m
+        target_unit_slot: tu
+        source_unit: m
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+        none_if_non_numeric: false
+      stringification:
+        reversed: false
+    c: null
+enum_derivations:
+  E3:
+    populated_from: Ghost
+    expr: x
+    permissible_value_derivations:
+      Y:
+        populated_from:
+        - R
+        - P

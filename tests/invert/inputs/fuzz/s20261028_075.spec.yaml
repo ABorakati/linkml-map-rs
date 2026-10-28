@@ -1,0 +1,39 @@
+class_derivations:
+- name: Beta
+  populated_from: Beta
+  slot_derivations:
+    b:
+      populated_from: ''
+      unit_conversion:
+        target_unit: g
+        target_unit_slot: tu
+        target_magnitude_slot: tm
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+        none_if_non_numeric: false
+    t2:
+      populated_from: d
+      expr: bare_name
+      unit_conversion:
+        target_unit: cm
+        target_unit_scheme: ucum_code
+      hide: false
+      class_derivations:
+      - name: Nested
+        populated_from: Gamma
+        slot_derivations:
+          n:
+            populated_from: att1
+- name: Target1
+  populated_from: Beta
+enum_derivations:
+  Kind:
+    populated_from: Kind
+    expr: x
+    hide: true
+    permissible_value_derivations:
+      R:
+        populated_from:
+        - Q
+        - R
+        expr: y

@@ -1,0 +1,52 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    weight:
+      name: weight
+      populated_from: kg
+      unit_conversion:
+        target_unit: kg
+        target_unit_scheme: ucum_code
+        source_unit: g
+    mass_sym:
+      name: mass_sym
+      populated_from: lb
+      unit_conversion:
+        target_unit: '[lb_av]'
+        target_unit_scheme: ucum_code
+        source_unit: g
+    mass_iec:
+      name: mass_iec
+      populated_from: iec
+      unit_conversion:
+        target_unit: kgm
+        target_unit_scheme: symbol
+        source_unit: g
+    mass_iec_only:
+      name: mass_iec_only
+      populated_from: iec_only
+      unit_conversion:
+        source_unit: g
+    mass_abbr:
+      name: mass_abbr
+      populated_from: abbr
+      unit_conversion:
+        source_unit: g
+    mass_none:
+      name: mass_none
+      populated_from: none
+      unit_conversion:
+        source_unit: g
+    height:
+      name: height
+      populated_from: inh
+      unit_conversion:
+        source_unit: cm
+    weight_attr:
+      name: weight_attr
+      populated_from: attr
+      unit_conversion:
+        target_unit: stone
+        target_unit_scheme: symbol
+        source_unit: g

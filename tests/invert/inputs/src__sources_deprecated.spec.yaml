@@ -1,0 +1,11 @@
+class_derivations:
+  Agent:
+    sources: [Person]
+    slot_derivations:
+      x:
+        sources: [name]
+enum_derivations:
+  E:
+    sources: [Status]
+    permissible_value_derivations:
+      Q: {sources: [A]}

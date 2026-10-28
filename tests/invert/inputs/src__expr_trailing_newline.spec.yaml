@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      a: {expr: "name\n"}
+      b: {expr: "name\n\n"}
+      c: {expr: "na me"}

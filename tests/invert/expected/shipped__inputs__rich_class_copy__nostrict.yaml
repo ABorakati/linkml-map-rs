@@ -1,0 +1,12 @@
+class_derivations:
+- name: Person
+  populated_from: Person
+- name: Employee
+  populated_from: Employee
+  slot_derivations:
+    salary:
+      name: salary
+      populated_from: pay
+      range: integer
+- name: Container
+  populated_from: Person2
