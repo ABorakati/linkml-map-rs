@@ -1,0 +1,5 @@
+class_derivations: []
+enum_derivations:
+  Kind:
+    populated_from: Kind
+    expr: x

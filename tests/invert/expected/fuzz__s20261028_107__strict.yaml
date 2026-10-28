@@ -1,0 +1,13 @@
+enum_derivations:
+  Kind:
+    name: Kind
+    populated_from: E3
+    permissible_value_derivations:
+      Q:
+        name: Q
+        populated_from:
+        - W
+      P:
+        name: P
+        populated_from:
+        - P

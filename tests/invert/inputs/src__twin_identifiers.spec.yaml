@@ -1,0 +1,5 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      t: {populated_from: multi_ident, range: Twin}

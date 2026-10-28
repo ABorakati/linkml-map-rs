@@ -1,0 +1,9 @@
+enum_derivations:
+  NoSuch:
+    name: NoSuch
+    populated_from: Ghost
+    permissible_value_derivations:
+      B:
+        name: B
+        populated_from:
+        - A

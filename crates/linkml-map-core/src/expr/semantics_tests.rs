@@ -233,3 +233,45 @@ fn upstream_value_semantics_repr() {
         assert_eq!(got, Ok(Value::Str((*want).to_string())), "{expr}");
     }
 }
+
+/// `Bindings.__getitem__` answers null for a declared slot the row lacks: only while
+/// the declared set is in force, and never for a name outside it.
+#[test]
+fn declared_slots_resolve_to_null_only_within_their_scope() {
+    use super::eval::{DeclaredSlots, eval_expr_with_mapping_strict, with_declared_slots};
+    use std::sync::Arc;
+
+    let declared: Arc<DeclaredSlots> =
+        Arc::new(["age", "max"].map(str::to_owned).into_iter().collect());
+    let vars = bindings("{}");
+    let in_scope = |expr: &str, strict: bool| {
+        with_declared_slots(Some(&declared), || {
+            if strict {
+                eval_expr_with_mapping_strict(expr, &vars)
+            } else {
+                eval_expr_with_mapping(expr, &vars)
+            }
+        })
+    };
+
+    assert_eq!(in_scope("age", true).unwrap(), Value::Null);
+    assert_eq!(in_scope("{age}.x", true).unwrap(), Value::Null);
+    // Names win over functions: a declared slot called `max` is null, not the function.
+    assert_eq!(in_scope("max", true).unwrap(), Value::Null);
+    // An undeclared name is still an error when strict, null when lax.
+    assert!(in_scope("nosuch", true).is_err());
+    assert_eq!(in_scope("nosuch", false).unwrap(), Value::Null);
+    // Out of scope nothing is declared.
+    assert!(eval_expr_with_mapping_strict("age", &vars).is_err());
+    // Scopes nest and restore.
+    with_declared_slots(Some(&declared), || {
+        with_declared_slots(None, || {
+            assert!(eval_expr_with_mapping_strict("age", &vars).is_err());
+        });
+        assert_eq!(
+            eval_expr_with_mapping_strict("age", &vars).unwrap(),
+            Value::Null
+        );
+    });
+    assert!(eval_expr_with_mapping_strict("age", &vars).is_err());
+}

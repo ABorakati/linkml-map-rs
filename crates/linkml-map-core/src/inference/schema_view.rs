@@ -210,7 +210,7 @@ impl SchemaView {
     }
 
     /// `_get_dict(element_name, imports=True)`: the closure's dicts merged in order.
-    fn get_dict(&self, element_name: &str) -> MetamodelResult<IndexMap<String, Node>> {
+    pub(super) fn get_dict(&self, element_name: &str) -> MetamodelResult<IndexMap<String, Node>> {
         let closure = self.imports_closure()?;
         let mut d: IndexMap<String, Node> = IndexMap::new();
         for sn in closure {

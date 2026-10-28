@@ -1,0 +1,11 @@
+class_derivations:
+- name: Thing
+  populated_from: Other
+  slot_derivations:
+    label:
+      name: label
+      populated_from: l
+    count:
+      name: count
+      populated_from: c
+      range: integer

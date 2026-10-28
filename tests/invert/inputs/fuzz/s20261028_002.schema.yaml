@@ -1,0 +1,71 @@
+id: https://example.org/fz
+name: fz
+default_range: string
+slots:
+  x-y:
+    range: Kind
+    key: true
+  b:
+    range: Alpha
+    inlined_as_list: false
+    unit:
+      ucum_code: '[lb_av]'
+      symbol: u1
+      iec61360code: u1
+    is_a: x-y
+  c:
+    range: string
+  g:
+    range: integer
+    multivalued: true
+    identifier: true
+    unit:
+      abbreviation: u1
+      ucum_code: kg
+      symbol: s
+  f:
+    range: date
+  a:
+    range: boolean
+    unit:
+      ucum_code: '[lb_av]'
+classes:
+  Alpha:
+    slots:
+    - b
+    - c
+    - x-y
+    - g
+    - a
+    - f
+  Beta:
+    mixins:
+    - Alpha
+    slots:
+    - b
+    - g
+    - a
+    - c
+    - f
+    - x-y
+    slot_usage:
+      x-y:
+        range: Alpha
+        inlined_as_list: true
+    attributes:
+      att1:
+        range: float
+        multivalued: true
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

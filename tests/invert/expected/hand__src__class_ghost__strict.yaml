@@ -1,0 +1,7 @@
+class_derivations:
+- name: Ghost
+  populated_from: Agent
+  slot_derivations:
+    name:
+      name: name
+      populated_from: label

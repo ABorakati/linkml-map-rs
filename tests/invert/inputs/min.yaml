@@ -1,0 +1,7 @@
+id: https://example.org/inv/min
+name: min
+classes:
+  Thing:
+    attributes:
+      label: {}
+      count: {range: integer}

@@ -1,0 +1,51 @@
+class_derivations:
+- name: Target2
+  populated_from: Beta
+  slot_derivations:
+    t3:
+      populated_from: x_y
+      expr: att2
+      range: Alpha
+      unit_conversion:
+        target_unit: kg
+        source_unit_slot: u
+        source_magnitude_slot: ''
+        target_magnitude_slot: tm
+        source_unit_scheme: symbol
+        none_if_non_numeric: true
+      cast_collection_as: MultiValuedList
+      class_derivations:
+      - name: Nested
+        populated_from: Gamma
+        slot_derivations:
+          n:
+            populated_from: k
+    t1:
+      populated_from: k
+      expr: a + 1
+      range: boolean
+      hide: false
+- name: Alpha
+  populated_from: ''
+  slot_derivations:
+    c:
+      populated_from: x_y
+      expr: bare_name
+      class_derivations:
+      - name: Nested
+        populated_from: Gamma
+        slot_derivations:
+          n:
+            populated_from: b
+enum_derivations:
+  Mode:
+    populated_from: Ghost
+    expr: x
+    permissible_value_derivations:
+      W:
+        populated_from:
+        - P
+      Y:
+        populated_from:
+        - R
+        expr: y

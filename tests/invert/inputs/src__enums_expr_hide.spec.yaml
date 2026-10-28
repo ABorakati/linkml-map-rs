@@ -1,0 +1,8 @@
+enum_derivations:
+  Condition:
+    populated_from: Status
+    expr: "source"
+    hide: true
+    value_mappings: {a: {key: a, value: b}}
+    permissible_value_derivations:
+      X: {populated_from: A, expr: "x", hide: true}

@@ -207,7 +207,7 @@ proptest! {
         let effectively_empty = |t: &str| {
             t.trim_start_matches(' ').is_empty() && !t.contains(['\t', '"', '\n'])
         };
-        if cells.iter().all(|v| effectively_empty(&tabular_cell(v))) {
+        if cells.iter().all(|v| effectively_empty(&tabular_cell(v).unwrap())) {
             prop_assert!(loaded.is_empty(), "an all-empty row is dropped; text:\n{}", text);
             return Ok(());
         }
@@ -216,7 +216,7 @@ proptest! {
         };
         for (i, v) in cells.iter().enumerate() {
             let got = row.get(&format!("c{i}"));
-            let want_text = tabular_cell(v);
+            let want_text = tabular_cell(v).unwrap();
             if effectively_empty(&want_text) {
                 prop_assert!(got.is_none(), "empty cell c{i} should be absent, got {got:?}");
                 continue;

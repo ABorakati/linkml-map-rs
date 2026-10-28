@@ -1,0 +1,48 @@
+id: https://example.org/fz
+name: fz
+slots:
+  x-y: {}
+  d:
+    range: Alpha
+    inlined: false
+    is_a: x-y
+  a:
+    range: float
+    multivalued: true
+    identifier: true
+  f:
+    range: date
+    multivalued: true
+classes:
+  Alpha:
+    slots:
+    - a
+    - d
+    - x-y
+    - f
+    slot_usage:
+      x-y:
+        multivalued: false
+        inlined_as_list: true
+        identifier: false
+    attributes:
+      att1:
+        range: float
+        identifier: true
+        unit:
+          iec61360code: '[lb_av]'
+          ucum_code: cm
+  Beta: {}
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

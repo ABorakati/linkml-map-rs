@@ -1,0 +1,18 @@
+class_derivations:
+- name: Thing
+  populated_from: Other
+  slot_derivations:
+    label:
+      name: label
+      populated_from: l
+    n:
+      name: n
+      populated_from: n
+      range: integer
+    weight:
+      name: weight
+      populated_from: w
+      unit_conversion:
+        target_unit: kg
+        target_unit_scheme: ucum_code
+        source_unit: g

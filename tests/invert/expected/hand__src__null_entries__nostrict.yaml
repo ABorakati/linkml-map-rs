@@ -1,0 +1,26 @@
+class_derivations:
+- name: Person
+  populated_from: A
+  slot_derivations:
+    x:
+      name: x
+      populated_from: x
+    name:
+      name: name
+      populated_from: y
+enum_derivations:
+  E:
+    name: E
+    populated_from: E
+  Status:
+    name: Status
+    populated_from: F
+    permissible_value_derivations:
+      X:
+        name: X
+        populated_from:
+        - X
+      A:
+        name: A
+        populated_from:
+        - Y

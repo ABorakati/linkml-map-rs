@@ -1,0 +1,31 @@
+id: https://example.org/inv/bad
+name: bad
+default_range: string
+slots:
+  ok: {}
+  child:
+    is_a: ghost_parent
+  mixed:
+    mixins: [ghost_mixin]
+  cyc_a:
+    is_a: cyc_b
+  cyc_b:
+    is_a: cyc_a
+  ranged: {range: Orphan}
+classes:
+  Fine:
+    slots: [ok]
+  ChildOfGhost:
+    is_a: GhostClass
+    slots: [ok]
+  MixesGhost:
+    mixins: [GhostMixin]
+    slots: [ok]
+  UsesUndefined:
+    slots: [ok, undefined_slot]
+  UsesBadParents:
+    slots: [child, mixed, cyc_a]
+  Orphan:
+    slots: [undefined_slot]
+  RangesToOrphan:
+    slots: [ranged]

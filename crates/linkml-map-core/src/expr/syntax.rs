@@ -118,16 +118,6 @@ fn call_value(
             let callable = is_callable(&receiver, attr)?;
             let argv = eval_call_args(args, vars)?;
             let kwargs = eval_call_keywords(keywords, vars)?;
-            // PARITY: `Value` has no tuple, so a tuple of affixes is a list; one
-            // that was not written as a tuple is the `TypeError` Python raises.
-            if matches!(attr.as_str(), "startswith" | "endswith")
-                && matches!(argv.first(), Some(Value::List(_)))
-                && !args.first().is_some_and(is_tuple_node)
-            {
-                return Err(ExprError::Eval(format!(
-                    "{attr} first arg must be str or a tuple of str, not list"
-                )));
-            }
             match callable {
                 Ok(()) => pymethods::call_method(&receiver, attr, argv, kwargs),
                 Err(type_name) => Err(ExprError::Eval(format!(
@@ -150,7 +140,9 @@ fn is_callable(receiver: &Value, attr: &str) -> ExprResult<Result<(), &'static s
         | Value::BigInt(_)
         | Value::Complex(_)
         | Value::Float(_)
-        | Value::Bool(_) => {
+        | Value::Bool(_)
+        | Value::Tuple(_)
+        | Value::Set(_) => {
             if attr.starts_with('_') {
                 // The private-name check of `_distributed_getattr`.
                 distributed_getattr(receiver, attr)?;
@@ -167,15 +159,6 @@ fn is_callable(receiver: &Value, attr: &str) -> ExprResult<Result<(), &'static s
             let found = distributed_getattr(other, attr)?;
             Ok(Err(python_type(&found)))
         }
-    }
-}
-
-/// Whether `node` builds a tuple: a tuple display or a `tuple(..)` call.
-fn is_tuple_node(node: &Ast) -> bool {
-    match node {
-        Ast::Tuple(_) => true,
-        Ast::Call { func, .. } => func == "tuple",
-        _ => false,
     }
 }
 
@@ -202,14 +185,17 @@ pub(super) fn subscript_slice(
     };
     let (lower, upper, step) = (bound(lower)?, bound(upper)?, bound(step)?);
     match obj {
-        Value::List(_) | Value::Str(_) => {}
+        Value::List(_) | Value::Tuple(_) | Value::Str(_) => {}
         // PARITY: a dict keyed by a slice is a `KeyError` (slices are hashable
         // since Python 3.12); no map here has such a key.
         // An unhashable bound makes the slice itself unhashable: a `TypeError`.
-        Value::Map(_) => {
-            let unhashable = [&lower, &upper, &step]
-                .into_iter()
-                .any(|b| matches!(b, Some(Value::List(_) | Value::Map(_))));
+        Value::Map(_) | Value::Dict(_) => {
+            let unhashable = [&lower, &upper, &step].into_iter().any(|b| {
+                matches!(
+                    b,
+                    Some(Value::List(_) | Value::Map(_) | Value::Dict(_) | Value::Set(_))
+                )
+            });
             return Err(if unhashable {
                 ExprError::Eval("unhashable type in slice".into())
             } else {
@@ -248,6 +234,10 @@ pub(super) fn subscript_slice(
         Value::List(items) => {
             let picked = slice_positions(items.len(), lower, upper, step);
             Ok(Value::List(picked.map(|i| items[i].clone()).collect()))
+        }
+        Value::Tuple(items) => {
+            let picked = slice_positions(items.len(), lower, upper, step);
+            Ok(Value::Tuple(picked.map(|i| items[i].clone()).collect()))
         }
         Value::Str(s) if s.is_ascii() => {
             let bytes = s.as_bytes();
@@ -328,16 +318,16 @@ fn is_identical(left_node: &Ast, left: &Value, right_node: &Ast, right: &Value) 
         (Value::Int(a), Value::Int(b)) => a == b && ((-5..=256).contains(a) || same_reference()),
         (Value::Str(a), Value::Str(b)) => a == b && (is_cached_str(a) || same_reference()),
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits() && same_reference(),
-        (Value::List(a), Value::List(b)) => {
-            let empty_tuples = matches!(
-                (left_node, right_node),
-                (Ast::Tuple(x), Ast::Tuple(y)) if x.is_empty() && y.is_empty()
-            );
-            (a.is_empty() && b.is_empty() && empty_tuples) || (left == right && same_reference())
+        (Value::List(_), Value::List(_)) => left == right && same_reference(),
+        // The empty tuple is a singleton.
+        (Value::Tuple(a), Value::Tuple(b)) => {
+            (a.is_empty() && b.is_empty()) || (left == right && same_reference())
         }
         (Value::Map(_), Value::Map(_))
         | (Value::BigInt(_), Value::BigInt(_))
         | (Value::Complex(_), Value::Complex(_))
+        | (Value::Set(_), Value::Set(_))
+        | (Value::Dict(_), Value::Dict(_))
         | (Value::Decimal(_), Value::Decimal(_))
         | (Value::Temporal(_), Value::Temporal(_)) => left == right && same_reference(),
         _ => false,

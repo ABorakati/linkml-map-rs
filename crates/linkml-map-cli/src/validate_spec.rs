@@ -534,7 +534,7 @@ fn load_spec_file(path: &Path) -> anyhow::Result<Vec<Map<String, Json>>> {
 }
 
 /// `spec_merge.load_and_merge_specs`.
-fn load_and_merge_specs(paths: &[&str]) -> Result<Map<String, Json>, String> {
+pub(crate) fn load_and_merge_specs(paths: &[&str]) -> Result<Map<String, Json>, String> {
     let files = resolve_spec_paths(paths)?;
     if files.is_empty() {
         return Err("No YAML files found in the provided paths".to_owned());

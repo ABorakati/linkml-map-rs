@@ -1,0 +1,9 @@
+enum_derivations:
+  Status:
+    name: Status
+    populated_from: Ghost
+    permissible_value_derivations:
+      A:
+        name: A
+        populated_from:
+        - A

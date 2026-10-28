@@ -1,0 +1,8 @@
+class_derivations: []
+enum_derivations:
+  Mode:
+    populated_from: Mode
+    expr: x
+    hide: true
+  Kind:
+    populated_from: Kind

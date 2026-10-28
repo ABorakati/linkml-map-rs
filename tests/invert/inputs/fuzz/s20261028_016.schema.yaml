@@ -1,0 +1,59 @@
+id: https://example.org/fz
+name: fz
+default_range: string
+slots:
+  b:
+    range: Alpha
+    multivalued: true
+    inlined: true
+    inlined_as_list: true
+    unit:
+      iec61360code: ''
+  d:
+    range: float
+    unit:
+      abbreviation: s
+    is_a: b
+  f:
+    range: Beta
+    identifier: true
+classes:
+  Alpha:
+    slots:
+    - d
+    - b
+  Beta:
+    is_a: Alpha
+    slots:
+    - d
+    - f
+    - b
+    slot_usage:
+      f:
+        range: integer
+        multivalued: false
+        inlined_as_list: false
+        identifier: false
+      d:
+        range: integer
+        inlined: false
+        inlined_as_list: true
+    attributes:
+      att1:
+        identifier: true
+      k:
+        unit:
+          abbreviation: u1
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

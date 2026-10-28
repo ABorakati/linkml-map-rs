@@ -1,0 +1,86 @@
+id: https://example.org/fz
+name: fz
+default_range: string
+slots:
+  full name:
+    range: Alpha
+  e:
+    range: float
+    is_a: full name
+  g:
+    range: boolean
+    multivalued: true
+    is_a: e
+  x-y:
+    multivalued: true
+    unit:
+      descriptive_name: m
+      ucum_code: '[lb_av]'
+      symbol: u1
+  b:
+    range: Alpha
+    multivalued: true
+    key: true
+  d:
+    range: Alpha
+    inlined: true
+    is_a: x-y
+classes:
+  Alpha:
+    slots:
+    - d
+    - g
+    - full name
+    - x-y
+    - b
+    - e
+    attributes:
+      att2:
+        range: Alpha
+        key: true
+        unit:
+          ucum_code: ''
+          iec61360code: m
+          descriptive_name: u1
+  Beta:
+    is_a: Alpha
+    slots:
+    - d
+    - g
+    - full name
+    - x-y
+    - b
+    - e
+    slot_usage:
+      d:
+        range: string
+        multivalued: true
+        unit:
+          abbreviation: '[lb_av]'
+          ucum_code: '[lb_av]'
+          symbol: '[lb_av]'
+    attributes:
+      k:
+        range: Alpha
+        multivalued: true
+        unit:
+          iec61360code: kg
+      att2:
+        multivalued: true
+        unit:
+          ucum_code: s
+          iec61360code: kg
+          descriptive_name: m
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

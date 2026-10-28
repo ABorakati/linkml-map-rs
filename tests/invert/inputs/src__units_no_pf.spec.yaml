@@ -1,0 +1,5 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      kg: {unit_conversion: {target_unit: g}}

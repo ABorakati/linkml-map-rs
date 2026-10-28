@@ -1,0 +1,7 @@
+enum_derivations:
+  Condition:
+    populated_from: Status
+    permissible_value_derivations:
+      X: {populated_from: [A]}
+      Y: {populated_from: []}
+      Z: {populated_from: B}

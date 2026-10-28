@@ -121,6 +121,8 @@ fn table(v: &Py) -> &'static [&'static str] {
         Py::Complex(..) => COMPLEX_METHODS,
         Py::Range(..) => RANGE_METHODS,
         Py::Exc(_) => EXC_METHODS,
+        Py::Type("dict") => &["fromkeys"],
+        Py::Type("str") => &["maketrans"],
         _ => &[],
     }
 }
@@ -285,8 +287,107 @@ pub(crate) fn call_method(
             "with_traceback" => Ok(Py::Exc(e.clone())),
             _ => Ok(Py::None),
         },
+        Py::Type("dict") => {
+            // `dict.fromkeys(iterable, value=None)`.
+            nargs(name, &args, 1, 2)?;
+            let mut out = PyDict::new();
+            for k in to_vec(&args[0])? {
+                let h = hkey(&k)?;
+                dict_set(&mut out, h, k, args.get(1).cloned().unwrap_or(Py::None));
+            }
+            Ok(Py::Dict(rf(out)))
+        }
+        Py::Type("str") => maketrans(args),
         _ => Err(exc("AttributeError", format!("no method {name}"))),
     }
+}
+
+/// `str.maketrans(x[, y[, z]])`.
+fn maketrans(args: Vec<Py>) -> PyRes<Py> {
+    let ord = |c: char| Py::Int(i64::from(u32::from(c)));
+    let mut out = PyDict::new();
+    let mut put = |k: Py, v: Py| -> PyRes<()> {
+        let h = hkey(&k)?;
+        dict_set(&mut out, h, k, v);
+        Ok(())
+    };
+    match args.as_slice() {
+        [Py::Dict(d)] => {
+            let pairs: Vec<(Py, Py)> = d.borrow().values().cloned().collect();
+            for (k, v) in pairs {
+                let key = match &k {
+                    Py::Str(s) => {
+                        let mut chars = s.chars();
+                        match (chars.next(), chars.next()) {
+                            (Some(c), None) => ord(c),
+                            _ => {
+                                return value_err(
+                                    "string keys in translate table must be of length 1",
+                                );
+                            }
+                        }
+                    }
+                    Py::Int(_) | Py::Bool(_) => k.clone(),
+                    _ => return type_err("keys in translate table must be strings or integers"),
+                };
+                put(key, v)?;
+            }
+        }
+        [_] => return type_err("if you give only one argument to maketrans it must be a dict"),
+        [Py::Str(x), Py::Str(y), rest @ ..] if rest.len() <= 1 => {
+            let (xs, ys): (Vec<char>, Vec<char>) = (x.chars().collect(), y.chars().collect());
+            if xs.len() != ys.len() {
+                return value_err("the first two maketrans arguments must have equal length");
+            }
+            for (a, b) in xs.iter().zip(&ys) {
+                put(ord(*a), ord(*b))?;
+            }
+            match rest {
+                [] => {}
+                [Py::Str(z)] => {
+                    for c in z.chars() {
+                        put(ord(c), Py::None)?;
+                    }
+                }
+                _ => return type_err("maketrans() argument 3 must be str"),
+            }
+        }
+        [_, _] | [_, _, _] => return type_err("maketrans() arguments must be str"),
+        other => {
+            return type_err(format!(
+                "maketrans expected 1 to 3 arguments, got {}",
+                other.len()
+            ));
+        }
+    }
+    Ok(Py::Dict(rf(out)))
+}
+
+/// `str.translate(table)`: `table[ord(c)]` for each character; a lookup error
+/// leaves the character, `None` deletes it, an int or a string replaces it.
+fn translate(s: &str, table: &Py) -> PyRes<String> {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let key = Py::Int(i64::from(u32::from(c)));
+        match getitem(table, &key) {
+            Ok(Py::None) => {}
+            Ok(Py::Str(r)) => out.push_str(&r),
+            Ok(Py::Int(n)) => out.push(
+                u32::try_from(n)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(|| {
+                        exc("TypeError", "character mapping must be in range(0x110000)")
+                    })?,
+            ),
+            Ok(_) => return type_err("character mapping must return integer, None or str"),
+            Err(e) if e.class == "LookupError" || exc_subclass(e.class, "LookupError") => {
+                out.push(c);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
 }
 
 fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
@@ -621,36 +722,39 @@ fn dict_method(recv: &Py, d: &Rf<PyDict>, name: &str, args: Vec<Py>, kwargs: Kwa
     }
 }
 
-fn set_items(v: &Py) -> PyRes<PySet> {
-    let mut out = PySet::new();
-    match v {
-        Py::Set(s) => return Ok(s.borrow().clone()),
-        other => {
-            for x in to_vec(other)? {
-                set_add(&mut out, hkey(&x)?, x);
-            }
-        }
-    }
-    Ok(out)
+/// How a set method's argument is seen: a set (iterated and probed as such) or
+/// the elements of any other iterable.
+enum SetArg {
+    Set(Rf<PySet>),
+    Items(Vec<Py>),
+}
+
+fn set_arg(v: &Py) -> PyRes<SetArg> {
+    Ok(match v {
+        Py::Set(s) => SetArg::Set(s.clone()),
+        other => SetArg::Items(to_vec(other)?),
+    })
+}
+
+fn type_error(message: String) -> Box<ExcObj> {
+    exc("TypeError", message)
 }
 
 fn set_method(s: &Rf<PySet>, name: &str, args: Vec<Py>) -> PyRes<Py> {
     match name {
         "add" => {
             nargs(name, &args, 1, 1)?;
-            let k = hkey(&args[0])?;
-            s.borrow_mut().entry(k).or_insert_with(|| args[0].clone());
+            s.borrow_mut().add(args[0].clone()).map_err(type_error)?;
             Ok(Py::None)
         }
         "clear" => {
             s.borrow_mut().clear();
             Ok(Py::None)
         }
-        "copy" => Ok(Py::Set(rf(s.borrow().clone()))),
+        "copy" => Ok(Py::Set(rf(s.borrow().copy()))),
         "discard" | "remove" => {
             nargs(name, &args, 1, 1)?;
-            let k = hkey(&args[0])?;
-            let had = s.borrow_mut().shift_remove(&k).is_some();
+            let had = s.borrow_mut().discard(&args[0]).map_err(type_error)?;
             if !had && name == "remove" {
                 return Err(Box::new(ExcObj {
                     class: "KeyError",
@@ -660,29 +764,51 @@ fn set_method(s: &Rf<PySet>, name: &str, args: Vec<Py>) -> PyRes<Py> {
             Ok(Py::None)
         }
         "pop" => match s.borrow_mut().pop() {
-            Some((_, v)) => Ok(v),
+            Some(v) => Ok(v),
             None => Err(exc("KeyError", "pop from an empty set")),
         },
-        "union" | "update" => {
-            let mut out = s.borrow().clone();
+        "union" => {
+            let mut out = s.borrow().copy();
             for a in &args {
-                for (k, v) in set_items(a)? {
-                    set_add(&mut out, k, v);
+                match set_arg(a)? {
+                    SetArg::Set(o) if Rc::ptr_eq(s, &o) => {}
+                    SetArg::Set(o) => out.merge(&o.borrow()),
+                    SetArg::Items(items) => out.update_items(items).map_err(type_error)?,
                 }
             }
-            if name == "update" {
-                *s.borrow_mut() = out;
-                Ok(Py::None)
-            } else {
-                Ok(Py::Set(rf(out)))
+            Ok(Py::Set(rf(out)))
+        }
+        "update" => {
+            for a in &args {
+                match set_arg(a)? {
+                    SetArg::Set(o) if Rc::ptr_eq(s, &o) => {}
+                    SetArg::Set(o) => s.borrow_mut().merge(&o.borrow()),
+                    SetArg::Items(items) => {
+                        s.borrow_mut().update_items(items).map_err(type_error)?
+                    }
+                }
             }
+            Ok(Py::None)
         }
         "intersection" | "intersection_update" => {
-            let mut out = s.borrow().clone();
+            // `set_intersection_multi`: the first argument meets `s` itself, each
+            // further one the running result.
+            let mut out: Option<PySet> = None;
             for a in &args {
-                let other = set_items(a)?;
-                out.retain(|k, _| other.contains_key(k));
+                let next = {
+                    let borrowed = s.borrow();
+                    let left: &PySet = out.as_ref().unwrap_or(&borrowed);
+                    match set_arg(a)? {
+                        SetArg::Set(o) if out.is_none() && Rc::ptr_eq(s, &o) => left.copy(),
+                        SetArg::Set(o) => left.intersection(&o.borrow()),
+                        SetArg::Items(items) => {
+                            left.intersection_items(items).map_err(type_error)?
+                        }
+                    }
+                };
+                out = Some(next);
             }
+            let out = out.unwrap_or_else(|| s.borrow().copy());
             if name.ends_with("update") {
                 *s.borrow_mut() = out;
                 Ok(Py::None)
@@ -690,34 +816,57 @@ fn set_method(s: &Rf<PySet>, name: &str, args: Vec<Py>) -> PyRes<Py> {
                 Ok(Py::Set(rf(out)))
             }
         }
-        "difference" | "difference_update" => {
-            let mut out = s.borrow().clone();
+        "difference" => {
+            // `set_difference_multi`: the first argument is subtracted from `s`
+            // itself, the rest are removed from the result in place.
+            let mut out: Option<PySet> = None;
             for a in &args {
-                let other = set_items(a)?;
-                out.retain(|k, _| !other.contains_key(k));
+                let arg = set_arg(a)?;
+                match out.as_mut() {
+                    None => {
+                        let borrowed = s.borrow();
+                        out = Some(match arg {
+                            SetArg::Set(o) if Rc::ptr_eq(s, &o) => PySet::new(),
+                            SetArg::Set(o) => borrowed.difference(&o.borrow()),
+                            SetArg::Items(items) => {
+                                borrowed.difference_items(items).map_err(type_error)?
+                            }
+                        });
+                    }
+                    Some(result) => match arg {
+                        SetArg::Set(o) => result.difference_update(&o.borrow()),
+                        SetArg::Items(items) => {
+                            result.difference_update_items(items).map_err(type_error)?;
+                        }
+                    },
+                }
             }
-            if name.ends_with("update") {
-                *s.borrow_mut() = out;
-                Ok(Py::None)
-            } else {
-                Ok(Py::Set(rf(out)))
+            Ok(Py::Set(rf(out.unwrap_or_else(|| s.borrow().copy()))))
+        }
+        "difference_update" => {
+            for a in &args {
+                match set_arg(a)? {
+                    SetArg::Set(o) if Rc::ptr_eq(s, &o) => s.borrow_mut().clear(),
+                    SetArg::Set(o) => s.borrow_mut().difference_update(&o.borrow()),
+                    SetArg::Items(items) => {
+                        s.borrow_mut()
+                            .difference_update_items(items)
+                            .map_err(type_error)?;
+                    }
+                }
             }
+            Ok(Py::None)
         }
         "symmetric_difference" | "symmetric_difference_update" => {
             nargs(name, &args, 1, 1)?;
-            let other = set_items(&args[0])?;
-            let cur = s.borrow().clone();
-            let mut out = PySet::new();
-            for (k, v) in cur.iter() {
-                if !other.contains_key(k) {
-                    out.insert(k.clone(), v.clone());
-                }
-            }
-            for (k, v) in other.iter() {
-                if !cur.contains_key(k) {
-                    out.insert(k.clone(), v.clone());
-                }
-            }
+            let out = match set_arg(&args[0])? {
+                SetArg::Set(o) if Rc::ptr_eq(s, &o) => PySet::new(),
+                SetArg::Set(o) => s.borrow().symmetric_difference(&o.borrow()),
+                SetArg::Items(items) => s
+                    .borrow()
+                    .symmetric_difference_items(items)
+                    .map_err(type_error)?,
+            };
             if name.ends_with("update") {
                 *s.borrow_mut() = out;
                 Ok(Py::None)
@@ -727,12 +876,15 @@ fn set_method(s: &Rf<PySet>, name: &str, args: Vec<Py>) -> PyRes<Py> {
         }
         "isdisjoint" | "issubset" | "issuperset" => {
             nargs(name, &args, 1, 1)?;
-            let other = set_items(&args[0])?;
+            let other = match set_arg(&args[0])? {
+                SetArg::Set(o) => o.borrow().clone(),
+                SetArg::Items(items) => PySet::from_items(items).map_err(type_error)?,
+            };
             let cur = s.borrow();
             Ok(Py::Bool(match name {
-                "isdisjoint" => cur.keys().all(|k| !other.contains_key(k)),
-                "issubset" => cur.keys().all(|k| other.contains_key(k)),
-                _ => other.keys().all(|k| cur.contains_key(k)),
+                "isdisjoint" => cur.is_disjoint(&other),
+                "issubset" => cur.is_subset(&other),
+                _ => other.is_subset(&cur),
             }))
         }
         _ => Err(exc("AttributeError", format!("no method {name}"))),
@@ -1040,6 +1192,11 @@ fn str_method(s: &Arc<str>, name: &'static str, args: Vec<Py>, kwargs: Kwargs) -
                 fill.to_string().repeat(l),
                 fill.to_string().repeat(r)
             ))
+        }
+        "maketrans" => maketrans(args),
+        "translate" => {
+            nargs(name, &args, 1, 1)?;
+            st(translate(sv, &args[0])?)
         }
         "zfill" => {
             nargs(name, &args, 1, 1)?;

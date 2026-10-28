@@ -1,0 +1,21 @@
+class_derivations:
+- name: Person
+  populated_from: Combined
+  slot_derivations:
+    name:
+      name: name
+      populated_from: name
+- name: Employee
+  populated_from: Combined
+  slot_derivations:
+    salary:
+      name: salary
+      populated_from: salary
+    name:
+      name: name
+      populated_from: name
+      range: string
+- name: Container
+  populated_from: Combined
+- name: Container
+  populated_from: Other

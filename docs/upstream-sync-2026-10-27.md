@@ -208,9 +208,13 @@ Each is marked `PARITY:` in the code.
   own division and power algorithms), `abs`, `.real`/`.imag`/`.conjugate()`, `repr`, and
   `TypeError` (a null in the null-propagating wrapper) for ordering. The asteval port's `Py`
   has the same integers. Remaining differences: `complex.__format__` with a format spec,
-  `range()` with bounds beyond `i64`, `int.to_bytes`, and an output a Python writer would
-  abort on (a complex number in JSON, an integer of more than 4300 digits anywhere) is
-  written in full instead.
+  `range()` with bounds beyond `i64`, `int.to_bytes`, and an integer of more than 4300 digits
+  in an output (a Python writer would abort on it) is written in full instead. A complex
+  number in a JSON/JSONL output is simplejson's `TypeError`, as upstream (YAML writes
+  `!!python/complex`); the pipeline's raw-line fast paths drop such a row with the error
+  logged, as they do for a set. Tuples, sets and dicts hold big integers and complex
+  numbers as keys and elements, hashed as CPython hashes them (modulo 2**61 - 1, equal to
+  the float of the same value).
 - **Expression depth.** More than 200 open brackets is a lexer error (CPython's
   `MAXLEVEL`), more than 99 nested statement blocks an indentation error, and an
   expression tree deeper than 496 nodes an uncaught `RecursionError`
@@ -294,13 +298,18 @@ The complete, grouped list (including everything found by the later fuzzing roun
   `expr/syntax.rs`, `expr/pymethods.rs`, `expr/pyformat.rs`): results with no `Value`
   (`bytes`, `...`, functions and bound methods such as `s.upper`
   or a bare `upper`) raise an "unrepresentable" error where upstream succeeds; a
-  list method called in a statement block does not mutate the binding; a tuple of
-  affixes for `startswith` is recognised by how it is written (`(..)` or `tuple(..)`)
-  because `Value` has no tuple; a lone-surrogate escape (`'\ud800'`) cannot be held; `str.casefold` folds the common special
+  list method called in a statement block does not mutate the binding; a lone-surrogate escape (`'\ud800'`) cannot be held; `str.casefold` folds the common special
   cases, not all of `CaseFolding.txt`; `'{0.__class__}'.format(..)` is refused.
-- **`Value` has no tuple, set or bytes variant**, so for example
-  `is_list((1, 2))` is true.
-- **Joined/dotted `populated_from` values** are not coerced to the target range.
+- **`Value` has no bytes variant**. (Tuples, sets and dicts with non-string keys have since been added as
+  `Value::Tuple`, `Value::Set` and `Value::Dict`: a tuple is not a list, a set
+  iterates in CPython 3.13's table order for elements with a deterministic hash
+  and in insertion order for strings, whose order Python itself randomises, and a
+  dict an expression builds keeps its key types.)
+- ~~**Joined/dotted `populated_from` values** are not coerced to the target range.~~ Closed (port/absentslot):
+  `Class.field`, inlined and FK paths now return their source slot and are coerced like any other
+  `populated_from`; a joined value is never coerced, as upstream (`_perform_join_resolution`'s
+  `field_path in class_induced_slots(..)` compares a string with slot objects: see `PARITY:` in
+  `engine/populated_from.rs`).
 - **`type: Agent`.** linkml 1.12's `transformer_model` drops the abstract `Agent`
   from the `creator`/`author`/`reviewer` union; Rust still accepts and injects
   `type: Agent`. Low priority.
@@ -372,8 +381,9 @@ Remaining, not modelled:
   makes upstream's `derive-schema` and `transform_enum` raise `AttributeError`; the datamodel cannot
   tell an explicit null from an absent field, so Rust derives the schema
   (`tests/derive_schema/cases.json`: `known_divergence`).
-- A populated_from dotted path that is neither a join alias, the source class, an inlined path nor
-  an FK path raises upstream ("requires a matching join spec or FK path"); Rust reads it from the row.
+- ~~A populated_from dotted path that is neither a join alias, the source class, an inlined path nor
+  an FK path raises upstream~~ Closed (port/absentslot): it raises here too, and `Class.field` and FK
+  paths (`org_id.name`, through the `ObjectIndex`) are resolved.
 - A nested derivation with a different `populated_from` and no join spec raises upstream
   (`no implicit join could be synthesized`); Rust derives it from the parent row.
 - A target schema without `imports: linkml:types` has no `integer` etc. upstream, so nothing is

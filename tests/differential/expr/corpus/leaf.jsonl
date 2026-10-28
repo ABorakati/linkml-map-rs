@@ -914,10 +914,10 @@
 {"leaf": "fn:startswith", "ref": "startswith", "args": ["back\\slash", "-ǄΐЖ"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:startswith", "ref": "startswith", "args": ["１Ж́Ж１😀n", "ǆﬂ3ﬆ"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:startswith", "ref": "startswith", "args": ["὾", "\n­ʼ ﬃΣ"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
-{"leaf": "fn:startswith", "ref": "startswith", "args": ["", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:startswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
-{"leaf": "fn:startswith", "ref": "startswith", "args": [",", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:startswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
-{"leaf": "fn:startswith", "ref": "startswith", "args": [".ΑzǄÑ", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:startswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
-{"leaf": "fn:startswith", "ref": "startswith", "args": ["mcDonald's", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:startswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
+{"leaf": "fn:startswith", "ref": "startswith", "args": ["", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:startswith:py_err_rs_ok"}
+{"leaf": "fn:startswith", "ref": "startswith", "args": [",", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:startswith:py_err_rs_ok"}
+{"leaf": "fn:startswith", "ref": "startswith", "args": [".ΑzǄÑ", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:startswith:py_err_rs_ok"}
+{"leaf": "fn:startswith", "ref": "startswith", "args": ["mcDonald's", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:startswith:py_err_rs_ok"}
 {"leaf": "fn:endswith", "ref": "endswith", "args": ["ſ яΣ3 ΐ", "None"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:endswith", "ref": "endswith", "args": [" ½ǰ.Σåſя", "Ж"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:endswith", "ref": "endswith", "args": ["nø٣１2", "null"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
@@ -943,10 +943,10 @@
 {"leaf": "fn:endswith", "ref": "endswith", "args": ["123 hits", "ѝ"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:endswith", "ref": "endswith", "args": ["ǈ", ""], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:endswith", "ref": "endswith", "args": ["yØ_ǅ한Å", "Ⅷ-∑ß🎉Ǆ"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
-{"leaf": "fn:endswith", "ref": "endswith", "args": ["", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:endswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
-{"leaf": "fn:endswith", "ref": "endswith", "args": ["σ", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:endswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
-{"leaf": "fn:endswith", "ref": "endswith", "args": ["!!!", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:endswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
-{"leaf": "fn:endswith", "ref": "endswith", "args": ["quote'\"", []], "upstream": {"err": "TypeError"}, "status": "divergence", "class": "leaf:endswith:py_err_rs_ok", "reason": "PARITY: a list affix is a TypeError upstream, but `Value` has no tuple (a tuple literal is a list), so a list of strings is accepted as the tuple it most likely stands for"}
+{"leaf": "fn:endswith", "ref": "endswith", "args": ["", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:endswith:py_err_rs_ok"}
+{"leaf": "fn:endswith", "ref": "endswith", "args": ["σ", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:endswith:py_err_rs_ok"}
+{"leaf": "fn:endswith", "ref": "endswith", "args": ["!!!", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:endswith:py_err_rs_ok"}
+{"leaf": "fn:endswith", "ref": "endswith", "args": ["quote'\"", []], "upstream": {"err": "TypeError"}, "status": "pass", "class": "leaf:endswith:py_err_rs_ok"}
 {"leaf": "fn:contains", "ref": "contains", "args": ["😀ﬆzü ǋ\u001cZ", "inf"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:contains", "ref": "contains", "args": ["", "o'neil"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
 {"leaf": "fn:contains", "ref": "contains", "args": [" ЯbǇ", "１.５"], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}

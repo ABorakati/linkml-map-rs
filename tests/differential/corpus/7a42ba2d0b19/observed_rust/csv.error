@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0; class_derivation=Agent: transformation error in 'Agent.inner': transformation error in 'Inner.dbl': expr eval failed for slot 'dbl' in class 'Org': eval error: name 'size' is not defined"
+}

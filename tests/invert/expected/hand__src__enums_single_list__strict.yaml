@@ -1,0 +1,17 @@
+enum_derivations:
+  Status:
+    name: Status
+    populated_from: Condition
+    permissible_value_derivations:
+      A:
+        name: A
+        populated_from:
+        - X
+      Y:
+        name: Y
+        populated_from:
+        - Y
+      B:
+        name: B
+        populated_from:
+        - Z

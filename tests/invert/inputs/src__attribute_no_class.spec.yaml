@@ -1,0 +1,5 @@
+class_derivations:
+  Agent:
+    slot_derivations:
+      a: {populated_from: nickname, range: string}
+      b: {populated_from: k, range: string}

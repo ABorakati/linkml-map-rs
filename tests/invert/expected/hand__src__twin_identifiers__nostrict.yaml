@@ -1,0 +1,10 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    multi_ident:
+      name: multi_ident
+      populated_from: t
+      range: Twin
+      cast_collection_as: MultiValuedDict
+      dictionary_key: a_id

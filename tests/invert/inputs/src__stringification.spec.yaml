@@ -1,0 +1,9 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      s1: {populated_from: tags, stringification: {delimiter: "|"}}
+      s2: {populated_from: nick_list, stringification: {delimiter: ",", reversed: true}}
+      s3: {populated_from: lines, stringification: {syntax: JSON}}
+      s4: {populated_from: friends, stringification: {over_slots: [a, b], syntax: YAML, reversed: false}}
+      s5: {populated_from: name, stringification: {}}

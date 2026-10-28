@@ -1,0 +1,18 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      f: {populated_from: friends, range: Person}
+      f_plain: {populated_from: friends}
+      b: {populated_from: by_id}
+      b_range: {populated_from: by_id, range: Person}
+      k: {populated_from: keyed, range: Keyed}
+      nk: {populated_from: inl_nokey, range: NoId}
+      one: {populated_from: one, range: Person}
+      refs: {populated_from: refs, range: Person}
+      single: {populated_from: inl_single, range: Person}
+      tags: {populated_from: tags}
+      nicks: {populated_from: nick_list}
+      homes: {populated_from: homes, range: Address}
+      home: {populated_from: home, range: Address}
+      twins: {populated_from: multi_ident, range: Twin}

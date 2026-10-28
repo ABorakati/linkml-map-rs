@@ -1,0 +1,18 @@
+class_derivations:
+- name: Address
+  populated_from: Place
+  slot_derivations:
+    street:
+      name: street
+      populated_from: st
+      range: string
+    zip:
+      name: zip
+      populated_from: zp
+      range: integer
+    homes:
+      name: homes
+      populated_from: home
+      range: Address
+      cast_collection_as: MultiValuedDict
+      dictionary_key: addr_id

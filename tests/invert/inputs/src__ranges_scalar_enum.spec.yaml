@@ -1,0 +1,9 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      s: {populated_from: status, range: Status}
+      c: {populated_from: colour, range: Colour}
+      a: {populated_from: age, range: integer}
+      n: {populated_from: name, range: string}
+      m: {populated_from: age, range: whatever}

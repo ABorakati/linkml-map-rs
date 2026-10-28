@@ -4,6 +4,7 @@
 //!
 //! - `map-data` — run the concurrent pipeline over a source data file.
 //! - `derive-schema` — derive a target schema from a transformation spec.
+//! - `invert` — invert a transformation spec (upstream `linkml-map invert`).
 //! - `validate-spec` (alias `validate`) — read-only check of spec files, structurally and
 //!   against their source/target schemas (no transform is run); upstream's `validate-spec`.
 
@@ -11,6 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use linkml_map_cli::invert::{InvertOptions, run_invert};
 use linkml_map_cli::validate_spec::{ValidateSpecOptions, run_validate_spec};
 use linkml_map_cli::{MapDataConfig, parse_format_str, run_map_data_config_with_options};
 use linkml_map_core::inference::SchemaMapper;
@@ -91,6 +93,8 @@ enum Commands {
     MapData(MapDataArgs),
     /// Derive a target schema from a transformation spec.
     DeriveSchema(DeriveSchemaArgs),
+    /// Invert a transformation specification (upstream `linkml-map invert`).
+    Invert(InvertArgs),
     /// Validate transformation specification YAML files.
     ///
     /// Checks each file against the TransformationSpecification model and, when a source
@@ -237,6 +241,45 @@ struct DeriveSchemaArgs {
     output: Option<String>,
 }
 
+// ── invert ────────────────────────────────────────────────────────────────────
+
+#[derive(Parser, Debug)]
+struct InvertArgs {
+    /// Transformation specification file or directory (-T; repeatable, as upstream).
+    #[arg(
+        short = 'T',
+        long = "transformer-specification",
+        visible_alias = "specification",
+        value_name = "SPEC"
+    )]
+    spec: Vec<String>,
+
+    /// Source LinkML schema (upstream's positional `SCHEMA`).
+    #[arg(value_name = "SCHEMA", required_unless_present = "schema_option")]
+    schema: Option<String>,
+
+    /// Source schema, spelled as the other subcommands do.
+    #[arg(
+        short = 's',
+        long = "source-schema",
+        value_name = "SCHEMA_YAML",
+        hide = true
+    )]
+    schema_option: Option<String>,
+
+    /// Output file. Defaults to stdout.
+    #[arg(short = 'o', long = "output", value_name = "OUT_YAML")]
+    output: Option<String>,
+
+    /// Strict mode: refuse a slot derivation whose expression is not a bare slot name
+    /// (the default); `--no-strict` drops it instead.
+    #[arg(long = "strict", overrides_with = "no_strict")]
+    _strict: bool,
+
+    #[arg(long = "no-strict", overrides_with = "_strict", hide = true)]
+    no_strict: bool,
+}
+
 // ── validate ──────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
@@ -350,6 +393,30 @@ fn dispatch_derive_schema(args: &DeriveSchemaArgs) -> Result<()> {
     Ok(())
 }
 
+/// `invert`: upstream `cli.py::invert`. An exception upstream does not catch is a
+/// traceback and exit status 1; the message goes to stderr.
+fn dispatch_invert(args: InvertArgs) -> Result<()> {
+    let opts = InvertOptions {
+        spec_files: args.spec,
+        schema: args.schema.or(args.schema_option).unwrap_or_default(),
+        output: args.output,
+        strict: !args.no_strict,
+    };
+    match run_invert(&opts) {
+        Ok(yaml) => {
+            match &opts.output {
+                Some(path) => std::fs::write(path, yaml)?,
+                None => print!("{yaml}"),
+            }
+            Ok(())
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// `validate-spec`: upstream `cli.py::validate_spec_cmd` (see `linkml_map_cli::validate_spec`).
 fn dispatch_validate(args: ValidateArgs) -> Result<()> {
     let mut spec_files = args.spec_files;
@@ -423,6 +490,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::MapData(args) => dispatch_map_data(args).await?,
         Commands::DeriveSchema(args) => dispatch_derive_schema(&args)?,
+        Commands::Invert(args) => dispatch_invert(args)?,
         Commands::Validate(args) => dispatch_validate(args)?,
     }
     Ok(())

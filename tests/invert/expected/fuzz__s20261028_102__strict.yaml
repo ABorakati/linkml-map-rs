@@ -1,0 +1,26 @@
+class_derivations:
+- name: Alpha
+  populated_from: Target2
+  slot_derivations:
+    g:
+      name: g
+      populated_from: t1
+      range: date
+      unit_conversion:
+        target_unit: m
+        target_unit_scheme: symbol
+      stringification:
+        reversed: false
+        over_slots:
+        - g
+        syntax: JSON
+    a:
+      name: a
+      populated_from: b
+      range: boolean
+      unit_conversion:
+        source_unit: cm
+        target_unit_slot: u
+      stringification:
+        reversed: true
+        syntax: JSON

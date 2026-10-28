@@ -1,0 +1,4 @@
+class_derivations:
+enum_derivations:
+  E:
+    populated_from: Status

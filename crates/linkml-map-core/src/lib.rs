@@ -8,6 +8,7 @@ pub mod inference;
 pub mod normalize;
 pub mod pyfmt;
 pub mod pynum;
+pub mod pyset;
 pub mod pyyaml;
 pub mod schema;
 pub mod temporal;

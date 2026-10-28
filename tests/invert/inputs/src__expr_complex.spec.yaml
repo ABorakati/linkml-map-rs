@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      a: {populated_from: id}
+      b: {expr: "str({age}) + ' years'"}
+      c: {populated_from: name}

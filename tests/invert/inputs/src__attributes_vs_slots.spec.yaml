@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      n: {populated_from: nickname, range: string}
+      l: {populated_from: nick_list}
+      w: {populated_from: weight_attr, unit_conversion: {target_unit: g}}

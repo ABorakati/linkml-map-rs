@@ -1,0 +1,30 @@
+class_derivations:
+- name: Gamma
+  populated_from: Gamma
+  slot_derivations:
+    b:
+      name: b
+      populated_from: c
+      unit_conversion:
+        target_unit: '[lb_av]'
+        target_unit_scheme: ucum_code
+        target_magnitude_slot: m
+      stringification:
+        reversed: true
+enum_derivations:
+  Kind:
+    name: Kind
+    populated_from: E3
+    permissible_value_derivations:
+      Y:
+        name: Y
+        populated_from:
+        - Y
+  Mode:
+    name: Mode
+    populated_from: Kind
+    permissible_value_derivations:
+      Q:
+        name: Q
+        populated_from:
+        - Y

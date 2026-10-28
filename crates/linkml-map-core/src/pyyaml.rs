@@ -452,7 +452,9 @@ fn represent_scalar(value: &Value) -> (Cow<'_, str>, Tag) {
         // `!!timestamp`; the text matches the timestamp resolver, so it is plain.
         Value::Temporal(t) => (Cow::Owned(t.to_string()), Tag::Timestamp),
         Value::Str(s) => (Cow::Borrowed(s.as_str()), Tag::Str),
-        Value::List(_) | Value::Map(_) => unreachable!("collections are not scalars"),
+        Value::List(_) | Value::Map(_) | Value::Tuple(_) | Value::Set(_) | Value::Dict(_) => {
+            unreachable!("collections are not scalars")
+        }
     }
 }
 
@@ -692,6 +694,17 @@ enum Style {
     Double,
 }
 
+/// A mapping key: a string (a record's key, the hot path) or any other value
+/// (a `dict` with non-string keys, the elements of a `set`).
+#[derive(Clone, Copy)]
+enum Key<'v> {
+    Str(&'v str),
+    Value(&'v Value),
+}
+
+/// The `null` every `!!set` element maps to.
+static NULL: Value = Value::Null;
+
 /// The `root` / `sequence` / `mapping` / `simple_key` arguments of
 /// `Emitter.expect_node` (`sequence_context` is never read, so it is not kept).
 #[derive(Debug, Clone, Copy, Default)]
@@ -804,20 +817,33 @@ impl<'o> Emitter<'o> {
         match value {
             Value::List(items) => {
                 self.set_context(ctx);
-                if self.flow_level > 0 || self.opts.default_flow_style || items.is_empty() {
-                    self.expect_flow_sequence(items);
-                } else {
-                    self.expect_block_sequence(items);
-                }
+                self.expect_sequence(items);
+            }
+            // `Representer.represent_tuple`: a sequence tagged `!!python/tuple`.
+            Value::Tuple(items) => {
+                self.set_context(ctx);
+                self.write_indicator("!!python/tuple", true, false, false);
+                self.expect_sequence(items);
             }
             Value::Map(map) => {
                 self.set_context(ctx);
                 let entries = self.mapping_entries(map);
-                if self.flow_level > 0 || self.opts.default_flow_style || entries.is_empty() {
-                    self.expect_flow_mapping(&entries);
-                } else {
-                    self.expect_block_mapping(&entries);
-                }
+                self.expect_mapping(&entries);
+            }
+            // A dict whose keys are not all strings (`represent_dict`).
+            Value::Dict(dict) => {
+                self.set_context(ctx);
+                let pairs: Vec<(&Value, &Value)> = dict.iter().collect();
+                let entries = self.sorted_entries(pairs);
+                self.expect_mapping(&entries);
+            }
+            // `SafeRepresenter.represent_set`: a `!!set` mapping of the elements to null.
+            Value::Set(set) => {
+                self.set_context(ctx);
+                self.write_indicator("!!set", true, false, false);
+                let pairs: Vec<(&Value, &Value)> = set.iter().map(|k| (k, &NULL)).collect();
+                let entries = self.sorted_entries(pairs);
+                self.expect_mapping(&entries);
             }
             scalar => {
                 let (text, tag) = represent_scalar(scalar);
@@ -825,6 +851,44 @@ impl<'o> Emitter<'o> {
                 self.expect_scalar(&text, tag, &analysis, ctx);
             }
         }
+    }
+
+    fn expect_sequence(&mut self, items: &[Value]) {
+        if self.flow_level > 0 || self.opts.default_flow_style || items.is_empty() {
+            self.expect_flow_sequence(items);
+        } else {
+            self.expect_block_sequence(items);
+        }
+    }
+
+    fn expect_mapping(&mut self, entries: &[(Key<'_>, &Value)]) {
+        if self.flow_level > 0 || self.opts.default_flow_style || entries.is_empty() {
+            self.expect_flow_mapping(entries);
+        } else {
+            self.expect_block_mapping(entries);
+        }
+    }
+
+    /// `represent_mapping` for items with arbitrary keys: `sorted(mapping)` when
+    /// `sort_keys`, which Python abandons (keeping the insertion order) when two
+    /// keys do not compare.
+    fn sorted_entries<'v>(&self, pairs: Vec<(&'v Value, &'v Value)>) -> Vec<(Key<'v>, &'v Value)> {
+        let mut pairs = pairs;
+        if self.opts.sort_keys {
+            let comparable = pairs.iter().enumerate().all(|(i, (a, _))| {
+                pairs[i + 1..]
+                    .iter()
+                    .all(|(b, _)| crate::expr::py_order(a, b).is_some())
+            });
+            if comparable {
+                pairs.sort_by(|(a, _), (b, _)| {
+                    crate::expr::py_order(a, b)
+                        .flatten()
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
+        pairs.into_iter().map(|(k, v)| (Key::Value(k), v)).collect()
     }
 
     fn set_context(&mut self, ctx: Context) {
@@ -837,12 +901,12 @@ impl<'o> Emitter<'o> {
     fn mapping_entries<'v>(
         &self,
         map: &'v indexmap::IndexMap<String, Value>,
-    ) -> Vec<(&'v str, &'v Value)> {
+    ) -> Vec<(Key<'v>, &'v Value)> {
         let mut entries: Vec<(&str, &Value)> = map.iter().map(|(k, v)| (k.as_str(), v)).collect();
         if self.opts.sort_keys {
             entries.sort_by(|a, b| a.0.cmp(b.0));
         }
-        entries
+        entries.into_iter().map(|(k, v)| (Key::Str(k), v)).collect()
     }
 
     /// `expect_node` for a scalar, then `process_tag` and `expect_scalar`.
@@ -893,7 +957,7 @@ impl<'o> Emitter<'o> {
         self.write_indicator("]", false, false, false);
     }
 
-    fn expect_flow_mapping(&mut self, entries: &[(&str, &Value)]) {
+    fn expect_flow_mapping(&mut self, entries: &[(Key<'_>, &Value)]) {
         self.write_indicator("{", true, true, false);
         self.flow_level += 1;
         self.increase_indent(true, false);
@@ -904,26 +968,59 @@ impl<'o> Emitter<'o> {
             if self.column > self.best_width {
                 self.write_indent();
             }
-            let analysis = analyze_scalar(key, self.opts.allow_unicode);
-            if check_simple_key(&analysis) {
-                self.expect_scalar(key, Tag::Str, &analysis, Context::SIMPLE_KEY);
-                // expect_flow_mapping_simple_value
-                self.write_indicator(":", false, false, false);
-                self.expect_node(value, Context::MAPPING);
-            } else {
-                self.write_indicator("?", true, false, false);
-                self.expect_scalar(key, Tag::Str, &analysis, Context::MAPPING);
-                // expect_flow_mapping_value
-                if self.column > self.best_width {
-                    self.write_indent();
+            match key {
+                Key::Str(key) => {
+                    let analysis = analyze_scalar(key, self.opts.allow_unicode);
+                    if check_simple_key(&analysis) {
+                        self.expect_scalar(key, Tag::Str, &analysis, Context::SIMPLE_KEY);
+                        self.write_indicator(":", false, false, false);
+                    } else {
+                        self.write_indicator("?", true, false, false);
+                        self.expect_scalar(key, Tag::Str, &analysis, Context::MAPPING);
+                        self.flow_mapping_value_indicator();
+                    }
                 }
-                self.write_indicator(":", true, false, false);
-                self.expect_node(value, Context::MAPPING);
+                Key::Value(key) => {
+                    if self.value_key_is_simple(key) {
+                        self.expect_node(key, Context::SIMPLE_KEY);
+                        self.write_indicator(":", false, false, false);
+                    } else {
+                        self.write_indicator("?", true, false, false);
+                        self.expect_node(key, Context::MAPPING);
+                        self.flow_mapping_value_indicator();
+                    }
+                }
             }
+            self.expect_node(value, Context::MAPPING);
         }
         self.pop_indent();
         self.flow_level -= 1;
         self.write_indicator("}", false, false, false);
+    }
+
+    /// `expect_flow_mapping_value`'s `:` after a complex key.
+    fn flow_mapping_value_indicator(&mut self) {
+        if self.column > self.best_width {
+            self.write_indent();
+        }
+        self.write_indicator(":", true, false, false);
+    }
+
+    /// `check_simple_key` for a key that is any [`Value`]: a scalar of fewer
+    /// than 128 characters (counting its tag) that is neither empty nor
+    /// multi-line, or an empty collection.
+    fn value_key_is_simple(&self, key: &Value) -> bool {
+        match key {
+            Value::List(items) | Value::Tuple(items) => items.is_empty(),
+            Value::Map(m) => m.is_empty(),
+            Value::Dict(d) => d.is_empty(),
+            Value::Set(s) => s.is_empty(),
+            scalar => {
+                let (text, tag) = represent_scalar(scalar);
+                let analysis = analyze_scalar(&text, self.opts.allow_unicode);
+                tag.prepared().len() + analysis.len < 128 && !analysis.empty && !analysis.multiline
+            }
+        }
     }
 
     // ── Block sequence and mapping ───────────────────────────────────────────
@@ -939,24 +1036,38 @@ impl<'o> Emitter<'o> {
         self.pop_indent();
     }
 
-    fn expect_block_mapping(&mut self, entries: &[(&str, &Value)]) {
+    fn expect_block_mapping(&mut self, entries: &[(Key<'_>, &Value)]) {
         self.increase_indent(false, false);
         for (key, value) in entries {
             self.write_indent();
-            let analysis = analyze_scalar(key, self.opts.allow_unicode);
-            if check_simple_key(&analysis) {
-                self.expect_scalar(key, Tag::Str, &analysis, Context::SIMPLE_KEY);
-                // expect_block_mapping_simple_value
-                self.write_indicator(":", false, false, false);
-                self.expect_node(value, Context::MAPPING);
-            } else {
-                self.write_indicator("?", true, false, true);
-                self.expect_scalar(key, Tag::Str, &analysis, Context::MAPPING);
-                // expect_block_mapping_value
-                self.write_indent();
-                self.write_indicator(":", true, false, true);
-                self.expect_node(value, Context::MAPPING);
+            match key {
+                Key::Str(key) => {
+                    let analysis = analyze_scalar(key, self.opts.allow_unicode);
+                    if check_simple_key(&analysis) {
+                        self.expect_scalar(key, Tag::Str, &analysis, Context::SIMPLE_KEY);
+                        // expect_block_mapping_simple_value
+                        self.write_indicator(":", false, false, false);
+                    } else {
+                        self.write_indicator("?", true, false, true);
+                        self.expect_scalar(key, Tag::Str, &analysis, Context::MAPPING);
+                        // expect_block_mapping_value
+                        self.write_indent();
+                        self.write_indicator(":", true, false, true);
+                    }
+                }
+                Key::Value(key) => {
+                    if self.value_key_is_simple(key) {
+                        self.expect_node(key, Context::SIMPLE_KEY);
+                        self.write_indicator(":", false, false, false);
+                    } else {
+                        self.write_indicator("?", true, false, true);
+                        self.expect_node(key, Context::MAPPING);
+                        self.write_indent();
+                        self.write_indicator(":", true, false, true);
+                    }
+                }
             }
+            self.expect_node(value, Context::MAPPING);
         }
         self.pop_indent();
     }
@@ -1316,5 +1427,44 @@ mod tests {
         ] {
             assert_eq!(resolve_implicit(text), tag, "{text:?}");
         }
+    }
+
+    /// Tuples, sets and dicts with non-string keys against the text upstream's
+    /// `dump_yaml` (PyYAML's `Dumper`) writes for them; see
+    /// `tools/gen_pyyaml_container_cases.py`.
+    #[test]
+    fn containers_dump_as_pyyaml_does() {
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/data/pyyaml_containers.json")).unwrap();
+        let mut failures = Vec::new();
+        for case in cases.as_array().unwrap() {
+            let expr = case["expr"].as_str().unwrap();
+            let value = crate::expr::eval_expr(expr).unwrap();
+            for (name, opts) in [
+                ("block_sorted", DumpOptions::default()),
+                (
+                    "block_unsorted",
+                    DumpOptions {
+                        sort_keys: false,
+                        ..DumpOptions::default()
+                    },
+                ),
+                (
+                    "flow",
+                    DumpOptions {
+                        default_flow_style: true,
+                        allow_unicode: false,
+                        sort_keys: true,
+                    },
+                ),
+            ] {
+                let want = case[name].as_str().unwrap();
+                let got = dump_yaml(&value, opts);
+                if got != want {
+                    failures.push(format!("{expr} [{name}]:\n want {want:?}\n got  {got:?}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

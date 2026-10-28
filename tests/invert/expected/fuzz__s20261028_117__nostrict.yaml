@@ -1,0 +1,14 @@
+class_derivations:
+- name: Alpha
+  populated_from: Target1
+- name: Alpha
+  populated_from: Gamma
+  slot_derivations:
+    e:
+      name: e
+      populated_from: b
+      range: string
+enum_derivations:
+  Kind:
+    name: Kind
+    populated_from: E3

@@ -241,6 +241,9 @@ impl TargetCoercions {
                 })
                 .collect::<Result<_>>()
                 .map(Value::Map),
+            Value::Dict(d) => d
+                .try_map_values(|i| self.resolve_enum_value(i, index, target, strict))
+                .map(|d| Value::Dict(Box::new(d))),
             scalar => {
                 // Python `str(v)`: `True` is 'True', `1.5` is '1.5', `None` is 'None'.
                 let text = py_str(&scalar);
@@ -352,6 +355,9 @@ pub(crate) fn coerce_datatype(v: Value, target_range: &str) -> Result<Value> {
             .map(|(k, i)| coerce_datatype(i, target_range).map(|c| (k, c)))
             .collect::<Result<_>>()
             .map(Value::Map),
+        Value::Dict(d) => d
+            .try_map_values(|i| coerce_datatype(i, target_range))
+            .map(|d| Value::Dict(Box::new(d))),
         scalar => coerce_scalar(scalar, target_range),
     }
 }
@@ -727,7 +733,7 @@ mod tests {
             coerce_datatype(s("2.50"), "decimal").unwrap(),
         ]);
         // JSON: `str(Decimal)`; YAML flow: `format(d, 'f')`.
-        assert_eq!(super::super::py_json(&list), "[1E-7, 2.50]");
+        assert_eq!(super::super::py_json(&list).unwrap(), "[1E-7, 2.50]");
         assert_eq!(super::super::yaml_flow(&list), "[0.0000001, 2.50]");
     }
 
@@ -748,14 +754,14 @@ mod tests {
             Value::Float(2.0),
         ]);
         assert_eq!(
-            super::super::py_json(&list),
+            super::super::py_json(&list).unwrap(),
             "[\"caf\\u00e9\", \"\\ud83d\\ude00 \\u007f \\u0001 \\\" \\\\ / \\b\\f\\n\\r\\t\", \
              1e+16, 1e-05, NaN, -Infinity, 2.0]"
         );
         let mut m = indexmap::IndexMap::new();
         m.insert("k\u{e9}y".to_owned(), s("\u{4e2d}"));
         assert_eq!(
-            super::super::py_json(&Value::List(vec![Value::Map(m)])),
+            super::super::py_json(&Value::List(vec![Value::Map(m)])).unwrap(),
             "[{\"k\\u00e9y\": \"\\u4e2d\"}]"
         );
     }

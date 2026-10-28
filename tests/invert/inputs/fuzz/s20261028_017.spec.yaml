@@ -1,0 +1,5 @@
+class_derivations: []
+enum_derivations:
+  E3:
+    populated_from: Ghost
+    expr: x

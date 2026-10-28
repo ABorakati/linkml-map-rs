@@ -1,0 +1,12 @@
+class_derivations:
+- name: Agent
+  populated_from: Agent
+  slot_derivations:
+    nickname:
+      name: nickname
+      populated_from: a
+      range: string
+    k:
+      name: k
+      populated_from: b
+      range: string

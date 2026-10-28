@@ -10,8 +10,8 @@
 //! `bool`, whose public attributes are the tables below.
 //!
 //! PARITY: a bound method that is *not* called (`s.upper`), and a result that
-//! is `bytes` (`s.encode()`, `n.to_bytes(..)`) or a mapping with integer keys
-//! (`str.maketrans`), have no [`Value`]: they raise an "unrepresentable" error
+//! is `bytes` (`s.encode()`, `n.to_bytes(..)`), have no [`Value`]: they raise an
+//! "unrepresentable" error
 //! (see [`ExprError::unrepresentable`]). Mutating methods of lists and dicts
 //! are never reachable (attribute access distributes over them).
 //!
@@ -24,7 +24,8 @@ use super::pystr;
 use super::pytables::{self, CASE_IGNORABLE, LOWERCASE, TITLECASE_LETTERS, UPPERCASE};
 use crate::pynum::complex::Complex64;
 use crate::pynum::{self, BigInt, IntRef};
-use crate::value::Value;
+use crate::pyset::PySet;
+use crate::value::{PyDict, Value, dict_value, set_value};
 
 /// What `getattr(scalar, name)` finds.
 pub(super) enum Lookup {
@@ -85,6 +86,26 @@ const STR_METHODS: &[&str] = &[
     "upper",
     "zfill",
 ];
+const TUPLE_METHODS: &[&str] = &["count", "index"];
+const SET_METHODS: &[&str] = &[
+    "add",
+    "clear",
+    "copy",
+    "difference",
+    "difference_update",
+    "discard",
+    "intersection",
+    "intersection_update",
+    "isdisjoint",
+    "issubset",
+    "issuperset",
+    "pop",
+    "remove",
+    "symmetric_difference",
+    "symmetric_difference_update",
+    "union",
+    "update",
+];
 const INT_METHODS: &[&str] = &[
     "as_integer_ratio",
     "bit_count",
@@ -110,6 +131,8 @@ pub(super) fn lookup(recv: &Value, name: &str) -> Lookup {
         Value::Int(_) | Value::BigInt(_) | Value::Bool(_) => INT_METHODS,
         Value::Float(_) => FLOAT_METHODS,
         Value::Complex(_) => COMPLEX_METHODS,
+        Value::Tuple(_) => TUPLE_METHODS,
+        Value::Set(_) => SET_METHODS,
         _ => return Lookup::Missing,
     };
     if methods.contains(&name) {
@@ -308,6 +331,8 @@ pub(super) fn call_method(
             ))),
         },
         Value::List(items) => list_method(items, name, args, kwargs),
+        Value::Tuple(items) => tuple_method(items, name, args, kwargs),
+        Value::Set(set) => set_method(set, name, args, kwargs),
         other => Err(type_error(format!(
             "'{}' object has no method '{name}'",
             python_type(other)
@@ -421,6 +446,221 @@ fn list_method(
     }
 }
 
+// === tuple =================================================================
+
+/// `tuple.count` and `tuple.index`.
+fn tuple_method(
+    items: &[Value],
+    name: &str,
+    args: Vec<Value>,
+    kwargs: Vec<(String, Value)>,
+) -> ExprResult<Value> {
+    match name {
+        "count" => {
+            let bound = Bound::new(name, &[("value", false)], 1, args, kwargs)?;
+            let needle = bound.get(0).expect("required");
+            Ok(Value::Int(
+                items.iter().filter(|v| v.py_eq(needle)).count() as i64
+            ))
+        }
+        "index" => {
+            let bound = Bound::new(
+                name,
+                &[("value", false), ("start", false), ("stop", false)],
+                1,
+                args,
+                kwargs,
+            )?;
+            let needle = bound.get(0).expect("required");
+            let (start, end) = adjust_indices(
+                items.len(),
+                bound.int(name, 1, false)?,
+                bound.int(name, 2, false)?,
+            );
+            (start..end.max(start))
+                .find(|&i| items[i].py_eq(needle))
+                .map(|i| Value::Int(i as i64))
+                .ok_or_else(|| type_error("tuple.index(x): x not in tuple"))
+        }
+        _ => Err(type_error(format!("'tuple' object has no method '{name}'"))),
+    }
+}
+
+// === set ===================================================================
+
+/// A set method's argument: a set, or the elements of any other iterable.
+enum SetArg<'a> {
+    Set(&'a PySet<Value>),
+    Items(Vec<Value>),
+}
+
+fn set_arg(v: &Value) -> ExprResult<SetArg<'_>> {
+    Ok(match v {
+        Value::Set(s) => SetArg::Set(s),
+        other => SetArg::Items(super::builtins::py_iter(other)?.into_owned()),
+    })
+}
+
+/// The methods of a set. The receiver is a copy of the bound value, so a
+/// mutating method (`add`, `update`, ...) returns what Python returns (`None`)
+/// and changes nothing the expression can read back.
+///
+/// Each follows the CPython method it mirrors (`set_difference_multi`,
+/// `set_update`, ...) so the result iterates in the same order.
+fn set_method(
+    set: &PySet<Value>,
+    name: &str,
+    args: Vec<Value>,
+    kwargs: Vec<(String, Value)>,
+) -> ExprResult<Value> {
+    let hashable = ExprError::Eval;
+    if !kwargs.is_empty() {
+        return Err(type_error(format!("{name}() takes no keyword arguments")));
+    }
+    let one = |args: &[Value]| -> ExprResult<()> {
+        if args.len() == 1 {
+            Ok(())
+        } else {
+            Err(type_error(format!(
+                "set.{name}() takes exactly one argument ({} given)",
+                args.len()
+            )))
+        }
+    };
+    let no_arguments = |args: &[Value]| -> ExprResult<()> {
+        if args.is_empty() {
+            Ok(())
+        } else {
+            Err(type_error(format!(
+                "set.{name}() takes no arguments ({} given)",
+                args.len()
+            )))
+        }
+    };
+    match name {
+        "add" => {
+            one(&args)?;
+            set.clone().add(args[0].clone()).map_err(hashable)?;
+            Ok(Value::Null)
+        }
+        "clear" => {
+            no_arguments(&args)?;
+            Ok(Value::Null)
+        }
+        "copy" => {
+            no_arguments(&args)?;
+            Ok(set_value(set.copy()))
+        }
+        "discard" => {
+            one(&args)?;
+            set.clone().discard(&args[0]).map_err(hashable)?;
+            Ok(Value::Null)
+        }
+        "remove" => {
+            one(&args)?;
+            if set.clone().discard(&args[0]).map_err(hashable)? {
+                Ok(Value::Null)
+            } else {
+                Err(ExprError::Uncaught(format!(
+                    "KeyError: {}",
+                    super::eval::py_repr(&args[0])
+                )))
+            }
+        }
+        "pop" => {
+            no_arguments(&args)?;
+            set.clone()
+                .pop()
+                .ok_or_else(|| ExprError::Uncaught("KeyError: 'pop from an empty set'".to_owned()))
+        }
+        "union" => {
+            let mut out = set.copy();
+            for a in &args {
+                match set_arg(a)? {
+                    SetArg::Set(o) => out.merge(o),
+                    SetArg::Items(items) => out.update_items(items).map_err(hashable)?,
+                }
+            }
+            Ok(set_value(out))
+        }
+        "update" => {
+            let mut out = set.clone();
+            for a in &args {
+                match set_arg(a)? {
+                    SetArg::Set(o) => out.merge(o),
+                    SetArg::Items(items) => out.update_items(items).map_err(hashable)?,
+                }
+            }
+            Ok(Value::Null)
+        }
+        "intersection" | "intersection_update" => {
+            // `set_intersection_multi`: the first argument meets the receiver
+            // itself, each further one the running result.
+            let mut out: Option<PySet<Value>> = None;
+            for a in &args {
+                let left = out.as_ref().unwrap_or(set);
+                out = Some(match set_arg(a)? {
+                    SetArg::Set(o) => left.intersection(o),
+                    SetArg::Items(items) => left.intersection_items(items).map_err(hashable)?,
+                });
+            }
+            if name == "intersection_update" {
+                return Ok(Value::Null);
+            }
+            Ok(set_value(out.unwrap_or_else(|| set.copy())))
+        }
+        "difference" | "difference_update" => {
+            let mut out: Option<PySet<Value>> = None;
+            for a in &args {
+                match out.as_mut() {
+                    None => {
+                        out = Some(match set_arg(a)? {
+                            SetArg::Set(o) => set.difference(o),
+                            SetArg::Items(items) => {
+                                set.difference_items(items).map_err(hashable)?
+                            }
+                        });
+                    }
+                    Some(result) => match set_arg(a)? {
+                        SetArg::Set(o) => result.difference_update(o),
+                        SetArg::Items(items) => {
+                            result.difference_update_items(items).map_err(hashable)?;
+                        }
+                    },
+                }
+            }
+            if name == "difference_update" {
+                return Ok(Value::Null);
+            }
+            Ok(set_value(out.unwrap_or_else(|| set.copy())))
+        }
+        "symmetric_difference" | "symmetric_difference_update" => {
+            one(&args)?;
+            let out = match set_arg(&args[0])? {
+                SetArg::Set(o) => set.symmetric_difference(o),
+                SetArg::Items(items) => set.symmetric_difference_items(items).map_err(hashable)?,
+            };
+            if name == "symmetric_difference_update" {
+                return Ok(Value::Null);
+            }
+            Ok(set_value(out))
+        }
+        "isdisjoint" | "issubset" | "issuperset" => {
+            one(&args)?;
+            let other = match set_arg(&args[0])? {
+                SetArg::Set(o) => o.clone(),
+                SetArg::Items(items) => PySet::from_items(items).map_err(hashable)?,
+            };
+            Ok(Value::Bool(match name {
+                "isdisjoint" => set.is_disjoint(&other),
+                "issubset" => set.is_subset(&other),
+                _ => other.is_subset(set),
+            }))
+        }
+        _ => Err(type_error(format!("'set' object has no method '{name}'"))),
+    }
+}
+
 // === int and float =========================================================
 
 fn int_method(
@@ -457,7 +697,7 @@ fn int_method(
         }
         "as_integer_ratio" => {
             no_args(name, &args, &kwargs)?;
-            Ok(Value::List(vec![value(n), Value::Int(1)]))
+            Ok(Value::Tuple(vec![value(n), Value::Int(1)]))
         }
         // `to_bytes` yields bytes; `from_bytes` needs bytes, which no expression can build.
         "to_bytes" | "from_bytes" => {
@@ -535,7 +775,7 @@ fn float_ratio(f: f64) -> ExprResult<Value> {
         ));
     }
     if f == 0.0 {
-        return Ok(Value::List(vec![Value::Int(0), Value::Int(1)]));
+        return Ok(Value::Tuple(vec![Value::Int(0), Value::Int(1)]));
     }
     let bits = f.to_bits();
     let raw_exp = ((bits >> 52) & 0x7ff) as i32;
@@ -550,12 +790,12 @@ fn float_ratio(f: f64) -> ExprResult<Value> {
     exp += trailing;
     let numerator = BigInt::from(mantissa) * if f < 0.0 { -1 } else { 1 };
     if exp >= 0 {
-        Ok(Value::List(vec![
+        Ok(Value::Tuple(vec![
             Value::from_bigint(numerator << exp as usize),
             Value::Int(1),
         ]))
     } else {
-        Ok(Value::List(vec![
+        Ok(Value::Tuple(vec![
             Value::from_bigint(numerator),
             Value::from_bigint(BigInt::from(1) << (-exp) as usize),
         ]))
@@ -739,12 +979,13 @@ fn str_method(
             };
             match bound.get(0).expect("required") {
                 Value::Str(affix) => flag(matches(affix)),
-                // PARITY: a tuple of affixes is a list here (`Value` has no tuple).
-                Value::List(affixes) => {
-                    let mut found = false;
+                // Looked at in turn: a non-string affix is a `TypeError` only when no
+                // earlier one has matched.
+                Value::Tuple(affixes) => {
                     for affix in affixes {
                         match affix {
-                            Value::Str(a) => found = found || matches(a),
+                            Value::Str(a) if matches(a) => return flag(true),
+                            Value::Str(_) => {}
                             other => {
                                 return Err(type_error(format!(
                                     "tuple for {name} must only contain str, not {}",
@@ -753,7 +994,7 @@ fn str_method(
                             }
                         }
                     }
-                    flag(found)
+                    flag(false)
                 }
                 other => Err(type_error(format!(
                     "{name} first arg must be str or a tuple of str, not {}",
@@ -837,7 +1078,7 @@ fn str_method(
                 None if name == "partition" => [s.to_owned(), String::new(), String::new()],
                 None => [String::new(), String::new(), s.to_owned()],
             };
-            Ok(Value::List(parts.into_iter().map(Value::Str).collect()))
+            Ok(Value::Tuple(parts.into_iter().map(Value::Str).collect()))
         }
         "removeprefix" | "removesuffix" => {
             let bound = Bound::new(name, &[("affix", false)], 1, args, kwargs)?;
@@ -866,6 +1107,14 @@ fn str_method(
             // A non-mapping is only an error once a field looks something up.
             let kw: Vec<(String, Value)> = match bound.get(0).expect("required") {
                 Value::Map(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                // `mapping[key]` is looked up with the field's text: a string key.
+                Value::Dict(d) => d
+                    .iter()
+                    .filter_map(|(k, v)| match k {
+                        Value::Str(k) => Some((k.clone(), v.clone())),
+                        _ => None,
+                    })
+                    .collect(),
                 _ => Vec::new(),
             };
             text(pyformat::str_format(s, &[], &kw)?)
@@ -881,9 +1130,92 @@ fn str_method(
             )?;
             Err(ExprError::unrepresentable("bytes"))
         }
-        "maketrans" => Err(ExprError::unrepresentable("dict")),
+        "maketrans" => maketrans(args, kwargs),
         _ => Err(type_error(format!("'str' object has no method '{name}'"))),
     }
+}
+
+/// `str.maketrans(x[, y[, z]])`: a dict from code points to code points,
+/// strings or `None`.
+fn maketrans(args: Vec<Value>, kwargs: Vec<(String, Value)>) -> ExprResult<Value> {
+    if !kwargs.is_empty() {
+        return Err(type_error("maketrans() takes no keyword arguments"));
+    }
+    let value_error = |m: &str| ExprError::Eval(m.to_owned());
+    let mut table = PyDict::new();
+    let put = |table: &mut PyDict, k: Value, v: Value| table.insert(k, v).map_err(ExprError::Eval);
+    match args.as_slice() {
+        [x] => {
+            let pairs: Vec<(Value, Value)> = match x {
+                Value::Dict(d) => d.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                Value::Map(m) => m
+                    .iter()
+                    .map(|(k, v)| (Value::Str(k.clone()), v.clone()))
+                    .collect(),
+                _ => {
+                    return Err(type_error(
+                        "if you give only one argument to maketrans it must be a dict",
+                    ));
+                }
+            };
+            for (k, v) in pairs {
+                let key = match k {
+                    Value::Str(s) => {
+                        let mut chars = s.chars();
+                        match (chars.next(), chars.next()) {
+                            (Some(c), None) => Value::Int(i64::from(u32::from(c))),
+                            _ => {
+                                return Err(value_error(
+                                    "string keys in translate table must be of length 1",
+                                ));
+                            }
+                        }
+                    }
+                    int @ (Value::Int(_) | Value::Bool(_)) => int,
+                    _ => {
+                        return Err(type_error(
+                            "keys in translate table must be strings or integers",
+                        ));
+                    }
+                };
+                put(&mut table, key, v)?;
+            }
+        }
+        [Value::Str(x), Value::Str(y), rest @ ..] if rest.len() <= 1 => {
+            let (xs, ys): (Vec<char>, Vec<char>) = (x.chars().collect(), y.chars().collect());
+            if xs.len() != ys.len() {
+                return Err(value_error(
+                    "the first two maketrans arguments must have equal length",
+                ));
+            }
+            for (a, b) in xs.iter().zip(&ys) {
+                put(
+                    &mut table,
+                    Value::Int(i64::from(u32::from(*a))),
+                    Value::Int(i64::from(u32::from(*b))),
+                )?;
+            }
+            match rest {
+                [] => {}
+                [Value::Str(z)] => {
+                    for c in z.chars() {
+                        put(&mut table, Value::Int(i64::from(u32::from(c))), Value::Null)?;
+                    }
+                }
+                _ => return Err(type_error("maketrans() argument 3 must be str")),
+            }
+        }
+        [_, _, ..] if args.len() <= 3 => {
+            return Err(type_error("maketrans() arguments must be str"));
+        }
+        _ => {
+            return Err(type_error(format!(
+                "maketrans expected 1 to 3 arguments, got {}",
+                args.len()
+            )));
+        }
+    }
+    Ok(dict_value(table))
 }
 
 /// CPython's `ADJUST_INDICES`: `start` and `end` of a `find`-style call, clamped
@@ -1130,7 +1462,12 @@ fn translate(s: &str, table: &Value) -> ExprResult<String> {
     let lookup = |c: char| -> Option<Value> {
         match table {
             Value::Map(m) => m.get(&(c as u32).to_string()).cloned(),
-            Value::List(items) => items.get(c as usize).cloned(),
+            Value::Dict(d) => d
+                .get(&Value::Int(i64::from(c as u32)))
+                .ok()
+                .flatten()
+                .cloned(),
+            Value::List(items) | Value::Tuple(items) => items.get(c as usize).cloned(),
             Value::Str(chars) => chars
                 .chars()
                 .nth(c as usize)
@@ -1138,7 +1475,10 @@ fn translate(s: &str, table: &Value) -> ExprResult<String> {
             _ => None,
         }
     };
-    if !matches!(table, Value::Map(_) | Value::List(_) | Value::Str(_)) {
+    if !matches!(
+        table,
+        Value::Map(_) | Value::Dict(_) | Value::List(_) | Value::Tuple(_) | Value::Str(_)
+    ) {
         return Err(type_error(format!(
             "'{}' object is not subscriptable",
             python_type(table)

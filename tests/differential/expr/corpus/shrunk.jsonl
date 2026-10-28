@@ -18,7 +18,7 @@
 {"expr": "0 << 9007199254740993", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"err": "NumberTooHigh"}, "status": "pass", "class": "resource-limits"}
 {"expr": "0 ** 9223372036854775807", "bindings": {}, "mode": "restricted", "strict": true, "upstream": {"err": "NumberTooHigh"}, "status": "pass", "class": "resource-limits"}
 {"expr": "set()", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"ok": {"$set": []}}, "status": "pass", "class": "set-vs-list"}
-{"expr": "last(set(a))", "bindings": {"a": [0]}, "mode": "restricted", "strict": true, "upstream": {"err": "TypeError"}, "status": "divergence", "class": "set-vs-list", "reason": "sets are insertion-ordered de-duplicated lists"}
+{"expr": "last(set(a))", "bindings": {"a": [0]}, "mode": "restricted", "strict": true, "upstream": {"err": "TypeError"}, "status": "pass", "class": "set-vs-list"}
 {"expr": "'\\xa0'", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"ok": " "}, "status": "pass", "class": "string-escapes", "reason": ""}
 {"expr": "r''", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"ok": ""}, "status": "pass", "class": "string-literal-forms", "reason": ""}
 {"expr": "\"\"\"\"\"\"", "bindings": {}, "mode": "unrestricted", "strict": true, "upstream": {"ok": ""}, "status": "pass", "class": "string-literal-forms", "reason": ""}
@@ -26,10 +26,10 @@
 {"expr": "0 != \"\"\"\"\"\"", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": true}, "status": "pass", "class": "string-literal-forms", "reason": ""}
 {"expr": "'n' 'ew\\nline'", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"ok": "new\nline"}, "status": "pass", "class": "string-literal-forms", "reason": ""}
 {"expr": "f\"{z:.2f}\" if {z}[NULL:NULL:] else split(NULL)", "bindings": {"a": false, "b": [{"": "􂤾", "A": [], "é": null}, {}, {"NULL": "double"}, {"values": -1, "get": "a,b,,c"}], "c": {"$f": "3fb999999999999a"}, "n": 2, "s": true, "f": {"$f": "3f1a36e2eb1c432d"}, "l": [], "m": {}, "x": {"upper": null}, "z": "-1", "t": "µ\u0002£gè񱍖"}, "mode": "restricted", "strict": false, "upstream": {"err": "ValueError"}, "status": "pass", "class": "string-literal-forms"}
-{"expr": "0 > ().b", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "AttributeError"}, "status": "divergence", "class": "tuple-vs-list", "reason": "Value has no tuple: tuple displays behave as lists (distribution, equality, concatenation, str())"}
-{"expr": "0 != ().b", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "AttributeError"}, "status": "divergence", "class": "tuple-vs-list", "reason": "Value has no tuple: tuple displays behave as lists (distribution, equality, concatenation, str())"}
-{"expr": "to_pascal(())", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"err": "TypeError"}, "status": "divergence", "class": "tuple-vs-list", "reason": "Value has no tuple: tuple displays behave as lists (distribution, equality, concatenation, str())"}
-{"expr": "to_camel((0,))", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "AttributeError"}, "status": "divergence", "class": "tuple-vs-list", "reason": "Value has no tuple: tuple displays behave as lists (distribution, equality, concatenation, str())"}
+{"expr": "0 > ().b", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "AttributeError"}, "status": "pass", "class": "tuple-vs-list"}
+{"expr": "0 != ().b", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "AttributeError"}, "status": "pass", "class": "tuple-vs-list"}
+{"expr": "to_pascal(())", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"err": "TypeError"}, "status": "pass", "class": "tuple-vs-list"}
+{"expr": "to_camel((0,))", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "AttributeError"}, "status": "pass", "class": "tuple-vs-list"}
 {"expr": "0[:0]", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback", "reason": ""}
 {"expr": "0 @ 2", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback", "reason": ""}
 {"expr": "0[0:0]", "bindings": {}, "mode": "unrestricted", "strict": true, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback", "reason": ""}
@@ -39,7 +39,7 @@
 {"expr": "[].strip()", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback", "reason": ""}
 {"expr": "[].split()", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback", "reason": ""}
 {"expr": "lambda q: 0", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback", "reason": ""}
-{"expr": "capitalize(set())", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "divergence", "class": "unrestricted-fallback", "reason": "restricted rejection retried by asteval (result null) differs"}
+{"expr": "capitalize(set())", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-fallback"}
 {"expr": "r = uuid()", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "ValueError"}, "status": "pass", "class": "unrestricted-namespace"}
 {"expr": "f\"{{0}:,}\"", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "unrestricted-namespace"}
 {"expr": "tmp = Upper()", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"err": "ValueError"}, "status": "pass", "class": "unrestricted-namespace"}

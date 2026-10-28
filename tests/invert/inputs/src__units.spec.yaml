@@ -1,0 +1,12 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      kg: {populated_from: weight, unit_conversion: {target_unit: g}}
+      lb: {populated_from: mass_sym, unit_conversion: {target_unit: g}}
+      iec: {populated_from: mass_iec, unit_conversion: {target_unit: g}}
+      iec_only: {populated_from: mass_iec_only, unit_conversion: {target_unit: g}}
+      abbr: {populated_from: mass_abbr, unit_conversion: {target_unit: g}}
+      none: {populated_from: mass_none, unit_conversion: {target_unit: g}}
+      inh: {populated_from: height, unit_conversion: {target_unit: cm}}
+      attr: {populated_from: weight_attr, unit_conversion: {target_unit: g}}

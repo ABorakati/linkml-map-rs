@@ -1,0 +1,53 @@
+id: https://example.org/fz
+name: fz
+slots:
+  a: {}
+  x-y:
+    range: Mode
+    key: true
+    is_a: a
+  f:
+    range: Kind
+    key: true
+  c:
+    range: Kind
+    multivalued: true
+    identifier: true
+  g:
+    range: date
+    unit:
+      symbol: m
+    is_a: a
+  b:
+    multivalued: true
+    unit:
+      iec61360code: kg
+      abbreviation: m
+      ucum_code: u1
+classes:
+  Alpha:
+    slots:
+    - a
+    - f
+    - x-y
+    slot_usage:
+      x-y:
+        multivalued: false
+        inlined_as_list: true
+        identifier: true
+      a:
+        range: boolean
+        multivalued: true
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

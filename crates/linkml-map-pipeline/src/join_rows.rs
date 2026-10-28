@@ -64,9 +64,16 @@ impl Ty {
             Value::Complex(_) => Self::Str,
             Value::Float(_) => Self::Double,
             Value::Str(_) | Value::Temporal(_) => Self::Str,
-            Value::List(items) => Self::List(Box::new(
+            // A tuple is written as a JSON array; a set has no JSON form.
+            Value::List(items) | Value::Tuple(items) => Self::List(Box::new(
                 items.iter().map(Self::of).fold(Self::Null, Self::merge),
             )),
+            Value::Set(_) => Self::Json,
+            Value::Dict(d) => Self::Struct(
+                d.iter()
+                    .map(|(k, v)| (linkml_map_core::value::json_key(k), Self::of(v)))
+                    .collect(),
+            ),
             Value::Map(m) => {
                 Self::Struct(m.iter().map(|(k, v)| (k.clone(), Self::of(v))).collect())
             }

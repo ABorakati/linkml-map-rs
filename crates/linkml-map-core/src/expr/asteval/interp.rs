@@ -501,7 +501,7 @@ impl<'a> Interp<'a> {
         }
         let mut s = PySet::new();
         for x in items {
-            set_add(&mut s, hkey(&x)?, x);
+            set_add(&mut s, x)?;
         }
         Ok(Py::Set(rf(s)))
     }
@@ -599,7 +599,7 @@ impl<'a> Interp<'a> {
         let mut s = PySet::new();
         if let Py::List(l) = r {
             for x in l.borrow().iter() {
-                set_add(&mut s, hkey(x)?, x.clone());
+                set_add(&mut s, x.clone())?;
             }
         }
         Ok(Py::Set(rf(s)))

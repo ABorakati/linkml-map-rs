@@ -1,0 +1,41 @@
+class_derivations:
+- name: Beta
+  slot_derivations:
+    a:
+      populated_from: e
+      expr: 'k
+
+        '
+      unit_conversion:
+        source_magnitude_slot: m
+        target_magnitude_slot: tm
+        source_unit: m
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+      hide: true
+      cast_collection_as: SingleValued
+- name: Gamma
+  populated_from: Beta
+  slot_derivations:
+    t1:
+      expr: e
+      range: string
+      unit_conversion:
+        source_unit_slot: ''
+        source_magnitude_slot: m
+        target_magnitude_slot: tm
+        source_unit: m
+        source_unit_scheme: symbol
+      stringification:
+        delimiter: ','
+        over_slots:
+        - k
+        - k
+    a:
+      expr: a + 1
+      range: Kind
+      stringification:
+        delimiter: ','
+        reversed: true
+      cast_collection_as: MultiValuedList
+- name: Target2

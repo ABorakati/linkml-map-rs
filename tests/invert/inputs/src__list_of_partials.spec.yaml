@@ -1,0 +1,8 @@
+- class_derivations:
+    A:
+      populated_from: Person
+      slot_derivations:
+        x: {populated_from: name}
+- enum_derivations:
+    E:
+      populated_from: Status

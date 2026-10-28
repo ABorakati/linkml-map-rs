@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      a: {expr: "nämé_1"}
+      b: {expr: "名前"}
+      c: {expr: "a-b"}

@@ -1,0 +1,40 @@
+class_derivations:
+- name: Target1
+- name: Beta
+  slot_derivations:
+    b: null
+- name: Target1
+  populated_from: Alpha
+  slot_derivations:
+    b: null
+    t3:
+      populated_from: ''
+      range: date
+      class_derivations:
+      - name: Nested
+        populated_from: Alpha
+        slot_derivations:
+          n:
+            populated_from: att1
+    t2:
+      populated_from: ''
+      range: date
+      class_derivations:
+      - name: Nested
+        populated_from: Alpha
+        slot_derivations:
+          n:
+            populated_from: att1
+enum_derivations:
+  E3:
+    populated_from: Kind
+    hide: true
+    permissible_value_derivations:
+      W:
+        expr: y
+  Kind:
+    populated_from: Kind
+    expr: x
+    permissible_value_derivations:
+      W:
+        populated_from: []

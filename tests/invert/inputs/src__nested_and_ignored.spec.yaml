@@ -1,0 +1,24 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    description: ignored
+    is_a: Thing
+    mixins: [M]
+    joins: {x: {alias: y}}
+    slot_derivations:
+      addr:
+        populated_from: home
+        range: Address
+        class_derivations:
+          - name: Addr
+            populated_from: Address
+            slot_derivations:
+              st: {populated_from: street}
+      v:
+        populated_from: name
+        value_mappings: {a: {key: a, value: b}}
+        value: 3
+        missing_values: [-9]
+        mirror_source: true
+        description: x
+      m: {populated_from: age, offset: {offset_value: 1.0, offset_field: age}}

@@ -1,0 +1,11 @@
+class_derivations:
+  A:
+    populated_from: Fine
+    slot_derivations:
+      x: {populated_from: ok}
+      n:
+        class_derivations:
+          - name: N
+            populated_from: UsesUndefined
+            slot_derivations:
+              y: {populated_from: ok}

@@ -1,0 +1,13 @@
+class_derivations:
+- name: MappingSet
+  populated_from: MappingSet
+  slot_derivations:
+    mappings:
+      name: mappings
+      populated_from: mappings
+- name: Mapping
+  populated_from: Mapping
+  slot_derivations:
+    predicate:
+      name: predicate
+      populated_from: predicate_id

@@ -320,7 +320,7 @@ fn key_of(value: &Value) -> Result<KeyKind, LoadError> {
         Value::Float(f) => py_float_repr(*f),
         Value::Decimal(d) => d.to_sci_string(),
         Value::Temporal(t) => t.to_string(),
-        Value::List(_) | Value::Map(_) => {
+        Value::List(_) | Value::Map(_) | Value::Tuple(_) | Value::Set(_) | Value::Dict(_) => {
             return Err(LoadError::Yaml(
                 "while constructing a mapping: found unhashable key".to_owned(),
             ));

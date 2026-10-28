@@ -1,0 +1,7 @@
+class_derivations:
+  Staff:
+    populated_from: Employee
+    slot_derivations:
+      f: {populated_from: friends, range: Person}
+      a: {populated_from: age, range: integer}
+      i: {populated_from: id}

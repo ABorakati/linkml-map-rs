@@ -1,0 +1,16 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    name:
+      name: name
+      populated_from: a
+    b:
+      name: b
+      populated_from: b
+    'NULL':
+      name: 'NULL'
+      populated_from: c
+    d:
+      name: d
+      populated_from: d

@@ -1,0 +1,9 @@
+enum_derivations:
+  Mode:
+    name: Mode
+    populated_from: E3
+    permissible_value_derivations:
+      P:
+        name: P
+        populated_from:
+        - R

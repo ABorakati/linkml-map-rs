@@ -174,6 +174,14 @@ impl ObjectIndex {
         self.by_id.get(id)
     }
 
+    /// Look up an object by exactly its class and identifier, without
+    /// [`ObjectIndex::get`]'s fallback to an object of another class: upstream's
+    /// `_source_object_cache.get((class, id))`.
+    // gate:internal — engine-only helper, not part of the binding-consumed surface.
+    pub fn get_in_class(&self, class: &str, id: &str) -> Option<&Value> {
+        self.by_class_id.get(&(class.to_string(), id.to_string()))
+    }
+
     /// True if `id` is a known identifier in the flat index.
     pub fn contains_id(&self, id: &str) -> bool {
         self.by_id.contains_key(id)

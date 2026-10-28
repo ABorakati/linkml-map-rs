@@ -1,0 +1,7 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      ident: {populated_from: id}
+      label: {populated_from: name}
+      years: {populated_from: age}

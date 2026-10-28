@@ -1,0 +1,79 @@
+class_derivations:
+- name: Gamma
+  populated_from: Alpha
+  slot_derivations:
+    a:
+      populated_from: ghost_slot
+      expr: a + 1
+      hide: false
+      class_derivations:
+      - name: Nested
+        populated_from: Beta
+        slot_derivations:
+          n:
+            populated_from: att2
+    b:
+      populated_from: full name
+      hide: false
+    c:
+      populated_from: ghost_slot
+      expr: a
+      unit_conversion:
+        source_unit: m
+        source_unit_scheme: symbol
+      stringification:
+        delimiter: ''
+        reversed: true
+        over_slots: []
+      class_derivations:
+      - name: Nested
+        populated_from: Beta
+        slot_derivations:
+          n:
+            populated_from: full name
+- name: Target2
+  populated_from: ''
+  slot_derivations:
+    t1:
+      range: Alpha
+      unit_conversion:
+        target_unit: cm
+        source_magnitude_slot: m
+        target_unit_scheme: ucum_code
+      value_mappings:
+        x:
+          key: x
+          value: y
+      class_derivations:
+      - name: Nested
+        populated_from: Alpha
+        slot_derivations:
+          n:
+            populated_from: x-y
+enum_derivations:
+  E3:
+    populated_from: Ghost
+    expr: x
+    permissible_value_derivations:
+      Y:
+        populated_from:
+        - S
+      W:
+        populated_from:
+        - P
+      Q:
+        expr: y
+      Z:
+        populated_from: []
+        expr: y
+  Kind:
+    populated_from: Mode
+    hide: true
+    permissible_value_derivations:
+      Z: null
+      X:
+        populated_from:
+        - S
+      Q:
+        populated_from: S
+        expr: y

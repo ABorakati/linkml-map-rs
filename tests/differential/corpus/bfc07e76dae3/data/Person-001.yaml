@@ -1,0 +1,5 @@
+id: p1
+code: '12'
+codes: ['1','2']
+kind: a
+addr: {street: s, zip: '34', zips: ['5','6'], kind: b}

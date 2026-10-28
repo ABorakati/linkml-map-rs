@@ -1,0 +1,5 @@
+class_derivations:
+- name: C
+  populated_from: C
+- name: D
+  populated_from: D

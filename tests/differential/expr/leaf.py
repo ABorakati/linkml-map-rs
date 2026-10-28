@@ -101,6 +101,13 @@ def rvalue(rng: random.Random, depth: int = 0):
         return [rvalue(rng, depth + 1) for _ in range(rng.randint(0, 3))]
     if depth < 3 and r < 0.3:
         return {rng.choice(["a", "b", "", "é", "k 1", "x\"y", "\n", "1"]): rvalue(rng, depth + 1) for _ in range(rng.randint(0, 3))}
+    if depth < 3 and r < 0.36:
+        return tuple(rvalue(rng, depth + 1) for _ in range(rng.randint(0, 3)))
+    if depth < 3 and r < 0.40:
+        # integers, floats and tuples of them only: their set order is the same in every process
+        return {rng.choice([0, 1, -1, 7, 64, 2.5, True, None, (1, 2), (), 2**40]) for _ in range(rng.randint(0, 5))}
+    if depth < 3 and r < 0.44:
+        return {rng.choice([1, 2.5, None, True, (1, 2), "a", 0, -3, 1.0]): rvalue(rng, depth + 1) for _ in range(rng.randint(0, 3))}
     return rscalar(rng)
 
 

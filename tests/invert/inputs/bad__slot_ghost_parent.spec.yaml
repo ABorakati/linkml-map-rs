@@ -1,0 +1,5 @@
+class_derivations:
+  A:
+    populated_from: UsesBadParents
+    slot_derivations:
+      x: {populated_from: child}

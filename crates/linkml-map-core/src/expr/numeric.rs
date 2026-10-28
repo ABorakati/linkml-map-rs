@@ -88,6 +88,15 @@ impl From<NumError> for ExprError {
 
 /// `x op y` for two numbers, after the `safe_*` checks of simpleeval.
 pub(super) fn native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Option<Value>> {
+    // `bool.__and__`/`__or__`/`__xor__` keep two bools a bool.
+    if let (Value::Bool(a), Value::Bool(b)) = (left, right) {
+        match op {
+            BinOp::BitAnd => return Ok(Some(Value::Bool(*a & *b))),
+            BinOp::BitOr => return Ok(Some(Value::Bool(*a | *b))),
+            BinOp::BitXor => return Ok(Some(Value::Bool(*a ^ *b))),
+            _ => {}
+        }
+    }
     let (Some(l), Some(r)) = (as_arith(left), as_arith(right)) else {
         return Ok(None);
     };

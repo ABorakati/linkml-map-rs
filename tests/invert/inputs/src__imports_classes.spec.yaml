@@ -1,0 +1,7 @@
+class_derivations:
+  Place:
+    populated_from: Address
+    slot_derivations:
+      st: {populated_from: street, range: string}
+      zp: {populated_from: zip, range: integer}
+      home: {populated_from: homes, range: Address}

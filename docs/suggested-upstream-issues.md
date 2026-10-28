@@ -84,6 +84,12 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 
 ## Join engine and lookup index
 
+- `_perform_join_resolution` tests `field_path in class_induced_slots(joined_class)`, comparing a string with
+  `SlotDefinition` objects, so it is always false and joined values are never range-, cardinality-, datatype- or
+  enum-coerced.
+- `_resolve_joined_row` queries `lookup_index.lookup_row(table_name=<join alias>)`, so a join's `class_named` has no
+  effect on which table is read.
+- `DynObj.__getattr__` returns `None` for every missing attribute, hiding typos such as `Person.x` or `src.x`.
 - The set-based join engine's row order depends on DuckDB internals (a `LEFT JOIN` probe returns matches first,
   caches small outputs, and changes order with several joins and with file size). An `ORDER BY` on the primary row
   number would make it deterministic and equal to the per-row fallback.
@@ -123,6 +129,20 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - `target_definition.attributes`/`slot_usage` is never applied to a copied class.
 - `exclude` without `copy_all` raises `KeyError`; `_rewire_parent` raises `AttributeError` for a non-source parent.
 - `derive-schema` ignores `source_schema_patches`.
+
+## invert (`TransformationSpecificationInverter`)
+
+Details in [`invert-parity.md`](invert-parity.md).
+
+- The `if inverted_ed.expr:` guard tests the freshly built inverse instead of `ed.expr`, so it never fires and the
+  strict "Cannot invert slot derivation" branch (`elif self.strict`) is dead.
+- An unresolvable source slot raises `AttributeError: 'NoneType' object has no attribute 'range'` instead of
+  `NonInvertibleSpecificationError`.
+- Unit inversion uses only `ucum_code` then `symbol`, ignoring `iec61360code`, `abbreviation` and `descriptive_name`.
+- `re.match(r"^\w+$", expr)` accepts a trailing newline (should be `fullmatch`).
+- Two slots mapped to the same target silently overwrite each other; `value_mappings`, nested derivations and `hide`
+  are dropped without warning.
+- `_pre_flight_validate` can raise on a broken source schema although it is documented as informational.
 
 ## Not linkml-map (third-party)
 

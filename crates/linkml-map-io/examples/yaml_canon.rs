@@ -61,6 +61,24 @@ fn canon(out: &mut String, v: &Value) {
             }
             out.push('}')
         }
+        // The loader builds none of these; spelled out for completeness.
+        Value::Tuple(l) => {
+            out.push('T');
+            canon(out, &Value::List(l.clone()))
+        }
+        Value::Set(set) => {
+            out.push('S');
+            canon(out, &Value::List(set.to_vec()))
+        }
+        Value::Dict(d) => {
+            out.push('M');
+            for (k, x) in d.iter() {
+                canon(out, k);
+                out.push(':');
+                canon(out, x);
+                out.push(',');
+            }
+        }
     }
 }
 fn main() {

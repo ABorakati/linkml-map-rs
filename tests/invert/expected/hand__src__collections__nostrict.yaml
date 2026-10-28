@@ -1,0 +1,62 @@
+class_derivations:
+- name: Person
+  populated_from: Agent
+  slot_derivations:
+    friends:
+      name: friends
+      populated_from: f_plain
+      cast_collection_as: MultiValuedList
+    by_id:
+      name: by_id
+      populated_from: b_range
+      range: Person
+      cast_collection_as: MultiValuedDict
+      dictionary_key: id
+    keyed:
+      name: keyed
+      populated_from: k
+      range: Keyed
+      cast_collection_as: MultiValuedDict
+      dictionary_key: k
+    inl_nokey:
+      name: inl_nokey
+      populated_from: nk
+      range: NoId
+    one:
+      name: one
+      populated_from: one
+      range: Person
+      dictionary_key: id
+    refs:
+      name: refs
+      populated_from: refs
+      range: Person
+      dictionary_key: id
+    inl_single:
+      name: inl_single
+      populated_from: single
+      range: Person
+      dictionary_key: id
+    tags:
+      name: tags
+      populated_from: tags
+    nick_list:
+      name: nick_list
+      populated_from: nicks
+    homes:
+      name: homes
+      populated_from: homes
+      range: Address
+      cast_collection_as: MultiValuedDict
+      dictionary_key: addr_id
+    home:
+      name: home
+      populated_from: home
+      range: Address
+      dictionary_key: addr_id
+    multi_ident:
+      name: multi_ident
+      populated_from: twins
+      range: Twin
+      cast_collection_as: MultiValuedDict
+      dictionary_key: a_id

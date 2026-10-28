@@ -1,0 +1,7 @@
+enum_derivations:
+  Mode:
+    name: Mode
+    populated_from: Mode
+  Kind:
+    name: Kind
+    populated_from: Kind

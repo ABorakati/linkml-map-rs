@@ -1,0 +1,7 @@
+class_derivations:
+  A:
+    populated_from: Person
+    slot_derivations:
+      x: {populated_from: name}
+  B: {}
+  C:

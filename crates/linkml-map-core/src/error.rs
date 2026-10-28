@@ -65,7 +65,7 @@ pub enum Error {
 
     /// A transformation specification could not be inverted (e.g. a non-trivial
     /// expression with no reverse). Mirrors Python `NonInvertibleSpecificationError`.
-    #[error("non-invertible specification: {0}")]
+    #[error("{0}")]
     NonInvertible(String),
 
     /// Implicit-join synthesis (spec normalisation) failed loud: a cross-table

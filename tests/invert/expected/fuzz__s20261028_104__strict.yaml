@@ -1,0 +1,4 @@
+enum_derivations:
+  Kind:
+    name: Kind
+    populated_from: Kind

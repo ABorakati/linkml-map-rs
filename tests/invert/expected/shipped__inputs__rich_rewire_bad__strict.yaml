@@ -1,0 +1,7 @@
+class_derivations:
+- name: Person
+  populated_from: Worker
+- name: Person
+  populated_from: Human
+- name: Employee
+  populated_from: Employee

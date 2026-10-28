@@ -1,0 +1,8 @@
+class_derivations:
+  Ägent:
+    populated_from: Person
+    slot_derivations:
+      "näme": {populated_from: name}
+      "with space": {populated_from: age}
+      "yes": {populated_from: id}
+      "123": {populated_from: tags}

@@ -24,16 +24,17 @@
 //!   element as in `_null_safe`); otherwise a `None` argument gives `None`.
 //!   There is no recursion: a nested list is handed to `f` as a list.
 //!
-//! PARITY: [`Value`] has no tuple, set or bytes type. A tuple literal is a list
-//! (so `is_list((1, 2))` is true here and a list distributes where a tuple would
-//! not) and `startswith`/`endswith` accept a list of strings where Python wants a
-//! tuple.
+//! A tuple is a [`Value::Tuple`] and a set a [`Value::Set`]: neither is a list, so
+//! neither distributes, `is_list` is false for both and `startswith`/`endswith`
+//! take a tuple (not a list) of affixes.
+//!
+//! PARITY: [`Value`] has no bytes type.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use super::error::{ExprError, ExprResult};
-use super::eval::{eval_subscript, membership, try_py_str};
+use super::eval::{eval_subscript, expr_truthy, membership, try_py_str};
 use super::numeric;
 use super::parser::BinOp;
 use super::{compound, pystr, slugify};
@@ -120,7 +121,7 @@ const PLAIN_FUNCTIONS: &[(&str, Builtin)] = &[
 /// [`compound`]).
 const COMPOUND_FUNCTIONS: &[(&str, Builtin)] = &[
     ("list", list),
-    ("tuple", list),
+    ("tuple", tuple),
     ("dict", |args| compound::dict(args, Vec::new())),
     ("set", compound::set),
 ];
@@ -251,7 +252,9 @@ fn tn(v: &Value) -> &'static str {
         Value::Temporal(t) => t.type_name(),
         Value::Str(_) => "str",
         Value::List(_) => "list",
-        Value::Map(_) => "dict",
+        Value::Map(_) | Value::Dict(_) => "dict",
+        Value::Tuple(_) => "tuple",
+        Value::Set(_) => "set",
     }
 }
 
@@ -317,11 +320,13 @@ fn clamped_int_arg(v: &Value) -> ExprResult<i64> {
     }
 }
 
-/// Python iteration over a value: lists by element, strings by character and
-/// dicts by key.
+/// Python iteration over a value: lists and tuples by element, strings by
+/// character, sets in their table order and dicts by key.
 pub(super) fn py_iter(v: &Value) -> ExprResult<Cow<'_, [Value]>> {
     match v {
-        Value::List(items) => Ok(Cow::Borrowed(items)),
+        Value::List(items) | Value::Tuple(items) => Ok(Cow::Borrowed(items)),
+        Value::Set(set) => Ok(Cow::Owned(set.to_vec())),
+        Value::Dict(d) => Ok(Cow::Owned(d.keys().cloned().collect())),
         Value::Str(s) => Ok(Cow::Owned(
             s.chars().map(|c| Value::Str(c.to_string())).collect(),
         )),
@@ -491,7 +496,9 @@ pub(super) fn py_cmp(a: &Value, b: &Value, symbol: &str) -> ExprResult<Option<Or
     }
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => Ok(Some(x.cmp(y))),
-        (Value::List(x), Value::List(y)) => {
+        // Lists, and tuples, order lexicographically (`list_richcompare`,
+        // `tuplerichcompare`); a list and a tuple do not order.
+        (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
             // The first position whose items differ decides; otherwise length.
             for (p, q) in x.iter().zip(y) {
                 if !p.py_eq(q) {
@@ -500,12 +507,28 @@ pub(super) fn py_cmp(a: &Value, b: &Value, symbol: &str) -> ExprResult<Option<Or
             }
             Ok(Some(x.len().cmp(&y.len())))
         }
+        // Sets order by inclusion: `None` when neither contains the other.
+        (Value::Set(x), Value::Set(y)) => Ok(if x.set_equal(y) {
+            Some(Ordering::Equal)
+        } else if x.is_subset(y) {
+            Some(Ordering::Less)
+        } else if y.is_subset(x) {
+            Some(Ordering::Greater)
+        } else {
+            None
+        }),
         _ => err(format!(
             "'{symbol}' not supported between instances of '{}' and '{}'",
             tn(a),
             tn(b)
         )),
     }
+}
+
+/// Python's ordering of two values: `None` when they do not order (a
+/// `TypeError`), `Some(None)` when unordered (NaN).
+pub(crate) fn py_order(a: &Value, b: &Value) -> Option<Option<Ordering>> {
+    py_cmp(a, b, "<").ok()
 }
 
 fn py_lt(a: &Value, b: &Value) -> ExprResult<bool> {
@@ -556,8 +579,10 @@ fn len(args: &[Value]) -> ExprResult<Value> {
     check_arity("len", args, 1, 1)?;
     match &args[0] {
         Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
-        Value::List(l) => Ok(Value::Int(l.len() as i64)),
+        Value::List(l) | Value::Tuple(l) => Ok(Value::Int(l.len() as i64)),
         Value::Map(m) => Ok(Value::Int(m.len() as i64)),
+        Value::Set(s) => Ok(Value::Int(s.len() as i64)),
+        Value::Dict(d) => Ok(Value::Int(d.len() as i64)),
         other => err(format!("object of type '{}' has no len()", tn(other))),
     }
 }
@@ -574,6 +599,9 @@ fn py_add(a: &Value, b: &Value) -> ExprResult<Value> {
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => Ok(Value::Str(format!("{x}{y}"))),
         (Value::List(x), Value::List(y)) => Ok(Value::List(x.iter().chain(y).cloned().collect())),
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            Ok(Value::Tuple(x.iter().chain(y).cloned().collect()))
+        }
         (Value::Decimal(_), _) | (_, Value::Decimal(_)) => err("Decimal addition is not supported"),
         _ => match (as_num(a), as_num(b)) {
             (Some(Num::Dec(_)), _) | (_, Some(Num::Dec(_))) => unsupported(),
@@ -787,19 +815,20 @@ fn merge_sort(mut items: Vec<Value>) -> ExprResult<Vec<Value>> {
 
 fn any(args: &[Value]) -> ExprResult<Value> {
     check_arity("any", args, 1, 1)?;
-    Ok(Value::Bool(py_iter(&args[0])?.iter().any(Value::is_truthy)))
+    Ok(Value::Bool(py_iter(&args[0])?.iter().any(expr_truthy)))
 }
 
 fn all(args: &[Value]) -> ExprResult<Value> {
     check_arity("all", args, 1, 1)?;
-    Ok(Value::Bool(py_iter(&args[0])?.iter().all(Value::is_truthy)))
+    Ok(Value::Bool(py_iter(&args[0])?.iter().all(expr_truthy)))
 }
 
 /// `_list_reversed`: `list(reversed(x))`.
 fn reversed(args: &[Value]) -> ExprResult<Value> {
     check_arity("_list_reversed", args, 1, 1)?;
     match &args[0] {
-        Value::List(_) | Value::Str(_) | Value::Map(_) => {
+        // `reversed(dict)` yields the keys backwards; a set has no order to reverse.
+        Value::List(_) | Value::Tuple(_) | Value::Str(_) | Value::Map(_) | Value::Dict(_) => {
             let mut items = py_iter(&args[0])?.into_owned();
             items.reverse();
             Ok(Value::List(items))
@@ -812,11 +841,11 @@ fn reversed(args: &[Value]) -> ExprResult<Value> {
 fn first_or_last(name: &str, args: &[Value], index: i64) -> ExprResult<Value> {
     check_arity(name, args, 1, 1)?;
     let x = &args[0];
-    if !x.is_truthy() {
+    if !expr_truthy(x) {
         return Ok(Value::Null);
     }
     if let Value::Map(_) = x {
-        // A non-empty dict has no integer key here.
+        // A non-empty record map has no integer key.
         return err(format!("KeyError: {index}"));
     }
     eval_subscript(x, &Value::Int(index))
@@ -849,7 +878,7 @@ fn bool_(args: &[Value]) -> ExprResult<Value> {
             args.len()
         ));
     }
-    Ok(Value::Bool(args.first().is_some_and(Value::is_truthy)))
+    Ok(Value::Bool(args.first().is_some_and(expr_truthy)))
 }
 
 /// A float as an `int`: `ValueError` for NaN and `OverflowError` for the
@@ -1263,19 +1292,12 @@ fn replace(args: &[Value]) -> ExprResult<Value> {
 fn tail_match(name: &str, args: &[Value], at_start: bool) -> ExprResult<Value> {
     check_arity(name, args, 2, 4)?;
     let s = self_str(name, &args[0])?;
-    let affixes: Vec<&str> = match &args[1] {
-        Value::Str(a) => vec![a.as_str()],
-        // PARITY: Python takes a tuple here; a list is the nearest `Value`.
-        Value::List(items) => items
-            .iter()
-            .map(|item| match item {
-                Value::Str(a) => Ok(a.as_str()),
-                other => err(format!(
-                    "tuple for {name} must only contain str, not {}",
-                    tn(other)
-                )),
-            })
-            .collect::<ExprResult<_>>()?,
+    // The affixes are looked at one after another, so a non-string one is a
+    // `TypeError` only when no earlier one has matched (CPython's tuple loop).
+    let affixes: Vec<&Value> = match &args[1] {
+        Value::Str(_) => vec![&args[1]],
+        // Only a tuple of strings; a list is a `TypeError`.
+        Value::Tuple(items) => items.iter().collect(),
         other => {
             return err(format!(
                 "{name} first arg must be str or a tuple of str, not {}",
@@ -1283,16 +1305,29 @@ fn tail_match(name: &str, args: &[Value], at_start: bool) -> ExprResult<Value> {
             ));
         }
     };
+    let not_str = |item: &Value| -> ExprResult<bool> {
+        err(format!(
+            "tuple for {name} must only contain str, not {}",
+            tn(item)
+        ))
+    };
     let bound = |position: usize| args.get(position).map(clamped_int_arg).transpose();
     let (start, end) = (bound(2)?, bound(3)?);
     if start.is_none() && end.is_none() {
-        return Ok(Value::Bool(affixes.iter().any(|a| {
-            if at_start {
-                s.starts_with(a)
+        for item in affixes {
+            let Value::Str(a) = item else {
+                not_str(item)?;
+                continue;
+            };
+            if if at_start {
+                s.starts_with(a.as_str())
             } else {
-                s.ends_with(a)
+                s.ends_with(a.as_str())
+            } {
+                return Ok(Value::Bool(true));
             }
-        })));
+        }
+        return Ok(Value::Bool(false));
     }
     // ADJUST_INDICES: slice-style clamping, except that `start` is not clamped
     // to the length (so a start past the end never matches).
@@ -1309,16 +1344,22 @@ fn tail_match(name: &str, args: &[Value], at_start: bool) -> ExprResult<Value> {
     };
     let end = end.map_or(length, clamp_end);
     let start = start.map_or(0, |b| if b < 0 { (b + length).max(0) } else { b });
-    let matched = affixes.iter().any(|affix| {
+    for item in affixes {
+        let Value::Str(affix) = item else {
+            not_str(item)?;
+            continue;
+        };
         let affix: Vec<char> = affix.chars().collect();
         let n = affix.len() as i64;
         if end - n < start {
-            return false;
+            continue;
         }
         let from = if at_start { start } else { end - n } as usize;
-        chars[from..from + affix.len()] == affix[..]
-    });
-    Ok(Value::Bool(matched))
+        if chars[from..from + affix.len()] == affix[..] {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
 }
 
 fn startswith(args: &[Value]) -> ExprResult<Value> {
@@ -1409,7 +1450,15 @@ fn substr(args: &[Value]) -> ExprResult<Value> {
                 Vec::new()
             }))
         }
-        Value::Map(_) => err("unhashable type: 'slice'"),
+        Value::Tuple(items) => {
+            let (from, to) = range(items.len());
+            Ok(Value::Tuple(if from < to {
+                items[from..to].to_vec()
+            } else {
+                Vec::new()
+            }))
+        }
+        Value::Map(_) | Value::Dict(_) => err("unhashable type: 'slice'"),
         other => err(format!("'{}' object is not subscriptable", tn(other))),
     }
 }
@@ -1461,6 +1510,31 @@ fn to_pascal(args: &[Value]) -> ExprResult<Value> {
 
 fn to_camel(args: &[Value]) -> ExprResult<Value> {
     check_arity("_to_camel", args, 1, 1)?;
+    // `inflection.camelize(s, uppercase_first_letter=False)` is
+    // `s[0].lower() + camelize(s)[1:]`: `s[0]` and `.lower()` run before the
+    // `re.sub` that rejects a non-string, so a tuple's or dict's first item is
+    // read (and must be a string) first.
+    let first =
+        match &args[0] {
+            Value::Tuple(items) => Some(items.first().ok_or_else(|| {
+                ExprError::Uncaught("IndexError: tuple index out of range".into())
+            })?),
+            Value::Dict(d) => Some(
+                d.get(&Value::Int(0))
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| ExprError::Uncaught("KeyError: 0".into()))?,
+            ),
+            _ => None,
+        };
+    if let Some(first) = first
+        && !matches!(first, Value::Str(_))
+    {
+        return Err(ExprError::Uncaught(format!(
+            "AttributeError: '{}' object has no attribute 'lower'",
+            tn(first)
+        )));
+    }
     // PARITY: `inflection.camelize("", uppercase_first_letter=False)` indexes
     // `string[0]` and raises IndexError for the empty string.
     match pystr::camelize_lower(inflection_arg(&args[0])?) {
@@ -1527,14 +1601,19 @@ fn is_numeric(args: &[Value]) -> ExprResult<Value> {
 fn case(args: &[Value]) -> ExprResult<Value> {
     for cond in args {
         let pair: Cow<'_, [Value]> = match cond {
-            Value::List(_) | Value::Str(_) | Value::Map(_) => py_iter(cond)?,
+            Value::List(_)
+            | Value::Tuple(_)
+            | Value::Str(_)
+            | Value::Map(_)
+            | Value::Set(_)
+            | Value::Dict(_) => py_iter(cond)?,
             other => {
                 return err(format!("cannot unpack non-iterable {} object", tn(other)));
             }
         };
         match &*pair {
             [is_true, val] => {
-                if is_true.is_truthy() {
+                if expr_truthy(is_true) {
                     return Ok(val.clone());
                 }
             }
@@ -1550,13 +1629,20 @@ fn case(args: &[Value]) -> ExprResult<Value> {
     Ok(Value::Null)
 }
 
-/// `list(iterable)` and `tuple(iterable)`.
-///
-/// PARITY: a tuple is a list here.
+/// `list(iterable)`.
 fn list(args: &[Value]) -> ExprResult<Value> {
     check_arity("list", args, 0, 1)?;
     match args.first() {
         None => Ok(Value::List(Vec::new())),
         Some(iterable) => Ok(Value::List(py_iter(iterable)?.into_owned())),
+    }
+}
+
+/// `tuple(iterable)`.
+fn tuple(args: &[Value]) -> ExprResult<Value> {
+    check_arity("tuple", args, 0, 1)?;
+    match args.first() {
+        None => Ok(Value::Tuple(Vec::new())),
+        Some(iterable) => Ok(Value::Tuple(py_iter(iterable)?.into_owned())),
     }
 }

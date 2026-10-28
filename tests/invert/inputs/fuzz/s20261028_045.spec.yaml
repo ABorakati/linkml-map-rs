@@ -1,0 +1,14 @@
+class_derivations: []
+enum_derivations:
+  Kind:
+    populated_from: Ghost
+    expr: x
+  E3:
+    populated_from: Ghost
+    permissible_value_derivations:
+      Y:
+        populated_from: R
+        expr: y
+      S:
+        populated_from: []
+        expr: y

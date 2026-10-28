@@ -94,8 +94,9 @@ class Transformer:
         """Transform a single object.
 
         Values cross the boundary by direct conversion (no JSON round trip):
-        ``None``/``bool``/``int`` (of any size)/``float``/``complex``/``str``/
-        ``list``/``dict`` keep their types and dict order. A slot with ``range: decimal`` comes back as an
+        ``None``/``bool``/``int`` (of any size)/``float``/``complex``/``str``/``list``/``tuple``/``set``/
+        ``dict`` keep their types and dict order (a ``frozenset`` comes back as a
+        ``set``; a dict with non-``str`` keys keeps its real keys). A slot with ``range: decimal`` comes back as an
         exact ``decimal.Decimal`` (``"52.30"`` -> ``Decimal("52.30")``, digits
         and exponent kept), and a ``decimal.Decimal`` in ``obj`` stays exact. Any
         other non-JSON scalar (``datetime.date``, ``pathlib.Path``, ...) is

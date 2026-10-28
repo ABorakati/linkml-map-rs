@@ -1,0 +1,61 @@
+id: https://example.org/fz
+name: fz
+slots:
+  b:
+    range: Kind
+    key: true
+  a:
+    range: Beta
+    multivalued: true
+    key: true
+    unit:
+      symbol: kg
+classes:
+  Alpha:
+    slots:
+    - b
+    - a
+    slot_usage:
+      a:
+        inlined: false
+  Beta:
+    mixins:
+    - Alpha
+    slots:
+    - b
+    - a
+    slot_usage:
+      a:
+        range: Beta
+        multivalued: false
+        inlined: false
+      b:
+        multivalued: false
+        inlined: true
+        inlined_as_list: false
+    attributes:
+      att1:
+        identifier: true
+        unit:
+          ucum_code: m
+  Gamma:
+    is_a: Beta
+    mixins:
+    - Alpha
+    attributes:
+      att1:
+        unit:
+          ucum_code: kg
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

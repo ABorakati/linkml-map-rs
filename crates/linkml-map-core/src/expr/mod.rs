@@ -31,10 +31,13 @@ mod slugify;
 pub mod stmt;
 mod syntax;
 
+pub(crate) use builtins::py_order;
 pub use error::{ExprError, ExprResult};
+pub(crate) use eval::with_declared_slots;
 pub use eval::{
-    Bindings, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr, eval_expr_with_mapping,
-    eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict, expression_asts, parse_expr,
+    Bindings, DeclaredSlots, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr,
+    eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict,
+    expression_asts, parse_expr,
 };
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
@@ -752,5 +755,13 @@ mod tests {
         let mut vars: Bindings = IndexMap::new();
         vars.insert("age_in_years".to_string(), Value::Int(33));
         assert_eq!(parsed.eval(&vars).unwrap(), s("33 years"));
+    }
+
+    #[test]
+    fn two_bools_stay_a_bool_under_the_bitwise_operators() {
+        assert_eq!(e("True | True"), Value::Bool(true));
+        assert_eq!(e("True & False"), Value::Bool(false));
+        assert_eq!(e("True ^ True"), Value::Bool(false));
+        assert_eq!(e("True | 2"), Value::Int(3));
     }
 }

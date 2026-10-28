@@ -1,0 +1,5 @@
+class_derivations:
+- name: GhostClass
+  populated_from: Gamma
+- name: GhostClass
+  populated_from: Target1

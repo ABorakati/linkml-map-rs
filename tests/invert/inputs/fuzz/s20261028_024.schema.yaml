@@ -1,0 +1,43 @@
+id: https://example.org/fz
+name: fz
+slots:
+  d:
+    range: string
+    multivalued: true
+  a:
+    range: float
+    multivalued: true
+    identifier: true
+    is_a: d
+  b:
+    range: float
+    multivalued: true
+    unit:
+      ucum_code: ''
+  e:
+    range: boolean
+    multivalued: true
+    is_a: d
+  g:
+    range: string
+    identifier: true
+classes:
+  Alpha:
+    slots:
+    - a
+    - d
+    - g
+    - b
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

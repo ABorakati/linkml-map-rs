@@ -235,6 +235,17 @@ pub(crate) fn to_f(n: NumV) -> PyRes<f64> {
     }
 }
 
+/// A set operator on two set objects; `x op x` is the same object, which
+/// CPython treats specially (a copy for `|` and `&`).
+fn set_binary(x: &Rf<PySet>, y: &Rf<PySet>, op: impl Fn(&PySet, &PySet) -> PySet) -> PySet {
+    let (xb, yb) = (x.borrow(), y.borrow());
+    if Rc::ptr_eq(x, y) {
+        // The same reference twice: `op` sees one object.
+        return op(&xb, &xb);
+    }
+    op(&xb, &yb)
+}
+
 fn sub(a: &Py, b: &Py) -> PyRes<Py> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(match (x, y) {
@@ -248,12 +259,7 @@ fn sub(a: &Py, b: &Py) -> PyRes<Py> {
         });
     }
     if let (Py::Set(x), Py::Set(y)) = (a, b) {
-        let (x, y) = (x.borrow(), y.borrow());
-        let out: PySet = x
-            .iter()
-            .filter(|(k, _)| !y.contains_key(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let out = set_binary(x, y, |x, y| x.difference(y));
         return Ok(Py::Set(rf(out)));
     }
     unsupported_operand("-", a, b)
@@ -502,44 +508,50 @@ fn bitop(op: BinOp, a: &Py, b: &Py) -> PyRes<Py> {
         return Ok(Py::from_big(pynum::bitwise(kind, x, y)));
     }
     if let (Py::Set(x), Py::Set(y)) = (a, b) {
-        let (x, y) = (x.borrow(), y.borrow());
-        let mut out = PySet::new();
-        match op {
-            BinOp::BitAnd => {
-                for (k, v) in x.iter() {
-                    if y.contains_key(k) {
-                        out.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            BinOp::BitOr => {
-                for (k, v) in x.iter().chain(y.iter()) {
-                    set_add(&mut out, k.clone(), v.clone());
-                }
-            }
-            _ => {
-                for (k, v) in x.iter() {
-                    if !y.contains_key(k) {
-                        out.insert(k.clone(), v.clone());
-                    }
-                }
-                for (k, v) in y.iter() {
-                    if !x.contains_key(k) {
-                        out.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
+        let out = match op {
+            BinOp::BitAnd => set_binary(x, y, |x, y| x.intersection(y)),
+            BinOp::BitOr => set_binary(x, y, |x, y| x.union(y)),
+            _ => set_binary(x, y, |x, y| x.symmetric_difference(y)),
+        };
         return Ok(Py::Set(rf(out)));
     }
     if let (BinOp::BitOr, Py::Dict(x), Py::Dict(y)) = (op, a, b) {
         let mut out = x.borrow().clone();
-        for (k, v) in y.borrow().iter() {
-            out.insert(k.clone(), v.clone());
+        for (h, (k, v)) in y.borrow().iter() {
+            dict_set(&mut out, h.clone(), k.clone(), v.clone());
         }
         return Ok(Py::Dict(rf(out)));
     }
+    // A dict view (`d.keys() | other`) combines with any set or iterable as a set.
+    if is_dict_view(a) || is_dict_view(b) {
+        let (x, y) = (view_as_set(a)?, view_as_set(b)?);
+        if let (Some(x), Some(y)) = (x, y) {
+            let out = match op {
+                BinOp::BitAnd => x.intersection(&y),
+                BinOp::BitOr => x.union(&y),
+                _ => x.symmetric_difference(&y),
+            };
+            return Ok(Py::Set(rf(out)));
+        }
+    }
     unsupported_operand(sym, a, b)
+}
+
+fn is_dict_view(v: &Py) -> bool {
+    matches!(v, Py::Iter(it) if matches!(it.borrow().kind, "dict_keys" | "dict_items"))
+}
+
+/// A set, or a keys/items view, as a set; `None` for anything else (a view
+/// combines with another view or a set; other iterables are not set operands
+/// of the infix operators).
+fn view_as_set(v: &Py) -> PyRes<Option<PySet>> {
+    Ok(match v {
+        Py::Set(s) => Some(s.borrow().clone()),
+        view if is_dict_view(view) => {
+            Some(PySet::from_items(to_vec(view)?).map_err(|m| exc("TypeError", m))?)
+        }
+        _ => None,
+    })
 }
 
 /// `op2func(op)(a)`.
@@ -621,10 +633,10 @@ pub(crate) fn contains(container: &Py, item: &Py) -> PyRes<bool> {
             let k = hkey(item)?;
             Ok(d.borrow().contains_key(&k))
         }
-        Py::Set(s) => {
-            let k = hkey(item)?;
-            Ok(s.borrow().contains_key(&k))
-        }
+        // A set needle is looked up as the equal `frozenset`: hashable there, and
+        // equal to no element (a set cannot hold a set).
+        Py::Set(_) if matches!(item, Py::Set(_)) => Ok(false),
+        Py::Set(s) => s.borrow().contains(item).map_err(|m| exc("TypeError", m)),
         // PARITY: a map may be the `DynObj` or the plain dict upstream builds; reads
         // that only the dict supports work (see `getitem`).
         Py::Obj(m) => Ok(matches!(item, Py::Str(k) if m.borrow().contains_key(&**k))),
@@ -716,7 +728,7 @@ pub(crate) fn iterate(v: &Py) -> PyRes<Cursor> {
         Py::Bytes(b) => Cursor::Items(b.iter().map(|&x| Py::Int(x as i64)).collect()),
         Py::Dict(d) => Cursor::Items(d.borrow().values().map(|(k, _)| k.clone()).collect()),
         Py::Obj(m) => Cursor::Items(m.borrow().keys().map(|k| Py::str(k.as_str())).collect()),
-        Py::Set(s) => Cursor::Items(s.borrow().values().cloned().collect()),
+        Py::Set(s) => Cursor::Items(s.borrow().iter().cloned().collect()),
         Py::Range(a, b, c) => Cursor::Range(*a, *b, *c),
         Py::Iter(it) => {
             if it.borrow().kind.starts_with("dict_") {
@@ -991,7 +1003,8 @@ pub(crate) fn setitem(obj: &Py, key: &Py, val: Py) -> PyRes<()> {
         }
         Py::Dict(d) => {
             let k = hkey(key)?;
-            d.borrow_mut().insert(k, (key.clone(), val));
+            // An existing equal key keeps its original object (`d[1.0] = x` on `{1: y}`).
+            dict_set(&mut d.borrow_mut(), k, key.clone(), val);
             Ok(())
         }
         other => type_err(format!(
@@ -1052,11 +1065,7 @@ pub(crate) fn deepcopy(v: &Py) -> Py {
             .iter()
             .map(|(h, (k, v))| (h.clone(), (deepcopy(k), deepcopy(v))))
             .collect())),
-        Py::Set(s) => Py::Set(rf(s
-            .borrow()
-            .iter()
-            .map(|(h, v)| (h.clone(), deepcopy(v)))
-            .collect())),
+        Py::Set(s) => Py::Set(rf(s.borrow().map_items(deepcopy))),
         Py::Obj(o) => Py::Obj(rf(o
             .borrow()
             .iter()

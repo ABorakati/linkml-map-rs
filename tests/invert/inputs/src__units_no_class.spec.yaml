@@ -1,0 +1,4 @@
+class_derivations:
+  Agent:
+    slot_derivations:
+      kg: {populated_from: weight, unit_conversion: {target_unit: g}}

@@ -1,0 +1,21 @@
+id: https://example.org/inv/src_common
+name: src_common
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/inv/
+default_prefix: ex
+default_range: string
+slots:
+  street: {}
+  addr_id: {identifier: true}
+  zip: {range: integer}
+  lines: {multivalued: true}
+classes:
+  Address:
+    slots: [addr_id, street, zip, lines]
+enums:
+  Colour:
+    permissible_values:
+      RED: {}
+      GREEN: {}
+      BLUE: {}

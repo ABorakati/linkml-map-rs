@@ -1,0 +1,5 @@
+class_derivations:
+  Agent:
+    populated_from: Ghost
+    slot_derivations:
+      label: {populated_from: name, range: string}

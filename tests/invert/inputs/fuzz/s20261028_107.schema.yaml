@@ -1,0 +1,49 @@
+id: https://example.org/fz
+name: fz
+slots:
+  e:
+    range: float
+    identifier: true
+  g:
+    range: float
+    unit:
+      descriptive_name: '[lb_av]'
+      iec61360code: u1
+    is_a: e
+classes:
+  Alpha:
+    slots:
+    - g
+    - e
+  Beta:
+    mixins:
+    - Alpha
+    slots:
+    - g
+    slot_usage:
+      g:
+        multivalued: false
+        inlined: true
+  Gamma:
+    attributes:
+      att1:
+        range: float
+        multivalued: true
+        key: true
+        unit:
+          abbreviation: cm
+          ucum_code: u1
+          descriptive_name: u1
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

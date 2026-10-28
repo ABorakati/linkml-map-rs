@@ -1,0 +1,68 @@
+id: https://example.org/fz
+name: fz
+default_range: integer
+slots:
+  f:
+    range: boolean
+    multivalued: true
+    unit:
+      abbreviation: m
+      ucum_code: s
+      iec61360code: ''
+  e:
+    range: Kind
+    is_a: f
+  a:
+    range: string
+    unit:
+      symbol: ''
+  full name:
+    range: boolean
+    unit:
+      iec61360code: u1
+    is_a: e
+  x-y:
+    range: integer
+    key: true
+  b:
+    range: Alpha
+    multivalued: true
+    key: true
+    unit:
+      abbreviation: s
+classes:
+  Alpha:
+    slots:
+    - e
+    - x-y
+    - f
+    - b
+    - full name
+    - a
+  Beta:
+    is_a: Alpha
+    slots:
+    - e
+    attributes:
+      k:
+        key: true
+        unit:
+          iec61360code: m
+          descriptive_name: kg
+          symbol: s
+      att2:
+        range: Kind
+        multivalued: true
+enums:
+  Kind:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}
+  Mode:
+    permissible_values:
+      P: {}
+      Q: {}
+      R: {}
+      S: {}

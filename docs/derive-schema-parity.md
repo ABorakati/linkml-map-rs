@@ -58,16 +58,12 @@ The replay test is `crates/linkml-map-cli/tests/derive_schema_upstream_parity.rs
 - Error text differs (Python tracebacks vs `Error: ...`); exit status agrees.
 - `slot_derivation.value: [1, 2]` becomes `1` upstream (same `Any` collapse) and is not
   replicated for `value`, because it affects the engine; not checked here.
-- The CLI takes `-s/--source-schema`, upstream a positional `SCHEMA` argument; `compile` and
-  `invert` subcommands do not exist (see below).
+- The CLI takes `-s/--source-schema`, upstream a positional `SCHEMA` argument; `compile` does not
+  exist; `invert` takes both spellings (see below).
 
 ## `invert`
 
-Upstream has `linkml-map invert -T SPEC SCHEMA`. Rust has the library
-(`TransformationSpecificationInverter`) but no subcommand. Wiring one is small; byte-identical
-output is not, because upstream dumps a pydantic model (`model_dump()` field order and defaults)
-and none of the shipped examples is invertible (each raises `NonInvertibleSpecificationError`),
-so there is nothing to diff against. Not implemented.
+Implemented since: see [`invert-parity.md`](invert-parity.md).
 
 ## Suggested upstream issues (not filed)
 

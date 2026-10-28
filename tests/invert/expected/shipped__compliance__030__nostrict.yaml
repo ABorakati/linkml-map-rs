@@ -1,0 +1,11 @@
+class_derivations:
+- name: C
+  populated_from: C
+  slot_derivations:
+    height_in_m:
+      name: height_in_m
+      populated_from: height_in_cm
+      unit_conversion:
+        target_unit: m
+        target_unit_scheme: ucum_code
+        source_unit: cm

@@ -38,9 +38,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
 use crate::format::Format;
-use crate::pycompat::{
-    dumps_json, flatten, py_str, strip_empty, strip_nulls, tabular_cell, try_dumps_json,
-};
+use crate::pycompat::{dumps_json, flatten, py_str, strip_empty, strip_nulls, tabular_cell};
 use crate::serialization::decimal_placeholder;
 use linkml_map_core::pyyaml::{self, DumpOptions};
 
@@ -170,7 +168,7 @@ impl StreamWriter for JsonStreamWriter {
             self.first_object = false;
             // PARITY: output_streams.py::JSONStreamWriter.write_chunk — `_strip_nulls`
             // then `dumps_json(indent=2)`.
-            out.push_str(&try_dumps_json(obj, Some(2), true)?);
+            out.push_str(&dumps_json(obj, Some(2), true).map_err(anyhow::Error::msg)?);
         }
         Ok(out)
     }
@@ -193,7 +191,7 @@ impl StreamWriter for JsonlStreamWriter {
     fn write_chunk(&mut self, chunk: &[Value]) -> Result<String> {
         let mut out = String::new();
         for obj in chunk {
-            out.push_str(&try_jsonl_line(obj)?);
+            out.push_str(&jsonl_line(obj).map_err(anyhow::Error::msg)?);
             out.push('\n');
         }
         Ok(out)
@@ -204,17 +202,12 @@ impl StreamWriter for JsonlStreamWriter {
 ///
 /// Shared with the pipeline's JSONL fast paths so they stay identical to the
 /// generic writer.
-pub fn jsonl_line(obj: &Value) -> String {
-    dumps_json(obj, None, true)
-}
-
-/// [`jsonl_line`] as simplejson behaves: a complex number is a `TypeError`
-/// (see [`try_dumps_json`]).
 ///
 /// # Errors
-/// [`crate::pycompat::NotJsonSerializable`] for a complex number.
-pub fn try_jsonl_line(obj: &Value) -> Result<String, crate::pycompat::NotJsonSerializable> {
-    try_dumps_json(obj, None, true)
+/// simplejson's `TypeError` message for a value it cannot write (see
+/// [`dumps_json`]).
+pub fn jsonl_line(obj: &Value) -> Result<String, String> {
+    dumps_json(obj, None, true)
 }
 
 // ─── YAML ────────────────────────────────────────────────────────────────────
@@ -294,13 +287,15 @@ impl TabularStreamWriter {
     }
 
     /// Mirror of `_escape_value`: quote values holding the separator, `"` or a newline.
-    fn escape_value(&self, value: &Value) -> String {
-        let text = tabular_cell(value);
-        if text.contains(self.separator) || text.contains('"') || text.contains('\n') {
-            format!("\"{}\"", text.replace('"', "\"\""))
-        } else {
-            text
-        }
+    fn escape_value(&self, value: &Value) -> Result<String> {
+        let text = tabular_cell(value).map_err(anyhow::Error::msg)?;
+        Ok(
+            if text.contains(self.separator) || text.contains('"') || text.contains('\n') {
+                format!("\"{}\"", text.replace('"', "\"\""))
+            } else {
+                text
+            },
+        )
     }
 }
 
@@ -327,14 +322,14 @@ impl StreamWriter for TabularStreamWriter {
             }
 
             // Emit the data row.
-            let row: Vec<String> = self
+            let row = self
                 .headers
                 .iter()
                 .map(|h| {
                     flat.get(h)
-                        .map_or_else(String::new, |v| self.escape_value(v))
+                        .map_or_else(|| Ok(String::new()), |v| self.escape_value(v))
                 })
-                .collect();
+                .collect::<Result<Vec<String>>>()?;
             out.push_str(&row.join(&sep));
             out.push('\n');
         }
@@ -624,16 +619,20 @@ pub fn dump_output(data: &Value, format: Format) -> Result<String> {
             dump_yaml_into(&mut text, &strip_empty(data), false);
             text
         }
-        Format::Json => format!("{}\n", try_dumps_json(data, Some(2), true)?),
+        Format::Json => format!(
+            "{}\n",
+            dumps_json(data, Some(2), true).map_err(anyhow::Error::msg)?
+        ),
         Format::Jsonl => match data {
             Value::List(items) => {
                 let lines = items
                     .iter()
-                    .map(try_jsonl_line)
-                    .collect::<Result<Vec<String>, _>>()?;
+                    .map(jsonl_line)
+                    .collect::<Result<Vec<String>, String>>()
+                    .map_err(anyhow::Error::msg)?;
                 format!("{}\n", lines.join("\n"))
             }
-            other => format!("{}\n", try_jsonl_line(other)?),
+            other => format!("{}\n", jsonl_line(other).map_err(anyhow::Error::msg)?),
         },
         Format::Csv => dump_delimited(data, ",")?,
         Format::Tsv => dump_delimited(data, "\t")?,
@@ -934,8 +933,21 @@ pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
         // Lenient, as in `pycompat::write_json`: the `str()` text.
         Value::Temporal(t) => serde_json::Value::String(t.to_string()),
         Value::Str(s) => serde_json::Value::String(s.clone()),
-        Value::List(items) => {
+        // simplejson writes a tuple as an array and refuses a set.
+        Value::List(items) | Value::Tuple(items) => {
             serde_json::Value::Array(items.iter().map(value_to_json).collect::<Result<_>>()?)
+        }
+        Value::Set(_) => anyhow::bail!("Object of type set is not JSON serializable"),
+        Value::Dict(dict) => {
+            let obj: serde_json::Map<String, serde_json::Value> = dict
+                .iter()
+                .map(|(k, v)| {
+                    let key =
+                        linkml_map_core::value::simplejson_key(k).map_err(anyhow::Error::msg)?;
+                    value_to_json(v).map(|jv| (key, jv))
+                })
+                .collect::<Result<_>>()?;
+            serde_json::Value::Object(obj)
         }
         Value::Map(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map

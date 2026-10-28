@@ -1,0 +1,9 @@
+
+id: https://example.org/spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {populated_from: id}
+      out:
+        expr: "x = src.name\ntarget = x"

@@ -1,0 +1,13 @@
+id: https://example.org/spec
+title: T
+version: "1.0"
+prefixes: {a: {key: a, value: "http://a/"}}
+source_schema: {name: src.yaml}
+target_schema: {name: tgt.yaml}
+mint_ids: true
+class_derivations:
+  Agent:
+    populated_from: Person
+    mint_ids: false
+    slot_derivations:
+      x: {populated_from: name}

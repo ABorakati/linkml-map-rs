@@ -1,0 +1,5 @@
+class_derivations:
+  Other:
+    slot_derivations:
+      l: {populated_from: label, range: string}
+      w: {populated_from: weight, unit_conversion: {target_unit: g}}

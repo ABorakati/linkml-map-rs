@@ -1,0 +1,29 @@
+class_derivations:
+- name: Gamma
+  slot_derivations:
+    c:
+      populated_from: b
+      expr: ''
+      unit_conversion:
+        target_unit: ''
+        source_unit_slot: ''
+        source_magnitude_slot: m
+        target_unit_slot: tu
+        target_unit_scheme: ucum_code
+        source_unit_scheme: symbol
+        none_if_non_numeric: true
+      stringification: {}
+enum_derivations:
+  E3:
+    populated_from: Kind
+    permissible_value_derivations:
+      Y:
+        populated_from: []
+        expr: y
+  Kind:
+    populated_from: Mode
+    expr: x
+    hide: true
+    permissible_value_derivations:
+      Y:
+        populated_from: Q

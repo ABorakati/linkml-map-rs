@@ -1,0 +1,10 @@
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      a:
+        populated_from: weight
+        unit_conversion: {target_unit: "", source_unit_slot: "", source_magnitude_slot: ""}
+      b:
+        populated_from: weight
+        unit_conversion: {}

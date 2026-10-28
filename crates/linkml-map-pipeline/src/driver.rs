@@ -33,8 +33,8 @@ use linkml_map_core::{
     value::Value,
 };
 use linkml_map_io::{
-    Format, load_all_single_object, load_all_with_numeric_hints, load_stream_single_object,
-    load_stream_with_numeric_hints, parse_numeric, try_jsonl_line,
+    Format, jsonl_line, load_all_single_object, load_all_with_numeric_hints,
+    load_stream_single_object, load_stream_with_numeric_hints, parse_numeric,
 };
 use tokio::sync::mpsc;
 
@@ -152,14 +152,14 @@ impl Sink {
         match self {
             Sink::Values(tx) => tx.send(Ok(value)).await.is_ok(),
             Sink::Jsonl(buf) => {
-                // A value simplejson cannot encode (a complex number) drops its row
-                // with the message, like a row that fails to transform here.
-                match try_jsonl_line(&value) {
+                match jsonl_line(&value) {
                     Ok(line) => {
                         buf.push_str(&line);
                         buf.push('\n');
                     }
-                    Err(e) => eprintln!("{e}"),
+                    // Not JSON serialisable (a set): the row is dropped with the
+                    // error logged, as a row that fails to transform is.
+                    Err(e) => eprintln!("cannot write the row as JSON: {e}"),
                 }
                 true
             }
@@ -739,9 +739,7 @@ async fn fk_jsonl_segment(
                 .enumerate()
                 .map(|(i, row)| {
                     match plan.transform_segment_with_index(&seg2, row, &index, lookup.as_ref()) {
-                        Ok(v) => try_jsonl_line(&v)
-                            .map_err(|e| eprintln!("{}: {e:#}", seg2.error_context(&plan, i)))
-                            .ok(),
+                        Ok(v) => jsonl_line(&v).map_err(|e| eprintln!("{e}")).ok(),
                         Err(e) => {
                             eprintln!("{}: {e:#}", seg2.error_context(&plan, i));
                             None
@@ -857,13 +855,7 @@ fn parse_transform_serialize(
         }
     };
     match plan.transform_segment(seg, v, lookup) {
-        Ok(out) => match try_jsonl_line(&out) {
-            Ok(line) => Some(line),
-            Err(e) => {
-                eprintln!("{}: {e:#}", seg.error_context(plan, row));
-                None
-            }
-        },
+        Ok(out) => jsonl_line(&out).map_err(|e| eprintln!("{e}")).ok(),
         Err(e) => {
             eprintln!("{}: {e:#}", seg.error_context(plan, row));
             None

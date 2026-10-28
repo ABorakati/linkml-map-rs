@@ -1,0 +1,7 @@
+enum_derivations:
+  Status:
+    permissible_value_derivations:
+      A:
+      B: {populated_from: C}
+  Hue:
+    populated_from: Colour

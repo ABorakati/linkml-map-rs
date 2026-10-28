@@ -1,0 +1,17 @@
+class_derivations:
+- name: Employee
+  populated_from: Staff
+  slot_derivations:
+    friends:
+      name: friends
+      populated_from: f
+      range: Person
+      cast_collection_as: MultiValuedDict
+      dictionary_key: id
+    age:
+      name: age
+      populated_from: a
+      range: integer
+    id:
+      name: id
+      populated_from: i

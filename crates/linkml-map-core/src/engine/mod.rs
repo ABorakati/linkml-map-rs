@@ -27,17 +27,21 @@ pub mod content_id;
 pub mod lookup_index;
 pub mod object_index;
 mod pivot;
+mod populated_from;
+mod source_slots;
 pub mod units;
 pub use coerce::TargetCoercions;
 pub use content_id::ContentIds;
 pub use lookup_index::{LookupIndex, LookupIndexRef};
 pub use object_index::ObjectIndex;
+// gate:internal — engine plan table, not part of the binding-consumed surface.
+pub use source_slots::SourceSlots;
 
 use indexmap::IndexMap;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// A `HashMap` for the engine's read-only lookup tables: names looked up per row,
 /// from spec and schema text, so a fast non-cryptographic hash.
@@ -51,7 +55,8 @@ use crate::{
     },
     error::{Error, Result},
     expr::{
-        Bindings, EvalMode, ExprResult, ParsedExpr, eval_enum_parsed, eval_parsed_gated, parse_expr,
+        Bindings, DeclaredSlots, EvalMode, ExprResult, ParsedExpr, eval_enum_parsed,
+        eval_parsed_gated, parse_expr, with_declared_slots,
     },
     schema::{RangeKind, SchemaProvider, SlotDef},
     value::Value,
@@ -254,6 +259,8 @@ struct RowBindings(
     /// The row's keys that are not slots of the source type (see
     /// [`ObjectTransformer::check_row_names`]), found once per row.
     std::cell::OnceCell<Vec<String>>,
+    /// The slots the source type declares (see [`SourceSlots`]), looked up once per row.
+    std::cell::OnceCell<Option<Arc<DeclaredSlots>>>,
 );
 
 /// Why [`ObjectTransformer::unresolved_join`] cannot resolve a join alias.
@@ -304,6 +311,13 @@ pub struct ObjectTransformer<'s> {
     /// Lazily built fallback used when no shared table is attached (tests,
     /// `ObjectTransformer::new` callers). Unused without a target schema.
     local_target_coercions: OnceLock<TargetCoercions>,
+    /// Optional shared table of the slots each source class declares; see
+    /// [`ObjectTransformer::with_source_slots`].
+    source_slots: Option<&'s SourceSlots>,
+    /// Fallback used when no shared table is attached: the classes resolved so
+    /// far. Unused without a source schema; built on first use, so an engine
+    /// made per row (as the pipeline does, with a shared table) never pays for it.
+    local_source_slots: OnceLock<Mutex<FastMap<String, Option<Arc<DeclaredSlots>>>>>,
     /// Shared content-id synthesiser (built once per plan); when `None` one is
     /// built lazily into `owned_content_ids`. See [`content_id`].
     content_ids: Option<&'s ContentIds>,
@@ -335,6 +349,8 @@ impl<'s> ObjectTransformer<'s> {
             target_coercions: None,
             resolved_derivations: None,
             local_target_coercions: OnceLock::new(),
+            source_slots: None,
+            local_source_slots: OnceLock::new(),
             content_ids: None,
             owned_content_ids: Default::default(),
             emit_without_identifiers: false,
@@ -363,6 +379,8 @@ impl<'s> ObjectTransformer<'s> {
             target_coercions: None,
             resolved_derivations: None,
             local_target_coercions: OnceLock::new(),
+            source_slots: None,
+            local_source_slots: OnceLock::new(),
             content_ids: None,
             owned_content_ids: Default::default(),
             emit_without_identifiers: false,
@@ -405,6 +423,16 @@ impl<'s> ObjectTransformer<'s> {
     /// every row. Must be built from the same spec this transformer holds.
     pub fn with_resolved_derivations(mut self, resolved: &'s ResolvedDerivations) -> Self {
         self.resolved_derivations = Some(resolved);
+        self
+    }
+
+    /// Attach a pre-built [`SourceSlots`] table so the engine does not walk the
+    /// source schema for the slots a class declares on every row. Must be built
+    /// from the same source schema this transformer holds. Without one the engine
+    /// lazily builds its own on first use.
+    // gate:internal — engine plan hook, not part of the binding-consumed surface.
+    pub fn with_source_slots(mut self, slots: &'s SourceSlots) -> Self {
+        self.source_slots = Some(slots);
         self
     }
 
@@ -777,14 +805,15 @@ impl<'s> ObjectTransformer<'s> {
             // `_source_class` is a virtual slot that resolves to the source class
             // name itself, enabling value_mappings keyed by source class (#193).
             // `"alias.field"` resolves via the LookupIndex join (#188).
-            let raw = resolve_populated_from_raw(
+            // The value and its source slot come together, as in upstream
+            // (`_resolve_fk_or_literal` and the join / `Class.field` branches).
+            let (raw, ssd) = self.resolve_populated_from(
                 populated_from,
-                source_type,
-                source_map,
-                self.lookup_index.as_deref(),
-                class_deriv,
-                self.source_schema,
                 slot_deriv,
+                source_map,
+                source_type,
+                class_deriv,
+                index,
             )?;
             // PARITY: `_nullify_missing_values` runs on the raw value, before
             // the mappings, offset and range coercion.
@@ -809,13 +838,6 @@ impl<'s> ObjectTransformer<'s> {
             {
                 mapped = apply_offset(off, mapped, source_map)?;
             }
-            // Source slot def for range/cardinality coercion.
-            // _source_class is virtual — no real schema slot to look up.
-            let ssd = if populated_from == "_source_class" || populated_from.contains('.') {
-                induced_slot_cow(self.source_schema, populated_from, source_type)
-            } else {
-                self.require_source_slot(populated_from, source_type)?
-            };
             (mapped, ssd)
         } else if slot_deriv.class_derivations.is_some() {
             // 4. class_derivations — nested target objects (v0.6.0; replaces the
@@ -915,6 +937,22 @@ impl<'s> ObjectTransformer<'s> {
         } else {
             Ok(Value::Null)
         }
+    }
+
+    /// The slots `source_type` declares (upstream `Bindings._schema_slots`); `None`
+    /// without a source schema or when the source type is not one of its classes.
+    fn declared_slots(&self, source_type: &str) -> Option<Arc<DeclaredSlots>> {
+        let schema = self.source_schema?;
+        if let Some(shared) = self.source_slots {
+            return shared.slots_of(source_type).cloned();
+        }
+        self.local_source_slots
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(source_type.to_owned())
+            .or_insert_with(|| SourceSlots::class_slots(schema, source_type))
+            .clone()
     }
 
     /// The shared (or lazily built) target-schema lookup table; `None` without
@@ -1616,11 +1654,34 @@ impl<'s> ObjectTransformer<'s> {
     ) -> Result<Value> {
         let class_name = class_deriv.name.as_str();
         self.check_row_names(expr, source_map, source_type, class_deriv, row)?;
+        // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
+        // cache is attached and holds this (class, slot). Falls back to the
+        // string parse path otherwise (identical result).
+        let cached = self
+            .compiled
+            .and_then(|c| c.slot(class_name, slot_name, expr));
+
         // The row's bindings are built by the row's first `expr:` slot and kept
         // for the rest: only `__slot_values` changes from slot to slot.
         let mut cell = row.0.borrow_mut();
         let bindings = cell
             .get_or_insert_with(|| self.row_bindings(source_map, source_type, class_deriv, index));
+
+        // PARITY: `Bindings.__getitem__` binds the source type's own name to the
+        // row (`DynObj(**source_obj)`) when the row has no such key, so `Person.name`
+        // reads a slot of the row of a `Person`. It is bound when the expression
+        // names it in a qualified reference (`Person.name`: a dot, and the type's name,
+        // in the text stand in for that), as a row's worth of clone is not worth
+        // paying for every expression; join aliases (already bound) win, and a
+        // statement block never sees bare names.
+        if expr.as_bytes().contains(&b'.')
+            && expr.contains(source_type)
+            && !source_map.contains_key(source_type)
+            && !bindings.contains_key(source_type)
+            && !(self.unrestricted_eval && cached.is_some_and(ParsedExpr::is_program))
+        {
+            bindings.insert(source_type.to_string(), Value::Map(source_map.clone()));
+        }
 
         // PARITY: no `src` binding. Upstream's `Bindings` hold the source slots,
         // `NULL` and join aliases; `src` exists only inside an unrestricted
@@ -1637,12 +1698,6 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
 
-        // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
-        // cache is attached and holds this (class, slot). Falls back to the
-        // string parse path otherwise (identical result).
-        let cached = self
-            .compiled
-            .and_then(|c| c.slot(class_name, slot_name, expr));
         if let Some(failure) = self.unresolved_join(expr, source_map, class_deriv) {
             // A statement block never resolves a join alias (it reads `src`), and
             // one that does not parse fails before any name is read.
@@ -1654,7 +1709,10 @@ impl<'s> ObjectTransformer<'s> {
                 };
             }
         }
-        let result = self.eval_gated(cached, expr, bindings);
+        let declared = row.2.get_or_init(|| self.declared_slots(source_type));
+        let result = with_declared_slots(declared.as_ref(), || {
+            self.eval_gated(cached, expr, bindings)
+        });
         result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
             slot: slot_name.to_string(),
@@ -1970,21 +2028,50 @@ impl<'s> ObjectTransformer<'s> {
         if let Some(key_slot) = dict_key
             && let Value::List(items) = v
         {
-            let mut result: IndexMap<String, Value> = IndexMap::new();
+            // The key keeps its type (`{v1[dictionary_key]: v1 for v1 in v}`): an
+            // integer identifier is an integer key, which YAML output shows
+            // as such; a dict with only string keys is a record map.
+            let mut result = crate::value::PyDict::new();
             for item in items {
                 if let Value::Map(mut m) = item {
                     let key_val = m
                         .shift_remove(&key_slot)
-                        .map(|kv| value_to_string_key(&kv))
-                        .unwrap_or_default();
-                    result.insert(key_val, Value::Map(m));
+                        .unwrap_or_else(|| Value::Str(String::new()));
+                    result
+                        .insert(key_val, Value::Map(m))
+                        .map_err(Error::Python)?;
                 }
                 // Non-map items in a list being keyed: skip (no key to extract).
             }
-            return Ok(Value::Map(result));
+            return Ok(Value::Dict(Box::new(result)).into_record_form());
         }
 
         // ── Keyed dict → list ────────────────────────────────────────────────
+        if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as
+            && let Value::Dict(d) = &v
+        {
+            // A dict with non-string keys: the key keeps its type when re-injected.
+            let id_slot_name: Option<String> = source_slot
+                .range_class()
+                .and_then(|range_class| {
+                    self.source_schema
+                        .and_then(|ss| ss.identifier_slot(range_class).ok())
+                })
+                .flatten()
+                .map(|s| s.name);
+            let list: Vec<Value> = d
+                .iter()
+                .map(|(k, val)| match (&id_slot_name, val) {
+                    (Some(id_slot), Value::Map(inner)) => {
+                        let mut inner = inner.clone();
+                        inner.insert(id_slot.clone(), k.clone());
+                        Value::Map(inner)
+                    }
+                    _ => val.clone(),
+                })
+                .collect();
+            return Ok(Value::List(list));
+        }
         if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as
             && let Value::Map(m) = v
         {
@@ -2361,7 +2448,7 @@ impl<'s> ObjectTransformer<'s> {
             if let Some(syntax) = &s.syntax {
                 let list = Value::List(items);
                 let out = match syntax {
-                    SerializationSyntaxType::Json => py_json(&list),
+                    SerializationSyntaxType::Json => py_json(&list).map_err(slot_err)?,
                     SerializationSyntaxType::Yaml => yaml_flow(&list),
                     SerializationSyntaxType::Turtle => {
                         return Err(slot_err("Unknown syntax: TURTLE".into()));
@@ -2664,219 +2751,10 @@ fn resolve_aggregation_source(
     source_map.get(src_key).cloned().unwrap_or(Value::Null)
 }
 
-/// Resolve the raw [`Value`] for the `populated_from:` arm (arm 3, first half).
-///
-/// Handles the `_source_class` virtual slot, inlined nested dot-paths (#247),
-/// dotted `"alias.field"` join paths, and plain source-map lookups.
-///
-/// Mirrors Python `ObjectTransformer._resolve_fk_or_literal`
-/// (`object_transformer.py`): a dotted path that traverses inlined nested data
-/// is walked structurally *before* attempting FK/join resolution.
-#[allow(clippy::too_many_arguments)]
-fn resolve_populated_from_raw(
-    populated_from: &str,
-    source_type: &str,
-    source_map: &IndexMap<String, Value>,
-    lookup_index: Option<&LookupIndex>,
-    class_deriv: &ClassDerivation,
-    source_schema: Option<&dyn SchemaProvider>,
-    slot_deriv: &SlotDerivation,
-) -> Result<Value> {
-    if populated_from == "_source_class" {
-        return Ok(Value::Str(source_type.to_string()));
-    }
-    if let Some(dot) = populated_from.find('.') {
-        // #247: inlined nested dot-path takes precedence over FK/join resolution.
-        // Mirrors `if "." in populated_from and self._is_inline_path(...)` at the
-        // top of Python `_resolve_fk_or_literal`.
-        if is_inline_path(populated_from, source_type, source_map, source_schema) {
-            return resolve_inline_path(
-                populated_from,
-                source_type,
-                source_map,
-                source_schema,
-                slot_deriv,
-            );
-        }
-        let alias = &populated_from[..dot];
-        let field = &populated_from[dot + 1..];
-        if let Some(ac) = class_deriv
-            .joins
-            .as_ref()
-            .and_then(|joins| joins.get(alias))
-        {
-            let table = ac.class_named.as_deref().unwrap_or(alias);
-            // PARITY: `_resolve_joined_row`: `join_keys(spec)` raises on an unresolved key;
-            // no key value on the row is a miss (`None`); but a key value with no
-            // `lookup_index` at all (single-object input) raises `ValueError`, and with
-            // an index that has no such table (a join table with no file) DuckDB raises
-            // a `CatalogException`. Only a registered table can miss quietly.
-            let Some(source_key) = join_source_key(ac) else {
-                return Err(Error::Python(format!(
-                    "ValueError: Join {alias:?} must specify 'join_on' or both 'source_key' and 'lookup_key'"
-                )));
-            };
-            let Some(key) = source_map.get(source_key).filter(|kv| !kv.is_null()) else {
-                return Ok(Value::Null);
-            };
-            let Some(li) = lookup_index else {
-                return Err(Error::Python(format!(
-                    "ValueError: Join configured for {alias:?} but lookup_index has not been initialized"
-                )));
-            };
-            if !li.is_registered(table) {
-                return Err(Error::Python(format!(
-                    "duckdb.CatalogException: Catalog Error: Table with name {table} does not exist!"
-                )));
-            }
-            let ks = match key {
-                Value::Str(s) => s.clone(),
-                Value::Int(i) => i.to_string(),
-                Value::BigInt(n) => n.to_string(),
-                _ => return Ok(Value::Null),
-            };
-            return Ok(li
-                .lookup_row(table, &ks)
-                .and_then(|row| row.get(field))
-                .cloned()
-                .unwrap_or(Value::Null));
-        }
-        // Not a join alias — fall through to plain map lookup.
-        return Ok(source_map
-            .get(populated_from)
-            .cloned()
-            .unwrap_or(Value::Null));
-    }
-    Ok(source_map
-        .get(populated_from)
-        .cloned()
-        .unwrap_or(Value::Null))
-}
-
-/// Decide whether a dot-path traverses inlined nested data rather than an FK.
-///
-/// Mirrors Python `ObjectTransformer._is_inline_path` (`object_transformer.py`,
-/// issue #247). Detection is declarative first, with a runtime fallback:
-///
-/// * **Declarative:** the first path segment's source slot has a class range and
-///   is marked `inlined` / `inlined_as_list`.
-/// * **Runtime fallback:** the value at the first segment is actually a nested
-///   object (map) or list, even when the schema doesn't declare `inlined`.
-///
-/// Foreign keys (class range, scalar identifier value, not inlined) fall through
-/// to the join/FK resolution as before.
-fn is_inline_path(
-    populated_from: &str,
-    source_type: &str,
-    source_map: &IndexMap<String, Value>,
-    source_schema: Option<&dyn SchemaProvider>,
-) -> bool {
-    let first_segment = populated_from.split('.').next().unwrap_or(populated_from);
-    let slot = source_schema.and_then(|sv| sv.induced_slot(first_segment, source_type).ok());
-    // `slot.range in sv.all_classes()` is encoded directly by `RangeKind::Class`.
-    if let Some(slot) = &slot
-        && slot.is_object_range()
-        && (slot.inlined || slot.inlined_as_list)
-    {
-        return true;
-    }
-    matches!(
-        source_map.get(first_segment),
-        Some(Value::Map(_)) | Some(Value::List(_))
-    )
-}
-
-/// Walk a dot-path structurally through inlined nested objects (issue #247).
-///
-/// Mirrors Python `ObjectTransformer._resolve_inline_path`
-/// (`object_transformer.py`). Descends into the nested map(s) one segment at a
-/// time and returns the leaf value. A segment that is legitimately absent yields
-/// `Null` rather than an error.
-///
-/// # Errors
-/// Returns [`Error::InlinePath`] if a segment holds a list (multivalued inline
-/// fan-out, tracked in #265) or a non-map value is encountered mid-path.
-fn resolve_inline_path(
-    populated_from: &str,
-    source_type: &str,
-    source_map: &IndexMap<String, Value>,
-    source_schema: Option<&dyn SchemaProvider>,
-    slot_deriv: &SlotDerivation,
-) -> Result<Value> {
-    let segments: Vec<&str> = populated_from.split('.').collect();
-    // Start from the source object (a `Map`) rather than the raw `IndexMap` so
-    // the loop can uniformly hold a `&Value`, mirroring Python's `current_val`.
-    let mut current_val = Value::Map(source_map.clone());
-    let mut current_class: Option<String> = Some(source_type.to_string());
-
-    let inline_err = |message: String| Error::InlinePath {
-        message,
-        slot_derivation_name: slot_deriv.name.clone(),
-        slot_populated_from: populated_from.to_string(),
-    };
-
-    let last = segments.len() - 1;
-    for (i, segment) in segments.iter().enumerate() {
-        let map = match &current_val {
-            Value::Map(m) => m,
-            other => {
-                return Err(inline_err(format!(
-                    "Cannot traverse inlined path '{populated_from}': segment '{segment}' \
-                     expected a nested object but found {}",
-                    value_type_name(other)
-                )));
-            }
-        };
-        let slot = current_class
-            .as_deref()
-            .and_then(|c| source_schema.and_then(|sv| sv.induced_slot(segment, c).ok()));
-        let next = map.get(*segment).cloned().unwrap_or(Value::Null);
-        if let Value::List(_) = next {
-            return Err(inline_err(format!(
-                "Inlined path '{populated_from}' reaches a multivalued segment '{segment}'; \
-                 per-item fan-out to a matching class_derivation is not yet supported (see #265)"
-            )));
-        }
-        current_val = next;
-        if i == last {
-            // Final segment — value is the leaf; slot is captured by the caller
-            // via `induced_slot` on `populated_from` (as before), so we only
-            // return the value here.
-        } else if slot.as_ref().is_some_and(|s| s.is_object_range()) {
-            current_class = slot.and_then(|s| s.range_class().map(str::to_string));
-        } else {
-            // PARITY: upstream `_resolve_inline_path` sets
-            // `current_class = slot.range if slot else None` on the non-final,
-            // non-class-range branch — a *scalar* range becomes the "class" for
-            // the next hop (which will then fail `induced_slot` and yield None).
-            // Reproduced verbatim rather than cleaned up so a malformed deep path
-            // resolves identically to upstream.
-            // (linkml-map object_transformer.py::_resolve_inline_path, commit b5fca196)
-            current_class = slot.and_then(|s| s.range.name().map(str::to_string));
-        }
-        if current_val.is_null() {
-            break;
-        }
-    }
-
-    Ok(current_val)
-}
-
 /// Human-readable type name for the [`Error::InlinePath`] diagnostic, matching
 /// the shape of Python's `type(current_val).__name__` (dict/list/str/int/...).
 fn value_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "NoneType",
-        Value::Bool(_) => "bool",
-        Value::Int(_) | Value::BigInt(_) => "int",
-        Value::Float(_) => "float",
-        Value::Complex(_) => "complex",
-        Value::Decimal(_) => "Decimal",
-        Value::Temporal(t) => t.type_name(),
-        Value::Str(_) => "str",
-        Value::List(_) => "list",
-        Value::Map(_) => "dict",
-    }
+    v.python_type_name()
 }
 
 // ── Offset / aggregation / pivot helpers ──────────────────────────────────────
@@ -3082,13 +2960,16 @@ fn apply_aggregation(agg: &AggregationOperation, value: Value, slot: &str) -> Re
 ///
 /// This is the form `stringification: {syntax: JSON}` produces
 /// (`object_transformer.py::_multivalued_to_singlevalued`).
-fn py_json(v: &Value) -> String {
+///
+/// # Errors
+/// simplejson's `TypeError` for a set, or for a dict key it cannot write.
+fn py_json(v: &Value) -> std::result::Result<String, String> {
     let mut out = String::new();
-    write_py_json(&mut out, v);
-    out
+    write_py_json(&mut out, v)?;
+    Ok(out)
 }
 
-fn write_py_json(out: &mut String, v: &Value) {
+fn write_py_json(out: &mut String, v: &Value) -> std::result::Result<(), String> {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -3108,13 +2989,14 @@ fn write_py_json(out: &mut String, v: &Value) {
         // string, so the `str()` text is written instead.
         Value::Temporal(t) => write_py_json_str(out, &t.to_string()),
         Value::Str(s) => write_py_json_str(out, s),
-        Value::List(items) => {
+        // simplejson writes a tuple as an array (`tuple_as_array`).
+        Value::List(items) | Value::Tuple(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_py_json(out, item);
+                write_py_json(out, item)?;
             }
             out.push(']');
         }
@@ -3126,11 +3008,25 @@ fn write_py_json(out: &mut String, v: &Value) {
                 }
                 write_py_json_str(out, k);
                 out.push_str(": ");
-                write_py_json(out, val);
+                write_py_json(out, val)?;
             }
             out.push('}');
         }
+        Value::Dict(d) => {
+            out.push('{');
+            for (i, (k, val)) in d.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py_json_str(out, &crate::value::simplejson_key(k)?);
+                out.push_str(": ");
+                write_py_json(out, val)?;
+            }
+            out.push('}');
+        }
+        Value::Set(_) => return Err("Object of type set is not JSON serializable".to_owned()),
     }
+    Ok(())
 }
 
 /// simplejson's `FLOAT_REPR` (`float.__repr__`) with `allow_nan=True`.
