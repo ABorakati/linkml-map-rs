@@ -68,7 +68,7 @@ invert_upstream_parity` replays them):
 Every pair runs strict and `--no-strict`: 280 pairs, 560 cases, 179 of which end in an upstream exception
 (`NonInvertibleSpecificationError`, `AttributeError`, `ValueError`, pydantic `ValidationError`).
 
-A live campaign (`fuzz.py --run N --seed S`, 150 worlds at seed 777001 and 200 at 777002, both modes) found no
+A live campaign (`fuzz.py --run N --seed S`, 150 worlds at seed 777001 and 80 at 777002, both modes) found no
 mismatch; so did the general differential run (`tests/differential/run.sh --fuzz ... --time-budget 600`).
 
 ## Divergences left
