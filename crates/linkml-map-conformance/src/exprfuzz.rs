@@ -19,9 +19,10 @@
 //! integer (`{"$i": "<digits>"}` outside the `i64` range); a `float` is
 //! `{"$f": "<16 hex digits of the IEEE-754 bits>"}` so NaN, infinities, `-0.0`
 //! and every last bit survive; a map is a JSON object (keys never start with
-//! `$`). The Python side additionally emits `{"$tuple": [...]}`, `{"$set":
-//! [...]}`, `{"$dict": [[k, v], ...]}` and `{"$other": "<type>"}` for results
-//! the Rust [`Value`] model has no counterpart for; the Rust side emits
+//! `$`). A `tuple` is `{"$tuple": [...]}`, a `set` `{"$set": [...]}` (in
+//! iteration order) and a dict with any non-string key `{"$dict": [[k, v], ...]}`,
+//! both sides; the Python side additionally emits `{"$other": "<type>"}` for
+//! results the Rust [`Value`] model has no counterpart for, and the Rust side
 //! `{"$dec": "<text>"}` for a decimal.
 //!
 //! The expression modes are the entry points the engine uses for a slot
@@ -38,6 +39,7 @@ use linkml_map_core::expr::{
     Bindings, EvalMode, ExprError, eval_expr_with_mapping, eval_parsed_gated, parse_expr,
 };
 use linkml_map_core::pyfmt;
+use linkml_map_core::pyset::PySet;
 use linkml_map_core::value::{Value, parse_python_float};
 use serde_json::{Value as J, json};
 
@@ -84,6 +86,26 @@ pub fn decode(j: &J) -> Result<Value, String> {
                     None => Err(format!("unrepresentable integer {i}")),
                 };
             }
+            if let Some(items) = m.get("$tuple") {
+                return Ok(Value::Tuple(decode_all(items)?));
+            }
+            if let Some(items) = m.get("$set") {
+                // The order Python iterated the set in, kept whatever table made it.
+                return PySet::from_iteration_order(decode_all(items)?)
+                    .map(linkml_map_core::value::set_value)
+                    .map_err(|e| format!("bad $set: {e}"));
+            }
+            if let Some(pairs) = m.get("$dict") {
+                let mut dict = linkml_map_core::value::PyDict::new();
+                for pair in pairs.as_array().into_iter().flatten() {
+                    let [k, v] = pair.as_array().map_or(&[][..], Vec::as_slice) else {
+                        return Err("bad $dict pair".to_owned());
+                    };
+                    dict.insert(decode(k)?, decode(v)?)
+                        .map_err(|e| format!("bad $dict: {e}"))?;
+                }
+                return Ok(Value::Dict(Box::new(dict)));
+            }
             if m.keys().any(|k| k.starts_with('$')) {
                 return Err("unknown $ tag".to_owned());
             }
@@ -94,6 +116,14 @@ pub fn decode(j: &J) -> Result<Value, String> {
             )
         }
     })
+}
+
+fn decode_all(j: &J) -> Result<Vec<Value>, String> {
+    j.as_array()
+        .ok_or_else(|| "expected an array".to_owned())?
+        .iter()
+        .map(decode)
+        .collect()
 }
 
 /// Encode a [`Value`] in the shared JSON encoding.
@@ -108,6 +138,11 @@ pub fn encode(v: &Value) -> J {
         Value::Str(s) => J::String(s.clone()),
         Value::List(l) => J::Array(l.iter().map(encode).collect()),
         Value::Map(m) => J::Object(m.iter().map(|(k, v)| (k.clone(), encode(v))).collect()),
+        Value::Tuple(items) => json!({"$tuple": items.iter().map(encode).collect::<Vec<_>>()}),
+        Value::Set(set) => json!({"$set": set.iter().map(encode).collect::<Vec<_>>()}),
+        Value::Dict(d) => {
+            json!({"$dict": d.iter().map(|(k, v)| json!([encode(k), encode(v)])).collect::<Vec<_>>()})
+        }
     }
 }
 
@@ -249,14 +284,20 @@ fn leaf_inner(name: &str, args: &[Value]) -> Result<Value, LeafErr> {
                 Some(Value::Int(n)) if *n >= 0 => Some(*n as usize),
                 _ => None,
             };
-            Value::Str(pycompat::dumps_json(&args[0], indent, false))
+            Value::Str(
+                pycompat::dumps_json(&args[0], indent, false)
+                    .map_err(|e| ("TypeError".to_owned(), e))?,
+            )
         }
         "json_dumps_skipnull" => {
             let indent = match args.get(1) {
                 Some(Value::Int(n)) if *n >= 0 => Some(*n as usize),
                 _ => None,
             };
-            Value::Str(pycompat::dumps_json(&args[0], indent, true))
+            Value::Str(
+                pycompat::dumps_json(&args[0], indent, true)
+                    .map_err(|e| ("TypeError".to_owned(), e))?,
+            )
         }
         "decimal" => {
             let text = s(args, 0).map_err(bad)?;
@@ -405,8 +446,10 @@ pub fn serve<W: Write + Send + 'static>(
 
 /// Strict, Python-flavoured equality for comparing a Rust result with a stored
 /// upstream one: `1`, `1.0` and `True` are different, floats compare by bit
-/// pattern (all NaNs equal), a tuple/set folds into a list (sets compare
-/// order-insensitively because the port keeps them as insertion-ordered lists).
+/// pattern (all NaNs equal), a tuple is not a list, a set is compared in
+/// iteration order when every element has a deterministic hash (CPython's table
+/// order is reproduced) and order-insensitively otherwise (`str` hashes are
+/// randomised per process, so upstream's own order cannot be reproduced).
 fn strict_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
@@ -416,8 +459,22 @@ fn strict_eq(a: &Value, b: &Value) -> bool {
             (x.is_nan() && y.is_nan()) || x.to_bits() == y.to_bits()
         }
         (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::List(x), Value::List(y)) => {
+        (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| strict_eq(p, q))
+        }
+        (Value::Set(x), Value::Set(y)) => {
+            let (x, y) = (x.to_vec(), y.to_vec());
+            if x.len() != y.len() {
+                return false;
+            }
+            if x.iter().all(deterministic_hash) {
+                x.iter().zip(&y).all(|(p, q)| strict_eq(p, q))
+            } else {
+                strict_eq(
+                    &sorted_debug(&Value::List(x)),
+                    &sorted_debug(&Value::List(y)),
+                )
+            }
         }
         (Value::Map(x), Value::Map(y)) => {
             x.len() == y.len()
@@ -425,76 +482,19 @@ fn strict_eq(a: &Value, b: &Value) -> bool {
                     .zip(y)
                     .all(|((kx, vx), (ky, vy))| kx == ky && strict_eq(vx, vy))
         }
+        (Value::Dict(x), Value::Dict(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y.iter())
+                    .all(|((kx, vx), (ky, vy))| strict_eq(kx, ky) && strict_eq(vx, vy))
+        }
         _ => false,
     }
 }
 
-/// Decode a stored upstream result (`$tuple`/`$set`/`$dict` folded into the
-/// closest `Value`). `None` when it has no Rust counterpart (`$other`, big
-/// integers, non-string dict keys).
-fn upstream_value(j: &J) -> Option<(Value, bool)> {
-    // The bool says "contains a set", making list comparison order-insensitive.
-    match j {
-        J::Object(m) if m.contains_key("$tuple") => {
-            let items = m["$tuple"].as_array()?;
-            let mut any_set = false;
-            let v = items
-                .iter()
-                .map(|x| {
-                    upstream_value(x).map(|(v, s)| {
-                        any_set |= s;
-                        v
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some((Value::List(v), any_set))
-        }
-        J::Object(m) if m.contains_key("$set") => {
-            let items = m["$set"].as_array()?;
-            let v = items
-                .iter()
-                .map(|x| upstream_value(x).map(|(v, _)| v))
-                .collect::<Option<Vec<_>>>()?;
-            Some((Value::List(v), true))
-        }
-        J::Object(m) if m.contains_key("$dict") => {
-            let mut out = IndexMap::new();
-            for pair in m["$dict"].as_array()? {
-                let pair = pair.as_array()?;
-                let key = match decode(&pair[0]).ok()? {
-                    Value::Str(s) => s,
-                    _ => return None,
-                };
-                out.insert(key, upstream_value(&pair[1])?.0);
-            }
-            Some((Value::Map(out), false))
-        }
-        J::Object(m) if m.contains_key("$other") => None,
-        J::Array(a) => {
-            let mut any_set = false;
-            let v = a
-                .iter()
-                .map(|x| {
-                    upstream_value(x).map(|(v, s)| {
-                        any_set |= s;
-                        v
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?;
-            Some((Value::List(v), any_set))
-        }
-        J::Object(m) if !m.contains_key("$f") && !m.contains_key("$i") => {
-            let mut out = IndexMap::new();
-            let mut any_set = false;
-            for (k, v) in m {
-                let (v, s) = upstream_value(v)?;
-                any_set |= s;
-                out.insert(k.clone(), v);
-            }
-            Some((Value::Map(out), any_set))
-        }
-        other => decode(other).ok().map(|v| (v, false)),
-    }
+/// Whether CPython's `hash` of the value is the same in every process.
+fn deterministic_hash(v: &Value) -> bool {
+    matches!(v.py_hash(), Ok(Some(_)))
 }
 
 fn sorted_debug(v: &Value) -> Value {
@@ -506,6 +506,12 @@ fn sorted_debug(v: &Value) -> Value {
         }
         other => other.clone(),
     }
+}
+
+/// A stored upstream result as a [`Value`]; `None` when it has no Rust
+/// counterpart (`$other`, big integers).
+fn upstream_value(j: &J) -> Option<Value> {
+    decode(j).ok()
 }
 
 /// Check one corpus entry (expression or leaf) against its stored upstream
@@ -533,16 +539,11 @@ pub fn check_entry(entry: &J) -> Result<(), String> {
             up["ok"], resp["err"], resp["message"]
         )),
         (false, false) => {
-            let Some((exp, sets)) = upstream_value(&up["ok"]) else {
+            let Some(exp) = upstream_value(&up["ok"]) else {
                 return Ok(()); // no Rust counterpart to compare with
             };
             let got = decode(&resp["ok"]).map_err(|e| e.to_string())?;
-            let same = if sets {
-                strict_eq(&sorted_debug(&exp), &sorted_debug(&got))
-            } else {
-                strict_eq(&exp, &got)
-            };
-            if same {
+            if strict_eq(&exp, &got) {
                 Ok(())
             } else {
                 Err(format!("upstream {} != Rust {}", up["ok"], resp["ok"]))

@@ -30,6 +30,7 @@ mod slugify;
 pub mod stmt;
 mod syntax;
 
+pub(crate) use builtins::py_order;
 pub use error::{ExprError, ExprResult};
 pub use eval::{
     Bindings, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr, eval_expr_with_mapping,

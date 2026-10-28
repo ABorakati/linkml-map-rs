@@ -194,6 +194,17 @@ impl Decimal {
         Some(d.trimmed())
     }
 
+    /// The sign, coefficient digits and exponent, for `hash(Decimal)`.
+    pub(crate) fn hash_parts(&self) -> (bool, &str, i64) {
+        (self.negative, &self.coeff, self.exp)
+    }
+
+    /// The value with trailing zeros of the coefficient folded into the
+    /// exponent: equal decimals have equal canonical spellings.
+    pub(crate) fn canonical(&self) -> String {
+        self.trimmed().to_sci_string()
+    }
+
     /// Whether the value is zero (`Decimal("0.00")` is falsy).
     pub fn is_zero(&self) -> bool {
         self.coeff == "0"

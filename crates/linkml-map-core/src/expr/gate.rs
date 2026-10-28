@@ -57,8 +57,12 @@ impl EvalMode {
 pub(super) fn eval_restricted(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
     match &parsed.inner {
         ParsedInner::NoneLiteral => Ok(Value::Null),
-        ParsedInner::Single(ast) => super::eval::eval_ast_public(ast, vars),
-        ParsedInner::Program(program) => program.eval_first_statement(vars),
+        ParsedInner::Single(ast) => {
+            super::eval::eval_ast_public(ast, vars).map(Value::into_record_form)
+        }
+        ParsedInner::Program(program) => program
+            .eval_first_statement(vars)
+            .map(Value::into_record_form),
     }
 }
 

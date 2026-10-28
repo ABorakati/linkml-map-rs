@@ -62,6 +62,19 @@ impl Checks {
         }
     }
 
+    /// [`ok`](Self::ok) with an expected [`Value`] JSON cannot spell (a tuple).
+    fn ok_value(&mut self, expr: &str, vars: Json, expected: Value) {
+        match eval(expr, vars.clone()) {
+            Ok(got) if got == expected => {}
+            Ok(got) => self.failures.push(format!(
+                "{expr} with {vars}: expected {expected:?}, got {got:?}"
+            )),
+            Err(e) => self.failures.push(format!(
+                "{expr} with {vars}: expected {expected:?}, got error {e}"
+            )),
+        }
+    }
+
     fn err(&mut self, expr: &str, vars: Json) {
         if let Ok(got) = eval(expr, vars.clone()) {
             self.failures.push(format!(
@@ -649,15 +662,21 @@ fn python_whitespace_set() {
 }
 
 #[test]
-fn startswith_and_endswith_take_a_list_for_python_tuples() {
-    // PARITY: Python takes a tuple of prefixes; `Value` has no tuple (a tuple
-    // literal evaluates to a list), so a list of strings is accepted too.
+fn startswith_and_endswith_take_a_tuple_not_a_list() {
     expect("startswith('hello', ('he', 'zz'))", json!({}), json!(true));
-    expect("startswith('hello', ['zz'])", json!({}), json!(false));
-    expect("startswith('hello', [])", json!({}), json!(false));
+    expect("startswith('hello', ('zz',))", json!({}), json!(false));
+    expect("startswith('hello', ())", json!({}), json!(false));
+    expect("startswith('hello', tuple(['he']))", json!({}), json!(true));
     expect("endswith('hello', ('zz', 'lo'))", json!({}), json!(true));
     expect("endswith('hello', ('he', 'zz'))", json!({}), json!(false));
-    expect_error("endswith('hello', ('lo', 5))", json!({}));
+    // The affixes are tried in turn: a non-string one fails only if reached.
+    expect("endswith('hello', ('lo', 5))", json!({}), json!(true));
+    expect_error("endswith('hello', ('zz', 5))", json!({}));
+    // A list of affixes is a `TypeError`, whether written or bound.
+    expect_error("startswith('hello', ['zz'])", json!({}));
+    expect_error("startswith('hello', [])", json!({}));
+    expect_error("endswith('hello', x)", json!({"x": ["lo"]}));
+    expect_error("'hello'.startswith(['he'])", json!({}));
 }
 
 #[test]
@@ -2358,9 +2377,17 @@ fn python_parity_cases() {
     c.err(r#"list(5)"#, json!({})); // TypeError
     c.err(r#"list(None)"#, json!({})); // TypeError
     c.err(r#"list([1], [2])"#, json!({})); // TypeError
-    c.ok(r#"tuple([1, 2])"#, json!({}), json!([1, 2]));
-    c.ok(r#"tuple('ab')"#, json!({}), json!(["a", "b"]));
-    c.ok(r#"tuple()"#, json!({}), json!([]));
+    c.ok_value(
+        r#"tuple([1, 2])"#,
+        json!({}),
+        Value::Tuple(vec![Value::Int(1), Value::Int(2)]),
+    );
+    c.ok_value(
+        r#"tuple('ab')"#,
+        json!({}),
+        Value::Tuple(vec![Value::Str("a".into()), Value::Str("b".into())]),
+    );
+    c.ok_value(r#"tuple()"#, json!({}), Value::Tuple(vec![]));
     // --- distribute
     c.ok(r#"str([1, None, 'a'])"#, json!({}), json!(["1", null, "a"]));
     c.ok(

@@ -181,7 +181,7 @@ fn check_fixture(fx: &Fixture, rows: Vec<Value>, out_format: Format) -> Result<(
         if comparable_to_reference {
             let text: String = expected_values
                 .iter()
-                .map(|v| jsonl_line(v) + "\n")
+                .map(|v| jsonl_line(v).unwrap() + "\n")
                 .collect();
             prop_assert_eq!(text, reference);
         }

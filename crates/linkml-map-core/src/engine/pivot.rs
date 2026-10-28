@@ -183,17 +183,7 @@ fn unmelt_collection(pivot_op: &PivotOperation, records: &[Value]) -> Result<Val
 fn attribute_error_get(v: &Value) -> Error {
     Error::Python(format!(
         "AttributeError: '{}' object has no attribute 'get'",
-        match v {
-            Value::Null => "NoneType",
-            Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
-            Value::Float(_) => "float",
-            Value::Decimal(_) => "Decimal",
-            Value::Temporal(t) => t.type_name(),
-            Value::Str(_) => "str",
-            Value::List(_) => "list",
-            Value::Map(_) => "dict",
-        }
+        v.python_type_name()
     ))
 }
 

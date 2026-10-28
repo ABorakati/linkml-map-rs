@@ -99,8 +99,10 @@ const RESTRICTED_CASES: &[(&str, &str, &str, &str)] = &[
     (
         r##"'yes' if x else 'no'"##,
         r##"{"x": {}}"##,
+        // PARITY: a bound map is a `DynObj` (always truthy); a plain empty dict
+        // would give "no" (see `expr_truthy`).
         r##"ok"##,
-        r##""no""##,
+        r##""yes""##,
     ),
     (
         r##"'yes' if x else 'no'"##,
@@ -1425,31 +1427,44 @@ fn sorted_json(v: &Value) -> Json {
 }
 
 /// Check one oracle result; `Some(message)` when it differs.
+/// The JSON-shaped form the probe table records: a tuple is an array, a set an
+/// array in iteration order and a dict's keys are text (the container types
+/// themselves are covered by `tests/differential/expr`).
+fn json_shape(v: &Value) -> Value {
+    match v {
+        Value::List(items) | Value::Tuple(items) => {
+            Value::List(items.iter().map(json_shape).collect())
+        }
+        Value::Set(set) => Value::List(set.iter().map(json_shape).collect()),
+        Value::Map(m) => Value::Map(m.iter().map(|(k, x)| (k.clone(), json_shape(x))).collect()),
+        Value::Dict(d) => Value::Map(
+            d.iter()
+                .map(|(k, x)| (crate::value::json_key(k), json_shape(x)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 fn check(got: &Result<Value, ExprError>, kind: &str, payload: &str) -> Option<String> {
     match (kind, got) {
         ("err", Err(_)) => None,
         ("ok", Ok(v)) => {
             let want: Json = serde_json::from_str(payload).unwrap();
-            (*v != Value::from(&want)).then(|| format!("want {want}, got {v:?}"))
+            (json_shape(v) != Value::from(&want)).then(|| format!("want {want}, got {v:?}"))
         }
         ("set", Ok(v)) => {
             let mut want: Json = serde_json::from_str(payload).unwrap();
             want.as_array_mut().unwrap().sort_by_key(Json::to_string);
-            (!matches!(v, Value::List(_)) || sorted_json(v) != want)
+            (!matches!(v, Value::Set(_)) || sorted_json(&json_shape(v)) != want)
                 .then(|| format!("want set {want}, got {v:?}"))
         }
         _ => Some(format!("want {kind} {payload}, got {got:?}")),
     }
 }
 
-/// Differences from upstream that follow from [`Value`] having no set or tuple
-/// (see `compound.rs`): `(expression, what this evaluator gives instead)`.
+/// Differences from upstream: `(expression, what this evaluator gives instead)`.
 const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
-    // PARITY: a set is a list here, so the distributing built-ins (`bool`, `str`,
-    // ...) map over it where Python sees one set.
-    ("bool(set())", "[] (distributes over the empty list)"),
-    ("bool(set([0]))", "[False]"),
-    ("bool({0})", "[False]"),
     // Not about syntax: asteval has all of Python's built-ins, this evaluator the
     // LinkML function table, which takes no keyword arguments.
     ("sorted([2,1], reverse=True)", "error"),
@@ -1687,7 +1702,7 @@ fn restricted_syntax_rejects_exactly_what_upstream_rejects() {
 fn statement_blocks_are_never_restricted() {
     // asteval: `{x}` is a one-element set, whatever the restriction.
     let got = eval_unrestricted("target = {1, 2}", json!({})).unwrap();
-    assert_eq!(got, Value::from(&json!([1, 2])));
+    assert_eq!(json_shape(&got), Value::from(&json!([1, 2])));
 }
 
 // === statement blocks (asteval) ===============================================
@@ -1700,7 +1715,7 @@ fn run_block(src: &str, slots: Json) -> Value {
 fn block_brace_is_a_one_element_set() {
     // asteval has no reference syntax: `{src.x}` is `{src.x}` the set.
     assert_eq!(
-        run_block("target = {src.x}", json!({"x": 4})),
+        json_shape(&run_block("target = {src.x}", json!({"x": 4}))),
         Value::from(&json!([4]))
     );
     // An unhashable member is a TypeError, which asteval records: target stays None.
@@ -1790,32 +1805,46 @@ fn syntax_errors() {
 
 #[test]
 fn a_set_is_a_deduplicated_list_in_insertion_order() {
-    // PARITY: Python iterates `set([3, 1, 2])` as {1, 2, 3} (small ints hash to
-    // themselves) and a string set in per-process hash order; this evaluator
-    // keeps first-insertion order. Membership, length, `sorted` and `list`
-    // agree with Python.
-    expect("set([3, 1, 2, 3, 1])", json!({}), json!([3, 1, 2]));
+    // Python iterates `set([3, 1, 2])` as {1, 2, 3} (small ints hash to
+    // themselves): the table order of CPython 3.13 is reproduced for elements
+    // with a deterministic hash (see `crate::pyset`).
+    expect("list(set([3, 1, 2, 3, 1]))", json!({}), json!([1, 2, 3]));
+    expect(
+        "list(set([10, 9, 8, 7, 6, 5]))",
+        json!({}),
+        json!([5, 6, 7, 8, 9, 10]),
+    );
+    // PARITY: a string set iterates in per-process hash order upstream (so
+    // upstream's own output is not reproducible); this evaluator keeps
+    // first-insertion order.
     expect("list(set(['b', 'a', 'b']))", json!({}), json!(["b", "a"]));
     // A set comprehension is rejected by the restricted evaluator, so a block.
     assert_eq!(
-        eval_unrestricted("target = {c for c in 'hello'}", json!({})).unwrap(),
+        json_shape(&eval_unrestricted("target = {c for c in 'hello'}", json!({})).unwrap()),
         Value::from(&json!(["h", "e", "l", "o"]))
     );
-    // PARITY: a tuple is a list here, so it is unhashable (Python hashes tuples).
-    expect_err("set([(1, 2)])", json!({}), "unhashable type: 'list'");
-    // PARITY: no set type to distinguish, so set equality is list equality.
-    expect("set([1, 2]) == set([2, 1])", json!({}), json!(false));
+    // A tuple is hashable, a list is not.
+    expect("len(set([(1, 2), (1, 2)]))", json!({}), json!(1));
+    expect_err("set([[1, 2]])", json!({}), "unhashable type: 'list'");
+    expect("set([1, 2]) == set([2, 1])", json!({}), json!(true));
+    expect("set([1, 2]) == [1, 2]", json!({}), json!(false));
 }
 
 #[test]
-fn dict_keys_are_stringified() {
-    // PARITY: Python keeps `1` as an int key (JSON output still shows "1").
-    expect("{1: 'a'}", json!({}), json!({"1": "a"}));
+fn dict_keys_keep_their_type() {
+    // The key stays an int (JSON output shows "1", YAML output `1`).
+    let got = eval("{1: 'a'}", json!({})).unwrap();
+    assert!(matches!(&got, Value::Dict(d) if d.keys().all(|k| *k == Value::Int(1))));
+    assert_eq!(json_shape(&got), Value::from(&json!({"1": "a"})));
     expect("{1: 'a'}[1]", json!({}), json!("a"));
-    // ... which also merges keys Python keeps apart.
-    expect("len({1: 'a', '1': 'b'})", json!({}), json!(1));
-    // PARITY: a non-string needle never matches a map key (Python: True).
-    expect("1 in {1: 'a'}", json!({}), json!(false));
+    // `1`, `1.0` and `True` are one key; `'1'` is another.
+    expect("len({1: 'a', '1': 'b'})", json!({}), json!(2));
+    expect("len({1: 'a', 1.0: 'b', True: 'c'})", json!({}), json!(1));
+    expect("{1: 'a', True: 'b'}[1.0]", json!({}), json!("b"));
+    expect("1 in {1: 'a'}", json!({}), json!(true));
+    expect("'1' in {1: 'a'}", json!({}), json!(false));
+    expect("(1, 2) in {(1, 2): 'a'}", json!({}), json!(true));
+    expect_err("{[1]: 2}", json!({}), "unhashable type: 'list'");
 }
 
 #[test]

@@ -48,12 +48,17 @@ pub fn py_float_repr(f: f64) -> String {
 /// # use linkml_map_io::pycompat::dumps_json;
 /// # use linkml_map_core::value::Value;
 /// let v: Value = serde_json::from_str(r#"{"a": 1, "b": null, "c": [1, null]}"#).unwrap();
-/// assert_eq!(dumps_json(&v, None, true), r#"{"a": 1, "c": [1, null]}"#);
+/// assert_eq!(dumps_json(&v, None, true).unwrap(), r#"{"a": 1, "c": [1, null]}"#);
 /// ```
-pub fn dumps_json(value: &Value, indent: Option<usize>, skip_null: bool) -> String {
+///
+/// # Errors
+/// simplejson's `TypeError` message: a `set` is not JSON serialisable, and a
+/// dict key must be a string, number, boolean or `None`. (A tuple is written
+/// as an array and a dict's keys as text, as simplejson does.)
+pub fn dumps_json(value: &Value, indent: Option<usize>, skip_null: bool) -> Result<String, String> {
     let mut out = String::new();
-    write_json(&mut out, value, indent, 0, skip_null);
-    out
+    write_json(&mut out, value, indent, 0, skip_null)?;
+    Ok(out)
 }
 
 fn write_json(
@@ -62,7 +67,7 @@ fn write_json(
     indent: Option<usize>,
     level: usize,
     skip_null: bool,
-) {
+) -> Result<(), String> {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(true) => out.push_str("true"),
@@ -82,12 +87,26 @@ fn write_json(
         Value::List(items) => {
             if items.is_empty() {
                 out.push_str("[]");
-                return;
+                return Ok(());
             }
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 write_item_separator(out, i == 0, indent, level + 1);
-                write_json(out, item, indent, level + 1, skip_null);
+                write_json(out, item, indent, level + 1, skip_null)?;
+            }
+            write_close(out, ']', indent, level);
+        }
+        // simplejson's `tuple_as_array`: a tuple is an array. `_strip_nulls` does
+        // not look inside one, so nothing below it is stripped.
+        Value::Tuple(items) => {
+            if items.is_empty() {
+                out.push_str("[]");
+                return Ok(());
+            }
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                write_item_separator(out, i == 0, indent, level + 1);
+                write_json(out, item, indent, level + 1, false)?;
             }
             write_close(out, ']', indent, level);
         }
@@ -98,18 +117,40 @@ fn write_json(
                 .peekable();
             if members.peek().is_none() {
                 out.push_str("{}");
-                return;
+                return Ok(());
             }
             out.push('{');
             for (i, (key, member)) in members.enumerate() {
                 write_item_separator(out, i == 0, indent, level + 1);
                 write_json_str(out, key);
                 out.push_str(": ");
-                write_json(out, member, indent, level + 1, skip_null);
+                write_json(out, member, indent, level + 1, skip_null)?;
             }
             write_close(out, '}', indent, level);
         }
+        // A dict whose keys are not all strings: int, float, bool and None keys
+        // are written as text, any other key is simplejson's `TypeError`.
+        Value::Dict(dict) => {
+            let mut members = dict
+                .iter()
+                .filter(|(_, v)| !(skip_null && v.is_null()))
+                .peekable();
+            if members.peek().is_none() {
+                out.push_str("{}");
+                return Ok(());
+            }
+            out.push('{');
+            for (i, (key, member)) in members.enumerate() {
+                write_item_separator(out, i == 0, indent, level + 1);
+                write_json_str(out, &linkml_map_core::value::simplejson_key(key)?);
+                out.push_str(": ");
+                write_json(out, member, indent, level + 1, skip_null)?;
+            }
+            write_close(out, '}', indent, level);
+        }
+        Value::Set(_) => return Err("Object of type set is not JSON serializable".to_owned()),
     }
+    Ok(())
 }
 
 fn write_item_separator(out: &mut String, first: bool, indent: Option<usize>, level: usize) {
@@ -161,12 +202,16 @@ fn json_float(f: f64) -> String {
 
 // ─── str() / repr() ──────────────────────────────────────────────────────────
 
-/// Python `str(value)` for a scalar, `dumps_json(value)` for a list or dict.
+/// Python `str(value)` for a scalar (a tuple or set too), `dumps_json(value)`
+/// for a list or dict.
 ///
 /// This is `TabularStreamWriter._escape_value` minus the quoting: booleans
 /// render as `True` / `False` and `None` as the empty string.
-pub fn tabular_cell(value: &Value) -> String {
-    match value {
+///
+/// # Errors
+/// The `TypeError` of `dumps_json` for a list or dict holding a set.
+pub fn tabular_cell(value: &Value) -> Result<String, String> {
+    Ok(match value {
         Value::Null => String::new(),
         Value::Bool(b) => py_bool(*b).to_owned(),
         Value::Int(i) => i.to_string(),
@@ -176,8 +221,10 @@ pub fn tabular_cell(value: &Value) -> String {
         // `str(date)`.
         Value::Temporal(t) => t.to_string(),
         Value::Str(s) => s.clone(),
-        Value::List(_) | Value::Map(_) => dumps_json(value, None, false),
-    }
+        Value::List(_) | Value::Map(_) | Value::Dict(_) => dumps_json(value, None, false)?,
+        // `str(tuple)` / `str(set)`: not a list or dict, so not JSON.
+        Value::Tuple(_) | Value::Set(_) => py_repr(value),
+    })
 }
 
 /// Python `str(value)`: scalars as printed, containers as their `repr`.
@@ -211,6 +258,28 @@ pub fn py_repr(value: &Value) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
+        Value::Tuple(items) => {
+            let inner: Vec<String> = items.iter().map(py_repr).collect();
+            match inner.as_slice() {
+                [only] => format!("({only},)"),
+                _ => format!("({})", inner.join(", ")),
+            }
+        }
+        Value::Set(set) => {
+            if set.is_empty() {
+                "set()".to_owned()
+            } else {
+                let inner: Vec<String> = set.iter().map(py_repr).collect();
+                format!("{{{}}}", inner.join(", "))
+            }
+        }
+        Value::Dict(dict) => {
+            let inner: Vec<String> = dict
+                .iter()
+                .map(|(k, v)| format!("{}: {}", py_repr(k), py_repr(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
     }
 }
 
@@ -236,13 +305,23 @@ pub fn strip_nulls(value: &Value) -> Value {
                 .collect(),
         ),
         Value::List(items) => Value::List(items.iter().map(strip_nulls).collect()),
+        // `_strip_nulls` recurses into dicts (of any key type) and lists only: a
+        // tuple or set is returned as it is.
+        Value::Dict(dict) => Value::Dict(Box::new(
+            dict.iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k.clone(), strip_nulls(v)))
+                .collect(),
+        )),
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
-        | Value::Str(_)) => scalar.clone(),
+        | Value::Str(_)
+        | Value::Tuple(_)
+        | Value::Set(_)) => scalar.clone(),
     }
 }
 
@@ -263,13 +342,21 @@ pub fn strip_empty(value: &Value) -> Value {
                 .filter(|v| !is_empty(v))
                 .collect(),
         ),
+        Value::Dict(dict) => Value::Dict(Box::new(
+            dict.iter()
+                .map(|(k, v)| (k.clone(), strip_empty(v)))
+                .filter(|(_, v)| !is_empty(v))
+                .collect(),
+        )),
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
-        | Value::Str(_)) => scalar.clone(),
+        | Value::Str(_)
+        | Value::Tuple(_)
+        | Value::Set(_)) => scalar.clone(),
     }
 }
 
@@ -279,12 +366,15 @@ fn is_empty(value: &Value) -> bool {
         Value::Null => true,
         Value::List(items) => items.is_empty(),
         Value::Map(map) => map.is_empty(),
+        Value::Dict(dict) => dict.is_empty(),
         Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
-        | Value::Str(_) => false,
+        | Value::Str(_)
+        | Value::Tuple(_)
+        | Value::Set(_) => false,
     }
 }
 
@@ -308,7 +398,10 @@ pub fn sort_keys(value: &Value) -> Value {
         | Value::Float(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
-        | Value::Str(_)) => scalar.clone(),
+        | Value::Str(_)
+        | Value::Tuple(_)
+        | Value::Set(_)
+        | Value::Dict(_)) => scalar.clone(),
     }
 }
 
@@ -339,18 +432,36 @@ fn flatten_into<'a>(
             Some(p) => format!("{p}{sep}{key}"),
             None => key.clone(),
         };
-        match value {
-            Value::Map(child) => flatten_into(child, Some(&flat_key), sep, flat),
-            leaf @ (Value::Null
-            | Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::Decimal(_)
-            | Value::Temporal(_)
-            | Value::Str(_)
-            | Value::List(_)) => {
-                flat.insert(flat_key, leaf);
+        flatten_value(value, flat_key, sep, flat);
+    }
+}
+
+/// One member of a flattened mapping: a mapping recurses, anything else is a leaf.
+fn flatten_value<'a>(
+    value: &'a Value,
+    flat_key: String,
+    sep: &str,
+    flat: &mut IndexMap<String, &'a Value>,
+) {
+    match value {
+        Value::Map(child) => flatten_into(child, Some(&flat_key), sep, flat),
+        // `flatten_dict` recurses into any mapping, joining the keys as `str()`.
+        Value::Dict(child) => {
+            for (k, v) in child.iter() {
+                flatten_value(v, format!("{flat_key}{sep}{}", py_str(k)), sep, flat);
             }
+        }
+        leaf @ (Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Decimal(_)
+        | Value::Temporal(_)
+        | Value::Str(_)
+        | Value::List(_)
+        | Value::Tuple(_)
+        | Value::Set(_)) => {
+            flat.insert(flat_key, leaf);
         }
     }
 }
@@ -389,11 +500,11 @@ mod tests {
     fn dumps_json_spacing_matches_simplejson() {
         let val = v(r#"{"a": [1, 2.0, {"b": "x"}], "c": {}, "d": []}"#);
         assert_eq!(
-            dumps_json(&val, None, false),
+            dumps_json(&val, None, false).unwrap(),
             r#"{"a": [1, 2.0, {"b": "x"}], "c": {}, "d": []}"#
         );
         assert_eq!(
-            dumps_json(&val, Some(2), false),
+            dumps_json(&val, Some(2), false).unwrap(),
             "{\n  \"a\": [\n    1,\n    2.0,\n    {\n      \"b\": \"x\"\n    }\n  ],\n  \"c\": {},\n  \"d\": []\n}"
         );
     }
@@ -401,18 +512,24 @@ mod tests {
     #[test]
     fn dumps_json_keeps_non_ascii_and_escapes_controls() {
         let val = Value::Str("caf\u{e9}\n\u{1}".to_owned());
-        assert_eq!(dumps_json(&val, None, false), "\"caf\u{e9}\\n\\u0001\"");
+        assert_eq!(
+            dumps_json(&val, None, false).unwrap(),
+            "\"caf\u{e9}\\n\\u0001\""
+        );
     }
 
     #[test]
     fn dumps_json_non_finite_floats() {
-        assert_eq!(dumps_json(&Value::Float(f64::NAN), None, false), "NaN");
         assert_eq!(
-            dumps_json(&Value::Float(f64::INFINITY), None, false),
+            dumps_json(&Value::Float(f64::NAN), None, false).unwrap(),
+            "NaN"
+        );
+        assert_eq!(
+            dumps_json(&Value::Float(f64::INFINITY), None, false).unwrap(),
             "Infinity"
         );
         assert_eq!(
-            dumps_json(&Value::Float(f64::NEG_INFINITY), None, false),
+            dumps_json(&Value::Float(f64::NEG_INFINITY), None, false).unwrap(),
             "-Infinity"
         );
     }
@@ -425,8 +542,11 @@ mod tests {
         );
         let want = v(r#"{"id": "p1", "q": {"unit": "mg"}, "tags": ["a", null]}"#);
         assert_eq!(strip_nulls(&row), want);
-        // dumps_json(skip_null) and strip_nulls agree.
-        assert_eq!(dumps_json(&row, None, true), dumps_json(&want, None, false));
+        // dumps_json(skip_null).unwrap() and strip_nulls agree.
+        assert_eq!(
+            dumps_json(&row, None, true).unwrap(),
+            dumps_json(&want, None, false).unwrap()
+        );
         // A dict emptied by stripping stays as `{}`.
         assert_eq!(strip_nulls(&v(r#"{"a": {"b": null}}"#)), v(r#"{"a": {}}"#));
     }
@@ -444,7 +564,7 @@ mod tests {
     fn sort_keys_is_recursive() {
         let got = sort_keys(&v(r#"{"b": 1, "a": {"z": 1, "y": [{"q": 1, "p": 2}]}}"#));
         assert_eq!(
-            dumps_json(&got, None, false),
+            dumps_json(&got, None, false).unwrap(),
             r#"{"a": {"y": [{"p": 2, "q": 1}], "z": 1}, "b": 1}"#
         );
     }
@@ -461,10 +581,10 @@ mod tests {
 
     #[test]
     fn tabular_cell_follows_str() {
-        assert_eq!(tabular_cell(&Value::Bool(true)), "True");
-        assert_eq!(tabular_cell(&Value::Float(2.0)), "2.0");
-        assert_eq!(tabular_cell(&Value::Null), "");
-        assert_eq!(tabular_cell(&v(r#"[1, "a"]"#)), r#"[1, "a"]"#);
+        assert_eq!(tabular_cell(&Value::Bool(true)).unwrap(), "True");
+        assert_eq!(tabular_cell(&Value::Float(2.0)).unwrap(), "2.0");
+        assert_eq!(tabular_cell(&Value::Null).unwrap(), "");
+        assert_eq!(tabular_cell(&v(r#"[1, "a"]"#)).unwrap(), r#"[1, "a"]"#);
     }
 
     #[test]

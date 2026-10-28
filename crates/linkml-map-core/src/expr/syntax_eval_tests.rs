@@ -176,9 +176,13 @@ fn statement_blocks_follow_asteval() {
     expect_block("target = src.s.format()", vars.clone(), json!(null));
     expect_block("target = [*src.l]", vars.clone(), json!(null));
     expect_block("target = max(*src.l)", vars.clone(), json!(null));
-    // `**` in a dict display is a `None` key, which no map here can hold.
-    let err = block("target = {**src.m}", vars.clone()).unwrap_err();
-    assert!(err.is_unrepresentable(), "{err}");
+    // `**` in a dict display is a `None` key.
+    let got = block("target = {**src.m}", vars.clone()).unwrap();
+    assert_eq!(got.python_type_name(), "dict");
+    assert!(
+        matches!(&got, Value::Dict(d) if d.len() == 1 && d.keys().all(Value::is_null)),
+        "{got:?}"
+    );
     expect_block("target = (lambda x, y=2: x + y)(1)", vars.clone(), json!(3));
     expect_block("target = src.s.upper().lower()", vars, json!("hi"));
 }

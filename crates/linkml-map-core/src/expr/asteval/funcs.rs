@@ -1304,10 +1304,20 @@ pub(crate) fn call_type(
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 0, 1)?;
             let mut s = PySet::new();
-            if let Some(x) = args.first() {
-                for item in to_vec(x)? {
-                    set_add(&mut s, hkey(&item)?, item);
+            match args.first() {
+                // `set_merge`: a set is copied table to table.
+                Some(Py::Set(other)) => s = other.borrow().copy(),
+                // `set_update_internal` makes room for all of a dict's keys at once.
+                Some(Py::Dict(d)) => {
+                    let keys = d.borrow().values().map(|(k, _)| k.clone()).collect();
+                    s.update_dict_keys(keys).map_err(|m| exc("TypeError", m))?;
                 }
+                Some(x) => {
+                    for item in to_vec(x)? {
+                        set_add(&mut s, item)?;
+                    }
+                }
+                None => {}
             }
             Ok(Py::Set(rf(s)))
         }

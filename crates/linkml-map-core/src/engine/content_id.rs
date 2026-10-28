@@ -157,6 +157,14 @@ pub fn canonical(
             t.type_name(),
             t.repr()
         )),
+        // PARITY: a tuple or set is no `dict`/`list` either. (A dict with a
+        // non-string key is a dict upstream, whose canonical form would keep
+        // the key; the port has no such `Canon`, so it is refused too.)
+        Value::Tuple(_) | Value::Set(_) | Value::Dict(_) => Err(format!(
+            "Cannot synthesize an identifier from a value of type {}: {}",
+            value.python_type_name(),
+            crate::expr::eval::py_repr(value)
+        )),
     }
 }
 

@@ -840,12 +840,33 @@ class TestDecimalBridge:
         assert type(value["f"]) is float
         assert [type(v) for v in value["l"]] == [bool, int, float]
 
-    def test_dict_keys_are_stringified_and_bad_keys_rejected(self) -> None:
+    def test_dict_keys_keep_their_python_type(self) -> None:
+        # A dict whose keys are not all `str` stays a dict with its real keys
+        # (upstream passes the Python object through untouched).
         t = _raw_transformer()
-        value = t.transform({"id": "r1", "value": {1: "a", 2.5: "b", None: "d", False: "e"}})
-        assert value["value_raw"] == {"1": "a", "2.5": "b", "null": "d", "false": "e"}
-        with pytest.raises(TypeError):
-            t.transform({"id": "r1", "value": {(1,): "a"}})
+        keys = {1: "a", 2.5: "b", None: "d", False: "e", (1, 2): "f"}
+        value = t.transform({"id": "r1", "value": keys})["value_raw"]
+        assert value == keys
+        assert list(value) == list(keys)
+        assert [type(k) for k in value] == [int, float, type(None), bool, tuple]
+        # `1`, `1.0` and `True` are one key, and the first spelling stays.
+        merged = t.transform({"id": "r1", "value": {"a": {1: "x", 1.0: "y", True: "z"}}})
+        assert merged["value_raw"] == {"a": {1: "z"}}
+        # An unhashable key cannot exist in a Python dict, so there is nothing to reject.
+
+    def test_tuples_and_sets_keep_their_python_type(self) -> None:
+        t = _raw_transformer()
+        value = t.transform(
+            {"id": "r1", "value": {"t": (1, (2, "x")), "s": {3, 1, 2}, "f": frozenset({7}), "l": [(1,), {4}]}}
+        )["value_raw"]
+        assert value["t"] == (1, (2, "x"))
+        assert type(value["t"]) is tuple and type(value["t"][1]) is tuple
+        assert value["s"] == {1, 2, 3} and type(value["s"]) is set
+        # A frozenset comes back as a plain set.
+        assert value["f"] == {7} and type(value["f"]) is set
+        assert type(value["l"]) is list and type(value["l"][0]) is tuple and type(value["l"][1]) is set
+        # A set keeps the order the Python set iterates in.
+        assert list(value["s"]) == list({3, 1, 2})
 
     def test_non_json_scalars_still_stringify(self) -> None:
         import datetime

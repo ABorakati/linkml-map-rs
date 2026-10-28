@@ -88,9 +88,9 @@ impl StreamWriter for ColumnarStreamWriter {
         let mut out = String::new();
         for obj in chunk {
             if contains_decimal(obj) {
-                out.push_str(&jsonl_line(&decimals_as_strings(obj)));
+                out.push_str(&jsonl_line(&decimals_as_strings(obj)).map_err(anyhow::Error::msg)?);
             } else {
-                out.push_str(&jsonl_line(obj));
+                out.push_str(&jsonl_line(obj).map_err(anyhow::Error::msg)?);
             }
             out.push('\n');
         }
