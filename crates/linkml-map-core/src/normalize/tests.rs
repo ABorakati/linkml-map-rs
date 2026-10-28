@@ -555,10 +555,13 @@ mod join_conflicts {
         )]);
         synthesize_implicit_joins(&mut spec, &mr_schema()).unwrap();
         let expected =
-            "Conflicting join specs for 'Reading': ('id', 'id') vs ('subject_id', 'subject_id')."
+            "Conflicting join specs for 'Reading': ('id', 'id') vs ('subject_id', 'subject_id')"
                 .to_owned();
         // Only the engine route (`join_engine._collect_joins`) advises distinct names.
-        assert_eq!(err_of(result_cd(&spec), true), format!("{expected} {TAIL}"));
+        assert_eq!(
+            err_of(result_cd(&spec), true),
+            format!("{expected}. {TAIL}")
+        );
         assert_eq!(err_of(result_cd(&spec), false), expected);
     }
 
@@ -577,7 +580,7 @@ mod join_conflicts {
         );
         assert_eq!(
             err_of(&cd, false),
-            "Conflicting join specs for 'Reading': ('subject_id', 'id') vs ('method', 'id')."
+            "Conflicting join specs for 'Reading': ('subject_id', 'id') vs ('method', 'id')"
         );
     }
 
@@ -773,7 +776,7 @@ mod join_conflicts {
         let merged = with_inherited_fields(&child, &all).unwrap();
         assert_eq!(
             err_of(&merged, false),
-            "Conflicting join specs for 'Reading': ('id', 'id') vs ('subject_id', 'subject_id')."
+            "Conflicting join specs for 'Reading': ('id', 'id') vs ('subject_id', 'subject_id')"
         );
     }
 }

@@ -69,12 +69,12 @@ pub fn join_keys(spec: &AliasedClass) -> Result<(&str, &str)> {
 /// `join_engine._collect_joins` adds the advice to use distinct join names.
 fn conflict(join_name: &str, existing: &str, new: &str, advice: bool) -> Error {
     let advice = if advice {
-        " Use distinct join names to join a table more than one way."
+        ". Use distinct join names to join a table more than one way."
     } else {
         ""
     };
     Error::JoinSpec(format!(
-        "Conflicting join specs for {}: {existing} vs {new}.{advice}",
+        "Conflicting join specs for {}: {existing} vs {new}{advice}",
         py_repr_str(join_name)
     ))
 }

@@ -1,0 +1,3 @@
+{"id": "p1", "left": {"z": "first"}, "right": {"z": "o1"}}
+{"id": "p2", "left": {"z": "second"}, "right": {"z": "o2"}}
+{"id": "p3", "left": {}, "right": {}}
