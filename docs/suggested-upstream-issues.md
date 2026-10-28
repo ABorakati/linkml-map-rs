@@ -117,6 +117,20 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - `exclude` without `copy_all` raises `KeyError`; `_rewire_parent` raises `AttributeError` for a non-source parent.
 - `derive-schema` ignores `source_schema_patches`.
 
+## invert (`TransformationSpecificationInverter`)
+
+Details in [`invert-parity.md`](invert-parity.md).
+
+- The `if inverted_ed.expr:` guard tests the freshly built inverse instead of `ed.expr`, so it never fires and the
+  strict "Cannot invert slot derivation" branch (`elif self.strict`) is dead.
+- An unresolvable source slot raises `AttributeError: 'NoneType' object has no attribute 'range'` instead of
+  `NonInvertibleSpecificationError`.
+- Unit inversion uses only `ucum_code` then `symbol`, ignoring `iec61360code`, `abbreviation` and `descriptive_name`.
+- `re.match(r"^\w+$", expr)` accepts a trailing newline (should be `fullmatch`).
+- Two slots mapped to the same target silently overwrite each other; `value_mappings`, nested derivations and `hide`
+  are dropped without warning.
+- `_pre_flight_validate` can raise on a broken source schema although it is documented as informational.
+
 ## Not linkml-map (third-party)
 
 - PyYAML cannot round-trip U+0085, and misreads a double-quoted scalar folded across lines with `\` at a line end.
