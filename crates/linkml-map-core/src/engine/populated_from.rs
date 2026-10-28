@@ -41,6 +41,7 @@ impl<'s> ObjectTransformer<'s> {
     ///
     /// `_source_class` is a virtual slot naming the source class itself (#193), so
     /// it has no schema slot.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_populated_from(
         &self,
         populated_from: &str,
