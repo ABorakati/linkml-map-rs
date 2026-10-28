@@ -213,6 +213,9 @@ Each is marked `PARITY:` in the code.
 
 ## Suggested upstream issues (not filed)
 
+The complete, grouped list (including everything found by the later fuzzing rounds) is in
+[`suggested-upstream-issues.md`](suggested-upstream-issues.md). The items below are the ones found during the sync itself.
+
 - `read_json_auto`'s default `sample_size` (20,480) silently drops columns that
   first appear late in Parquet/DuckDB output; ISO timestamp typing differs between
   duckdb 1.5.2 and 2.0.0.
