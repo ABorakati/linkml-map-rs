@@ -191,7 +191,6 @@ Each is marked `PARITY:` in the code.
 - **`load_specification`** returns a dict-backed `TransformationSpecification`
   stand-in (no pydantic): unset or misspelt fields read `None`.
   `PathNotFoundError` subclasses both `FileNotFoundError` and `ValueError`.
-- **`--strict` only**, no `--no-strict`.
 - **Two ported constant-block tests adjusted.** Upstream drives `transform_spec`,
   which has no identifier pre-check; the Rust pipeline mirrors the CLI's
   `_require_identifiers`, so the tests set `mint_ids` or drop the target schema.
@@ -206,9 +205,6 @@ Each is marked `PARITY:` in the code.
   (`expr::parser::MAX_AST_DEPTH`; measured against v0.6.0-rc1, the figure depends on the
   caller's stack depth). Upstream raises at evaluation time, so a conditional expression
   whose deep branch is never taken evaluates there but is refused here.
-- **Division by zero is `None`** (`1 / 0`, `1 // 0`, `1 % 0`) where upstream's
-  `ZeroDivisionError` is not caught and aborts the row. Not changed: `0 ** -1` and float
-  `**` overflow, which also raise upstream, do raise here.
 - **Complex results** (`(-8) ** 0.5`) are an `Eval` error: `Value` has no complex type.
 
 ## Suggested upstream issues (not filed)

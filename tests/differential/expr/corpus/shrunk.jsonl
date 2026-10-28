@@ -5,7 +5,7 @@
 {"expr": "uuid5(z < z)", "bindings": {"z": []}, "mode": "restricted", "strict": false, "upstream": {"err": "TypeError"}, "status": "pass", "class": "decimal-or-unicode-numstr"}
 {"expr": "0 / 0", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"err": "ZeroDivisionError"}, "status": "pass", "class": "div-zero"}
 {"expr": "0 // 0", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"err": "ZeroDivisionError"}, "status": "pass", "class": "div-zero"}
-{"expr": "9223372036854775807 * x", "bindings": {"x": []}, "mode": "restricted", "strict": false, "upstream": {"ok": []}, "status": "divergence", "class": "hang-or-crash", "reason": "a case hangs or aborts the Rust evaluator (unbounded allocation/recursion)", "hazard": "hang"}
+{"expr": "9223372036854775807 * x", "bindings": {"x": []}, "mode": "restricted", "strict": false, "upstream": {"ok": []}, "status": "pass", "class": "agree"}
 {"expr": "m in 0", "bindings": {"m": {}}, "mode": "restricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "in-not-iterable"}
 {"expr": "0 not in True", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "in-not-iterable"}
 {"expr": "0 >= (a in 0)", "bindings": {"a": ""}, "mode": "restricted", "strict": false, "upstream": {"ok": null}, "status": "pass", "class": "in-not-iterable"}
