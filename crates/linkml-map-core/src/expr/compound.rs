@@ -40,36 +40,21 @@ use indexmap::IndexMap;
 
 use super::builtins::py_iter;
 use super::error::{ExprError, ExprResult};
-use super::eval::{Bindings, eval_ast, object_attr_mode_enabled, type_name};
+use super::eval::{Bindings, eval_ast, type_name};
 use super::gate::enter_comprehension;
 use super::parser::{Ast, CompKind, Comprehension, Target};
 use crate::value::Value;
 
-/// Restricted syntax applies: not inside a statement block, which is the only
-/// place the asteval-style evaluator runs.
-fn restricted_syntax_enabled() -> bool {
-    !object_attr_mode_enabled()
-}
-
-/// `{x}` as `asteval` sees it, evaluated as the one-element set it is. Only used
-/// inside a statement block; elsewhere `{x}` is the reference syntax.
-pub(super) fn eval_brace_as_set(inner: &Ast, vars: &Bindings) -> ExprResult<Value> {
-    set_from_values(vec![eval_ast(inner, vars)?])
-}
-
 /// A set display `{a, b, ...}`.
-pub(super) fn eval_set_display(elts: &[Ast], vars: &Bindings) -> ExprResult<Value> {
-    if restricted_syntax_enabled() {
-        return Err(ExprError::Eval(
-            if elts.len() == 1 {
-                "The {} must enclose a variable"
-            } else {
-                "The {} must enclose a single variable"
-            }
-            .into(),
-        ));
-    }
-    set_from_values(super::syntax::eval_elements(elts, vars, true)?)
+pub(super) fn eval_set_display(elts: &[Ast]) -> ExprResult<Value> {
+    Err(ExprError::Eval(
+        if elts.len() == 1 {
+            "The {} must enclose a variable"
+        } else {
+            "The {} must enclose a single variable"
+        }
+        .into(),
+    ))
 }
 
 /// A dict display `{k: v, ...}` (`_eval_dict`).
@@ -77,13 +62,6 @@ pub(super) fn eval_dict_display(pairs: &[(Ast, Ast)], vars: &Bindings) -> ExprRe
     let mut map = IndexMap::with_capacity(pairs.len());
     for (k, v) in pairs {
         if matches!(k, Ast::DictUnpack) {
-            // PARITY: asteval's `on_dict` is `dict(zip(keys, values))`, in which
-            // `**mapping` is the key `None`: `{None: mapping}`, which no
-            // string-keyed map can hold.
-            if object_attr_mode_enabled() {
-                eval_ast(v, vars)?;
-                return Err(ExprError::unrepresentable("dict with a None key"));
-            }
             // `{**mapping}`: `result.update(self._eval(value))`.
             match eval_ast(v, vars)? {
                 Value::Map(other) => map.extend(other),
@@ -249,13 +227,10 @@ pub(super) fn dict(args: &[Value], keywords: Vec<(String, Value)>) -> ExprResult
 /// Items a comprehension ranges over: lists by element, dicts by key, strings
 /// by character; `None` yields nothing.
 ///
-/// PARITY: iterating `None` is a `TypeError` in Python's restricted evaluator;
-/// asteval, inside a statement block, iterates nothing instead (the
-/// `[e for e in src.events]` null-propagation the statement-block tests rely on).
+/// PARITY: iterating `None` is a `TypeError`.
 fn iteration_items(v: Value) -> ExprResult<Vec<Value>> {
     match v {
         Value::List(items) => Ok(items),
-        Value::Null if object_attr_mode_enabled() => Ok(Vec::new()),
         other => py_iter(&other).map(Cow::into_owned),
     }
 }
@@ -268,7 +243,7 @@ enum Sink {
 
 /// A list, set, dict or generator comprehension.
 pub(super) fn eval_comprehension(c: &Comprehension, vars: &Bindings) -> ExprResult<Value> {
-    if c.kind == CompKind::Set && restricted_syntax_enabled() {
+    if c.kind == CompKind::Set {
         return Err(ExprError::Eval(
             "Sorry, SetComp is not available in this evaluator".into(),
         ));

@@ -113,7 +113,7 @@ thread_local! {
     /// Default (lax) behaviour is off, so all existing public entry points are
     /// unchanged. The `*_strict` entry points ([`eval_parsed_strict`],
     /// [`eval_expr_with_mapping_strict`]) flip this on for the duration of the
-    /// evaluation via [`with_strict_mode`]. Modelled on [`OBJECT_ATTR_MODE`].
+    /// evaluation via [`with_strict_mode`].
     static STRICT_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -137,22 +137,15 @@ fn strict_mode_enabled() -> bool {
 /// Resolve `name` from `vars`, honouring the current strict mode: in lax mode an
 /// unbound name yields [`Value::Null`]; in strict mode it is an error.
 ///
-/// PARITY: inside a statement block (see [`with_object_attr_mode`]) an unbound
-/// name is always an error, strict or not. asteval has no lax mode: reading a
-/// name missing from its symbol table is a `NameError`
-/// (`asteval.Interpreter._getsym`), which upstream `_unrestricted_eval`
-/// re-raises as `ValueError`.
 fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
     match vars.get(name) {
         Some(v) => Ok(v.clone()),
         // PARITY: simpleeval's `_eval_name` falls back to `self.functions[name]`, so
         // a bare function name (`upper`, `max`) evaluates to the function itself,
         // which has no `Value`.
-        None if !object_attr_mode_enabled() && is_function_name(name) => {
-            Err(ExprError::unrepresentable("function"))
-        }
+        None if is_function_name(name) => Err(ExprError::unrepresentable("function")),
         None => {
-            if strict_mode_enabled() || object_attr_mode_enabled() {
+            if strict_mode_enabled() {
                 let message = format!("name '{name}' is not defined");
                 Err(ExprError::Undefined {
                     name: name.to_string(),
@@ -424,7 +417,7 @@ pub(super) fn attribute_receiver<'a>(
     // would clone the whole bound value (a nested record, say) to read
     // one attribute.
     let root_ast = match value {
-        Ast::Brace(inner) if !object_attr_mode_enabled() => inner.as_ref(),
+        Ast::Brace(inner) => inner.as_ref(),
         other => other,
     };
     if let Ast::Name(root) = root_ast
@@ -446,17 +439,9 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         Ast::Name(name) => resolve_name(name, vars),
 
-        // {x} resolves identically to bare x (`LinkMLEvaluator._eval_set`) ...
-        // PARITY: ... except in a statement block, which runs under `asteval`,
-        // where `{x}` is an ordinary one-element set display.
-        Ast::Brace(inner) => {
-            if object_attr_mode_enabled() {
-                compound::eval_brace_as_set(inner, vars)
-            } else {
-                eval_ast(inner, vars)
-            }
-        }
-        Ast::Set(elts) => compound::eval_set_display(elts, vars),
+        // {x} resolves identically to bare x (`LinkMLEvaluator._eval_set`).
+        Ast::Brace(inner) => eval_ast(inner, vars),
+        Ast::Set(elts) => compound::eval_set_display(elts),
         Ast::Dict(pairs) => compound::eval_dict_display(pairs, vars),
         Ast::Comp(c) => compound::eval_comprehension(c, vars),
 
@@ -587,10 +572,7 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
     match resolved {
         Some(v) => Ok(v),
         None => {
-            // PARITY: in a statement block `slot` is the plain lambda
-            // `tgt_attrs.get(name)` (ObjectTransformer._derive_class), so an
-            // unresolved slot is None there, whatever the strict setting.
-            if strict_mode_enabled() && !object_attr_mode_enabled() {
+            if strict_mode_enabled() {
                 Err(ExprError::Eval(format!(
                     "slot '{slot_name}' is not defined"
                 )))
@@ -673,38 +655,6 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
 
 // --- attribute distribution (mirrors _distributed_getattr) ---
 
-thread_local! {
-    /// True while a statement block (the `asteval`-style interpreter) runs: names
-    /// and `{x}` follow asteval rather than simpleeval (see [`with_object_attr_mode`]).
-    ///
-    /// Attribute access no longer depends on it: a `Map` is a `DynObj` in both
-    /// evaluators (see [`distributed_getattr`]).
-    static OBJECT_ATTR_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` with object-attribute semantics enabled, restoring the prior mode
-/// afterwards (nesting-safe).
-///
-/// No longer called: statement blocks run in [`super::asteval`], which has its
-/// own `DynObj`. The `object_attr_mode_enabled()` branches in this module and
-/// in `compound`/`gate` are dead and can go with the next clean-up of the
-/// restricted evaluator (kept now to leave that code to its own owners).
-#[allow(dead_code)]
-pub(crate) fn with_object_attr_mode<T>(f: impl FnOnce() -> T) -> T {
-    OBJECT_ATTR_MODE.with(|m| {
-        let prev = m.get();
-        m.set(true);
-        let out = f();
-        m.set(prev);
-        out
-    })
-}
-
-/// True while a statement block is being evaluated (see [`with_object_attr_mode`]).
-pub(super) fn object_attr_mode_enabled() -> bool {
-    OBJECT_ATTR_MODE.with(|c| c.get())
-}
-
 /// Whether `node` builds a plain Python `dict` (a display, a comprehension or
 /// `dict(...)`), as opposed to reading a bound value.
 fn is_dict_construction(node: &Ast) -> bool {
@@ -725,8 +675,6 @@ pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> 
         )));
     }
     match obj {
-        // asteval reads an attribute of the list itself (`getattr(list, attr, None)`).
-        Value::List(_) if object_attr_mode_enabled() => pymethods::list_getattr(attr),
         Value::List(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
@@ -747,7 +695,7 @@ pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> 
         // A scalar's attributes are those of the Python object (`s.upper`,
         // `x.real`); a missing one is an `AttributeError` upstream, which
         // `_eval_expr` does not catch (asteval's `safe_getattr` gives None).
-        other => pymethods::scalar_getattr(other, attr, object_attr_mode_enabled()),
+        other => pymethods::scalar_getattr(other, attr),
     }
 }
 

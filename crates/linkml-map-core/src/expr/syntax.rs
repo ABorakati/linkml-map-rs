@@ -5,17 +5,13 @@
 //! The parser accepts everything CPython's does, so a construct `simpleeval`
 //! cannot evaluate fails when (and only when) it is evaluated, as upstream does
 //! (`FeatureNotAvailable`/`OperatorNotDefined`, both `InvalidExpression`: a
-//! rejection the `unrestricted_eval` fallback retries). Inside a statement
-//! block (`asteval`, [`object_attr_mode_enabled`]) the same nodes mostly work,
-//! and a few behave differently; each such place says so.
+//! rejection the `unrestricted_eval` fallback retries). Statement blocks run in
+//! [`super::asteval`], not here.
 
 use super::error::{ExprError, ExprResult};
-use super::eval::{
-    Bindings, attribute_receiver, distributed_getattr, eval_ast, object_attr_mode_enabled, py_repr,
-    py_str, type_name,
-};
-use super::parser::{Ast, CmpOp, FPart, Lambda};
-use super::pyformat::{ascii_escape, format_value};
+use super::eval::{Bindings, attribute_receiver, distributed_getattr, eval_ast, py_str, type_name};
+use super::parser::{Ast, CmpOp, FPart};
+use super::pyformat::format_value;
 use super::pymethods::{self, Lookup};
 use crate::value::Value;
 
@@ -24,7 +20,6 @@ const MAX_STRING_LENGTH: usize = 100_000;
 
 /// Evaluate one of the nodes the basic evaluator delegates here.
 pub(super) fn eval_syntax(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
-    let restricted = !object_attr_mode_enabled();
     let unavailable =
         |what: &str| ExprError::Eval(format!("Sorry, {what} is not available in this evaluator"));
     match node {
@@ -36,8 +31,7 @@ pub(super) fn eval_syntax(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
         Ast::Starred(_) => Err(unavailable("Starred")),
         Ast::DictUnpack => Err(unavailable("DictUnpack")),
         Ast::NamedExpr { .. } => Err(unavailable("NamedExpr")),
-        Ast::Lambda(_) if restricted => Err(unavailable("Lambda")),
-        Ast::Lambda(_) => Err(ExprError::unrepresentable("function")),
+        Ast::Lambda(_) => Err(unavailable("Lambda")),
         Ast::CallValue {
             func,
             args,
@@ -66,12 +60,10 @@ pub(super) fn eval_elements(
     vars: &Bindings,
     always_expand: bool,
 ) -> ExprResult<Vec<Value>> {
-    // asteval has no `Starred` support at all.
-    let expand = always_expand && !object_attr_mode_enabled();
     let mut out = Vec::with_capacity(elts.len());
     for e in elts {
         match e {
-            Ast::Starred(inner) if expand => {
+            Ast::Starred(inner) if always_expand => {
                 let iterable = eval_ast(inner, vars)?;
                 out.extend(super::builtins::py_iter(&iterable)?.iter().cloned());
             }
@@ -91,7 +83,7 @@ pub(super) fn eval_call_args(args: &[Ast], vars: &Bindings) -> ExprResult<Vec<Va
 ///
 /// simpleeval builds `dict(self._eval(k) for k in node.keywords)` and calls
 /// `func(**that)`; for `**mapping` the pair is `(None, mapping)`, so the call
-/// raises `TypeError: keywords must be strings`. asteval merges the mapping.
+/// raises `TypeError: keywords must be strings`.
 pub(super) fn eval_call_keywords(
     keywords: &[(String, Ast)],
     vars: &Bindings,
@@ -103,12 +95,7 @@ pub(super) fn eval_call_keywords(
             out.push((name.clone(), evaluated));
             continue;
         }
-        match evaluated {
-            Value::Map(m) if object_attr_mode_enabled() => {
-                out.extend(m);
-            }
-            _ => return Err(ExprError::Eval("keywords must be strings".into())),
-        }
+        return Err(ExprError::Eval("keywords must be strings".into()));
     }
     Ok(out)
 }
@@ -121,12 +108,11 @@ fn call_value(
     keywords: &[(String, Ast)],
     vars: &Bindings,
 ) -> ExprResult<Value> {
-    let restricted = !object_attr_mode_enabled();
     match func {
         Ast::Attribute { value, attr } => {
             // `func = self._eval(node.func)` comes first, then the arguments.
             let receiver = attribute_receiver(value, attr, vars)?;
-            let callable = is_callable(&receiver, attr, restricted)?;
+            let callable = is_callable(&receiver, attr)?;
             let argv = eval_call_args(args, vars)?;
             let kwargs = eval_call_keywords(keywords, vars)?;
             // PARITY: `Value` has no tuple, so a tuple of affixes is a list; one
@@ -140,34 +126,21 @@ fn call_value(
                 )));
             }
             match callable {
-                Ok(()) => pymethods::call_method(&receiver, attr, argv, kwargs, restricted),
+                Ok(()) => pymethods::call_method(&receiver, attr, argv, kwargs),
                 Err(type_name) => Err(ExprError::Eval(format!(
                     "'{type_name}' object is not callable"
                 ))),
             }
         }
-        Ast::Lambda(lambda) if !restricted => {
-            let argv = eval_call_args(args, vars)?;
-            let kwargs = eval_call_keywords(keywords, vars)?;
-            apply_lambda(lambda, argv, kwargs, vars)
-        }
         // `func = self.functions[node.func.id]` raises AttributeError for any
         // callee that is not a name, which becomes `FeatureNotAvailable`.
-        _ if restricted => Err(ExprError::Eval("Lambda Functions not implemented".into())),
-        other => {
-            eval_ast(other, vars)?;
-            Err(ExprError::Eval("object is not callable".into()))
-        }
+        _ => Err(ExprError::Eval("Lambda Functions not implemented".into())),
     }
 }
 
 /// Whether `receiver.attr` is a method: `Ok(Ok(()))`; or the Python type name
 /// of the (not callable) value it is.
-fn is_callable(
-    receiver: &Value,
-    attr: &str,
-    restricted: bool,
-) -> ExprResult<Result<(), &'static str>> {
+fn is_callable(receiver: &Value, attr: &str) -> ExprResult<Result<(), &'static str>> {
     match receiver {
         Value::Str(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
             if attr.starts_with('_') {
@@ -177,14 +150,9 @@ fn is_callable(
             match pymethods::lookup(receiver, attr) {
                 Lookup::Method => Ok(Ok(())),
                 Lookup::Data(v) => Ok(Err(python_type(&v))),
-                Lookup::Missing if restricted => {
-                    Err(pymethods::scalar_getattr(receiver, attr, false).unwrap_err())
-                }
-                Lookup::Missing => Ok(Err("NoneType")),
+                Lookup::Missing => Err(pymethods::scalar_getattr(receiver, attr).unwrap_err()),
             }
         }
-        // asteval: a list's own method.
-        Value::List(_) if !restricted && pymethods::is_list_method(attr) => Ok(Ok(())),
         // Lists and dicts distribute the attribute over their items, so the
         // result is a list (or whatever the item holds) and never callable.
         other => {
@@ -208,51 +176,6 @@ fn python_type(v: &Value) -> &'static str {
         Value::Null => "NoneType",
         other => type_name(other),
     }
-}
-
-/// `lambda params: body` called in a statement block: asteval's `Procedure`.
-fn apply_lambda(
-    lambda: &Lambda,
-    args: Vec<Value>,
-    kwargs: Vec<(String, Value)>,
-    vars: &Bindings,
-) -> ExprResult<Value> {
-    if lambda.vararg.is_some() || lambda.kwarg.is_some() || !lambda.kwonly.is_empty() {
-        return Err(ExprError::unrepresentable("function"));
-    }
-    if args.len() > lambda.params.len() {
-        return Err(ExprError::Eval(format!(
-            "<lambda>() takes {} positional arguments but {} were given",
-            lambda.params.len(),
-            args.len()
-        )));
-    }
-    let mut scope = vars.clone();
-    let mut given = args.into_iter();
-    let mut kwargs = kwargs;
-    for (name, default) in &lambda.params {
-        let value = match given.next() {
-            Some(v) => v,
-            None => match kwargs.iter().position(|(k, _)| k == name) {
-                Some(i) => kwargs.swap_remove(i).1,
-                None => match default {
-                    Some(d) => eval_ast(d, vars)?,
-                    None => {
-                        return Err(ExprError::Eval(format!(
-                            "<lambda>() missing required argument: '{name}'"
-                        )));
-                    }
-                },
-            },
-        };
-        scope.insert(name.clone(), value);
-    }
-    if let Some((k, _)) = kwargs.first() {
-        return Err(ExprError::Eval(format!(
-            "<lambda>() got an unexpected keyword argument '{k}'"
-        )));
-    }
-    eval_ast(&lambda.body, &scope)
 }
 
 // === slices ===============================================================
@@ -453,24 +376,21 @@ fn same_reference(a: &Ast, b: &Ast) -> bool {
 
 // === f-strings ============================================================
 
-/// An f-string: `simpleeval._eval_joinedstr`, or `asteval.on_joinedstr`.
+/// An f-string: `simpleeval._eval_joinedstr`.
 ///
-/// PARITY (restricted): `_eval_formattedvalue` ignores the conversion (`!r`,
+/// PARITY: `_eval_formattedvalue` ignores the conversion (`!r`,
 /// `!s`, `!a`, and the implicit `!r` of `{x=}`): the value is `str()`d, so
 /// `f"{s!r}"` is `s`, not `repr(s)`. With a format spec the value goes through
 /// `("{:" + spec + "}").format(value)`. `_eval_joinedstr` never accumulates its
 /// `length` (it starts at 0 and is only added to the one part checked), so only
 /// a single part over `MAX_STRING_LENGTH` is refused, not their sum.
-///
-/// asteval applies the conversion before formatting.
 fn join_fstring(parts: &[FPart], vars: &Bindings) -> ExprResult<String> {
-    let restricted = !object_attr_mode_enabled();
     let too_long = || ExprError::Eval("Sorry, I will not evaluate something this long.".into());
     let mut out = String::new();
     for part in parts {
         match part {
             FPart::Lit(text) => {
-                if restricted && text.chars().count() > MAX_STRING_LENGTH {
+                if text.chars().count() > MAX_STRING_LENGTH {
                     return Err(too_long());
                 }
                 out.push_str(text);
@@ -481,24 +401,11 @@ fn join_fstring(parts: &[FPart], vars: &Bindings) -> ExprResult<String> {
                     Some(spec) => Some(join_fstring(spec, vars)?),
                     None => None,
                 };
-                let text = if restricted {
-                    match spec {
-                        None => py_str(&value),
-                        Some(spec) => format_with_spec(&value, &spec)?,
-                    }
-                } else {
-                    let converted = match field.conversion {
-                        Some('s') => Value::Str(py_str(&value)),
-                        Some('r') => Value::Str(py_repr(&value)),
-                        Some('a') => Value::Str(ascii_escape(&py_repr(&value))),
-                        _ => value,
-                    };
-                    match spec {
-                        None => py_str(&converted),
-                        Some(spec) => format_with_spec(&converted, &spec)?,
-                    }
+                let text = match spec {
+                    None => py_str(&value),
+                    Some(spec) => format_with_spec(&value, &spec)?,
                 };
-                if restricted && text.chars().count() > MAX_STRING_LENGTH {
+                if text.chars().count() > MAX_STRING_LENGTH {
                     return Err(too_long());
                 }
                 out.push_str(&text);

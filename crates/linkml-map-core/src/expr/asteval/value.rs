@@ -14,6 +14,7 @@ use indexmap::IndexMap;
 
 use super::ast::FuncDef;
 use crate::pyfmt::{py_float_repr, py_repr_str};
+use crate::temporal::Temporal;
 use crate::value::{Value, cmp_int_float};
 
 pub(crate) type Rf<T> = Rc<RefCell<T>>;
@@ -98,6 +99,8 @@ pub(crate) enum Py {
     /// An `ast` node object (what `break`/`continue` evaluate to).
     Ast(&'static str),
     Ellipsis,
+    /// A `datetime.date` / `datetime.datetime` PyYAML built from the data.
+    Temporal(Temporal),
 }
 
 pub(crate) type PyRes<T> = Result<T, Box<ExcObj>>;
@@ -170,6 +173,7 @@ impl Py {
             Py::Exc(e) => e.class.into(),
             Py::Ast(k) => (*k).into(),
             Py::Ellipsis => "ellipsis".into(),
+            Py::Temporal(t) => t.type_name().into(),
         }
     }
 
@@ -425,6 +429,10 @@ pub(crate) fn hkey(v: &Py) -> PyRes<HKey> {
         ]),
         Py::Builtin(n) | Py::Type(n) => HKey::Name(n),
         Py::Ellipsis => HKey::Name("Ellipsis"),
+        Py::Temporal(t) => HKey::Tuple(vec![
+            HKey::Name(t.type_name()),
+            HKey::Str(t.to_string().into()),
+        ]),
         Py::List(_) | Py::Dict(_) | Py::Set(_) => {
             return type_err(format!("unhashable type: '{}'", v.type_name()));
         }
@@ -508,6 +516,7 @@ pub(crate) fn py_eq(a: &Py, b: &Py) -> bool {
             l1 == l2 && (l1 == 0 || (a1 == a2 && (l1 == 1 || c1 == c2)))
         }
         (Py::Slice(x), Py::Slice(y)) => py_eq(&x.0, &y.0) && py_eq(&x.1, &y.1) && py_eq(&x.2, &y.2),
+        (Py::Temporal(x), Py::Temporal(y)) => x == y,
         _ => a.is(b),
     }
 }
@@ -525,6 +534,7 @@ fn py_cmp_opt(a: &Py, b: &Py, sym: &str) -> PyRes<Option<Ordering>> {
             seq_cmp(&x, &y, sym)
         }
         (Py::Tuple(x), Py::Tuple(y)) => seq_cmp(x, y, sym),
+        (Py::Temporal(x), Py::Temporal(y)) if x.py_cmp(y).is_some() => Ok(x.py_cmp(y)),
         _ => type_err(format!(
             "'{sym}' not supported between instances of '{}' and '{}'",
             a.type_name(),
@@ -597,6 +607,7 @@ pub(crate) fn to_str(v: &Py) -> String {
     match v {
         Py::Str(s) => s.to_string(),
         Py::Exc(e) => e.message(),
+        Py::Temporal(t) => t.to_string(),
         Py::Obj(o) => {
             // DynObj.__str__: str(vars(self))
             let mut out = String::new();
@@ -789,6 +800,7 @@ fn write_repr(v: &Py, out: &mut String, seen: &mut Vec<usize>, _top: bool) {
         }
         Py::Ast(k) => out.push_str(&format!("<ast.{k} object at 0x{:x}>", v.addr())),
         Py::Ellipsis => out.push_str("Ellipsis"),
+        Py::Temporal(t) => out.push_str(&t.repr()),
     }
 }
 
@@ -809,7 +821,7 @@ pub(crate) fn from_value(v: &Value) -> Py {
             .map(|(k, v)| (k.clone(), from_value(v)))
             .collect())),
         Value::Decimal(d) => Py::str(d.to_string()),
-        Value::Temporal(t) => Py::str(t.to_string()),
+        Value::Temporal(t) => Py::Temporal(*t),
     }
 }
 
@@ -825,6 +837,7 @@ pub(crate) fn to_value(v: &Py, depth: usize) -> Value {
         Py::Int(i) => Value::Int(*i),
         Py::Float(f) => Value::Float(*f),
         Py::Str(s) => Value::Str(s.to_string()),
+        Py::Temporal(t) => Value::Temporal(*t),
         Py::List(l) => Value::List(l.borrow().iter().map(|x| to_value(x, depth + 1)).collect()),
         Py::Tuple(t) => Value::List(t.iter().map(|x| to_value(x, depth + 1)).collect()),
         Py::Set(s) => Value::List(

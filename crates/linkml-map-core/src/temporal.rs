@@ -103,6 +103,49 @@ impl Temporal {
     }
 }
 
+impl Temporal {
+    /// Python's ordering of two values (`a < b`): dates with dates, datetimes
+    /// with datetimes of the same awareness; `None` is Python's `TypeError`
+    /// (a date against a datetime, a naive against an aware datetime).
+    pub fn py_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Temporal::Date(a), Temporal::Date(b)) => {
+                Some((a.year, a.month, a.day).cmp(&(b.year, b.month, b.day)))
+            }
+            (Temporal::DateTime(a), Temporal::DateTime(b))
+                if a.utc_offset_minutes.is_some() == b.utc_offset_minutes.is_some() =>
+            {
+                Some(a.utc_microseconds().cmp(&b.utc_microseconds()))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Date {
+    /// Days since 0001-01-01 (`date.toordinal() - 1`).
+    fn ordinal_days(&self) -> i64 {
+        let y = i64::from(self.year) - 1;
+        let before_year = y * 365 + y / 4 - y / 100 + y / 400;
+        let before_month: i64 = (1..self.month)
+            .map(|m| i64::from(days_in_month(self.year, m)))
+            .sum();
+        before_year + before_month + i64::from(self.day) - 1
+    }
+}
+
+impl DateTime {
+    /// Microseconds since 0001-01-01T00:00 UTC (the local time when naive).
+    fn utc_microseconds(&self) -> i128 {
+        let seconds = i128::from(self.date.ordinal_days()) * 86_400
+            + i128::from(self.hour) * 3_600
+            + i128::from(self.minute) * 60
+            + i128::from(self.second)
+            - i128::from(self.utc_offset_minutes.unwrap_or(0)) * 60;
+        seconds * 1_000_000 + i128::from(self.microsecond)
+    }
+}
+
 fn is_leap(year: u16) -> bool {
     year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }

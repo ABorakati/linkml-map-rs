@@ -26,6 +26,7 @@
 
 mod data_loader;
 mod driver;
+mod join_order;
 
 use std::{
     collections::BTreeSet,
