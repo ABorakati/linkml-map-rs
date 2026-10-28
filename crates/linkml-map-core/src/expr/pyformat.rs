@@ -6,9 +6,9 @@
 //! this module implements the spec parser and the `str`, `int` and `float`
 //! formatters, and the `{}` template syntax.
 //!
-//! [`Value`] has no tuples, sets, dates or arbitrary objects, so `format()` of
-//! those with a non-empty spec (a `TypeError` for every type but numbers and
-//! strings, `date.__format__` aside) is an evaluation error here too.
+//! `format()` of a tuple, set, dict or any other object with a non-empty spec (a
+//! `TypeError` for every type but numbers and strings, `date.__format__` aside)
+//! is an evaluation error here too.
 
 use super::error::{ExprError, ExprResult};
 use super::eval::{py_repr, py_str, type_name};
@@ -720,7 +720,7 @@ fn positional(args: &[Value], index: usize) -> ExprResult<Value> {
 fn index_field(value: &Value, key: &str) -> ExprResult<Value> {
     let numeric = key.bytes().all(|b| b.is_ascii_digit());
     match (value, numeric) {
-        (Value::List(items), true) => key
+        (Value::List(items) | Value::Tuple(items), true) => key
             .parse::<usize>()
             .ok()
             .and_then(|i| items.get(i))
@@ -737,8 +737,29 @@ fn index_field(value: &Value, key: &str) -> ExprResult<Value> {
             .cloned()
             .ok_or_else(|| ExprError::Uncaught(format!("KeyError: '{key}'"))),
         (Value::Map(_), true) => Err(ExprError::Uncaught(format!("KeyError: {key}"))),
+        // A numeric field is an integer key, any other a string key.
+        (Value::Dict(d), _) => {
+            let probe = if numeric {
+                key.parse::<i64>().map(Value::Int).unwrap_or(Value::Null)
+            } else {
+                Value::Str(key.to_owned())
+            };
+            match d.get(&probe) {
+                Ok(Some(v)) => Ok(v.clone()),
+                _ => Err(ExprError::Uncaught(format!("KeyError: {}", {
+                    if numeric {
+                        key.to_owned()
+                    } else {
+                        format!("'{key}'")
+                    }
+                }))),
+            }
+        }
         (Value::List(_), false) => Err(value_error(
             "list indices must be integers or slices, not str",
+        )),
+        (Value::Tuple(_), false) => Err(value_error(
+            "tuple indices must be integers or slices, not str",
         )),
         (other, _) => Err(value_error(format!(
             "'{}' object is not subscriptable",

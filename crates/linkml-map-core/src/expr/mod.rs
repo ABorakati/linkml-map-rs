@@ -30,6 +30,7 @@ mod slugify;
 pub mod stmt;
 mod syntax;
 
+pub(crate) use builtins::py_order;
 pub use error::{ExprError, ExprResult};
 pub(crate) use eval::with_declared_slots;
 pub use eval::{

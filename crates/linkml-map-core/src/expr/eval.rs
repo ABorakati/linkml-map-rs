@@ -31,7 +31,19 @@ use super::parser::{Ast, BinOp, BoolOp, CmpOp, UnOp};
 use super::pymethods;
 use super::stmt::{Program, SingleOrProgram, parse_single_or_program};
 use super::syntax;
-use crate::value::{Value, cmp_int_float};
+use crate::value::{Value, cmp_int_float, dict_value, set_value};
+
+/// `bool(value)` as an expression sees it.
+///
+/// PARITY: a bound map is a `DynObj` upstream (`dynamic_object` builds one for
+/// every class-ranged value, `DynObj(**row)` for a joined row), which defines
+/// neither `__bool__` nor `__len__`: it is truthy even when empty. A dict an
+/// expression builds is a [`Value::Dict`], falsy when empty. (A bound dict of
+/// an `any`-ranged slot is a plain `dict` upstream and so falsy when empty;
+/// `Value::Map` cannot tell the two apart and models the commoner `DynObj`.)
+pub(super) fn expr_truthy(v: &Value) -> bool {
+    matches!(v, Value::Map(_)) || v.is_truthy()
+}
 
 /// Variable bindings: name → value mapping.
 pub type Bindings = IndexMap<String, Value>;
@@ -506,7 +518,7 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         // Lazy: only the branch taken is evaluated; truthiness is Python's.
         Ast::IfExp { test, body, orelse } => {
-            if eval_ast(test, vars)?.is_truthy() {
+            if expr_truthy(&eval_ast(test, vars)?) {
                 eval_ast(body, vars)
             } else {
                 eval_ast(orelse, vars)
@@ -515,15 +527,6 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
 
         Ast::Attribute { value, attr } => {
             let obj = attribute_receiver(value, attr, vars)?;
-            // PARITY: a dict built by the expression itself is a real `dict`, not a
-            // `DynObj`: `_distributed_getattr` distributes over its values.
-            if is_dict_construction(value)
-                && let Value::Map(m) = obj.as_ref()
-                && !attr.starts_with('_')
-            {
-                let items = m.values().map(|v| distributed_getattr(v, attr));
-                return items.collect::<ExprResult<Vec<_>>>().map(Value::List);
-            }
             distributed_getattr(&obj, attr)
         }
 
@@ -538,11 +541,7 @@ pub(super) fn eval_ast(node: &Ast, vars: &Bindings) -> ExprResult<Value> {
             eval_subscript(&obj, &idx)
         }
 
-        Ast::Tuple(elts) => {
-            // Tuples are only meaningful as case() pair arguments; represent as
-            // a list so the evaluator can index into them.
-            syntax::eval_elements(elts, vars, false).map(Value::List)
-        }
+        Ast::Tuple(elts) => syntax::eval_elements(elts, vars, false).map(Value::Tuple),
 
         Ast::Unary { op, operand } => {
             let v = eval_ast(operand, vars)?;
@@ -646,24 +645,13 @@ fn call_slot_function(args: Vec<Value>, vars: &Bindings) -> ExprResult<Value> {
 
 pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
     match obj {
-        Value::List(items) => {
-            let i = match idx {
-                Value::Int(i) => *i,
-                Value::Bool(b) => *b as i64,
-                other => {
-                    return Err(ExprError::Eval(format!(
-                        "list indices must be integers, not {}",
-                        type_name(other)
-                    )));
-                }
-            };
-            let len = items.len() as i64;
-            let resolved = if i < 0 { len + i } else { i };
-            if resolved < 0 || resolved >= len {
-                return Err(ExprError::Uncaught("list index out of range".into()));
-            }
-            Ok(items[resolved as usize].clone())
-        }
+        Value::List(items) => seq_index(items, idx, "list"),
+        Value::Tuple(items) => seq_index(items, idx, "tuple"),
+        Value::Dict(d) => match d.get(idx) {
+            Ok(Some(v)) => Ok(v.clone()),
+            Ok(None) => Err(ExprError::Uncaught(format!("KeyError: {}", py_repr(idx)))),
+            Err(message) => Err(ExprError::Eval(message)),
+        },
         Value::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
             let i = match idx {
@@ -685,9 +673,11 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
         }
         Value::Map(m) => {
             // An unhashable key is a `TypeError`, a rejection; a missing hashable
-            // one a `KeyError`. (PARITY: `m[(1, 2)]`, a tuple key, is hashable
-            // upstream, but a tuple is a list here.)
-            if matches!(idx, Value::List(_) | Value::Map(_)) {
+            // one a `KeyError`.
+            if matches!(
+                idx,
+                Value::List(_) | Value::Map(_) | Value::Dict(_) | Value::Set(_)
+            ) {
                 return Err(ExprError::Eval(format!(
                     "unhashable type: '{}'",
                     type_name(idx)
@@ -712,18 +702,27 @@ pub(super) fn eval_subscript(obj: &Value, idx: &Value) -> ExprResult<Value> {
     }
 }
 
-// --- attribute distribution (mirrors _distributed_getattr) ---
-
-/// Whether `node` builds a plain Python `dict` (a display, a comprehension or
-/// `dict(...)`), as opposed to reading a bound value.
-fn is_dict_construction(node: &Ast) -> bool {
-    match node {
-        Ast::Dict(_) => true,
-        Ast::Comp(c) => c.kind == super::parser::CompKind::Dict,
-        Ast::Call { func, .. } => func == "dict",
-        _ => false,
+/// `seq[idx]` for a list or tuple.
+fn seq_index(items: &[Value], idx: &Value, kind: &str) -> ExprResult<Value> {
+    let i = match idx {
+        Value::Int(i) => *i,
+        Value::Bool(b) => *b as i64,
+        other => {
+            return Err(ExprError::Eval(format!(
+                "{kind} indices must be integers or slices, not {}",
+                type_name(other)
+            )));
+        }
+    };
+    let len = items.len() as i64;
+    let resolved = if i < 0 { len + i } else { i };
+    if resolved < 0 || resolved >= len {
+        return Err(ExprError::Uncaught(format!("{kind} index out of range")));
     }
+    Ok(items[resolved as usize].clone())
 }
+
+// --- attribute distribution (mirrors _distributed_getattr) ---
 
 pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> {
     if attr.starts_with('_') {
@@ -750,6 +749,15 @@ pub(super) fn distributed_getattr(obj: &Value, attr: &str) -> ExprResult<Value> 
         // scalar value; `Value` cannot tell the two apart and models the far
         // commoner `DynObj`.
         Value::Map(m) => Ok(m.get(attr).cloned().unwrap_or(Value::Null)),
+        // A dict an expression builds is a real `dict`: the attribute
+        // distributes over its values.
+        Value::Dict(d) => {
+            let mut out = Vec::with_capacity(d.len());
+            for item in d.values() {
+                out.push(distributed_getattr(item, attr)?);
+            }
+            Ok(Value::List(out))
+        }
         Value::Null => Ok(Value::Null),
         // A scalar's attributes are those of the Python object (`s.upper`,
         // `x.real`); a missing one is an `AttributeError` upstream, which
@@ -768,7 +776,9 @@ pub(super) fn type_name(v: &Value) -> &'static str {
         Value::Temporal(t) => t.type_name(),
         Value::Str(_) => "str",
         Value::List(_) => "list",
-        Value::Map(_) => "dict",
+        Value::Map(_) | Value::Dict(_) => "dict",
+        Value::Tuple(_) => "tuple",
+        Value::Set(_) => "set",
     }
 }
 
@@ -777,7 +787,7 @@ pub(super) fn type_name(v: &Value) -> &'static str {
 fn eval_unary(op: UnOp, v: Value) -> ExprResult<Value> {
     if op == UnOp::Not {
         // `not` is NOT null-propagating in Python: `not None` is True.
-        return Ok(Value::Bool(!v.is_truthy()));
+        return Ok(Value::Bool(!expr_truthy(&v)));
     }
     if v.is_null() {
         return Ok(Value::Null);
@@ -825,13 +835,13 @@ fn eval_boolop(op: BoolOp, values: &[Ast], vars: &Bindings) -> ExprResult<Value>
         let v = eval_ast(node, vars)?;
         match op {
             BoolOp::And => {
-                if !v.is_truthy() {
+                if !expr_truthy(&v) {
                     return Ok(v);
                 }
                 last = v;
             }
             BoolOp::Or => {
-                if v.is_truthy() {
+                if expr_truthy(&v) {
                     return Ok(v);
                 }
                 last = v;
@@ -963,7 +973,9 @@ fn ordering_compare(op: CmpOp, l: &Value, r: &Value) -> ExprResult<Value> {
         (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
         // Lists order lexicographically (the first position whose items differ
         // decides, else the length), as `list_richcompare` does.
-        (Value::List(_), Value::List(_)) => builtins::py_cmp(l, r, cmp_symbol(op))?,
+        (Value::List(_), Value::List(_))
+        | (Value::Tuple(_), Value::Tuple(_))
+        | (Value::Set(_), Value::Set(_)) => builtins::py_cmp(l, r, cmp_symbol(op))?,
         _ => {
             return Err(ExprError::Eval(format!(
                 "'{}' not supported between instances of '{}' and '{}'",
@@ -1030,14 +1042,18 @@ pub(super) fn membership(needle: &Value, haystack: &Value) -> ExprResult<bool> {
                 type_name(other)
             ))),
         },
-        Value::List(items) => Ok(items.iter().any(|item| item.py_eq(needle))),
+        Value::List(items) | Value::Tuple(items) => Ok(items.iter().any(|item| item.py_eq(needle))),
+        // A set needle is looked up as the equal `frozenset`: it is hashable there
+        // and equals no element (a set cannot hold a set).
+        Value::Set(_) if matches!(needle, Value::Set(_)) => Ok(false),
+        Value::Set(set) => set.contains(needle).map_err(ExprError::Eval),
+        Value::Dict(d) => d.contains_key(needle).map_err(ExprError::Eval),
         Value::Map(m) => match needle {
             Value::Str(k) => Ok(m.contains_key(k)),
-            // Hashing the needle comes first: a list or dict is a `TypeError`.
-            Value::List(_) | Value::Map(_) => Err(ExprError::Eval(format!(
-                "unhashable type: '{}'",
-                type_name(needle)
-            ))),
+            // Hashing the needle comes first: a list, set or dict is a `TypeError`.
+            Value::List(_) | Value::Map(_) | Value::Dict(_) | Value::Set(_) => Err(
+                ExprError::Eval(format!("unhashable type: '{}'", type_name(needle))),
+            ),
             _ => Ok(false),
         },
         other => Err(ExprError::Eval(format!(
@@ -1088,6 +1104,9 @@ fn same_py_type(a: &Value, b: &Value) -> bool {
             | (Value::Str(_), Value::Str(_))
             | (Value::List(_), Value::List(_))
             | (Value::Map(_), Value::Map(_))
+            | (Value::Tuple(_), Value::Tuple(_))
+            | (Value::Set(_), Value::Set(_))
+            | (Value::Dict(_), Value::Dict(_))
     )
 }
 
@@ -1302,12 +1321,34 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
         };
     }
 
+    // Tuple concatenation: tuple + tuple; a tuple does not add to a list.
+    if let (Tuple(a), Tuple(b)) = (left, right) {
+        return match op {
+            BinOp::Add => {
+                check_concat_length(a.len(), b.len(), || a.len() + b.len())?;
+                let mut out = a.clone();
+                out.extend(b.iter().cloned());
+                Ok(Some(Tuple(out)))
+            }
+            _ => Ok(None),
+        };
+    }
+    // Set algebra, and dict union (`d1 | d2`).
+    if let Some(result) = containers_binary(op, left, right)? {
+        return Ok(Some(result));
+    }
+
     // list * int  / int * list  → repetition (genuine Python list semantics)
     if op == BinOp::Mul {
         match (left, right) {
             (List(items), n) | (n, List(items)) => {
                 if let Some(v) = repeat_list(items, n)? {
                     return Ok(Some(v));
+                }
+            }
+            (Tuple(items), n) | (n, Tuple(items)) => {
+                if let Some(Value::List(v)) = repeat_list(items, n)? {
+                    return Ok(Some(Value::Tuple(v)));
                 }
             }
             _ => {}
@@ -1340,6 +1381,25 @@ fn try_native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Optio
 
     // Non-numeric, non-string-handled combination → retry path.
     Ok(None)
+}
+
+/// `set | set`, `&`, `-`, `^` and `dict | dict`: the operators the container
+/// types define. `None` when `op` is none of them for these operands.
+fn containers_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Option<Value>> {
+    Ok(match (op, left, right) {
+        (BinOp::BitOr, Value::Set(a), Value::Set(b)) => Some(set_value(a.union(b))),
+        (BinOp::BitAnd, Value::Set(a), Value::Set(b)) => Some(set_value(a.intersection(b))),
+        (BinOp::Sub, Value::Set(a), Value::Set(b)) => Some(set_value(a.difference(b))),
+        (BinOp::BitXor, Value::Set(a), Value::Set(b)) => Some(set_value(a.symmetric_difference(b))),
+        (BinOp::BitOr, Value::Dict(a), Value::Dict(b)) => {
+            let mut out = (**a).clone();
+            for (k, v) in b.iter() {
+                out.insert(k.clone(), v.clone()).map_err(ExprError::Eval)?;
+            }
+            Some(dict_value(out))
+        }
+        _ => None,
+    })
 }
 
 /// int-like: int or bool (Python treats bool as int in arithmetic), but NOT float.
@@ -1692,6 +1752,27 @@ pub(crate) fn py_str(v: &Value) -> String {
             let parts: Vec<String> = m
                 .iter()
                 .map(|(k, v)| format!("{}: {}", py_repr(&Value::Str(k.clone())), py_repr(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        Value::Tuple(items) => {
+            let parts: Vec<String> = items.iter().map(py_repr).collect();
+            match parts.as_slice() {
+                [only] => format!("({only},)"),
+                _ => format!("({})", parts.join(", ")),
+            }
+        }
+        Value::Set(set) => {
+            if set.is_empty() {
+                return "set()".to_string();
+            }
+            let parts: Vec<String> = set.iter().map(py_repr).collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        Value::Dict(d) => {
+            let parts: Vec<String> = d
+                .iter()
+                .map(|(k, v)| format!("{}: {}", py_repr(k), py_repr(v)))
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }

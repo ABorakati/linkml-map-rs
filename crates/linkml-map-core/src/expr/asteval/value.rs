@@ -40,7 +40,69 @@ pub(crate) enum HKey {
 }
 
 pub(crate) type PyDict = IndexMap<HKey, (Py, Py)>;
-pub(crate) type PySet = IndexMap<HKey, Py>;
+/// A Python `set`, iterating in CPython's order (see [`crate::pyset`]).
+pub(crate) type PySet = crate::pyset::PySet<Py>;
+
+impl crate::pyset::SetItem for Py {
+    type Key = HKey;
+
+    fn py_hash(&self) -> Result<Option<i64>, String> {
+        use crate::pyset::{HASH_NONE, hash_f64, hash_i64, hash_tuple};
+        // The hash of a tuple of hashes; `None` when any of them is randomised.
+        fn tuple_of(items: &[Option<i64>]) -> Option<i64> {
+            let hashes: Option<Vec<i64>> = items.iter().copied().collect();
+            hashes.map(|h| hash_tuple(&h))
+        }
+        Ok(match self {
+            Py::None => Some(HASH_NONE),
+            Py::Bool(b) => Some(hash_i64(i64::from(*b))),
+            Py::Int(i) => Some(hash_i64(*i)),
+            Py::Float(f) => hash_f64(*f),
+            // `hash(real) + 1000003 * hash(imag)`, modulo 2**64.
+            Py::Complex(r, i) => match (hash_f64(*r), hash_f64(*i)) {
+                (Some(hr), Some(hi)) => {
+                    let h = (hr as u64).wrapping_add((hi as u64).wrapping_mul(1_000_003)) as i64;
+                    Some(if h == -1 { -2 } else { h })
+                }
+                _ => None,
+            },
+            Py::Tuple(items) => {
+                let mut hashes = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    hashes.push(item.py_hash()?);
+                }
+                tuple_of(&hashes)
+            }
+            Py::Range(start, stop, step) => {
+                let n = range_len(*start, *stop, *step);
+                let parts = match n {
+                    0 => [Some(hash_i64(0)), Some(HASH_NONE), Some(HASH_NONE)],
+                    1 => [Some(hash_i64(1)), Some(hash_i64(*start)), Some(HASH_NONE)],
+                    _ => [
+                        Some(hash_i64(n)),
+                        Some(hash_i64(*start)),
+                        Some(hash_i64(*step)),
+                    ],
+                };
+                tuple_of(&parts)
+            }
+            Py::List(_) | Py::Dict(_) | Py::Set(_) => {
+                return Err(format!("unhashable type: '{}'", self.type_name()));
+            }
+            // str and bytes are randomised per process; everything else hashes
+            // by address.
+            _ => None,
+        })
+    }
+
+    fn set_key(&self) -> HKey {
+        hkey(self).unwrap_or(HKey::None)
+    }
+
+    fn set_eq(&self, other: &Py) -> bool {
+        self.is(other) || py_eq(self, other)
+    }
+}
 
 /// An exception instance.
 #[derive(Debug, Clone)]
@@ -508,8 +570,7 @@ pub(crate) fn py_eq(a: &Py, b: &Py) -> bool {
             if Rc::ptr_eq(x, y) {
                 return true;
             }
-            let (x, y) = (x.borrow(), y.borrow());
-            x.len() == y.len() && x.keys().all(|k| y.contains_key(k))
+            x.borrow().set_equal(&y.borrow())
         }
         (Py::Range(a1, b1, c1), Py::Range(a2, b2, c2)) => {
             let (l1, l2) = (range_len(*a1, *b1, *c1), range_len(*a2, *b2, *c2));
@@ -553,8 +614,8 @@ fn seq_cmp(x: &[Py], y: &[Py], sym: &str) -> PyRes<Option<Ordering>> {
 }
 
 fn set_cmp(x: &PySet, y: &PySet) -> Option<Ordering> {
-    let sub = x.keys().all(|k| y.contains_key(k));
-    let sup = y.keys().all(|k| x.contains_key(k));
+    let sub = x.is_subset(y);
+    let sup = y.is_subset(x);
     match (sub, sup) {
         (true, true) => Some(Ordering::Equal),
         (true, false) => Some(Ordering::Less),
@@ -724,7 +785,7 @@ fn write_repr(v: &Py, out: &mut String, seen: &mut Vec<usize>, _top: bool) {
                 return;
             }
             out.push('{');
-            for (i, x) in s.values().enumerate() {
+            for (i, x) in s.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
@@ -822,11 +883,27 @@ pub(crate) fn from_value(v: &Value) -> Py {
             .collect())),
         Value::Decimal(d) => Py::str(d.to_string()),
         Value::Temporal(t) => Py::Temporal(*t),
+        Value::Tuple(items) => Py::tuple(items.iter().map(from_value).collect()),
+        Value::Set(s) => Py::Set(rf(s.map_items(from_value))),
+        Value::Dict(d) => plain_dict(d.iter().map(|(k, v)| (from_value(k), from_value(v)))),
     }
 }
 
-/// `target`'s final value as an engine [`Value`]. Tuples and sets become
-/// lists, objects with no engine counterpart become their `str()`.
+/// A plain `dict` from key/value pairs; an unhashable key (impossible from a
+/// [`Value`]) is dropped.
+fn plain_dict(pairs: impl Iterator<Item = (Py, Py)>) -> Py {
+    let mut d = PyDict::new();
+    for (k, v) in pairs {
+        if let Ok(h) = hkey(&k) {
+            dict_set(&mut d, h, k, v);
+        }
+    }
+    Py::Dict(rf(d))
+}
+
+/// `target`'s final value as an engine [`Value`]: a tuple, set or dict stays
+/// one (a dict whose keys are all strings becomes a record map), objects with
+/// no engine counterpart become their `repr()`.
 pub(crate) fn to_value(v: &Py, depth: usize) -> Value {
     if depth > 200 {
         return Value::Null;
@@ -839,19 +916,25 @@ pub(crate) fn to_value(v: &Py, depth: usize) -> Value {
         Py::Str(s) => Value::Str(s.to_string()),
         Py::Temporal(t) => Value::Temporal(*t),
         Py::List(l) => Value::List(l.borrow().iter().map(|x| to_value(x, depth + 1)).collect()),
-        Py::Tuple(t) => Value::List(t.iter().map(|x| to_value(x, depth + 1)).collect()),
-        Py::Set(s) => Value::List(
-            s.borrow()
-                .values()
-                .map(|x| to_value(x, depth + 1))
-                .collect(),
-        ),
-        Py::Dict(d) => Value::Map(
-            d.borrow()
-                .values()
-                .map(|(k, v)| (to_str(k), to_value(v, depth + 1)))
-                .collect(),
-        ),
+        Py::Tuple(t) => Value::Tuple(t.iter().map(|x| to_value(x, depth + 1)).collect()),
+        Py::Set(s) => crate::value::set_value(s.borrow().map_items(|x| to_value(x, depth + 1))),
+        Py::Dict(d) => {
+            let d = d.borrow();
+            if d.values().all(|(k, _)| matches!(k, Py::Str(_))) {
+                Value::Map(
+                    d.values()
+                        .map(|(k, v)| (to_str(k), to_value(v, depth + 1)))
+                        .collect(),
+                )
+            } else {
+                crate::value::dict_value(
+                    d.values()
+                        .map(|(k, v)| (to_value(k, depth + 1), to_value(v, depth + 1)))
+                        .filter(|(k, _)| k.py_key().is_ok())
+                        .collect(),
+                )
+            }
+        }
         Py::Obj(o) => Value::Map(
             o.borrow()
                 .iter()
@@ -865,6 +948,12 @@ pub(crate) fn to_value(v: &Py, depth: usize) -> Value {
 /// An engine value as plain Python data (maps become dicts).
 pub(crate) fn plain_from_value(v: &crate::value::Value) -> Py {
     match v {
+        Value::Tuple(l) => Py::tuple(l.iter().map(plain_from_value).collect()),
+        Value::Set(s) => Py::Set(rf(s.map_items(plain_from_value))),
+        Value::Dict(d) => plain_dict(
+            d.iter()
+                .map(|(k, v)| (plain_from_value(k), plain_from_value(v))),
+        ),
         Value::Map(m) => {
             let mut d = PyDict::new();
             for (k, x) in m {
@@ -892,8 +981,8 @@ pub(crate) fn dict_set(d: &mut PyDict, h: HKey, key: Py, val: Py) {
 }
 
 /// `s.add(x)`: an equal element already present stays.
-pub(crate) fn set_add(s: &mut PySet, h: HKey, v: Py) {
-    s.entry(h).or_insert(v);
+pub(crate) fn set_add(s: &mut PySet, v: Py) -> PyRes<()> {
+    s.add(v).map(|_| ()).map_err(|m| exc("TypeError", m))
 }
 
 /// `math.frexp`: mantissa in `[0.5, 1)` and the binary exponent.
@@ -932,13 +1021,10 @@ pub(crate) fn unrepresentable_kind(v: &Py, depth: usize) -> Option<&'static str>
         Py::Tuple(t) => t.iter().find_map(|x| unrepresentable_kind(x, depth + 1)),
         Py::Set(s) => s
             .borrow()
-            .values()
+            .iter()
             .find_map(|x| unrepresentable_kind(x, depth + 1)),
         Py::Dict(d) => d.borrow().values().find_map(|(k, x)| {
-            if k.is_none() {
-                return Some("dict with a None key");
-            }
-            unrepresentable_kind(x, depth + 1)
+            unrepresentable_kind(k, depth + 1).or_else(|| unrepresentable_kind(x, depth + 1))
         }),
         Py::Obj(o) => o
             .borrow()

@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 pub use crate::decimal::Decimal;
 pub use crate::temporal::Temporal;
 
+mod containers;
+use crate::pyset::PySet;
+pub use containers::{PyDict, PyKey, dict_value, json_key, set_value, simplejson_key};
+
 /// A dynamically-typed value during transformation.
 ///
 /// Objects (dicts) are represented as [`Value::Map`]; an unbound variable
@@ -46,7 +50,31 @@ pub enum Value {
     List(Vec<Value>),
     /// Ordered map (object/dict).
     Map(IndexMap<String, Value>),
+    /// Python `tuple`: unlike a list it is hashable, compares unequal to a list
+    /// and concatenates only with another tuple. Serialises as a sequence.
+    Tuple(Vec<Value>),
+    /// Python `set`, in CPython's iteration order (see [`crate::pyset`]).
+    /// Serialises as a sequence; never deserialised from data.
+    #[serde(serialize_with = "serialize_set")]
+    Set(Box<PySet<Value>>),
+    /// A Python `dict` built by an expression: any hashable key, falsy when
+    /// empty (see [`containers`]). Serialises as a map with the keys
+    /// `json.dumps` would write.
+    #[serde(serialize_with = "serialize_dict")]
+    Dict(Box<PyDict>),
 }
+
+fn serialize_set<S: serde::Serializer>(set: &PySet<Value>, s: S) -> Result<S::Ok, S::Error> {
+    s.collect_seq(set.iter())
+}
+
+fn serialize_dict<S: serde::Serializer>(dict: &PyDict, s: S) -> Result<S::Ok, S::Error> {
+    s.collect_map(dict.iter().map(|(k, v)| (containers::json_key(k), v)))
+}
+
+// `Value` is moved and cloned on every row: the new variants add nothing to its size (72 bytes before them), so
+// the size must not grow (box what is large).
+const _: () = assert!(std::mem::size_of::<Value>() <= 72);
 
 fn serialize_temporal<S: serde::Serializer>(t: &Temporal, s: S) -> Result<S::Ok, S::Error> {
     s.collect_str(t)
@@ -157,6 +185,9 @@ impl Value {
             Value::Str(s) => !s.is_empty(),
             Value::List(items) => !items.is_empty(),
             Value::Map(m) => !m.is_empty(),
+            Value::Tuple(items) => !items.is_empty(),
+            Value::Set(set) => !set.is_empty(),
+            Value::Dict(dict) => !dict.is_empty(),
         }
     }
 
@@ -286,6 +317,19 @@ impl From<&Value> for serde_json::Value {
                     .map(|(k, v)| (k.clone(), serde_json::Value::from(v)))
                     .collect(),
             ),
+            // Generic form only; JSON *output* writes a tuple as an array,
+            // refuses a set and writes a dict's keys as `json.dumps` does.
+            Value::Tuple(items) => {
+                serde_json::Value::Array(items.iter().map(serde_json::Value::from).collect())
+            }
+            Value::Set(set) => {
+                serde_json::Value::Array(set.iter().map(serde_json::Value::from).collect())
+            }
+            Value::Dict(dict) => serde_json::Value::Object(
+                dict.iter()
+                    .map(|(k, v)| (containers::json_key(k), serde_json::Value::from(v)))
+                    .collect(),
+            ),
         }
     }
 }
@@ -346,7 +390,7 @@ impl Value {
             (Map(a), Map(b)) => {
                 a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.py_eq(w)))
             }
-            _ => false,
+            _ => containers::py_eq_containers(self, other),
         }
     }
 }
@@ -365,6 +409,9 @@ impl PartialEq for Value {
             (Str(a), Str(b)) => a == b,
             (List(a), List(b)) => a == b,
             (Map(a), Map(b)) => a == b,
+            (Tuple(a), Tuple(b)) => a == b,
+            (Set(a), Set(b)) => a.set_equal(b),
+            (Dict(a), Dict(b)) => a.py_eq(b),
             _ => false,
         }
     }

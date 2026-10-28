@@ -129,11 +129,11 @@ fn namespace() {
     assert_eq!(run("target = repr('a')").unwrap(), s("'a'"));
     assert_eq!(
         run("target = divmod(7, 2)").unwrap(),
-        Value::List(vec![int(3), int(1)])
+        Value::Tuple(vec![int(3), int(1)])
     );
     assert_eq!(
         run("target = enumerate([5])").unwrap(),
-        Value::List(vec![Value::List(vec![int(0), int(5)])])
+        Value::List(vec![Value::Tuple(vec![int(0), int(5)])])
     );
     for f in [
         "upper('a')",

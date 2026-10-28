@@ -1,0 +1,338 @@
+[
+{
+"expr": "()",
+"block_sorted": "!!python/tuple []\n",
+"block_unsorted": "!!python/tuple []\n",
+"flow": "!!python/tuple []\n"
+},
+{
+"expr": "(1,)",
+"block_sorted": "!!python/tuple\n- 1\n",
+"block_unsorted": "!!python/tuple\n- 1\n",
+"flow": "!!python/tuple [1]\n"
+},
+{
+"expr": "(1, 2)",
+"block_sorted": "!!python/tuple\n- 1\n- 2\n",
+"block_unsorted": "!!python/tuple\n- 1\n- 2\n",
+"flow": "!!python/tuple [1, 2]\n"
+},
+{
+"expr": "(1, 'a', None, 2.5, True)",
+"block_sorted": "!!python/tuple\n- 1\n- a\n- null\n- 2.5\n- true\n",
+"block_unsorted": "!!python/tuple\n- 1\n- a\n- null\n- 2.5\n- true\n",
+"flow": "!!python/tuple [1, a, null, 2.5, true]\n"
+},
+{
+"expr": "((1, 2), (3,))",
+"block_sorted": "!!python/tuple\n- !!python/tuple\n  - 1\n  - 2\n- !!python/tuple\n  - 3\n",
+"block_unsorted": "!!python/tuple\n- !!python/tuple\n  - 1\n  - 2\n- !!python/tuple\n  - 3\n",
+"flow": "!!python/tuple [!!python/tuple [1, 2], !!python/tuple [3]]\n"
+},
+{
+"expr": "[(1, 2), (3,)]",
+"block_sorted": "- !!python/tuple\n  - 1\n  - 2\n- !!python/tuple\n  - 3\n",
+"block_unsorted": "- !!python/tuple\n  - 1\n  - 2\n- !!python/tuple\n  - 3\n",
+"flow": "[!!python/tuple [1, 2], !!python/tuple [3]]\n"
+},
+{
+"expr": "[(), []]",
+"block_sorted": "- !!python/tuple []\n- []\n",
+"block_unsorted": "- !!python/tuple []\n- []\n",
+"flow": "[!!python/tuple [], []]\n"
+},
+{
+"expr": "[1, (2, 3), [4, (5,)]]",
+"block_sorted": "- 1\n- !!python/tuple\n  - 2\n  - 3\n- - 4\n  - !!python/tuple\n    - 5\n",
+"block_unsorted": "- 1\n- !!python/tuple\n  - 2\n  - 3\n- - 4\n  - !!python/tuple\n    - 5\n",
+"flow": "[1, !!python/tuple [2, 3], [4, !!python/tuple [5]]]\n"
+},
+{
+"expr": "{'a': (1, 2)}",
+"block_sorted": "a: !!python/tuple\n- 1\n- 2\n",
+"block_unsorted": "a: !!python/tuple\n- 1\n- 2\n",
+"flow": "{a: !!python/tuple [1, 2]}\n"
+},
+{
+"expr": "{'a': (), 'b': ((1,), 2)}",
+"block_sorted": "a: !!python/tuple []\nb: !!python/tuple\n- !!python/tuple\n  - 1\n- 2\n",
+"block_unsorted": "a: !!python/tuple []\nb: !!python/tuple\n- !!python/tuple\n  - 1\n- 2\n",
+"flow": "{a: !!python/tuple [], b: !!python/tuple [!!python/tuple [1], 2]}\n"
+},
+{
+"expr": "{'t': (1, 2), 'l': [3, 4], 's': 'x'}",
+"block_sorted": "l:\n- 3\n- 4\ns: x\nt: !!python/tuple\n- 1\n- 2\n",
+"block_unsorted": "t: !!python/tuple\n- 1\n- 2\nl:\n- 3\n- 4\ns: x\n",
+"flow": "{l: [3, 4], s: x, t: !!python/tuple [1, 2]}\n"
+},
+{
+"expr": "set([1, 2, 3])",
+"block_sorted": "!!set\n1: null\n2: null\n3: null\n",
+"block_unsorted": "!!set\n1: null\n2: null\n3: null\n",
+"flow": "!!set {1: null, 2: null, 3: null}\n"
+},
+{
+"expr": "set([3, 1, 2])",
+"block_sorted": "!!set\n1: null\n2: null\n3: null\n",
+"block_unsorted": "!!set\n1: null\n2: null\n3: null\n",
+"flow": "!!set {1: null, 2: null, 3: null}\n"
+},
+{
+"expr": "set()",
+"block_sorted": "!!set {}\n",
+"block_unsorted": "!!set {}\n",
+"flow": "!!set {}\n"
+},
+{
+"expr": "set([(1, 2), (3, 4)])",
+"block_sorted": "!!set\n? !!python/tuple\n- 1\n- 2\n: null\n? !!python/tuple\n- 3\n- 4\n: null\n",
+"block_unsorted": "!!set\n? !!python/tuple\n- 1\n- 2\n: null\n? !!python/tuple\n- 3\n- 4\n: null\n",
+"flow": "!!set {? !!python/tuple [1, 2] : null, ? !!python/tuple [3, 4] : null}\n"
+},
+{
+"expr": "set(['b', 'a'])",
+"block_sorted": "!!set\na: null\nb: null\n",
+"block_unsorted": "!!set\nb: null\na: null\n",
+"flow": "!!set {a: null, b: null}\n"
+},
+{
+"expr": "set([1, 'a'])",
+"block_sorted": "!!set\n1: null\na: null\n",
+"block_unsorted": "!!set\n1: null\na: null\n",
+"flow": "!!set {1: null, a: null}\n"
+},
+{
+"expr": "set([None, 1])",
+"block_sorted": "!!set\nnull: null\n1: null\n",
+"block_unsorted": "!!set\nnull: null\n1: null\n",
+"flow": "!!set {null: null, 1: null}\n"
+},
+{
+"expr": "[set([1]), set()]",
+"block_sorted": "- !!set\n  1: null\n- !!set {}\n",
+"block_unsorted": "- !!set\n  1: null\n- !!set {}\n",
+"flow": "[!!set {1: null}, !!set {}]\n"
+},
+{
+"expr": "{'s': set([2, 1])}",
+"block_sorted": "s: !!set\n  1: null\n  2: null\n",
+"block_unsorted": "s: !!set\n  1: null\n  2: null\n",
+"flow": "{s: !!set {1: null, 2: null}}\n"
+},
+{
+"expr": "{'s': set(['x'])}",
+"block_sorted": "s: !!set\n  x: null\n",
+"block_unsorted": "s: !!set\n  x: null\n",
+"flow": "{s: !!set {x: null}}\n"
+},
+{
+"expr": "set([1.5, 0.5])",
+"block_sorted": "!!set\n0.5: null\n1.5: null\n",
+"block_unsorted": "!!set\n0.5: null\n1.5: null\n",
+"flow": "!!set {0.5: null, 1.5: null}\n"
+},
+{
+"expr": "set([True, 2])",
+"block_sorted": "!!set\ntrue: null\n2: null\n",
+"block_unsorted": "!!set\ntrue: null\n2: null\n",
+"flow": "!!set {true: null, 2: null}\n"
+},
+{
+"expr": "set([-1, 5, 3])",
+"block_sorted": "!!set\n-1: null\n3: null\n5: null\n",
+"block_unsorted": "!!set\n3: null\n5: null\n-1: null\n",
+"flow": "!!set {-1: null, 3: null, 5: null}\n"
+},
+{
+"expr": "set([(2,), (1,)])",
+"block_sorted": "!!set\n? !!python/tuple\n- 1\n: null\n? !!python/tuple\n- 2\n: null\n",
+"block_unsorted": "!!set\n? !!python/tuple\n- 1\n: null\n? !!python/tuple\n- 2\n: null\n",
+"flow": "!!set {? !!python/tuple [1] : null, ? !!python/tuple [2] : null}\n"
+},
+{
+"expr": "{1: 'a'}",
+"block_sorted": "1: a\n",
+"block_unsorted": "1: a\n",
+"flow": "{1: a}\n"
+},
+{
+"expr": "{1: 'a', 2: 'b'}",
+"block_sorted": "1: a\n2: b\n",
+"block_unsorted": "1: a\n2: b\n",
+"flow": "{1: a, 2: b}\n"
+},
+{
+"expr": "{2: 'b', 1: 'a'}",
+"block_sorted": "1: a\n2: b\n",
+"block_unsorted": "2: b\n1: a\n",
+"flow": "{1: a, 2: b}\n"
+},
+{
+"expr": "{1: 'a', 'b': 2}",
+"block_sorted": "1: a\nb: 2\n",
+"block_unsorted": "1: a\nb: 2\n",
+"flow": "{1: a, b: 2}\n"
+},
+{
+"expr": "{'b': 2, 1: 'a'}",
+"block_sorted": "b: 2\n1: a\n",
+"block_unsorted": "b: 2\n1: a\n",
+"flow": "{b: 2, 1: a}\n"
+},
+{
+"expr": "{None: 1}",
+"block_sorted": "null: 1\n",
+"block_unsorted": "null: 1\n",
+"flow": "{null: 1}\n"
+},
+{
+"expr": "{True: 1, 2.5: 2}",
+"block_sorted": "true: 1\n2.5: 2\n",
+"block_unsorted": "true: 1\n2.5: 2\n",
+"flow": "{true: 1, 2.5: 2}\n"
+},
+{
+"expr": "{1.5: 'x', 0.5: 'y'}",
+"block_sorted": "0.5: y\n1.5: x\n",
+"block_unsorted": "1.5: x\n0.5: y\n",
+"flow": "{0.5: y, 1.5: x}\n"
+},
+{
+"expr": "{(1, 2): 'a'}",
+"block_sorted": "? !!python/tuple\n- 1\n- 2\n: a\n",
+"block_unsorted": "? !!python/tuple\n- 1\n- 2\n: a\n",
+"flow": "{? !!python/tuple [1, 2] : a}\n"
+},
+{
+"expr": "{(1, 2): 'a', (0, 5): 'b'}",
+"block_sorted": "? !!python/tuple\n- 0\n- 5\n: b\n? !!python/tuple\n- 1\n- 2\n: a\n",
+"block_unsorted": "? !!python/tuple\n- 1\n- 2\n: a\n? !!python/tuple\n- 0\n- 5\n: b\n",
+"flow": "{? !!python/tuple [0, 5] : b, ? !!python/tuple [1, 2] : a}\n"
+},
+{
+"expr": "{(): 1}",
+"block_sorted": "!!python/tuple []: 1\n",
+"block_unsorted": "!!python/tuple []: 1\n",
+"flow": "{!!python/tuple []: 1}\n"
+},
+{
+"expr": "{1: [1, 2], 2: {'a': 1}}",
+"block_sorted": "1:\n- 1\n- 2\n2:\n  a: 1\n",
+"block_unsorted": "1:\n- 1\n- 2\n2:\n  a: 1\n",
+"flow": "{1: [1, 2], 2: {a: 1}}\n"
+},
+{
+"expr": "{1: {2: {3: 4}}}",
+"block_sorted": "1:\n  2:\n    3: 4\n",
+"block_unsorted": "1:\n  2:\n    3: 4\n",
+"flow": "{1: {2: {3: 4}}}\n"
+},
+{
+"expr": "[{1: 2}, {'a': 1}]",
+"block_sorted": "- 1: 2\n- a: 1\n",
+"block_unsorted": "- 1: 2\n- a: 1\n",
+"flow": "[{1: 2}, {a: 1}]\n"
+},
+{
+"expr": "{1: (1, 2)}",
+"block_sorted": "1: !!python/tuple\n- 1\n- 2\n",
+"block_unsorted": "1: !!python/tuple\n- 1\n- 2\n",
+"flow": "{1: !!python/tuple [1, 2]}\n"
+},
+{
+"expr": "{1: set([1])}",
+"block_sorted": "1: !!set\n  1: null\n",
+"block_unsorted": "1: !!set\n  1: null\n",
+"flow": "{1: !!set {1: null}}\n"
+},
+{
+"expr": "{1: set()}",
+"block_sorted": "1: !!set {}\n",
+"block_unsorted": "1: !!set {}\n",
+"flow": "{1: !!set {}}\n"
+},
+{
+"expr": "{1: ()}",
+"block_sorted": "1: !!python/tuple []\n",
+"block_unsorted": "1: !!python/tuple []\n",
+"flow": "{1: !!python/tuple []}\n"
+},
+{
+"expr": "{1: []}",
+"block_sorted": "1: []\n",
+"block_unsorted": "1: []\n",
+"flow": "{1: []}\n"
+},
+{
+"expr": "{1: {}}",
+"block_sorted": "1: {}\n",
+"block_unsorted": "1: {}\n",
+"flow": "{1: {}}\n"
+},
+{
+"expr": "{1: None}",
+"block_sorted": "1: null\n",
+"block_unsorted": "1: null\n",
+"flow": "{1: null}\n"
+},
+{
+"expr": "{(1, 2): (3, 4)}",
+"block_sorted": "? !!python/tuple\n- 1\n- 2\n: !!python/tuple\n- 3\n- 4\n",
+"block_unsorted": "? !!python/tuple\n- 1\n- 2\n: !!python/tuple\n- 3\n- 4\n",
+"flow": "{? !!python/tuple [1, 2] : !!python/tuple [3, 4]}\n"
+},
+{
+"expr": "{('a', 'b'): 1}",
+"block_sorted": "? !!python/tuple\n- a\n- b\n: 1\n",
+"block_unsorted": "? !!python/tuple\n- a\n- b\n: 1\n",
+"flow": "{? !!python/tuple [a, b] : 1}\n"
+},
+{
+"expr": "{x: x for x in [3, 1, 2]}",
+"block_sorted": "1: 1\n2: 2\n3: 3\n",
+"block_unsorted": "3: 3\n1: 1\n2: 2\n",
+"flow": "{1: 1, 2: 2, 3: 3}\n"
+},
+{
+"expr": "{'a' * 70: 1, 2: 2}",
+"block_sorted": "null: 1\n2: 2\n",
+"block_unsorted": "null: 1\n2: 2\n",
+"flow": "{null: 1, 2: 2}\n"
+},
+{
+"expr": "{7: 'x'}",
+"block_sorted": "7: x\n",
+"block_unsorted": "7: x\n",
+"flow": "{7: x}\n"
+},
+{
+"expr": "{1: 'multi\\nline'}",
+"block_sorted": "1: 'multi\n\n  line'\n",
+"block_unsorted": "1: 'multi\n\n  line'\n",
+"flow": "{1: 'multi\n\n    line'}\n"
+},
+{
+"expr": "{1: 'a: b'}",
+"block_sorted": "1: 'a: b'\n",
+"block_unsorted": "1: 'a: b'\n",
+"flow": "{1: 'a: b'}\n"
+},
+{
+"expr": "{1: 'yes', 2: 'null', 3: '1'}",
+"block_sorted": "1: 'yes'\n2: 'null'\n3: '1'\n",
+"block_unsorted": "1: 'yes'\n2: 'null'\n3: '1'\n",
+"flow": "{1: 'yes', 2: 'null', 3: '1'}\n"
+},
+{
+"expr": "{'1': 1, 2: 2}",
+"block_sorted": "'1': 1\n2: 2\n",
+"block_unsorted": "'1': 1\n2: 2\n",
+"flow": "{'1': 1, 2: 2}\n"
+},
+{
+"expr": "{'': 1, 2: 2}",
+"block_sorted": "? ''\n: 1\n2: 2\n",
+"block_unsorted": "? ''\n: 1\n2: 2\n",
+"flow": "{? '' : 1, 2: 2}\n"
+}
+]

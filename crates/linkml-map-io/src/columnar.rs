@@ -23,9 +23,16 @@ use crate::writers::{StreamWriter, jsonl_line};
 fn contains_decimal(value: &Value) -> bool {
     match value {
         Value::Decimal(_) => true,
-        Value::List(items) => items.iter().any(contains_decimal),
+        Value::List(items) | Value::Tuple(items) => items.iter().any(contains_decimal),
         Value::Map(map) => map.values().any(contains_decimal),
-        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => false,
+        Value::Dict(dict) => dict.values().any(contains_decimal),
+        Value::Null
+        | Value::Bool(_)
+        | Value::Int(_)
+        | Value::Float(_)
+        | Value::Str(_)
+        | Value::Temporal(_)
+        | Value::Set(_) => false,
     }
 }
 
@@ -34,16 +41,25 @@ fn decimals_as_strings(value: &Value) -> Value {
     match value {
         Value::Decimal(d) => Value::Str(d.to_fixed_string()),
         Value::List(items) => Value::List(items.iter().map(decimals_as_strings).collect()),
+        Value::Tuple(items) => Value::Tuple(items.iter().map(decimals_as_strings).collect()),
         Value::Map(map) => Value::Map(
             map.iter()
                 .map(|(k, v)| (k.clone(), decimals_as_strings(v)))
                 .collect(),
         ),
+        Value::Dict(dict) => Value::Dict(Box::new(
+            dict.iter()
+                .map(|(k, v)| (k.clone(), decimals_as_strings(v)))
+                .collect(),
+        )),
+        // A set is no JSON (the staging write refuses it before any decimal matters).
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
-        | Value::Str(_)) => scalar.clone(),
+        | Value::Str(_)
+        | Value::Temporal(_)
+        | Value::Set(_)) => scalar.clone(),
     }
 }
 
@@ -88,9 +104,9 @@ impl StreamWriter for ColumnarStreamWriter {
         let mut out = String::new();
         for obj in chunk {
             if contains_decimal(obj) {
-                out.push_str(&jsonl_line(&decimals_as_strings(obj)));
+                out.push_str(&jsonl_line(&decimals_as_strings(obj)).map_err(anyhow::Error::msg)?);
             } else {
-                out.push_str(&jsonl_line(obj));
+                out.push_str(&jsonl_line(obj).map_err(anyhow::Error::msg)?);
             }
             out.push('\n');
         }

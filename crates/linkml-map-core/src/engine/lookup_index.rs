@@ -34,7 +34,9 @@ fn value_to_key(v: &Value) -> String {
         Value::Temporal(t) => t.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => String::new(),
-        Value::List(_) | Value::Map(_) => format!("{v:?}"),
+        Value::List(_) | Value::Map(_) | Value::Tuple(_) | Value::Set(_) | Value::Dict(_) => {
+            format!("{v:?}")
+        }
     }
 }
 

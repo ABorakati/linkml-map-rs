@@ -73,8 +73,11 @@
 //! | `decimal.Decimal` | `Decimal`        | `decimal.Decimal`  |
 //! | `str`             | `Str`            | `str`              |
 //! | *(never built from Python)* | `Temporal` (YAML input) | `datetime.date` / `datetime.datetime` |
-//! | `list`, `tuple`   | `List`           | `list`             |
-//! | `dict`            | `Map` (ordered)  | `dict` (ordered)   |
+//! | `list`            | `List`           | `list`             |
+//! | `tuple`           | `Tuple`          | `tuple`            |
+//! | `set`, `frozenset`| `Set`            | `set`              |
+//! | `dict` (all keys `str`) | `Map` (ordered) | `dict` (ordered) |
+//! | `dict` (other keys) | `Dict` (ordered) | `dict` (ordered) |
 //!
 //! A `decimal.Decimal` is exact in both directions: `range: decimal` slot
 //! derivations (upstream 72c0c28) return a real `decimal.Decimal` whose
@@ -86,8 +89,14 @@
 //! The rules are those of the former `json.dumps(obj, default=str)` bridge:
 //! an `int` beyond `i64` becomes a float; a non-finite `float` becomes `None`
 //! on the way out and raises `ValueError` on the way in, as does nesting
-//! beyond 128 levels (`serde_json`'s old parse limit); and dict keys
-//! may be `str`/`int`/`float`/`bool`/`None` (`TypeError` otherwise).
+//! beyond 128 levels (`serde_json`'s old parse limit).
+//!
+//! The Python containers keep their type in both directions: a `tuple` is a
+//! `tuple`, a `set` or `frozenset` a `set` (iterating as the Python set does
+//! on the way in, in the engine's CPython-order emulation on the way out), and
+//! a dict whose keys are not all `str` stays a dict with its real keys (`int`,
+//! `float`, `bool`, `None`, `tuple`, ...; `TypeError` for an unhashable key).
+//! A `frozenset` comes back as a plain `set`.
 //!
 //! Any other scalar is stringified with `str()` (`default=str`), both for a
 //! source *object* (`py_to_value`) and for a dict/`TransformationSpecification`
@@ -107,15 +116,17 @@
 
 use std::sync::Arc;
 
-use indexmap::IndexMap;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple, PyType};
+use pyo3::types::{
+    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
+};
 
 use linkml_map_core::{
     datamodel::TransformationSpecification,
     engine::{CompiledExprs, LookupIndex, ObjectTransformer},
+    pyset::PySet as PySetOf,
     validate::{ValidationMessage, validate_spec_semantics},
     value::{Decimal, Value},
 };
@@ -146,12 +157,13 @@ fn decimal_type<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyType>> {
 /// Convert a Python object (dict, list, scalar) to a Rust `Value` by walking it
 /// directly. The caller must hold the GIL (`py`).
 ///
-/// Accepts exactly what the former `json.dumps(obj, default=str)` bridge did:
-/// `bool` is tested before `int`; `tuple` is a list; dict keys may be `str`,
-/// `int`, `float`, `bool` or `None` (stringified as `json.dumps` does, else
-/// `TypeError`); an `int` beyond `i64` becomes a float; a non-finite float
-/// raises `ValueError`; a cyclic structure or nesting beyond 128 levels raises
-/// `ValueError`. Anything else is stringified with `str()` (`datetime.date`, `pathlib.Path`, ...), except
+/// `bool` is tested before `int`; a `tuple` stays a tuple ([`Value::Tuple`]),
+/// and a `set` or `frozenset` a set ([`Value::Set`], iterating as the Python set
+/// does); a `dict` whose keys are all `str` is a record map and any other
+/// dict keeps its hashable keys ([`Value::Dict`]); an `int` beyond `i64`
+/// becomes a float; a non-finite float raises `ValueError`; a cyclic structure
+/// or nesting beyond 128 levels raises `ValueError`. Anything else is
+/// stringified with `str()` (`datetime.date`, `pathlib.Path`, ...), except
 /// `decimal.Decimal`, which stays exact as `Value::Decimal`.
 fn py_to_value(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     py_to_value_at(py, obj, &mut Vec::new())
@@ -194,9 +206,11 @@ fn py_to_value_at(
         return Ok(Value::Str(obj.extract()?));
     }
 
-    let is_list = obj.is_instance_of::<PyList>() || obj.is_instance_of::<PyTuple>();
+    let is_list = obj.is_instance_of::<PyList>();
+    let is_tuple = obj.is_instance_of::<PyTuple>();
+    let is_set = obj.is_instance_of::<PySet>() || obj.is_instance_of::<PyFrozenSet>();
     let is_dict = obj.is_instance_of::<PyDict>();
-    if is_list || is_dict {
+    if is_list || is_tuple || is_set || is_dict {
         let id = obj.as_ptr() as usize;
         if open.contains(&id) {
             return Err(PyValueError::new_err("Circular reference detected"));
@@ -207,20 +221,44 @@ fn py_to_value_at(
             )));
         }
         open.push(id);
-        let value = if is_list {
+        let value = if is_list || is_tuple || is_set {
             obj.try_iter()?
                 .map(|item| py_to_value_at(py, &item?, open))
                 .collect::<PyResult<Vec<_>>>()
-                .map(Value::List)
+                .and_then(|items| {
+                    if is_list {
+                        Ok(Value::List(items))
+                    } else if is_tuple {
+                        Ok(Value::Tuple(items))
+                    } else {
+                        PySetOf::from_iteration_order(items)
+                            .map(|s| Value::Set(Box::new(s)))
+                            .map_err(PyTypeError::new_err)
+                    }
+                })
         } else {
             let dict = obj.downcast::<PyDict>()?;
-            let mut map = IndexMap::with_capacity(dict.len());
-            dict.iter()
-                .try_for_each(|(k, v)| -> PyResult<()> {
-                    map.insert(py_key_to_string(&k)?, py_to_value_at(py, &v, open)?);
-                    Ok(())
-                })
-                .map(|()| Value::Map(map))
+            let mut pairs = Vec::with_capacity(dict.len());
+            for (k, v) in dict.iter() {
+                pairs.push((py_to_value_at(py, &k, open)?, py_to_value_at(py, &v, open)?));
+            }
+            if pairs.iter().all(|(k, _)| matches!(k, Value::Str(_))) {
+                Ok(Value::Map(
+                    pairs
+                        .into_iter()
+                        .filter_map(|(k, v)| match k {
+                            Value::Str(s) => Some((s, v)),
+                            _ => None,
+                        })
+                        .collect(),
+                ))
+            } else {
+                let mut out = linkml_map_core::value::PyDict::new();
+                for (k, v) in pairs {
+                    out.insert(k, v).map_err(PyTypeError::new_err)?;
+                }
+                Ok(Value::Dict(Box::new(out)))
+            }
         };
         open.pop();
         return value;
@@ -236,36 +274,6 @@ fn py_to_value_at(
     }
     // `default=str`: dates, paths and other non-JSON scalars become their text.
     Ok(Value::Str(text))
-}
-
-/// A dict key as `json.dumps` writes it (`TypeError` for any other type).
-fn py_key_to_string(key: &Bound<'_, PyAny>) -> PyResult<String> {
-    if key.is_instance_of::<PyString>() {
-        return key.extract();
-    }
-    if key.is_none() {
-        return Ok("null".to_owned());
-    }
-    if let Ok(b) = key.downcast::<PyBool>() {
-        return Ok(if b.is_true() { "true" } else { "false" }.to_owned());
-    }
-    if key.is_instance_of::<PyInt>() {
-        return key.str()?.extract();
-    }
-    if key.is_instance_of::<PyFloat>() {
-        let f: f64 = key.extract()?;
-        return Ok(if f.is_nan() {
-            "NaN".to_owned()
-        } else if f.is_infinite() {
-            if f > 0.0 { "Infinity" } else { "-Infinity" }.to_owned()
-        } else {
-            key.repr()?.extract()?
-        });
-    }
-    Err(PyTypeError::new_err(format!(
-        "keys must be str, int, float, bool or None, not {}",
-        key.get_type().name()?
-    )))
 }
 
 /// Convert a Rust `Value` back to a Python object (dict/list/scalar) by
@@ -302,6 +310,29 @@ fn value_to_bound<'py>(py: Python<'py>, val: &Value) -> PyResult<Bound<'py, PyAn
             let dict = PyDict::new(py);
             for (k, v) in map {
                 dict.set_item(k, value_to_bound(py, v)?)?;
+            }
+            dict.into_any()
+        }
+        Value::Tuple(items) => {
+            let converted = items
+                .iter()
+                .map(|item| value_to_bound(py, item))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyTuple::new(py, converted)?.into_any()
+        }
+        // The elements are added in the Rust set's iteration order.
+        Value::Set(set) => {
+            let out = PySet::empty(py)?;
+            for item in set.iter() {
+                out.add(value_to_bound(py, item)?)?;
+            }
+            out.into_any()
+        }
+        // A real dict, with its real keys (int, float, bool, None, tuple, ...).
+        Value::Dict(d) => {
+            let dict = PyDict::new(py);
+            for (k, v) in d.iter() {
+                dict.set_item(value_to_bound(py, k)?, value_to_bound(py, v)?)?;
             }
             dict.into_any()
         }

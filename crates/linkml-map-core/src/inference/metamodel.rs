@@ -104,10 +104,18 @@ impl Node {
             // as a `Temporal`; if one does, keep its `str()` text.
             Value::Temporal(t) => Node::Str(t.to_string()),
             Value::Str(s) => Node::Str(s.clone()),
-            Value::List(items) => Node::list(items.iter().map(Node::from_value).collect()),
+            Value::List(items) | Value::Tuple(items) => {
+                Node::list(items.iter().map(Node::from_value).collect())
+            }
+            Value::Set(set) => Node::list(set.iter().map(Node::from_value).collect()),
             Value::Map(m) => Node::dict(
                 m.iter()
                     .map(|(k, v)| (k.clone(), Node::from_value(v)))
+                    .collect(),
+            ),
+            Value::Dict(d) => Node::dict(
+                d.iter()
+                    .map(|(k, v)| (crate::expr::eval::py_str(k), Node::from_value(v)))
                     .collect(),
             ),
         }

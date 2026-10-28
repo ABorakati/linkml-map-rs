@@ -2024,21 +2024,50 @@ impl<'s> ObjectTransformer<'s> {
         if let Some(key_slot) = dict_key
             && let Value::List(items) = v
         {
-            let mut result: IndexMap<String, Value> = IndexMap::new();
+            // The key keeps its type (`{v1[dictionary_key]: v1 for v1 in v}`): an
+            // integer identifier is an integer key, which YAML output shows
+            // as such; a dict with only string keys is a record map.
+            let mut result = crate::value::PyDict::new();
             for item in items {
                 if let Value::Map(mut m) = item {
                     let key_val = m
                         .shift_remove(&key_slot)
-                        .map(|kv| value_to_string_key(&kv))
-                        .unwrap_or_default();
-                    result.insert(key_val, Value::Map(m));
+                        .unwrap_or_else(|| Value::Str(String::new()));
+                    result
+                        .insert(key_val, Value::Map(m))
+                        .map_err(Error::Python)?;
                 }
                 // Non-map items in a list being keyed: skip (no key to extract).
             }
-            return Ok(Value::Map(result));
+            return Ok(Value::Dict(Box::new(result)).into_record_form());
         }
 
         // ── Keyed dict → list ────────────────────────────────────────────────
+        if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as
+            && let Value::Dict(d) = &v
+        {
+            // A dict with non-string keys: the key keeps its type when re-injected.
+            let id_slot_name: Option<String> = source_slot
+                .range_class()
+                .and_then(|range_class| {
+                    self.source_schema
+                        .and_then(|ss| ss.identifier_slot(range_class).ok())
+                })
+                .flatten()
+                .map(|s| s.name);
+            let list: Vec<Value> = d
+                .iter()
+                .map(|(k, val)| match (&id_slot_name, val) {
+                    (Some(id_slot), Value::Map(inner)) => {
+                        let mut inner = inner.clone();
+                        inner.insert(id_slot.clone(), k.clone());
+                        Value::Map(inner)
+                    }
+                    _ => val.clone(),
+                })
+                .collect();
+            return Ok(Value::List(list));
+        }
         if let Some(CollectionType::MultiValuedList) = &sd.cast_collection_as
             && let Value::Map(m) = v
         {
@@ -2414,7 +2443,7 @@ impl<'s> ObjectTransformer<'s> {
             if let Some(syntax) = &s.syntax {
                 let list = Value::List(items);
                 let out = match syntax {
-                    SerializationSyntaxType::Json => py_json(&list),
+                    SerializationSyntaxType::Json => py_json(&list).map_err(slot_err)?,
                     SerializationSyntaxType::Yaml => yaml_flow(&list),
                     SerializationSyntaxType::Turtle => {
                         return Err(slot_err("Unknown syntax: TURTLE".into()));
@@ -2719,17 +2748,7 @@ fn resolve_aggregation_source(
 /// Human-readable type name for the [`Error::InlinePath`] diagnostic, matching
 /// the shape of Python's `type(current_val).__name__` (dict/list/str/int/...).
 fn value_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "NoneType",
-        Value::Bool(_) => "bool",
-        Value::Int(_) => "int",
-        Value::Float(_) => "float",
-        Value::Decimal(_) => "Decimal",
-        Value::Temporal(t) => t.type_name(),
-        Value::Str(_) => "str",
-        Value::List(_) => "list",
-        Value::Map(_) => "dict",
-    }
+    v.python_type_name()
 }
 
 // ── Offset / aggregation / pivot helpers ──────────────────────────────────────
@@ -2933,13 +2952,16 @@ fn apply_aggregation(agg: &AggregationOperation, value: Value, slot: &str) -> Re
 ///
 /// This is the form `stringification: {syntax: JSON}` produces
 /// (`object_transformer.py::_multivalued_to_singlevalued`).
-fn py_json(v: &Value) -> String {
+///
+/// # Errors
+/// simplejson's `TypeError` for a set, or for a dict key it cannot write.
+fn py_json(v: &Value) -> std::result::Result<String, String> {
     let mut out = String::new();
-    write_py_json(&mut out, v);
-    out
+    write_py_json(&mut out, v)?;
+    Ok(out)
 }
 
-fn write_py_json(out: &mut String, v: &Value) {
+fn write_py_json(out: &mut String, v: &Value) -> std::result::Result<(), String> {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -2954,13 +2976,14 @@ fn write_py_json(out: &mut String, v: &Value) {
         // string, so the `str()` text is written instead.
         Value::Temporal(t) => write_py_json_str(out, &t.to_string()),
         Value::Str(s) => write_py_json_str(out, s),
-        Value::List(items) => {
+        // simplejson writes a tuple as an array (`tuple_as_array`).
+        Value::List(items) | Value::Tuple(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_py_json(out, item);
+                write_py_json(out, item)?;
             }
             out.push(']');
         }
@@ -2972,11 +2995,25 @@ fn write_py_json(out: &mut String, v: &Value) {
                 }
                 write_py_json_str(out, k);
                 out.push_str(": ");
-                write_py_json(out, val);
+                write_py_json(out, val)?;
             }
             out.push('}');
         }
+        Value::Dict(d) => {
+            out.push('{');
+            for (i, (k, val)) in d.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_py_json_str(out, &crate::value::simplejson_key(k)?);
+                out.push_str(": ");
+                write_py_json(out, val)?;
+            }
+            out.push('}');
+        }
+        Value::Set(_) => return Err("Object of type set is not JSON serializable".to_owned()),
     }
+    Ok(())
 }
 
 /// simplejson's `FLOAT_REPR` (`float.__repr__`) with `allow_nan=True`.

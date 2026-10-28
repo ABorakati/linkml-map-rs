@@ -57,8 +57,18 @@ impl EvalMode {
 pub(super) fn eval_restricted(parsed: &ParsedExpr, vars: &Bindings) -> ExprResult<Value> {
     match &parsed.inner {
         ParsedInner::NoneLiteral => Ok(Value::Null),
-        ParsedInner::Single(ast) => super::eval::eval_ast_public(ast, vars),
-        ParsedInner::Program(program) => program.eval_first_statement(vars),
+        ParsedInner::Single(ast) => super::eval::eval_ast_public(ast, vars).map(record_form),
+        ParsedInner::Program(program) => program.eval_first_statement(vars).map(record_form),
+    }
+}
+
+/// [`Value::into_record_form`] for the values that can hold a dict; a scalar
+/// (nearly every result) is returned as it is.
+#[inline]
+fn record_form(v: Value) -> Value {
+    match v {
+        Value::List(_) | Value::Tuple(_) | Value::Map(_) | Value::Dict(_) => v.into_record_form(),
+        scalar => scalar,
     }
 }
 

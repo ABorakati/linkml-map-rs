@@ -41,9 +41,9 @@ def encode(v: Any, depth: int = 0) -> Any:
     if isinstance(v, tuple):
         return {"$tuple": [encode(x, depth + 1) for x in v]}
     if isinstance(v, (set, frozenset)):
-        items = [encode(x, depth + 1) for x in v]
-        items.sort(key=lambda x: repr(x))
-        return {"$set": items}
+        # In iteration order: for elements with a deterministic hash it is the
+        # order CPython's table gives (and Rust reproduces); see `canon`.
+        return {"$set": [encode(x, depth + 1) for x in v]}
     if isinstance(v, UpDynObj):
         return {k: encode(x, depth + 1) for k, x in vars(v).items()}
     if isinstance(v, dict):
@@ -56,8 +56,11 @@ def encode(v: Any, depth: int = 0) -> Any:
 def canon(j: Any) -> Any:
     """Canonical comparable form of an encoded value.
 
-    Leaves are tagged so ``1``, ``1.0`` and ``True`` stay distinct; tuples fold
-    into lists (reported separately by :func:`has_tuple`), sets into sorted lists.
+    Leaves are tagged so ``1``, ``1.0`` and ``True`` stay distinct; a tuple is not a
+    list. A set keeps its iteration order when every element has a deterministic
+    hash (``int``, ``bool``, ``None``, ``float``, tuples of those), and is sorted
+    otherwise: ``str`` hashes are randomised per process, so upstream's own order
+    cannot be reproduced.
     """
     if j is None:
         return None
@@ -80,15 +83,34 @@ def canon(j: Any) -> Any:
         if "$temporal" in j:
             return ("temporal", j["$temporal"])
         if "$tuple" in j:
-            return ("l", [canon(x) for x in j["$tuple"]])
+            return ("t", [canon(x) for x in j["$tuple"]])
         if "$set" in j:
-            return ("set", [canon(x) for x in j["$set"]])
+            items = [canon(x) for x in j["$set"]]
+            if not all(deterministic_hash(x) for x in j["$set"]):
+                items.sort(key=repr)
+            return ("set", items)
         if "$dict" in j:
             return ("dict", [[canon(k), canon(x)] for k, x in j["$dict"]])
         if "$other" in j:
             return ("other", j["$other"])
         return ("m", [[k, canon(x)] for k, x in j.items()])
     raise TypeError(j)
+
+
+def deterministic_hash(j: Any) -> bool:
+    """Whether ``hash`` of the encoded value is the same in every process."""
+    if j is None or isinstance(j, (bool, int)):
+        return True
+    if isinstance(j, dict):
+        if "$f" in j:
+            return not math.isnan(h2f(j["$f"]))
+        if "$i" in j:
+            return True
+        if "$tuple" in j:
+            return all(deterministic_hash(x) for x in j["$tuple"])
+        if "$dec" in j:
+            return True
+    return False
 
 
 def has_tuple(j: Any) -> bool:
