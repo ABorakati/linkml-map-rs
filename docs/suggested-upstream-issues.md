@@ -84,6 +84,11 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 
 ## Join engine and lookup index
 
+- The two "Conflicting join specs" raise sites (`join_engine._collect_joins` and `engine._collect_all_joins`) word
+  the message differently, only the join-engine one gives the "use distinct join names" advice, and
+  `_collect_joins` prints an unresolved key as `None` where the per-row path raises a different `ValueError`.
+- A table named after a SQL reserved word (for example `Order`) breaks the per-row `LookupIndex`, whose
+  `CREATE TABLE` does not quote the name.
 - `_perform_join_resolution` tests `field_path in class_induced_slots(joined_class)`, comparing a string with
   `SlotDefinition` objects, so it is always false and joined values are never range-, cardinality-, datatype- or
   enum-coerced.

@@ -30,6 +30,7 @@ use futures::{StreamExt, TryStreamExt};
 use linkml_map_core::{
     datamodel::ClassDerivation,
     engine::{LookupIndex, ObjectIndex},
+    normalize::join_conflicts::check_block_joins,
     value::Value,
 };
 use linkml_map_io::{
@@ -280,6 +281,23 @@ pub(crate) fn collect_all_joins(class_deriv: &ClassDerivation) -> Result<BTreeMa
     Ok(out)
 }
 
+/// Upstream refuses a block that joins one name two ways when `transform_spec` reaches it
+/// (`join_engine._collect_joins`, `engine._collect_all_joins`), whether or not the table has rows.
+///
+/// A block takes the `_collect_joins` route when `can_use_join_engine` gets as far as calling it:
+/// its primary table is a CSV, TSV or JSON file and a class of the source schema.
+fn check_joins(plan: &CompiledPlan, block: usize, seg: &RowSegment) -> Result<()> {
+    let engine_candidate = matches!(seg.format, Format::Csv | Format::Tsv | Format::Json)
+        && seg.table.as_deref().is_some_and(|table| {
+            plan.source_provider
+                .all_class_names()
+                .iter()
+                .any(|class| class == table)
+        });
+    check_block_joins(&plan.blocks[block].class_derivation, engine_candidate)?;
+    Ok(())
+}
+
 /// The last block's joins and the index built for them.
 type JoinCache = (BTreeMap<String, String>, bool, Option<Arc<LookupIndex>>);
 
@@ -299,6 +317,9 @@ async fn lookup_index_for(
     seg: &RowSegment,
     cache: &mut Option<JoinCache>,
 ) -> Result<Option<Arc<LookupIndex>>> {
+    if let Some(block) = seg.block {
+        check_joins(plan, block, seg)?;
+    }
     let (Some(block), Some(loader)) = (seg.block, loader) else {
         return Ok(plan.lookup_index.clone());
     };

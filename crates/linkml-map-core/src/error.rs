@@ -77,6 +77,13 @@ pub enum Error {
     #[error("{0}")]
     JoinSynthesis(String),
 
+    /// A join spec upstream refuses when `transform_spec` reaches the block: one
+    /// join name declared with two different `(source_key, lookup_key)` pairs
+    /// (`join_engine._collect_joins`, `engine._collect_all_joins`), or a join
+    /// with an unresolved key (`join_utils.join_keys`). All `ValueError`s.
+    #[error("{0}")]
+    JoinSpec(String),
+
     /// A bare Python exception (`TypeError`, `ValueError`, ...) upstream's engine
     /// lets escape from the arithmetic or string operation it performs; the text
     /// is `Type: message` as Python would print it.

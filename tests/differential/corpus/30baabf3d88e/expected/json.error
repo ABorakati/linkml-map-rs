@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ValueError",
+  "message": "Conflicting join specs for 'Order': ('order_ref', 'id') vs ('id', 'name'). Use distinct join names to join a table more than one way."
+}

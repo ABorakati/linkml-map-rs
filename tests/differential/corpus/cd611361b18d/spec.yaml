@@ -1,0 +1,17 @@
+id: https://example.org/spec
+title: t
+class_derivations:
+  Agent:
+    populated_from: Person
+    joins:
+      Order: {source_key: id, lookup_key: id}
+    slot_derivations:
+      id: null
+      inner:
+        class_derivations:
+          Inner:
+            populated_from: Person
+            joins:
+              Order: {join_on: id}
+            slot_derivations:
+              out_a: {populated_from: Order.name}
