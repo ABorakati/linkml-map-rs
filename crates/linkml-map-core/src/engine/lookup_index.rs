@@ -53,6 +53,9 @@ fn value_to_key(v: &Value) -> String {
 pub struct LookupIndex {
     /// table_name → (key_column, key_value_string → rows)
     tables: HashMap<String, (String, HashMap<String, Vec<IndexMap<String, Value>>>)>,
+    /// table_name → rows again, under the key as `_parse_numeric` reads it (`"007"` → `7`),
+    /// for a probe whose key has been parsed already. Consulted only after an exact miss.
+    parsed_keys: HashMap<String, HashMap<String, Vec<IndexMap<String, Value>>>>,
 }
 
 impl LookupIndex {
@@ -82,18 +85,54 @@ impl LookupIndex {
         key_column: &str,
         coerce: impl Fn(&Value) -> Value,
     ) {
+        self.register(name, rows, key_column, coerce, false);
+    }
+
+    /// [`register_table_with`](Self::register_table_with), also finding a row by its key as
+    /// `coerce` reads it, for a probe that has been through `_parse_numeric` too.
+    ///
+    /// Upstream's set-based join engine matches the primary row's key *text* against the
+    /// joined table's, in SQL; the primary row then carries the parsed cell (`"007"` is `7`)
+    /// and a lookup by that cell must still find the row the text found.
+    pub fn register_table_with_parsed_keys(
+        &mut self,
+        name: &str,
+        rows: &[Value],
+        key_column: &str,
+        coerce: impl Fn(&Value) -> Value,
+    ) {
+        self.register(name, rows, key_column, coerce, true);
+    }
+
+    fn register(
+        &mut self,
+        name: &str,
+        rows: &[Value],
+        key_column: &str,
+        coerce: impl Fn(&Value) -> Value,
+        parsed_keys: bool,
+    ) {
         let mut index: HashMap<String, Vec<IndexMap<String, Value>>> = HashMap::new();
+        let mut parsed: HashMap<String, Vec<IndexMap<String, Value>>> = HashMap::new();
         for row in rows {
             if let Value::Map(m) = row
                 && let Some(key_val) = m.get(key_column)
             {
                 let key_str = value_to_key(key_val);
-                let stored = m.iter().map(|(k, v)| (k.clone(), coerce(v))).collect();
+                let stored: IndexMap<String, Value> =
+                    m.iter().map(|(k, v)| (k.clone(), coerce(v))).collect();
+                if parsed_keys {
+                    let alias = value_to_key(&coerce(key_val));
+                    if alias != key_str {
+                        parsed.entry(alias).or_default().push(stored.clone());
+                    }
+                }
                 index.entry(key_str).or_default().push(stored);
             }
         }
         self.tables
             .insert(name.to_string(), (key_column.to_string(), index));
+        self.parsed_keys.insert(name.to_string(), parsed);
     }
 
     /// Return the **first** row where the registered key column equals `key_val`.
@@ -101,7 +140,7 @@ impl LookupIndex {
     /// Mirrors Python `LookupIndex.lookup_row()` (`LIMIT 1` semantics).
     /// Returns `None` when the table is unregistered or no row matches.
     pub fn lookup_row(&self, table: &str, key_val: &str) -> Option<&IndexMap<String, Value>> {
-        self.tables.get(table)?.1.get(key_val)?.first()
+        self.lookup_rows(table, key_val).first()
     }
 
     /// Return **all** rows where the registered key column equals `key_val`.
@@ -112,6 +151,7 @@ impl LookupIndex {
         self.tables
             .get(table)
             .and_then(|(_, idx)| idx.get(key_val))
+            .or_else(|| self.parsed_keys.get(table)?.get(key_val))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
@@ -124,6 +164,7 @@ impl LookupIndex {
     /// Drop a registered table, releasing its memory.
     pub fn drop_table(&mut self, table: &str) {
         self.tables.remove(table);
+        self.parsed_keys.remove(table);
     }
 }
 

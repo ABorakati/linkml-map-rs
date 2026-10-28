@@ -1863,11 +1863,29 @@ impl<'s> ObjectTransformer<'s> {
             // wrapped in a one-element list (`[map_object(v, ...)]`) — before,
             // and independently of, any cardinality coercion. For a type range
             // `map_object` hands the scalar back as it is.
-            RangeKind::Type(_) if source_slot.multivalued => Ok(match v {
-                Value::List(_) | Value::Map(_) => v.clone(),
-                scalar => Value::List(vec![scalar.clone()]),
-            }),
-            RangeKind::Type(_) | RangeKind::None => Ok(v.clone()),
+            //
+            // PARITY: that `map_object(v, <type>, target_range)` call is also
+            // where a type-ranged value is cast to a `string`/`integer`/`float`
+            // target (`str(v)`, `int(v)`, `float(v)`), so `int(True)` is `1`
+            // here although `_coerce_datatype` would keep a bool as it is.
+            RangeKind::Type(_) if source_slot.multivalued => match v {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| coerce::map_object_type_value(item, target_range))
+                    .collect::<Result<Vec<_>>>()
+                    .map(Value::List),
+                Value::Map(m) => m
+                    .iter()
+                    .map(|(k, item)| {
+                        coerce::map_object_type_value(item, target_range).map(|c| (k.clone(), c))
+                    })
+                    .collect::<Result<_>>()
+                    .map(Value::Map),
+                scalar => coerce::map_object_type_value(scalar, target_range)
+                    .map(|c| Value::List(vec![c])),
+            },
+            RangeKind::Type(_) => coerce::map_object_type_value(v, target_range),
+            RangeKind::None => Ok(v.clone()),
         }
     }
 

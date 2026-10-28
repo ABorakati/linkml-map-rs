@@ -26,7 +26,7 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use linkml_map_core::{
     datamodel::ClassDerivation,
     engine::{LookupIndex, ObjectIndex},
@@ -38,7 +38,7 @@ use linkml_map_io::{
 };
 use tokio::sync::mpsc;
 
-use crate::{CompiledPlan, DataLoader, join_order::JoinEngine};
+use crate::{CompiledPlan, DataLoader, join_order::JoinEngine, join_rows};
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
@@ -267,7 +267,7 @@ pub(crate) fn collect_all_joins(class_deriv: &ClassDerivation) -> Result<BTreeMa
 }
 
 /// The last block's joins and the index built for them.
-type JoinCache = (BTreeMap<String, String>, Option<Arc<LookupIndex>>);
+type JoinCache = (BTreeMap<String, String>, bool, Option<Arc<LookupIndex>>);
 
 /// The join tables a block needs, loaded into one shared [`LookupIndex`].
 ///
@@ -278,8 +278,7 @@ type JoinCache = (BTreeMap<String, String>, Option<Arc<LookupIndex>>);
 /// registered (upstream's `LookupIndex` reads CSV, TSV and JSON). Upstream registers them for
 /// the block and drops them when it is done; here the index lives until the next
 /// block needs a different one, so consecutive blocks with the same joins share
-/// it. `None` when the block joins nothing that exists (an empty index would only
-/// add overhead).
+/// it. `None` when the block joins nothing.
 async fn lookup_index_for(
     plan: &CompiledPlan,
     loader: Option<&DataLoader>,
@@ -287,16 +286,26 @@ async fn lookup_index_for(
     cache: &mut Option<JoinCache>,
 ) -> Result<Option<Arc<LookupIndex>>> {
     let (Some(block), Some(loader)) = (seg.block, loader) else {
+        // PARITY: a table read from a single file has no other table to join, but
+        // `transform_spec` still gives its block an (empty) `LookupIndex`.
+        if let Some(block) = seg.block
+            && plan.lookup_index.is_none()
+            && !collect_all_joins(&plan.blocks[block].class_derivation)?.is_empty()
+        {
+            return Ok(Some(Arc::new(LookupIndex::new())));
+        }
         return Ok(plan.lookup_index.clone());
     };
     let joins = collect_all_joins(&plan.blocks[block].class_derivation)?;
-    if let Some((key, index)) = cache
+    // Whether upstream runs this block's joins in the set-based engine (see `join_rows`).
+    let engine = matches!(seg.format, Format::Csv | Format::Tsv | Format::Json);
+    if let Some((key, engine_key, index)) = cache
         && *key == joins
+        && *engine_key == engine
     {
         return Ok(index.clone());
     }
     let mut index = LookupIndex::new();
-    let mut any_registered = false;
     for (table, lookup_key) in &joins {
         // PARITY: engine.py::transform_spec — `if join_name in data_loader`.
         let Some(file) = loader.find(table) else {
@@ -321,11 +330,17 @@ async fn lookup_index_for(
                 .with_context(|| {
                     format!("loading joined table {table:?} from {}", file.display())
                 })?;
-            index.register_table_with(table, &rows, lookup_key, |cell| match cell {
+            let coerce = |cell: &Value| match cell {
                 Value::Str(text) => parse_numeric(text),
                 other => other.clone(),
-            });
-            any_registered = true;
+            };
+            if engine {
+                // PARITY: the engine joins on the keys' text, but the primary row it hands
+                // the transformer has had `_parse_numeric` run over its key cell.
+                index.register_table_with_parsed_keys(table, &rows, lookup_key, coerce);
+            } else {
+                index.register_table_with(table, &rows, lookup_key, coerce);
+            }
             continue;
         }
         let rows = load_all_with_numeric_hints(
@@ -335,11 +350,20 @@ async fn lookup_index_for(
         )
         .await
         .with_context(|| format!("loading joined table {table:?} from {}", file.display()))?;
+        // PARITY: `LookupIndex` and the join engine read a JSON table with every column cast
+        // to `VARCHAR` and run `_parse_numeric` over each cell (see `join_rows`).
+        let rows = if fmt == Format::Json {
+            join_rows::json_rows(rows)
+        } else {
+            rows
+        };
         index.register_table(table, &rows, lookup_key);
-        any_registered = true;
     }
-    let index = any_registered.then(|| Arc::new(index));
-    *cache = Some((joins, index.clone()));
+    // PARITY: `transform_spec` creates the `LookupIndex` for any block that is not run by the
+    // join engine, so a join whose table has no file reaches DuckDB (a `CatalogException`)
+    // rather than finding no index at all (a `ValueError`).
+    let index = (!joins.is_empty()).then(|| Arc::new(index));
+    *cache = Some((joins, engine, index.clone()));
     Ok(index)
 }
 
@@ -418,15 +442,16 @@ async fn stream_segment(
     out_tx: &mpsc::Sender<Result<Value>>,
 ) -> Result<SegmentStats> {
     let plan = &input.plan;
-    let mut source_stream = open_stream(plan, seg)
-        .await
-        .with_context(|| format!("opening source stream {}", seg.file.display()))?;
     // PARITY: a block with joins over CSV/TSV/JSON tables is run by upstream's set-based
-    // join engine, whose query returns the primary rows in DuckDB's probe order.
-    if let (Some(engine), Some(index)) = (
-        JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup.as_ref()),
-        lookup.as_ref(),
-    ) {
+    // join engine, which reads the primary table through DuckDB (see `join_rows`) and whose
+    // query returns the primary rows in DuckDB's probe order.
+    let engine = JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup.as_ref());
+    let mut source_stream = match &engine {
+        Some(engine) => engine.primary_stream(seg).await,
+        None => open_stream(plan, seg).await,
+    }
+    .with_context(|| format!("opening source stream {}", seg.file.display()))?;
+    if let (Some(engine), Some(index)) = (engine, lookup.as_ref()) {
         source_stream = engine.reorder_stream(source_stream, Arc::clone(index));
     }
 
@@ -582,7 +607,11 @@ struct FkBlock {
 /// parallel worker. For a single container object the index is built from it;
 /// for several rows from a synthetic container holding them all, which lets the
 /// index find referenced objects inlined within individual rows.
-async fn load_fk_block(input: &DriveInput, seg: &RowSegment) -> Result<FkBlock> {
+async fn load_fk_block(
+    input: &DriveInput,
+    seg: &RowSegment,
+    lookup: Option<&Arc<LookupIndex>>,
+) -> Result<FkBlock> {
     let plan = &input.plan;
     let rows = open_all(plan, seg)
         .await
@@ -602,6 +631,21 @@ async fn load_fk_block(input: &DriveInput, seg: &RowSegment) -> Result<FkBlock> 
         seg.source_type.as_deref(),
         Some(plan.source_provider.as_ref()),
     ));
+    // PARITY: as in `stream_segment`, upstream's set-based join engine returns the rows of a
+    // block with joins in DuckDB's probe order, whether or not a foreign key is also followed.
+    let rows = match (
+        JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup),
+        lookup,
+    ) {
+        (Some(engine), Some(lookup)) => {
+            let rows = engine.primary_stream(seg).await?;
+            engine
+                .reorder_stream(rows, Arc::clone(lookup))
+                .try_collect()
+                .await?
+        }
+        _ => rows,
+    };
     Ok(FkBlock { rows, index })
 }
 
@@ -621,7 +665,7 @@ async fn fk_values_segment(
     lookup: Option<Arc<LookupIndex>>,
     sink: &mut Sink,
 ) -> Result<SegmentStats> {
-    let FkBlock { rows, index } = load_fk_block(input, seg).await?;
+    let FkBlock { rows, index } = load_fk_block(input, seg, lookup.as_ref()).await?;
     let rows_in = rows.len();
     let (plan, seg2, pool) = (
         Arc::clone(&input.plan),
@@ -673,7 +717,7 @@ async fn fk_jsonl_segment(
     let Sink::Jsonl(buf) = sink else {
         anyhow::bail!("internal error: JSONL strategy without a JSONL sink");
     };
-    let FkBlock { rows, index } = load_fk_block(input, seg).await?;
+    let FkBlock { rows, index } = load_fk_block(input, seg, lookup.as_ref()).await?;
     let rows_in = rows.len();
     let (plan, seg2, pool) = (
         Arc::clone(&input.plan),

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Cannot convert '\"true\"' to boolean; class_derivation=Agent (from Person); slot_derivation=out_a (from flag)"
+}

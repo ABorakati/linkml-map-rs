@@ -40,9 +40,9 @@ use linkml_map_core::{
     engine::LookupIndex,
     value::Value,
 };
-use linkml_map_io::Format;
+use linkml_map_io::{Format, load_all_with_numeric_hints, load_stream_with_numeric_hints};
 
-use crate::{CompiledPlan, DataLoader, driver::RowSegment};
+use crate::{CompiledPlan, DataLoader, driver::RowSegment, join_rows};
 
 /// `STANDARD_VECTOR_SIZE`: the rows of a chunk the CSV and JSON readers emit.
 const VECTOR_SIZE: usize = 2048;
@@ -263,6 +263,8 @@ struct EngineJoin {
 #[derive(Debug, Clone)]
 pub(crate) struct JoinEngine {
     joins: Vec<EngineJoin>,
+    /// The format of the primary table.
+    format: Format,
 }
 
 /// `join_engine._collect_joins`: this derivation's joins and its nested ones'.
@@ -358,7 +360,26 @@ impl JoinEngine {
         }
         let mut available: Vec<&str> = vec![primary];
         available.extend(found.iter().map(|(name, _)| *name));
-        refs_engine_safe(cd, &available).then_some(Self { joins })
+        refs_engine_safe(cd, &available).then_some(Self {
+            joins,
+            format: seg.format,
+        })
+    }
+
+    /// The primary rows as upstream's engine reads them (see [`crate::join_rows`]). A
+    /// CSV/TSV table is read as text here and parsed after [`Self::reorder_stream`]
+    /// has matched its keys as text; a JSON table is cast column by column up front.
+    pub(crate) async fn primary_stream(
+        &self,
+        seg: &RowSegment,
+    ) -> Result<BoxStream<'static, Result<Value>>> {
+        if self.format == Format::Json {
+            let rows =
+                load_all_with_numeric_hints(&seg.file, seg.format, Default::default()).await?;
+            let rows = join_rows::json_rows(rows);
+            return Ok(futures::stream::iter(rows.into_iter().map(Ok)).boxed());
+        }
+        load_stream_with_numeric_hints(&seg.file, seg.format, Default::default()).await
     }
 
     /// Whether `row` has a match in each join (a null or absent key has none).
@@ -407,15 +428,18 @@ impl JoinEngine {
             rows: BoxStream<'static, Result<Value>>,
             order: JoinOrder<Value>,
             skip: Option<Vec<bool>>,
+            parse_cells: bool,
             ready: VecDeque<Result<Value>>,
             done: bool,
         }
+        let parse_cells = self.format != Format::Json;
         let state = State {
             order: JoinOrder::new(self.joins.len()),
             engine: self,
             lookup,
             rows,
             skip: None,
+            parse_cells,
             ready: VecDeque::new(),
             done: false,
         };
@@ -458,7 +482,14 @@ impl JoinEngine {
                 if st.done || failure.is_some() {
                     st.order.finish(&mut sink);
                 }
-                st.ready.extend(sink.into_iter().map(Ok));
+                let parse = st.parse_cells;
+                st.ready.extend(sink.into_iter().map(|row| {
+                    Ok(if parse {
+                        join_rows::parse_text_row(row)
+                    } else {
+                        row
+                    })
+                }));
                 if let Some(e) = failure {
                     st.ready.push_back(Err(e));
                     st.done = true;

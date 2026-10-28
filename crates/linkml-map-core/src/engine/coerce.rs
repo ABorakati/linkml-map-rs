@@ -307,6 +307,27 @@ pub(crate) fn to_bool(v: &Value) -> std::result::Result<bool, String> {
     }
 }
 
+/// The type branch of Python `ObjectTransformer.map_object`
+/// (`if source_type in sv.all_types(): ...`).
+///
+/// A value whose source range is a type is cast to the requested target type:
+/// `string` -> `str(v)`, `integer` -> `int(v)`, `float`/`double` -> `float(v)`;
+/// any other target (or none) hands the value back unchanged. The `uri` and
+/// `curie` branches (`expand_curie`/`compress_uri`) are applied afterwards by
+/// `coerce_uri_curie`.
+///
+/// # Errors
+/// A value Python's constructor would reject (`int("abc")`, `float([])`).
+pub(crate) fn map_object_type_value(v: &Value, target_range: Option<&str>) -> Result<Value> {
+    match (target_range, v) {
+        // `int(True)` is `1`; `_coerce_datatype`'s `isinstance(v, int)` would keep the bool.
+        (Some("integer"), Value::Bool(b)) => Ok(Value::Int(i64::from(*b))),
+        (Some(t @ ("string" | "integer" | "float")), _) => coerce_scalar(v.clone(), t),
+        (Some("double"), _) => coerce_scalar(v.clone(), "float"),
+        _ => Ok(v.clone()),
+    }
+}
+
 /// Mirror of Python `Transformer._coerce_datatype`.
 ///
 /// `None`-equivalent targets are handled by the caller. A list is coerced
