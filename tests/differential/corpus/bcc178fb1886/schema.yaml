@@ -1,0 +1,36 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+
+enums:
+  Kind:
+    permissible_values:
+      a: {}
+      b: {}
+classes:
+  Address:
+    attributes:
+      street: {range: string}
+      zip: {range: string}
+      zips: {range: string, multivalued: true}
+      kind: {range: Kind}
+  Org:
+    attributes:
+      id: {range: string, identifier: true}
+      size: {range: string}
+      kind: {range: Kind}
+      sizes: {range: string, multivalued: true}
+  Person:
+    attributes:
+      id: {range: string, identifier: true}
+      code: {range: string}
+      codes: {range: string, multivalued: true}
+      kind: {range: Kind}
+      addr: {range: Address, inlined: true}
+      org_id: {range: string}
+      friend: {range: Person}

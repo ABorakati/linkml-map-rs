@@ -290,7 +290,11 @@ The complete, grouped list (including everything found by the later fuzzing roun
   cases, not all of `CaseFolding.txt`; `'{0.__class__}'.format(..)` is refused.
 - **`Value` has no tuple, set, bytes or big-integer variant**, so for example
   `is_list((1, 2))` is true, and integer results beyond `i64` raise.
-- **Joined/dotted `populated_from` values** are not coerced to the target range.
+- ~~**Joined/dotted `populated_from` values** are not coerced to the target range.~~ Closed (port/absentslot):
+  `Class.field`, inlined and FK paths now return their source slot and are coerced like any other
+  `populated_from`; a joined value is never coerced, as upstream (`_perform_join_resolution`'s
+  `field_path in class_induced_slots(..)` compares a string with slot objects: see `PARITY:` in
+  `engine/populated_from.rs`).
 - **`type: Agent`.** linkml 1.12's `transformer_model` drops the abstract `Agent`
   from the `creator`/`author`/`reviewer` union; Rust still accepts and injects
   `type: Agent`. Low priority.
@@ -362,8 +366,9 @@ Remaining, not modelled:
   makes upstream's `derive-schema` and `transform_enum` raise `AttributeError`; the datamodel cannot
   tell an explicit null from an absent field, so Rust derives the schema
   (`tests/derive_schema/cases.json`: `known_divergence`).
-- A populated_from dotted path that is neither a join alias, the source class, an inlined path nor
-  an FK path raises upstream ("requires a matching join spec or FK path"); Rust reads it from the row.
+- ~~A populated_from dotted path that is neither a join alias, the source class, an inlined path nor
+  an FK path raises upstream~~ Closed (port/absentslot): it raises here too, and `Class.field` and FK
+  paths (`org_id.name`, through the `ObjectIndex`) are resolved.
 - A nested derivation with a different `populated_from` and no join spec raises upstream
   (`no implicit join could be synthesized`); Rust derives it from the parent row.
 - A target schema without `imports: linkml:types` has no `integer` etc. upstream, so nothing is

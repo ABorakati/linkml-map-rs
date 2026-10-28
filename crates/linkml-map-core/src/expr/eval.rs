@@ -16,6 +16,9 @@
 //!   scalar funcs.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use log::warn;
@@ -32,6 +35,10 @@ use crate::value::{Value, cmp_int_float};
 
 /// Variable bindings: name → value mapping.
 pub type Bindings = IndexMap<String, Value>;
+
+/// The names of the slots a source class declares (upstream
+/// `Bindings._schema_slots`): see [`with_declared_slots`].
+pub type DeclaredSlots = HashSet<String, foldhash::fast::RandomState>;
 
 /// Names injected into the unrestricted-eval namespace by the transformer
 /// (`src`, `target`, `uuid5`) that are neither source slots nor tables. The
@@ -134,12 +141,63 @@ fn strict_mode_enabled() -> bool {
     STRICT_MODE.with(|m| m.get())
 }
 
+thread_local! {
+    /// The slots the source class declares, for the evaluation in progress.
+    ///
+    /// PARITY: upstream's `Bindings.__getitem__` answers `None` for a name that is
+    /// not in the row but is declared by the source class (`_schema_slots`), a
+    /// legitimate SQL null, before simpleeval's strict/warn handling of an unbound
+    /// name ever sees it. The row's `vars` carry only the keys the row has, and
+    /// this set stands for the rest, so a row costs nothing for the slots it
+    /// lacks. Set per evaluation by [`with_declared_slots`].
+    static DECLARED_SLOTS: RefCell<Option<Arc<DeclaredSlots>>> = const { RefCell::new(None) };
+}
+
+/// Restores the previous [`DECLARED_SLOTS`] when an evaluation ends, even by panic.
+struct DeclaredSlotsGuard(Option<Arc<DeclaredSlots>>);
+
+impl Drop for DeclaredSlotsGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        DECLARED_SLOTS.with(|d| *d.borrow_mut() = prev);
+    }
+}
+
+/// Run `f` with `slots` as the source class's declared slots (see
+/// [`DECLARED_SLOTS`]), restoring the prior set afterwards (nesting-safe).
+pub(crate) fn with_declared_slots<T>(
+    slots: Option<&Arc<DeclaredSlots>>,
+    f: impl FnOnce() -> T,
+) -> T {
+    let _restore = DeclaredSlotsGuard(DECLARED_SLOTS.with(|d| d.replace(slots.cloned())));
+    f()
+}
+
+/// True when `name` is a slot the source class declares but the row lacks.
+fn is_declared_slot(name: &str) -> bool {
+    DECLARED_SLOTS.with(|d| d.borrow().as_ref().is_some_and(|s| s.contains(name)))
+}
+
+/// The value `vars` binds `name` to: the row's own, else null for a declared
+/// slot the row lacks, else unbound.
+pub(super) fn bound_value(vars: &Bindings, name: &str) -> Option<Value> {
+    match vars.get(name) {
+        Some(v) => Some(v.clone()),
+        None => is_declared_slot(name).then_some(Value::Null),
+    }
+}
+
 /// Resolve `name` from `vars`, honouring the current strict mode: in lax mode an
 /// unbound name yields [`Value::Null`]; in strict mode it is an error.
 ///
 fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
     match vars.get(name) {
         Some(v) => Ok(v.clone()),
+        // PARITY: `Bindings.__getitem__` answers null for a declared slot the row
+        // lacks, and simpleeval's `_eval_name` reads `names` before `functions`, so
+        // this also holds for a slot named like a function; strict mode and the
+        // unbound-name warning never see it.
+        None if is_declared_slot(name) => Ok(Value::Null),
         // PARITY: simpleeval's `_eval_name` falls back to `self.functions[name]`, so
         // a bare function name (`upper`, `max`) evaluates to the function itself,
         // which has no `Value`.
@@ -402,6 +460,7 @@ pub(super) fn attribute_receiver<'a>(
         && !INJECTED_EVAL_NAMES.contains(&root.as_str())
         && !is_function_name(root)
         && !vars.contains_key(root)
+        && !is_declared_slot(root)
     {
         let message = format!(
             "Expression references unknown '{root}' in '{root}.{attr}': \

@@ -31,9 +31,11 @@ pub mod stmt;
 mod syntax;
 
 pub use error::{ExprError, ExprResult};
+pub(crate) use eval::with_declared_slots;
 pub use eval::{
-    Bindings, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr, eval_expr_with_mapping,
-    eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict, expression_asts, parse_expr,
+    Bindings, DeclaredSlots, FUNCTION_NAMES, INJECTED_EVAL_NAMES, ParsedExpr, eval_expr,
+    eval_expr_with_mapping, eval_expr_with_mapping_strict, eval_parsed, eval_parsed_strict,
+    expression_asts, parse_expr,
 };
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;

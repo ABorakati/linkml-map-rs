@@ -186,7 +186,7 @@ pub(super) fn enter_comprehension(var: &str, vars: &Bindings) -> ComprehensionSc
         let outer = targets
             .iter()
             .find(|c| c.name == var)
-            .map_or_else(|| vars.get(var).cloned(), |c| c.outer.clone());
+            .map_or_else(|| super::eval::bound_value(vars, var), |c| c.outer.clone());
         targets.push(CompTarget {
             name: var.to_string(),
             outer,

@@ -1,0 +1,5 @@
+persons:
+- {id: p1, org_id: o1, code: '7'}
+- {id: p2, org_id: o9, code: '8'}
+orgs:
+- {id: o1, name: Acme, size: '5'}

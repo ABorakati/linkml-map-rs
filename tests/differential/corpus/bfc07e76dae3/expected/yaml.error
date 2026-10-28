@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Inlined path 'addr.zips' reaches a multivalued segment 'zips'; per-item fan-out to a matching class_derivation is not yet supported (see #265); slot_derivation=outs (from addr.zips)"
+}
