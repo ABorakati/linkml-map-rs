@@ -894,6 +894,9 @@ impl PyTransformer {
     /// `populated_from: "alias.field"` / `expr: "{alias.field}"` bindings
     /// against real data instead of always yielding `null`.
     ///
+    /// `name` is the join's name, the key of its `joins:` entry, not its
+    /// `class_named`: upstream's `_resolve_joined_row` looks the table up under it.
+    ///
     /// `rows` is a list of dicts, converted to the engine's `Value` via the
     /// same JSON bridge `.transform()` uses. `key_column` names the column in
     /// `rows` that join lookups match against (the spec's `joins:` entry

@@ -181,7 +181,7 @@ impl<'s> ObjectTransformer<'s> {
         ac: &crate::datamodel::AliasedClass,
         source_map: &IndexMap<String, Value>,
     ) -> Result<Value> {
-        let table = ac.class_named.as_deref().unwrap_or(alias);
+        let table = alias;
         let Some(source_key) = join_source_key(ac) else {
             return Err(Error::Python(format!(
                 "ValueError: Join {alias:?} must specify 'join_on' or both 'source_key' and 'lookup_key'"

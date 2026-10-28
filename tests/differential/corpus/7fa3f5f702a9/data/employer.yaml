@@ -1,0 +1,6 @@
+- id: 'o1'
+  name: 'ALIASACME'
+  size: '11'
+- id: 'o2'
+  name: 'ALIASBETA'
+  size: '22'

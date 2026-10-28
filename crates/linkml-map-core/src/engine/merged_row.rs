@@ -155,8 +155,9 @@ impl<'a> MergedRow<'a> {
                     _ => None,
                 })
                 .and_then(|key| {
-                    let table = ac.class_named.as_deref().unwrap_or(name);
-                    engine.lookup_index.as_deref()?.lookup_row(table, &key)
+                    // PARITY: the join engine reads the table under the join name,
+                    // never `class_named` (see `driver::collect_all_joins`).
+                    engine.lookup_index.as_deref()?.lookup_row(name, &key)
                 });
             // `rows_by_table[table] = ...` for each join, after the primary's own entry.
             match rows_by_table.iter_mut().find(|(t, _)| *t == name) {
@@ -246,7 +247,8 @@ impl ObjectTransformer<'_> {
                 "ValueError: Join configured for {table_name:?} but lookup_index has not been initialized"
             )));
         };
-        let table = ac.class_named.as_deref().unwrap_or(table_name);
+        // PARITY: `lookup_row(table_name=<join name>)`: `class_named` is not the table.
+        let table = table_name;
         if !li.is_registered(table) {
             return Err(Error::Python(format!(
                 "duckdb.CatalogException: Catalog Error: Table with name {table} does not exist!"

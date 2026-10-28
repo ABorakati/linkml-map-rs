@@ -1,0 +1,16 @@
+id: https://example.org/spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    joins:
+      by_id:
+        class_named: Org
+        source_key: org_id
+        lookup_key: id
+      by_name:
+        class_named: Org
+        source_key: name
+        lookup_key: name
+    slot_derivations:
+      id: {populated_from: id}
+      org_name: {expr: '{by_id.name} + "/" + {by_name.id}'}

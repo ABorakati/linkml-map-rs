@@ -51,8 +51,9 @@ classes:
         identifier: true
 """
 
-# Explicit `joins:` block: `demo` aliases the `demographics` table (registered
-# in-memory at test time via `register_join_table`), keyed on the primary
+# Explicit `joins:` block: the `demo` join reads the table registered under that
+# name in-memory at test time via `register_join_table` (upstream looks a table up
+# under the join name, never under `class_named`), keyed on the primary
 # object's `pid` slot. `age`/`city` are populated via dotted
 # `populated_from: "demo.<field>"` join bindings — exactly the resolution path
 # `crates/linkml-map-core/src/engine/mod.rs` wires `LookupIndex` through.
@@ -95,7 +96,7 @@ def test_register_join_table_resolves_join(tmp_path: pathlib.Path) -> None:
         t.transform({"pid": "P:1"})
 
     t.register_join_table(
-        "demographics",
+        "demo",
         [
             {"patient_id": "P:1", "age": 42, "city": "London"},
             {"patient_id": "P:2", "age": 31, "city": "Leeds"},
@@ -130,12 +131,36 @@ def test_register_join_table_replaces_same_name(tmp_path: pathlib.Path) -> None:
     )
 
     t.register_join_table(
-        "demographics", [{"patient_id": "P:1", "age": 42, "city": "London"}], "patient_id"
+        "demo", [{"patient_id": "P:1", "age": 42, "city": "London"}], "patient_id"
     )
     assert t.transform({"pid": "P:1"}) == {"pid": "P:1", "age": 42, "city": "London"}
 
     # Replace with new data for the same table name.
     t.register_join_table(
-        "demographics", [{"patient_id": "P:1", "age": 99, "city": "Bristol"}], "patient_id"
+        "demo", [{"patient_id": "P:1", "age": 99, "city": "Bristol"}], "patient_id"
     )
     assert t.transform({"pid": "P:1"}) == {"pid": "P:1", "age": 99, "city": "Bristol"}
+
+
+def test_class_named_does_not_select_the_table(tmp_path: pathlib.Path) -> None:
+    """A table registered under the join's `class_named` is not the join's table.
+
+    Upstream's `_resolve_joined_row` calls `lookup_row(table_name=<join name>)`, so
+    `class_named: demographics` has no effect on which table is read; with a lookup
+    index that holds no `demo` table, DuckDB raises a `CatalogException`.
+    """
+    schema_path = tmp_path / "source.yaml"
+    schema_path.write_text(SOURCE_SCHEMA_YAML)
+    spec_path = tmp_path / "transform.yaml"
+    spec_path.write_text(SPEC_YAML)
+
+    t = Transformer(
+        source_schema=str(schema_path),
+        spec=str(spec_path),
+        source_class="Patient",
+    )
+    t.register_join_table(
+        "demographics", [{"patient_id": "P:1", "age": 42, "city": "London"}], "patient_id"
+    )
+    with pytest.raises(Exception, match="Table with name demo does not exist"):
+        t.transform({"pid": "P:1"})

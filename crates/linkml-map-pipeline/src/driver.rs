@@ -30,7 +30,7 @@ use futures::{StreamExt, TryStreamExt};
 use linkml_map_core::{
     datamodel::ClassDerivation,
     engine::{LookupIndex, ObjectIndex},
-    normalize::join_conflicts::check_block_joins,
+    normalize::join_conflicts::{self, check_block_joins},
     value::Value,
 };
 use linkml_map_io::{
@@ -225,53 +225,31 @@ pub(crate) struct DriveInput {
 
 // ── Join tables ───────────────────────────────────────────────────────────────
 
-/// Collect all join specs from a class derivation and its nested descendants:
-/// `{table: lookup_key}`. Mirrors upstream `engine._collect_all_joins`, which
-/// walks the slot-derivation tree for joins declared or synthesised during
-/// normalisation.
+/// The join tables of a block: `{join name: lookup_key}` over the joins of a class
+/// derivation and of its nested descendants, as upstream's `engine._collect_all_joins`
+/// (see [`linkml_map_core::normalize::join_conflicts::collect_all_joins`]).
 ///
-/// The key is the name the engine looks the table up under at runtime
-/// (`class_named` if set, else the join alias — the engine's
-/// `ac.class_named.unwrap_or(alias)` resolution), which is also the file stem
-/// used to find its data.
+/// PARITY: the key is the join name (the `joins:` mapping key), which is the name
+/// the engine looks the table up under at runtime and the file stem used to find
+/// its data. `class_named` plays no part in it: upstream's `_resolve_joined_row`
+/// calls `lookup_row(table_name=<join name>)`, `transform_spec` registers
+/// `if join_name in data_loader`, and `_collect_joins` of the join engine reads
+/// `data_loader` under the same name. So `joins: {org: {class_named: Org}}` reads
+/// `org.tsv`, not `Org.tsv`, and with no `org` table fails with DuckDB's
+/// `CatalogException` at the first row that has a key; two join names over one
+/// `class_named` are two tables, with no conflict. Suggested upstream issue: a
+/// join's `class_named` names the schema class of the joined table but is never
+/// used to find its data, which is surprising; either read the table under
+/// `class_named` or document that the join name must be the file stem.
 ///
 /// # Errors
 /// As upstream's `ValueError`: a join with neither `join_on` nor both of
-/// `source_key` / `lookup_key`, or two joins of one table with different lookup
-/// keys.
+/// `source_key` / `lookup_key`, or one join name with different keys.
 pub(crate) fn collect_all_joins(class_deriv: &ClassDerivation) -> Result<BTreeMap<String, String>> {
-    fn collect_from(cd: &ClassDerivation, out: &mut BTreeMap<String, String>) -> Result<()> {
-        for (join_name, ac) in cd.joins.iter().flatten() {
-            let lookup_key = ac.lookup_key.as_deref().or(ac.join_on.as_deref());
-            let source_key = ac.source_key.as_deref().or(ac.join_on.as_deref());
-            let (Some(lookup_key), Some(_source_key)) = (lookup_key, source_key) else {
-                anyhow::bail!(
-                    "join {join_name:?} must specify 'join_on' or both \
-                     'source_key' and 'lookup_key'"
-                );
-            };
-            let table = ac.class_named.as_deref().unwrap_or(join_name).to_string();
-            if let Some(existing) = out.get(&table)
-                && existing != lookup_key
-            {
-                anyhow::bail!(
-                    "conflicting join specs for {table:?}: \
-                     lookup key {existing:?} vs {lookup_key:?}"
-                );
-            }
-            out.insert(table, lookup_key.to_string());
-        }
-        for (_, sd) in cd.slot_derivations.iter().flatten() {
-            for nested in sd.class_derivations.iter().flatten() {
-                collect_from(nested, out)?;
-            }
-        }
-        Ok(())
-    }
-
-    let mut out = BTreeMap::new();
-    collect_from(class_deriv, &mut out)?;
-    Ok(out)
+    Ok(join_conflicts::collect_all_joins(class_deriv)?
+        .into_iter()
+        .map(|(name, (_source_key, lookup_key))| (name.to_owned(), lookup_key.to_owned()))
+        .collect())
 }
 
 /// Upstream refuses a block that joins one name two ways when `transform_spec` reaches it
@@ -314,14 +292,6 @@ async fn lookup_index_for(
         check_joins(plan, block, seg)?;
     }
     let (Some(block), Some(loader)) = (seg.block, loader) else {
-        // PARITY: a table read from a single file has no other table to join, but
-        // `transform_spec` still gives its block an (empty) `LookupIndex`.
-        if let Some(block) = seg.block
-            && plan.lookup_index.is_none()
-            && !collect_all_joins(&plan.blocks[block].class_derivation)?.is_empty()
-        {
-            return Ok(Some(Arc::new(LookupIndex::new())));
-        }
         return Ok(plan.lookup_index.clone());
     };
     let joins = collect_all_joins(&plan.blocks[block].class_derivation)?;
@@ -391,6 +361,16 @@ async fn lookup_index_for(
     // join engine, so a join whose table has no file reaches DuckDB (a `CatalogException`)
     // rather than finding no index at all (a `ValueError`).
     let index = (!joins.is_empty()).then(|| Arc::new(index));
+    // PARITY: in single-file mode a join named like the file's table is "in the loader", so
+    // the per-row path's `data_loader.get_path(join_name)` runs and `_find_file` raises
+    // `ValueError`; the join engine reads the file itself (`_table_path` uses `base_path`),
+    // so only a block it cannot take fails.
+    if loader.is_single_file()
+        && joins.contains_key(loader.identifier())
+        && JoinEngine::for_segment(plan, Some(loader), seg, index.as_ref()).is_none()
+    {
+        anyhow::bail!("Cannot search for files when loader is in single-file mode.");
+    }
     *cache = Some((joins, engine, index.clone()));
     Ok(index)
 }

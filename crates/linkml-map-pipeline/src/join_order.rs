@@ -338,7 +338,8 @@ impl JoinEngine {
         }
         let mut joins = Vec::with_capacity(found.len());
         for (name, join) in &found {
-            let table = join.class_named.as_deref().unwrap_or(name);
+            // PARITY: the join name is the table (see `driver::collect_all_joins`).
+            let table = *name;
             let file = loader.find(table)?;
             if !duckdb_readable(Format::from_path(&file).ok()?) || !lookup.is_registered(table) {
                 return None;

@@ -1606,8 +1606,9 @@ impl<'s> ObjectTransformer<'s> {
                         Value::BigInt(n) => n.to_string(),
                         _ => return None,
                     };
-                    let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
-                    li.lookup_row(table, &key_str)
+                    // PARITY: the table is the join name, never `class_named`
+                    // (see `unresolved_join`).
+                    li.lookup_row(alias, &key_str)
                         .map(|r| Value::Map(r.clone()))
                 });
                 bindings.insert(alias.clone(), row.unwrap_or(Value::Null));
@@ -1646,7 +1647,7 @@ impl<'s> ObjectTransformer<'s> {
             if key.is_null() {
                 continue;
             }
-            let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
+            let table = alias.as_str();
             let failure = match self.lookup_index.as_deref() {
                 None => JoinFailure::NoIndex(Error::Python(format!(
                     "ValueError: Join configured for {alias:?} but lookup_index has not been initialized"
@@ -2853,7 +2854,7 @@ fn resolve_aggregation_source(
         if let (Some(li), Some(joins)) = (lookup_index, class_deriv.joins.as_ref())
             && let Some(ac) = joins.get(alias)
         {
-            let table = ac.class_named.as_deref().unwrap_or(alias);
+            let table = alias;
             let key_val = join_source_key(ac).and_then(|sk| source_map.get(sk));
             if let Some(key_val) = key_val {
                 let key_str = match key_val {
@@ -6510,7 +6511,8 @@ mod lookup_index_tests {
             ("city", Value::Str("London".into())),
         ])];
         let mut li = LookupIndex::new();
-        li.register_table("demographics", &demo_rows, "patient_id");
+        // PARITY: the table is registered under the join name, not `class_named`.
+        li.register_table("demo", &demo_rows, "patient_id");
 
         let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
         joins.insert(
@@ -6538,6 +6540,50 @@ mod lookup_index_tests {
         assert_eq!(get(&result, "city"), Value::Str("London".into()));
     }
 
+    /// Upstream `_resolve_joined_row` calls `lookup_row(table_name=<join name>)`, so a
+    /// join's `class_named` does not select the table: one registered under it is not
+    /// the join's, and a lookup index without the join's own table raises DuckDB's
+    /// `CatalogException` for a row with a key (`class_named` still names the schema class).
+    #[test]
+    fn test_join_class_named_does_not_select_the_table() {
+        let rows = vec![val_map(&[
+            ("patient_id", Value::Str("P1".into())),
+            ("age", Value::Int(42)),
+        ])];
+        let mut li = LookupIndex::new();
+        li.register_table("demographics", &rows, "patient_id");
+        let li = Arc::new(li);
+        let joins = || {
+            let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
+            joins.insert(
+                "demo".to_string(),
+                join_alias("demo", "demographics", "pid"),
+            );
+            Some(joins)
+        };
+        let source = val_map(&[("pid", Value::Str("P1".into()))]);
+        for slot in [slot_pf("age", "demo.age"), slot_expr("age", "{demo.age}")] {
+            let spec = make_spec("Patient", vec![slot], joins());
+            let err = ObjectTransformer::new(spec, None, None)
+                .with_lookup_index(Arc::clone(&li))
+                .map_object(&source, Some("Patient"))
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Table with name demo does not exist!"),
+                "{err}"
+            );
+        }
+        // A row without a key value is a plain miss, whatever the tables.
+        let keyless = val_map(&[("other", Value::Int(1))]);
+        let spec = make_spec("Patient", vec![slot_pf("age", "demo.age")], joins());
+        let result = ObjectTransformer::new(spec, None, None)
+            .with_lookup_index(li)
+            .map_object(&keyless, Some("Patient"))
+            .unwrap();
+        assert_eq!(get(&result, "age"), Value::Null);
+    }
+
     // ── Test 2: expr "{alias.field}" join binding ─────────────────────────────
 
     #[test]
@@ -6547,7 +6593,7 @@ mod lookup_index_tests {
             ("score", Value::Int(10)),
         ])];
         let mut li = LookupIndex::new();
-        li.register_table("scores", &demo_rows, "patient_id");
+        li.register_table("sc", &demo_rows, "patient_id");
 
         let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
         joins.insert("sc".to_string(), join_alias("sc", "scores", "pid"));
@@ -6587,7 +6633,7 @@ mod lookup_index_tests {
             ]),
         ];
         let mut li = LookupIndex::new();
-        li.register_table("visits", &visits, "patient_id");
+        li.register_table("v", &visits, "patient_id");
 
         let mut joins: IndexMap<String, AliasedClass> = IndexMap::new();
         joins.insert("v".to_string(), join_alias("v", "visits", "pid"));

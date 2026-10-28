@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ValueError",
+  "message": "Cannot search for files when loader is in single-file mode."
+}
