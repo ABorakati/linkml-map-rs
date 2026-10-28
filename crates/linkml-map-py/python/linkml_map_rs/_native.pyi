@@ -122,7 +122,9 @@ class Transformer:
         spec's ``joins:`` block (explicit, or synthesized from an implicit
         ``{Table.col}`` reference) resolve ``populated_from: "alias.field"`` /
         ``expr: "{alias.field}"`` bindings against real data instead of
-        always yielding ``null``.
+        always yielding ``null``. ``name`` is the join's name (its key in
+        ``joins:``), not its ``class_named``, as upstream looks a table up
+        under the join name.
 
         ``key_column`` names the column in ``rows`` that join lookups match
         against. Calling again with the same ``name`` replaces that table;

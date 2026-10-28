@@ -50,7 +50,9 @@ outs = t.transform_many([obj1, obj2])     # schema/spec parsed once
   (`utils/lookup_index.py`), except rows are supplied directly rather than
   loaded from a CSV/TSV/JSON file. Call it before `.transform()` /
   `.map_object()` / `.transform_many()`; calling again with the same `name`
-  replaces that table, different names accumulate.
+  replaces that table, different names accumulate. `name` is the join's name (its
+  key in `joins:`), as upstream looks a table up under the join name; a join's
+  `class_named` does not select the table.
 
 ### Loading a specification: `load_specification`
 

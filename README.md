@@ -203,13 +203,14 @@ implicit `{Table.col}` reference) need the joined table's rows supplied
 in-memory before transforming, mirroring upstream `Transformer.lookup_index`:
 
 ```python
-t.register_join_table("demographics", [{"patient_id": "P:1", "age": 42}], "patient_id")
+t.register_join_table("demo", [{"patient_id": "P:1", "age": 42}], "patient_id")
 out = t.transform({"pid": "P:1"})   # populated_from "demo.age" / {demo.age} now resolves
 ```
 
 `register_join_table(name, rows, key_column)` may be called multiple times to
 register several tables; calling it again with the same `name` replaces that
-table. Call it before `.transform()` / `.map_object()` / `.transform_many()`.
+table. As upstream's `LookupIndex`, the `name` is the join's name (its key in the
+spec's `joins:` mapping, `demo` here), not its `class_named`. Call it before `.transform()` / `.map_object()` / `.transform_many()`.
 
 A pre-flight `validate_spec` checks a spec against its schema(s) — unresolved
 class/slot/enum names, bad expression refs, misconfigured joins — **without**

@@ -1741,3 +1741,187 @@ async fn joined_table_cells_are_parsed_numerically() {
         ]
     );
 }
+
+// ── Which table a join reads: its name, not `class_named` ───────────────────
+
+/// A join named `loc` over the schema class `sites`.
+const ALIASED_JOIN_BLOCK: &str = r#"  FlatSample:
+    populated_from: samples
+    joins:
+      loc:
+        class_named: sites
+        join_on: site_code
+    slot_derivations:
+      sample_id:
+        populated_from: sample_id
+      site_name:
+        populated_from: loc.site_name
+"#;
+
+/// The same, with a second join over a table with no file, which keeps upstream's
+/// set-based join engine from taking the block (`can_use_join_engine` needs every
+/// join table in the loader), so the per-row lookup path runs.
+const ALIASED_JOIN_BLOCK_PER_ROW: &str = r#"  FlatSample:
+    populated_from: samples
+    joins:
+      loc:
+        class_named: sites
+        join_on: site_code
+      pad:
+        join_on: site_code
+    slot_derivations:
+      sample_id:
+        populated_from: sample_id
+      site_name:
+        populated_from: loc.site_name
+"#;
+
+const SAMPLES_TSV: &str = "sample_id\tname\tsite_code\nS001\tAlpha\tSITE_A\nS002\tBeta\t\n";
+const SITES_BY_CLASS: &str = "site_code\tsite_name\nSITE_A\tFrom the class table\n";
+const SITES_BY_ALIAS: &str = "site_code\tsite_name\nSITE_A\tFrom the alias table\n";
+
+/// Upstream `_resolve_joined_row` calls `lookup_row(table_name=<join name>)` and
+/// `transform_spec` registers `if join_name in data_loader`: the join named `loc` reads
+/// `loc.tsv`, and `class_named: sites` (the schema class) does not redirect it, on the
+/// set-based engine path and on the per-row path alike.
+#[tokio::test]
+async fn join_reads_the_table_named_by_its_alias() {
+    for spec in [ALIASED_JOIN_BLOCK, ALIASED_JOIN_BLOCK_PER_ROW] {
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data("samples.tsv", SAMPLES_TSV);
+        case.write_data("sites.tsv", SITES_BY_CLASS);
+        case.write_data("loc.tsv", SITES_BY_ALIAS);
+        let rows = case.run(spec, &Run::default()).await.unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                json!({"sample_id": "S001", "site_name": "From the alias table"}),
+                json!({"sample_id": "S002"}),
+            ],
+            "{spec}"
+        );
+    }
+}
+
+/// With no `loc` table the join fails for a row with a key, whatever `class_named`
+/// finds (`CatalogException: Table with name loc does not exist!`); a row with no key
+/// value is a miss, and so is every row of an empty primary table.
+#[tokio::test]
+async fn join_with_only_a_class_named_table_fails_for_a_key() {
+    for spec in [ALIASED_JOIN_BLOCK, ALIASED_JOIN_BLOCK_PER_ROW] {
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data("samples.tsv", SAMPLES_TSV);
+        case.write_data("sites.tsv", SITES_BY_CLASS);
+        let err = case.run(spec, &Run::default()).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Table with name loc does not exist!"),
+            "{err:#}"
+        );
+
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data("samples.tsv", "sample_id\tname\tsite_code\nS002\tBeta\t\n");
+        case.write_data("sites.tsv", SITES_BY_CLASS);
+        let rows = case.run(spec, &Run::default()).await.unwrap();
+        assert_eq!(rows, vec![json!({"sample_id": "S002"})], "{spec}");
+
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data("samples.tsv", "sample_id\tname\tsite_code\n");
+        case.write_data("sites.tsv", SITES_BY_CLASS);
+        assert!(case.run(spec, &Run::default()).await.unwrap().is_empty());
+    }
+}
+
+/// The join's own table may be in a different format from the schema class's.
+#[tokio::test]
+async fn aliased_join_table_may_be_csv_or_json() {
+    for (name, content) in [
+        ("loc.csv", "site_code,site_name\nSITE_A,From the alias table\n"),
+        (
+            "loc.json",
+            r#"[{"site_code": "SITE_A", "site_name": "From the alias table"}]"#,
+        ),
+    ] {
+        let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+        case.write_data("samples.tsv", SAMPLES_TSV);
+        case.write_data("sites.tsv", SITES_BY_CLASS);
+        case.write_data(name, content);
+        let rows = case
+            .run(ALIASED_JOIN_BLOCK, &Run::default())
+            .await
+            .unwrap();
+        assert_eq!(rows[0]["site_name"], "From the alias table", "{name}");
+    }
+}
+
+/// A join named like the file's own table reads that file (`DataLoader.__contains__` is
+/// true for the file's identifier, and `_table_path` is the file itself), even from
+/// single-file input: here samples joined to samples by `name` → `sample_id`.
+const SELF_JOIN_BLOCK: &str = r#"  FlatSample:
+    populated_from: samples
+    joins:
+      samples:
+        source_key: name
+        lookup_key: sample_id
+    slot_derivations:
+      sample_id:
+        populated_from: sample_id
+      site_name:
+        populated_from: samples.site_code
+"#;
+
+#[tokio::test]
+async fn single_file_join_named_like_the_file_reads_the_file() {
+    let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+    case.write_data(
+        "samples.tsv",
+        "sample_id\tname\tsite_code\nS001\tS002\tSITE_A\nS002\tZed\tSITE_B\n",
+    );
+    let file = case.data_dir().join("samples.tsv");
+    let (rows, _) = case
+        .run_on(&file, SELF_JOIN_BLOCK, &Run::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            json!({"sample_id": "S001", "site_name": "SITE_B"}),
+            json!({"sample_id": "S002"}),
+        ]
+    );
+}
+
+/// A single file holds one table: a join under any other name finds no table (a
+/// `CatalogException` at the first row with a key), `class_named` or not.
+#[tokio::test]
+async fn single_file_join_under_another_name_has_no_table() {
+    let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+    case.write_data("samples.tsv", SAMPLES_TSV);
+    let file = case.data_dir().join("samples.tsv");
+    let err = case
+        .run_on(&file, ALIASED_JOIN_BLOCK, &Run::default())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Table with name loc does not exist!"),
+        "{err:#}"
+    );
+}
+
+/// On the per-row path a join named like the file's table makes `transform_spec` call
+/// `get_path`, whose `_find_file` raises `ValueError` in single-file mode (the join
+/// engine, which reads the file directly, is not affected).
+#[tokio::test]
+async fn single_file_self_join_on_the_per_row_path_fails() {
+    let spec = SELF_JOIN_BLOCK.replace("source_key: name", "source_key: not_a_column");
+    let case = Case::new(EDGE_SOURCE, Some(EDGE_TARGET));
+    case.write_data("samples.tsv", SAMPLES_TSV);
+    let file = case.data_dir().join("samples.tsv");
+    let err = case
+        .run_on(&file, &spec, &Run::default())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Cannot search for files when loader is in single-file mode."),
+        "{err:#}"
+    );
+}

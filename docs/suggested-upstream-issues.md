@@ -88,7 +88,13 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
   `SlotDefinition` objects, so it is always false and joined values are never range-, cardinality-, datatype- or
   enum-coerced.
 - `_resolve_joined_row` queries `lookup_index.lookup_row(table_name=<join alias>)`, so a join's `class_named` has no
-  effect on which table is read.
+  effect on which table is read: `transform_spec` registers `if join_name in data_loader` and the join engine reads
+  `data_loader` under the join name too, so `joins: {org: {class_named: Org, ...}}` reads `org.tsv` and, with no
+  such file, fails with DuckDB's `CatalogException: Table with name org does not exist!` at the first row that has a
+  key (`class_named` only picks the schema class for the slot lookup that never matches, above). Either read the
+  table under `class_named` or document that the join name must be the file stem. A join named like a single input
+  file's table reads that file on the engine path but raises `ValueError: Cannot search for files when loader is in
+  single-file mode.` on the per-row path.
 - `DynObj.__getattr__` returns `None` for every missing attribute, hiding typos such as `Person.x` or `src.x`.
 - The set-based join engine's row order depends on DuckDB internals (a `LEFT JOIN` probe returns matches first,
   caches small outputs, and changes order with several joins and with file size). An `ORDER BY` on the primary row
