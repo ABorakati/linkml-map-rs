@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "unsupported operand type(s) for *: 'float' and '_AmbiguousType'; class_derivation=Inner (from Org); slot_derivation=sz (from size)"
+}

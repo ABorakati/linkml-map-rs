@@ -26,6 +26,8 @@ pub mod coerce;
 pub mod content_id;
 pub mod lookup_index;
 mod merged_row;
+#[cfg(test)]
+mod merged_row_tests;
 pub mod object_index;
 mod pivot;
 mod populated_from;
@@ -882,6 +884,14 @@ impl<'s> ObjectTransformer<'s> {
             if let Some(off) = &slot_deriv.offset
                 && !mapped.is_null()
             {
+                // PARITY: the offset field is read from the row unchecked, so an
+                // ambiguous column is the `_AMBIGUOUS` sentinel in `offset_value * ...`.
+                if row.3.is_some_and(|m| m.is_ambiguous(&off.offset_field)) {
+                    return Err(Error::Python(
+                        "TypeError: unsupported operand type(s) for *: 'float' and '_AmbiguousType'"
+                            .to_owned(),
+                    ));
+                }
                 mapped = apply_offset(off, mapped, source_map)?;
             }
             (mapped, ssd)
@@ -1666,6 +1676,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         row: &RowBindings,
+        whole_row: bool,
     ) -> Result<()> {
         let Some(schema) = self.source_schema else {
             return Ok(());
@@ -1683,13 +1694,17 @@ impl<'s> ObjectTransformer<'s> {
         if unknown.is_empty() {
             return Ok(());
         }
-        let names = crate::validate::expr_refs::extract_expr_slot_references(expr);
+        let names = if whole_row {
+            Default::default()
+        } else {
+            crate::validate::expr_refs::extract_expr_slot_references(expr)
+        };
         for key in unknown {
             let is_join = class_deriv
                 .joins
                 .as_ref()
                 .is_some_and(|j| j.contains_key(key));
-            if !is_join && names.contains(key) {
+            if !is_join && (whole_row || names.contains(key)) {
                 return Err(Error::Python(match schema.get_class(source_type) {
                     Err(_) => format!("ValueError: Class: \"{source_type}\" not found"),
                     Ok(_) => format!(
@@ -1714,13 +1729,21 @@ impl<'s> ObjectTransformer<'s> {
         target_attrs: Option<&IndexMap<String, Value>>,
     ) -> Result<Value> {
         let class_name = class_deriv.name.as_str();
-        self.check_row_names(expr, source_map, source_type, class_deriv, row)?;
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
         // string parse path otherwise (identical result).
         let cached = self
             .compiled
             .and_then(|c| c.slot(class_name, slot_name, expr));
+        // PARITY: `_eval_expr` hands an unrestricted statement block the whole row
+        // (`bindings.get_ctxt_obj_and_dict()`), so every key of it must be a slot of the
+        // source type, not just the names the block reads.
+        let whole_row = self.unrestricted_eval
+            && match cached {
+                Some(parsed) => parsed.is_program(),
+                None => parse_expr(expr).is_ok_and(|parsed| parsed.is_program()),
+            };
+        self.check_row_names(expr, source_map, source_type, class_deriv, row, whole_row)?;
 
         // The row's bindings are built by the row's first `expr:` slot and kept
         // for the rest: only `__slot_values` changes from slot to slot.
@@ -6663,11 +6686,9 @@ mod lookup_index_tests {
     }
 
     /// A matching joined row is NOT collapsed: the nested object is built and
-    /// retained (control for the miss test above — the collapse in
-    /// `nested_join_misses` fires only when the join finds no row). The inner
-    /// `score` uses a plain `populated_from` that reads the parent row, so it is
-    /// null here; the point of this test is that the object survives as a `Map`
-    /// rather than becoming `Null` as it would on a miss.
+    /// retained (control for the miss test above -- `derive_nested_objects` skips
+    /// the derivation only when the join finds no row). The inner `score` reads
+    /// the merge of the parent and joined rows, so it is the joined row's.
     #[test]
     fn nested_join_hit_builds_object() {
         let readings = vec![val_map(&[
