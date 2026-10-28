@@ -21,7 +21,7 @@
 use std::cell::{Cell, RefCell};
 
 use super::error::ExprResult;
-use super::eval::{Bindings, ParsedExpr, ParsedInner, object_attr_mode_enabled, with_strict_mode};
+use super::eval::{Bindings, ParsedExpr, ParsedInner, with_strict_mode};
 use crate::value::Value;
 
 /// How an expression is evaluated: upstream's `strict` and `unrestricted_eval`
@@ -179,12 +179,8 @@ impl Drop for ComprehensionScope {
 /// `vars` are the bindings in force at the comprehension, from which the
 /// binding the *expression* gave `var` is recovered: an enclosing comprehension
 /// that binds the same name has already shadowed it in `vars`, so its record
-/// wins. A no-op inside a statement block, where asteval resolves loop
-/// variables normally.
+/// wins.
 pub(super) fn enter_comprehension(var: &str, vars: &Bindings) -> ComprehensionScope {
-    if object_attr_mode_enabled() {
-        return ComprehensionScope { pushed: false };
-    }
     TARGETS.with(|t| {
         let mut targets = t.borrow_mut();
         let outer = targets

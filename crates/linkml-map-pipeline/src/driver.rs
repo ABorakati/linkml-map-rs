@@ -38,7 +38,7 @@ use linkml_map_io::{
 };
 use tokio::sync::mpsc;
 
-use crate::{CompiledPlan, DataLoader};
+use crate::{CompiledPlan, DataLoader, join_order::JoinEngine};
 
 // ── Steps ─────────────────────────────────────────────────────────────────────
 
@@ -421,6 +421,14 @@ async fn stream_segment(
     let mut source_stream = open_stream(plan, seg)
         .await
         .with_context(|| format!("opening source stream {}", seg.file.display()))?;
+    // PARITY: a block with joins over CSV/TSV/JSON tables is run by upstream's set-based
+    // join engine, whose query returns the primary rows in DuckDB's probe order.
+    if let (Some(engine), Some(index)) = (
+        JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup.as_ref()),
+        lookup.as_ref(),
+    ) {
+        source_stream = engine.reorder_stream(source_stream, Arc::clone(index));
+    }
 
     let (work_tx, mut work_rx) = mpsc::channel::<(usize, Value)>(input.channel_depth);
     let (res_tx, mut res_rx) = mpsc::channel::<(usize, Result<Value>)>(input.channel_depth);

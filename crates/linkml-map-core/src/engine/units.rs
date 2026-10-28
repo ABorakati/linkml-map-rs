@@ -89,6 +89,11 @@ struct UnitSpec {
     dimension: Dimension,
     factor: f64,
     offset: f64,
+    /// The scales `factor` is made of, `num / den` (`den` is 1 for a scalar
+    /// unit): pint multiplies them one by one, which [`multiplicative_factor`]
+    /// repeats.
+    num: f64,
+    den: f64,
 }
 
 impl UnitSpec {
@@ -97,6 +102,8 @@ impl UnitSpec {
             dimension,
             factor,
             offset: 0.0,
+            num: factor,
+            den: 1.0,
         }
     }
     const fn affine(dimension: Dimension, factor: f64, offset: f64) -> Self {
@@ -104,6 +111,8 @@ impl UnitSpec {
             dimension,
             factor,
             offset,
+            num: factor,
+            den: 1.0,
         }
     }
 }
@@ -283,13 +292,17 @@ fn make_ratio(num_s: &str, den_s: &str, system: UnitSystem) -> Option<UnitSpec> 
     let den_dim = scalar_dim_of(den.dimension)?;
     // A ratio is affine-free: combined factor = num.factor / den.factor.
     // (Both legs are linear; we never build a ratio from temperature.)
-    Some(UnitSpec::linear(
-        Dimension::Ratio(RatioDim {
-            num: num_dim,
-            den: den_dim,
-        }),
-        num.factor / den.factor,
-    ))
+    Some(UnitSpec {
+        num: num.factor,
+        den: den.factor,
+        ..UnitSpec::linear(
+            Dimension::Ratio(RatioDim {
+                num: num_dim,
+                den: den_dim,
+            }),
+            num.factor / den.factor,
+        )
+    })
 }
 
 /// Parse a UCUM multiplicative token like `m.s-1` (= m/s). Only exponents of
@@ -402,6 +415,9 @@ pub fn convert_checked_ex(
     let to = unit_spec(to_unit, system).ok_or_else(|| ConvError::Undefined(to_unit.to_string()))?;
 
     if from.dimension == to.dimension {
+        if from.offset == 0.0 && to.offset == 0.0 {
+            return Ok(value * multiplicative_factor(&from, &to));
+        }
         // base = value*from.factor + from.offset; then invert through `to`.
         let base = value * from.factor + from.offset;
         return Ok((base - to.offset) / to.factor);
@@ -419,6 +435,16 @@ pub fn convert_checked_ex(
         from_unit.to_string(),
         to_unit.to_string(),
     ))
+}
+
+/// pint's factor between two multiplicative units of one dimension:
+/// `ureg._convert` takes `_get_root_units(src / dst)`, which starts at 1 and
+/// multiplies in `scale ** exponent` for each unit of `src` and then of `dst`
+/// (inverted), so `g -> kg` is `1000.0 ** -1` and the value is *multiplied* by
+/// it (`2.25 g` is `0.0022500000000000003 kg`, not `2.25 / 1000`; `-0.0` keeps
+/// its sign).
+fn multiplicative_factor(from: &UnitSpec, to: &UnitSpec) -> f64 {
+    from.num * from.den.powf(-1.0) * to.num.powf(-1.0) * to.den
 }
 
 /// Multiplier `m` such that `to_base = from_base * m` when a substance bridge
@@ -665,5 +691,34 @@ mod tests {
     fn annotation_is_stripped() {
         // nmol/mmol{Cre} dimension matches nmol/mmol
         approx(convert(1.0, "nmol/mmol{Cre}", "nmol/mmol").unwrap(), 1.0);
+    }
+
+    /// pint multiplies by `1000.0 ** -1` rather than dividing by 1000 (values
+    /// from `convert_units` in upstream v0.6.0-rc1; corpus cases 99c786eba942,
+    /// fdf6e7952056).
+    #[test]
+    fn conversion_is_pints_multiplication_by_a_factor() {
+        for (v, from, to, want) in [
+            (2.25, "g", "kg", 0.002_250_000_000_000_000_3),
+            (2.25, "kg", "g", 2250.0),
+            (2.25, "mL", "L", 0.002_250_000_000_000_000_3),
+            (2.25, "L", "mL", 2250.0),
+            (1.0, "s", "min", 0.016_666_666_666_666_666),
+            (2.25, "min", "s", 135.0),
+            (1.0, "mg", "kg", 1e-6),
+            (2.25, "cm", "m", 0.0225),
+            (1.0, "h", "min", 60.0),
+            (1.0, "mg/dL", "g/L", 0.01),
+        ] {
+            assert_eq!(convert(v, from, to).unwrap(), want, "{v} {from} -> {to}");
+        }
+    }
+
+    /// A negative zero keeps its sign through the multiplication.
+    #[test]
+    fn negative_zero_keeps_its_sign() {
+        let converted = convert(-0.0, "kg", "g").unwrap();
+        assert_eq!(converted, 0.0);
+        assert!(converted.is_sign_negative());
     }
 }

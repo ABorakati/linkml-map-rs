@@ -256,6 +256,14 @@ struct RowBindings(
     std::cell::OnceCell<Vec<String>>,
 );
 
+/// Why [`ObjectTransformer::unresolved_join`] cannot resolve a join alias.
+enum JoinFailure {
+    /// No `LookupIndex`: upstream's `ValueError`.
+    NoIndex(Error),
+    /// An index without the table: DuckDB's `CatalogException`.
+    NoTable(Error),
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Single-object transformer.
@@ -1470,16 +1478,18 @@ impl<'s> ObjectTransformer<'s> {
         // matching row from the LookupIndex and bind the whole row map as
         // `alias → Value::Map(row)`.  This lets expr: "{alias.field}" resolve
         // via normal dot-access on the bound map without any parser changes.
-        if let (Some(li), Some(joins)) = (self.lookup_index.as_deref(), class_deriv.joins.as_ref())
-        {
+        if let Some(joins) = class_deriv.joins.as_ref() {
             for (alias, ac) in joins {
                 // Bind every declared join alias so a qualified `{alias.field}`
                 // never trips the unknown-root guard in `eval_ast`: the matched
                 // row on a hit, otherwise Null. A sparse-join miss stays a
                 // legitimate SQL null, mirroring upstream binding the joined
                 // row or None into the eval namespace (source_key or join_on).
-                let row = join_source_key(ac).and_then(|sk| {
-                    let key_str = match source_map.get(sk)? {
+                // Without a `LookupIndex` (single-object input) a row with no
+                // key value is still `None`; a row with one is
+                // [`Self::unresolved_join`].
+                let row = self.lookup_index.as_deref().and_then(|li| {
+                    let key_str = match source_map.get(join_source_key(ac)?)? {
                         Value::Str(s) => s.clone(),
                         Value::Int(i) => i.to_string(),
                         _ => return None,
@@ -1492,6 +1502,53 @@ impl<'s> ObjectTransformer<'s> {
             }
         }
         bindings
+    }
+
+    /// The failure upstream's `Bindings._resolve_join` raises when `expr` reads a
+    /// join alias whose key the row has but whose table cannot be looked up.
+    ///
+    /// PARITY: `_resolve_joined_row` returns `None` for a row with no key value, but
+    /// with one and no `lookup_index` at all (single-object input) raises
+    /// `ValueError`, and with an index that does not hold the table DuckDB raises a
+    /// `CatalogException`. The name is resolved when the expression reads it, which
+    /// the syntactic names of `expr` stand in for. The `ValueError` is one of the
+    /// errors `_eval_expr` hands to the unrestricted fallback; the
+    /// `CatalogException` is not.
+    fn unresolved_join(
+        &self,
+        expr: &str,
+        source_map: &IndexMap<String, Value>,
+        class_deriv: &ClassDerivation,
+    ) -> Option<JoinFailure> {
+        let joins = class_deriv.joins.as_ref()?;
+        let mut names = None;
+        for (alias, ac) in joins {
+            let Some(key) = join_source_key(ac).and_then(|k| source_map.get(k)) else {
+                continue;
+            };
+            if key.is_null() {
+                continue;
+            }
+            let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
+            let failure = match self.lookup_index.as_deref() {
+                None => JoinFailure::NoIndex(Error::Python(format!(
+                    "ValueError: Join configured for {alias:?} but lookup_index has not been initialized"
+                ))),
+                Some(li) if !li.is_registered(table) => {
+                    JoinFailure::NoTable(Error::Python(format!(
+                        "duckdb.CatalogException: Catalog Error: Table with name {table} does not exist!"
+                    )))
+                }
+                Some(_) => continue,
+            };
+            let names = names.get_or_insert_with(|| {
+                crate::validate::expr_refs::extract_expr_slot_references(expr)
+            });
+            if names.contains(alias) {
+                return Some(failure);
+            }
+        }
+        None
     }
 
     /// An `expr:` that names a row key which is not a slot of the source type fails.
@@ -1582,12 +1639,21 @@ impl<'s> ObjectTransformer<'s> {
         // Cached-AST fast path: evaluate the pre-parsed expr when a compiled
         // cache is attached and holds this (class, slot). Falls back to the
         // string parse path otherwise (identical result).
-        let result = self.eval_gated(
-            self.compiled
-                .and_then(|c| c.slot(class_name, slot_name, expr)),
-            expr,
-            bindings,
-        );
+        let cached = self
+            .compiled
+            .and_then(|c| c.slot(class_name, slot_name, expr));
+        if let Some(failure) = self.unresolved_join(expr, source_map, class_deriv) {
+            // A statement block never resolves a join alias (it reads `src`), and
+            // one that does not parse fails before any name is read.
+            let parsed = cached.cloned().or_else(|| parse_expr(expr).ok());
+            if parsed.is_some_and(|p| !p.is_program()) {
+                return match failure {
+                    JoinFailure::NoIndex(_) if self.unrestricted_eval => Ok(Value::Null),
+                    JoinFailure::NoIndex(e) | JoinFailure::NoTable(e) => Err(e),
+                };
+            }
+        }
+        let result = self.eval_gated(cached, expr, bindings);
         result.map_err(|e| Error::ExprEval {
             class: source_type.to_string(),
             slot: slot_name.to_string(),
@@ -7225,6 +7291,58 @@ mod upstream_errors {
             .collect(),
         );
         spec
+    }
+
+    /// `Bindings._resolve_join` for an `expr:` reading a join alias (corpus case
+    /// 2a5a0d33540d, a single-object input): a row without the key sees `None`; with one and
+    /// no `lookup_index` the `ValueError` is a restricted-eval rejection, which
+    /// `unrestricted_eval` retries (a single expression then yields `None`); a missing table
+    /// raises in both modes.
+    #[test]
+    fn expr_reading_an_unresolvable_join_alias() {
+        let source = schema("Person", &["id", "order_ref"], false);
+        let target = schema("Agent", &["o"], false);
+        let spec = || {
+            join_spec(SlotDerivation {
+                name: "o".into(),
+                expr: Some("{Order.id}".into()),
+                ..Default::default()
+            })
+        };
+        let null_row = Value::Map([("o".to_owned(), Value::Null)].into_iter().collect());
+
+        let keyless = row(&[("id", "p1")]);
+        let out = ObjectTransformer::new(spec(), Some(&source), Some(&target))
+            .map_object(&keyless, Some("Person"))
+            .unwrap();
+        assert_eq!(out, null_row);
+
+        let keyed = row(&[("id", "p1"), ("order_ref", "o1")]);
+        let msg = err_text(spec(), &source, Some(&target), &keyed);
+        assert!(
+            msg.contains("Join configured for \"Order\" but lookup_index has not been initialized"),
+            "{msg}"
+        );
+        let out = ObjectTransformer::new(spec(), Some(&source), Some(&target))
+            .with_unrestricted_eval(true)
+            .map_object(&keyed, Some("Person"))
+            .unwrap();
+        assert_eq!(out, null_row);
+
+        let mut index = LookupIndex::new();
+        index.register_table("Other", &[], "id");
+        for unrestricted in [false, true] {
+            let err = ObjectTransformer::new(spec(), Some(&source), Some(&target))
+                .with_unrestricted_eval(unrestricted)
+                .with_lookup_index(Arc::new(index.clone()))
+                .map_object(&keyed, Some("Person"))
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Table with name Order does not exist"),
+                "{err}"
+            );
+        }
     }
 
     /// `_resolve_joined_row`: no value for the join key is a miss; a value with no

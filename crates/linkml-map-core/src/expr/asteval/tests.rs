@@ -366,3 +366,31 @@ fn string_length_limit() {
         Value::Null
     );
 }
+
+/// A `datetime.date` PyYAML built from the data stays a date in a statement
+/// block (corpus: examples sweep `personinfo-to-agent.transform.yaml`, whose
+/// `driving_since` block picks a date out of `src.has_important_life_events`).
+#[test]
+fn dates_from_the_source_stay_dates() {
+    use crate::temporal::Temporal;
+    let date = |t: &str| Value::Temporal(Temporal::from_yaml_timestamp(t).unwrap());
+    let mut event = IndexMap::new();
+    event.insert("when".to_string(), date("2014-03-31"));
+    let mut src = IndexMap::new();
+    src.insert("born".to_string(), date("1990-01-01"));
+    src.insert("events".to_string(), Value::List(vec![Value::Map(event)]));
+    let r = |text: &str| run_with(text, src.clone()).unwrap();
+    assert_eq!(r("target = src.born"), date("1990-01-01"));
+    assert_eq!(
+        r("d = [e.when for e in src.events]\nif len(d):\n    target = d[0]"),
+        date("2014-03-31")
+    );
+    assert_eq!(r("target = str(src.born)"), s("1990-01-01"));
+    assert_eq!(r("target = repr(src.born)"), s("datetime.date(1990, 1, 1)"));
+    assert_eq!(r("target = src.born == src.born"), Value::Bool(true));
+    assert_eq!(r("target = src.born == '1990-01-01'"), Value::Bool(false));
+    assert_eq!(
+        r("target = src.born < src.events[0].when"),
+        Value::Bool(true)
+    );
+}

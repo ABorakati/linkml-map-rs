@@ -249,8 +249,12 @@ Each is marked `PARITY:` in the code.
 
 ## Still deferred
 
-- **DuckDB set-based join engine** (`510b0a50ca`) and **SCAN/MIGRATE
-  normalisation**: unchanged from earlier reviews.
+- **DuckDB set-based join engine** (`510b0a50ca`): not ported as a query engine, but
+  its observable *row order* is (`crates/linkml-map-pipeline/src/join_order.rs`: DuckDB's
+  `LEFT JOIN` probe, 64-row output caches and executor stack, checked against DuckDB 1.5).
+  Not modelled: a joined table whose file lacks the `lookup_key` column, files over a few
+  tens of megabytes, and DuckDB swapping the build side for a one-row primary table.
+  **SCAN/MIGRATE normalisation**: unchanged from earlier reviews.
 - **Expression language gaps (closed):** the conditional expression
   `x if c else y`, dict displays, `dict()`/`set()` (with keyword arguments),
   dict/set comprehensions, generator expressions and `for k, v in ...` targets

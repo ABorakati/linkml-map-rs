@@ -83,10 +83,6 @@ const STR_METHODS: &[&str] = &[
     "upper",
     "zfill",
 ];
-const LIST_METHODS: &[&str] = &[
-    "append", "clear", "copy", "count", "extend", "index", "insert", "pop", "remove", "reverse",
-    "sort",
-];
 const INT_METHODS: &[&str] = &[
     "as_integer_ratio",
     "bit_count",
@@ -126,33 +122,14 @@ pub(super) fn lookup(recv: &Value, name: &str) -> Lookup {
     }
 }
 
-/// `getattr(list, name, None)` as asteval does it inside a statement block,
-/// where an attribute of a list is the list's own (it is not distributed over
-/// the items): a method, or `None`.
-pub(super) fn list_getattr(name: &str) -> ExprResult<Value> {
-    if LIST_METHODS.contains(&name) {
-        Err(ExprError::unrepresentable("builtin_function_or_method"))
-    } else {
-        Ok(Value::Null)
-    }
-}
-
-/// Whether `name` is a method of a list.
-pub(super) fn is_list_method(name: &str) -> bool {
-    LIST_METHODS.contains(&name)
-}
-
 /// `getattr(scalar, attr)` as a value: the attribute access `scalar.attr`
 /// outside a call.
 ///
-/// In a statement block (asteval) a missing attribute is `None`
-/// (`safe_getattr` is `getattr(obj, attr, None)`); in the restricted evaluator
-/// it is an `AttributeError`.
-pub(super) fn scalar_getattr(recv: &Value, attr: &str, lenient: bool) -> ExprResult<Value> {
+/// A missing attribute is an `AttributeError`.
+pub(super) fn scalar_getattr(recv: &Value, attr: &str) -> ExprResult<Value> {
     match lookup(recv, attr) {
         Lookup::Data(v) => Ok(v),
         Lookup::Method => Err(ExprError::unrepresentable("builtin_function_or_method")),
-        Lookup::Missing if lenient => Ok(Value::Null),
         Lookup::Missing => Err(ExprError::Uncaught(format!(
             "AttributeError: '{}' object has no attribute '{attr}'",
             python_type(recv)
@@ -162,7 +139,7 @@ pub(super) fn scalar_getattr(recv: &Value, attr: &str, lenient: bool) -> ExprRes
 
 /// `.attr` inside a `str.format` replacement field: data attributes only.
 pub(super) fn format_getattr(recv: &Value, attr: &str) -> ExprResult<Value> {
-    scalar_getattr(recv, attr, false)
+    scalar_getattr(recv, attr)
 }
 
 fn python_type(v: &Value) -> &'static str {
@@ -283,10 +260,9 @@ pub(super) fn call_method(
     name: &str,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
-    restricted: bool,
 ) -> ExprResult<Value> {
     match recv {
-        Value::Str(s) => str_method(s, name, args, kwargs, restricted),
+        Value::Str(s) => str_method(s, name, args, kwargs),
         Value::Int(_) | Value::Bool(_) => {
             let n = match recv {
                 Value::Int(i) => i128::from(*i),
@@ -605,7 +581,6 @@ fn str_method(
     name: &str,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
-    restricted: bool,
 ) -> ExprResult<Value> {
     let text = |v: String| Ok(Value::Str(v));
     let flag = |b: bool| Ok(Value::Bool(b));
@@ -857,21 +832,8 @@ fn str_method(
             let bound = Bound::new(name, &[("table", false)], 1, args, kwargs)?;
             text(translate(s, bound.get(0).expect("required"))?)
         }
-        "format" => {
-            if !restricted {
-                // asteval: `str.format` is an unsafe attribute (`UNSAFE_ATTRS_DTYPES`).
-                return Err(ExprError::Uncaught(
-                    "AttributeError: no safe attribute 'format' for str".into(),
-                ));
-            }
-            text(pyformat::str_format(s, &args, &kwargs)?)
-        }
+        "format" => text(pyformat::str_format(s, &args, &kwargs)?),
         "format_map" => {
-            if !restricted {
-                return Err(ExprError::Uncaught(
-                    "AttributeError: no safe attribute 'format_map' for str".into(),
-                ));
-            }
             let bound = Bound::new(name, &[("mapping", false)], 1, args, kwargs)?;
             // A non-mapping is only an error once a field looks something up.
             let kw: Vec<(String, Value)> = match bound.get(0).expect("required") {
