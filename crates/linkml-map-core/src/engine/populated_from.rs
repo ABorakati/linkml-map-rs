@@ -174,6 +174,7 @@ fn lookup_joined_value(li: &LookupIndex, table: &str, field: &str, key: &Value) 
     let ks = match key {
         Value::Str(s) => s.clone(),
         Value::Int(i) => i.to_string(),
+        Value::BigInt(n) => n.to_string(),
         _ => return Ok(Value::Null),
     };
     Ok(li

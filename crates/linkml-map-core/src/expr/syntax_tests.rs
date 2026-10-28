@@ -1860,3 +1860,47 @@ fn comprehension_tuple_targets_zip_like_simpleeval() {
     );
     expect("[k for k, v in [[1], [2, 3]]]", json!({}), json!([1, 2]));
 }
+
+// Big integers and complex numbers as set elements and dict keys, ordered and
+// merged as CPython 3.13 does (expected values from CPython itself).
+#[test]
+fn sets_and_dicts_hold_big_integers_and_complex_numbers_like_cpython() {
+    let none = || json!({});
+    let text = |expr: &str, want: &str| expect(expr, none(), json!(want));
+    text(
+        "','.join(str(list(set([2**70, 1, 2**64, 3]))))",
+        "1180591620717411303424,1,3,18446744073709551616",
+    );
+    text(
+        "','.join(str(list(set([-(2**70), 2**61 - 1, 2**61, 2**62]))))",
+        "-1180591620717411303424,2305843009213693951,4611686018427387904,2305843009213693952",
+    );
+    text(
+        "','.join(str(list(set([1j, 2**65, 5, 1.5, 2.0**70]))))",
+        "1.1805916207174113e+21,1.5,1j,5,36893488147419103232",
+    );
+    // An integral float and the int of the same value are one key.
+    expect(
+        "len(dict([(2**70, 'a'), (2.0**70, 'b')]))",
+        none(),
+        json!(1),
+    );
+    expect(
+        "dict([(2**70, 'a'), (2.0**70, 'b')])[2**70]",
+        none(),
+        json!("b"),
+    );
+    expect("len(dict([(1e30, 1), (10**30, 2)]))", none(), json!(2));
+    expect("(2**70, 1j) in set([(2**70, 1j)])", none(), json!(true));
+    // `hash` is an asteval function.
+    for (expr, want) in [
+        ("target = hash(2**70)", 512),
+        ("target = hash(1+2j)", 2_000_007),
+    ] {
+        assert_eq!(
+            eval_unrestricted(expr, none()).unwrap(),
+            Value::Int(want),
+            "{expr}"
+        );
+    }
+}

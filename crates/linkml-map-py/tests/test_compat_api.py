@@ -840,6 +840,34 @@ class TestDecimalBridge:
         assert type(value["f"]) is float
         assert [type(v) for v in value["l"]] == [bool, int, float]
 
+    @pytest.mark.parametrize(
+        "value",
+        [2**63, -(2**63) - 1, 10**30, -(10**25), 2**200 + 1, 2**64 - 1],
+    )
+    def test_integers_beyond_i64_stay_exact(self, value: int) -> None:
+        # An `int` beyond 64 bits crosses the bridge as itself (it was once a float).
+        out = _raw_transformer().transform({"id": "r1", "value": {"n": value, "l": [value, 1]}})
+        got = out["value_raw"]
+        assert type(got["n"]) is int
+        assert got["n"] == value
+        assert got["l"] == [value, 1]
+        assert type(got["l"][0]) is int
+
+    def test_complex_crosses_the_bridge(self) -> None:
+        out = _raw_transformer().transform({"id": "r1", "value": {"z": 1 + 2j, "l": [3j]}})
+        assert out["value_raw"] == {"z": 1 + 2j, "l": [3j]}
+        assert type(out["value_raw"]["z"]) is complex
+
+    def test_containers_hold_big_integers_and_complex_numbers(self) -> None:
+        big = 2**70
+        out = _raw_transformer().transform(
+            {"id": "r1", "value": {"t": (big, 1j), "s": {big, 5}, "d": {big: "a", 1j: "b"}}}
+        )
+        got = out["value_raw"]
+        assert got["t"] == (big, 1j)
+        assert got["s"] == {big, 5}
+        assert got["d"] == {big: "a", 1j: "b"}
+
     def test_dict_keys_keep_their_python_type(self) -> None:
         # A dict whose keys are not all `str` stays a dict with its real keys
         # (upstream passes the Python object through untouched).

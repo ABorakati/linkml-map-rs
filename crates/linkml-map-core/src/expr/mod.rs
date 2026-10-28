@@ -12,6 +12,7 @@ pub mod error;
 pub mod eval;
 pub mod gate;
 pub mod lexer;
+mod numeric;
 pub mod parser;
 mod pyformat;
 mod pymethods;
@@ -41,6 +42,17 @@ pub use eval::{
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
 pub use pystr::int_literal as python_int_literal;
+
+/// `format(complex(re, im), spec)`, for the asteval port.
+pub(crate) fn pyformat_complex(re: f64, im: f64, spec: &str) -> Result<String, String> {
+    pyformat::format_complex(crate::pynum::complex::Complex64::new(re, im), spec).map_err(|e| {
+        match e {
+            ExprError::Eval(m) | ExprError::Uncaught(m) => m,
+            other => other.to_string(),
+        }
+    })
+}
+pub use pystr::int_value_from_str as python_int_value;
 
 #[cfg(test)]
 mod tests {
@@ -743,5 +755,13 @@ mod tests {
         let mut vars: Bindings = IndexMap::new();
         vars.insert("age_in_years".to_string(), Value::Int(33));
         assert_eq!(parsed.eval(&vars).unwrap(), s("33 years"));
+    }
+
+    #[test]
+    fn two_bools_stay_a_bool_under_the_bitwise_operators() {
+        assert_eq!(e("True | True"), Value::Bool(true));
+        assert_eq!(e("True & False"), Value::Bool(false));
+        assert_eq!(e("True ^ True"), Value::Bool(false));
+        assert_eq!(e("True | 2"), Value::Int(3));
     }
 }

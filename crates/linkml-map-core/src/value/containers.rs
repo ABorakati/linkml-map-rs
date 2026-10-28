@@ -28,6 +28,11 @@ pub enum PyKey {
     Str(String),
     Temporal(&'static str, String),
     Tuple(Vec<PyKey>),
+    /// An integer beyond `i64`, or an integral float or decimal equal to one.
+    Big(crate::pynum::BigInt),
+    /// A complex number with a non-zero imaginary part (the bits of both
+    /// parts); one without is its real part.
+    Complex(u64, u64),
 }
 
 /// `TypeError: unhashable type: '...'`.
@@ -42,8 +47,9 @@ impl Value {
         match self {
             Value::Null => "NoneType",
             Value::Bool(_) => "bool",
-            Value::Int(_) => "int",
+            Value::Int(_) | Value::BigInt(_) => "int",
             Value::Float(_) => "float",
+            Value::Complex(_) => "complex",
             Value::Decimal(_) => "Decimal",
             Value::Temporal(t) => t.type_name(),
             Value::Str(_) => "str",
@@ -64,11 +70,17 @@ impl Value {
             Value::Null => PyKey::None,
             Value::Bool(b) => PyKey::Int(i64::from(*b)),
             Value::Int(i) => PyKey::Int(*i),
+            Value::BigInt(n) => PyKey::Big((**n).clone()),
             Value::Float(f) => float_key(*f),
+            // A complex number with no imaginary part is its real part.
+            Value::Complex(z) if z.im == 0.0 => float_key(z.re),
+            Value::Complex(z) => PyKey::Complex(z.re.to_bits(), z.im.to_bits()),
             Value::Decimal(d) => {
                 let f = d.to_f64();
                 if f.is_finite() && d.cmp_f64(f) == Some(std::cmp::Ordering::Equal) {
                     float_key(f)
+                } else if let Some(n) = decimal_integer(d) {
+                    int_key(n)
                 } else {
                     PyKey::Decimal(d.canonical())
                 }
@@ -93,6 +105,8 @@ impl Value {
             Value::Bool(b) => Some(pyset::hash_i64(i64::from(*b))),
             Value::Int(i) => Some(pyset::hash_i64(*i)),
             Value::Float(f) => pyset::hash_f64(*f),
+            Value::BigInt(n) => Some(crate::pynum::hash(crate::pynum::IntRef::Big(n))),
+            Value::Complex(z) => complex_hash(z.re, z.im),
             Value::Decimal(d) => {
                 let (negative, coeff, exp) = d.hash_parts();
                 Some(pyset::hash_decimal(negative, coeff, exp))
@@ -117,9 +131,55 @@ impl Value {
 fn float_key(f: f64) -> PyKey {
     if f.fract() == 0.0 && f.abs() < 9.0e18 {
         PyKey::Int(f as i64)
+    } else if f.is_finite() && f.fract() == 0.0 {
+        int_key(crate::pynum::float_to_bigint(f))
     } else {
         PyKey::Float(f.to_bits())
     }
+}
+
+/// The key of an integer: `Int` while it fits `i64`, as a [`Value::Int`] does.
+fn int_key(n: crate::pynum::BigInt) -> PyKey {
+    match i64::try_from(&n) {
+        Ok(i) => PyKey::Int(i),
+        Err(_) => PyKey::Big(n),
+    }
+}
+
+/// The integer a decimal equals, when it equals one of a size an int can be
+/// compared at (`Decimal('1E+30') == 10**30`).
+fn decimal_integer(d: &crate::value::Decimal) -> Option<crate::pynum::BigInt> {
+    let (negative, coeff, exp) = d.hash_parts();
+    let digits = coeff.trim_end_matches('0');
+    let zeros = coeff.len() - digits.len();
+    let shift = i64::try_from(zeros).ok()? + exp;
+    if shift < 0 && !digits.is_empty() {
+        return None;
+    }
+    if digits.len() as i64 + shift > 5000 {
+        return None;
+    }
+    let mut n: crate::pynum::BigInt = if digits.is_empty() {
+        0.into()
+    } else {
+        digits.parse().ok()?
+    };
+    if shift > 0 {
+        n *= crate::pynum::BigInt::from(10).pow(shift as u32);
+    }
+    Some(if negative { -n } else { n })
+}
+
+/// `hash(complex)`: `hash(re) + 1000003 * hash(im)` in unsigned 64-bit
+/// arithmetic; `None` when either part is NaN.
+fn complex_hash(re: f64, im: f64) -> Option<i64> {
+    let (re, im) = (pyset::hash_f64(re)?, pyset::hash_f64(im)?);
+    let combined = (re as u64).wrapping_add(1_000_003u64.wrapping_mul(im as u64));
+    Some(if combined == u64::MAX {
+        -2
+    } else {
+        combined as i64
+    })
 }
 
 impl SetItem for Value {
@@ -288,7 +348,9 @@ impl Value {
             Value::Null
             | Value::Bool(_)
             | Value::Int(_)
+            | Value::BigInt(_)
             | Value::Float(_)
+            | Value::Complex(_)
             | Value::Str(_)
             | Value::Decimal(_)
             | Value::Temporal(_) => self,
@@ -356,6 +418,7 @@ pub fn simplejson_key(key: &Value) -> Result<String, String> {
     Ok(match key {
         Value::Str(s) => s.clone(),
         Value::Int(i) => i.to_string(),
+        Value::BigInt(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_owned(),
         Value::Float(f) if f.is_nan() => "NaN".to_owned(),

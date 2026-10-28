@@ -28,18 +28,21 @@
 //! neither distributes, `is_list` is false for both and `startswith`/`endswith`
 //! take a tuple (not a list) of affixes.
 //!
-//! PARITY: [`Value`] has no bytes type and no big integers: an integer result
-//! outside `i64` is an error where Python would return a big integer.
+//! PARITY: [`Value`] has no bytes type.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use super::error::{ExprError, ExprResult};
-use super::eval::{eval_subscript, expr_truthy, membership, py_str};
+use super::eval::{eval_subscript, expr_truthy, membership, try_py_str};
+use super::numeric;
+use super::parser::BinOp;
 use super::{compound, pystr, slugify};
 use crate::decimal::Decimal;
 use crate::pyfmt::py_repr_str;
-use crate::value::{Value, cmp_int_float};
+use crate::pynum::{self, BigInt, IntRef};
+use crate::value::Value;
+use num_traits::Signed;
 
 /// A built-in's body: called with the (already wrapper-processed) positional
 /// arguments, it checks its own arity as the Python callable would.
@@ -242,8 +245,9 @@ fn tn(v: &Value) -> &'static str {
     match v {
         Value::Null => "NoneType",
         Value::Bool(_) => "bool",
-        Value::Int(_) => "int",
+        Value::Int(_) | Value::BigInt(_) => "int",
         Value::Float(_) => "float",
+        Value::Complex(_) => "complex",
         Value::Decimal(_) => "Decimal",
         Value::Temporal(t) => t.type_name(),
         Value::Str(_) => "str",
@@ -269,10 +273,6 @@ fn check_arity(name: &str, args: &[Value], min: usize, max: usize) -> ExprResult
     err(format!("{name}() takes {expected} ({given} given)"))
 }
 
-fn overflow<T>() -> ExprResult<T> {
-    Err(ExprError::big_int())
-}
-
 /// The `str` a `str.<method>` descriptor is applied to.
 fn self_str<'a>(method: &str, v: &'a Value) -> ExprResult<&'a str> {
     match v {
@@ -295,15 +295,28 @@ fn str_arg<'a>(method: &str, position: usize, v: &'a Value) -> ExprResult<&'a st
     }
 }
 
-/// An `int`-like argument (`__index__`): ints and bools.
+/// An `int`-like argument (`__index__`): ints and bools. An integer beyond
+/// `i64` is the `OverflowError` of `PyNumber_AsSsize_t`.
 fn int_arg(v: &Value) -> ExprResult<i64> {
     match v {
         Value::Int(i) => Ok(*i),
         Value::Bool(b) => Ok(i64::from(*b)),
+        Value::BigInt(_) => Err(ExprError::Uncaught(
+            "Python int too large to convert to C ssize_t".into(),
+        )),
         other => err(format!(
             "'{}' object cannot be interpreted as an integer",
             tn(other)
         )),
+    }
+}
+
+/// An `int`-like slice bound or `round()` digit count: an integer beyond `i64`
+/// saturates, as `_PyEval_SliceIndex` and `PyNumber_AsSsize_t(o, NULL)` do.
+fn clamped_int_arg(v: &Value) -> ExprResult<i64> {
+    match v {
+        Value::BigInt(n) => Ok(if n.is_negative() { i64::MIN } else { i64::MAX }),
+        other => int_arg(other),
     }
 }
 
@@ -435,15 +448,16 @@ fn longest_match(
 
 /// A number as Python compares it: `bool` and `int` exactly, `float`, `Decimal`.
 enum Num<'a> {
-    Int(i64),
+    Int(IntRef<'a>),
     Float(f64),
     Dec(&'a Decimal),
 }
 
 fn as_num(v: &Value) -> Option<Num<'_>> {
     match v {
-        Value::Bool(b) => Some(Num::Int(i64::from(*b))),
-        Value::Int(i) => Some(Num::Int(*i)),
+        Value::Bool(b) => Some(Num::Int(IntRef::Small(i64::from(*b)))),
+        Value::Int(i) => Some(Num::Int(IntRef::Small(*i))),
+        Value::BigInt(n) => Some(Num::Int(IntRef::Big(n))),
         Value::Float(f) => Some(Num::Float(*f)),
         Value::Decimal(d) => Some(Num::Dec(d)),
         _ => None,
@@ -452,15 +466,25 @@ fn as_num(v: &Value) -> Option<Num<'_>> {
 
 fn cmp_num(a: &Num<'_>, b: &Num<'_>) -> Option<Ordering> {
     match (a, b) {
-        (Num::Int(x), Num::Int(y)) => Some(x.cmp(y)),
+        (Num::Int(x), Num::Int(y)) => Some(pynum::cmp(*x, *y)),
         (Num::Float(x), Num::Float(y)) => x.partial_cmp(y),
-        (Num::Int(x), Num::Float(y)) => cmp_int_float(*x, *y),
-        (Num::Float(x), Num::Int(y)) => cmp_int_float(*y, *x).map(Ordering::reverse),
+        (Num::Int(x), Num::Float(y)) => pynum::cmp_int_f64(*x, *y),
+        (Num::Float(x), Num::Int(y)) => pynum::cmp_int_f64(*y, *x).map(Ordering::reverse),
         (Num::Dec(x), Num::Dec(y)) => Some(x.cmp(y)),
-        (Num::Dec(x), Num::Int(y)) => Some((*x).cmp(&Decimal::from_i64(*y))),
-        (Num::Int(x), Num::Dec(y)) => Some(Decimal::from_i64(*x).cmp(y)),
+        (Num::Dec(x), Num::Int(y)) => Some((*x).cmp(&int_to_decimal(*y))),
+        (Num::Int(x), Num::Dec(y)) => Some(int_to_decimal(*x).cmp(y)),
         (Num::Dec(x), Num::Float(y)) => x.cmp_f64(*y),
         (Num::Float(x), Num::Dec(y)) => y.cmp_f64(*x).map(Ordering::reverse),
+    }
+}
+
+/// An exact `Decimal` of an integer.
+fn int_to_decimal(n: IntRef<'_>) -> Decimal {
+    match n {
+        IntRef::Small(i) => Decimal::from_i64(i),
+        IntRef::Big(b) => {
+            Decimal::parse_python(&b.to_string()).unwrap_or_else(|_| Decimal::from_i64(0))
+        }
     }
 }
 
@@ -580,19 +604,12 @@ fn py_add(a: &Value, b: &Value) -> ExprResult<Value> {
         }
         (Value::Decimal(_), _) | (_, Value::Decimal(_)) => err("Decimal addition is not supported"),
         _ => match (as_num(a), as_num(b)) {
-            (Some(Num::Int(x)), Some(Num::Int(y))) => match x.checked_add(y) {
-                Some(sum) => Ok(Value::Int(sum)),
-                None => overflow(),
+            (Some(Num::Dec(_)), _) | (_, Some(Num::Dec(_))) => unsupported(),
+            // int, float and complex operands: the evaluator's own `+`.
+            _ => match numeric::native_binary(BinOp::Add, a, b)? {
+                Some(sum) => Ok(sum),
+                None => unsupported(),
             },
-            (Some(x), Some(y)) => {
-                let float = |n: Num<'_>| match n {
-                    Num::Int(i) => i as f64,
-                    Num::Float(f) => f,
-                    Num::Dec(d) => d.to_f64(),
-                };
-                Ok(Value::Float(float(x) + float(y)))
-            }
-            _ => unsupported(),
         },
     }
 }
@@ -613,14 +630,25 @@ fn sum(args: &[Value]) -> ExprResult<Value> {
     };
     let mut rest: &[Value] = &items;
     if let Value::Int(mut total) = acc {
+        // The `i64` accumulator, as CPython's `C long` fast path.
         while let Some((Value::Int(i), tail)) = rest.split_first() {
-            total = match total.checked_add(*i) {
-                Some(t) => t,
-                None => return overflow(),
+            let Some(t) = total.checked_add(*i) else {
+                break;
             };
+            total = t;
             rest = tail;
         }
         acc = Value::Int(total);
+    }
+    if matches!(acc, Value::Int(_) | Value::BigInt(_)) {
+        // Past an overflow, or with a big integer: the exact sum.
+        while let Some((item @ (Value::Int(_) | Value::BigInt(_)), tail)) = rest.split_first() {
+            acc = match (acc.as_int_ref(), item.as_int_ref()) {
+                (Some(x), Some(y)) => Value::from_bigint(pynum::add(x, y)),
+                _ => unreachable!("integer operands"),
+            };
+            rest = tail;
+        }
         // The first non-int item is added generically; the result may be a float.
         if let Some((item, tail)) = rest.split_first() {
             acc = py_add(&acc, item)?;
@@ -835,7 +863,12 @@ fn last(args: &[Value]) -> ExprResult<Value> {
 
 fn str_(args: &[Value]) -> ExprResult<Value> {
     check_arity("str", args, 0, 1)?;
-    Ok(Value::Str(args.first().map(py_str).unwrap_or_default()))
+    Ok(Value::Str(
+        args.first()
+            .map(try_py_str)
+            .transpose()?
+            .unwrap_or_default(),
+    ))
 }
 
 fn bool_(args: &[Value]) -> ExprResult<Value> {
@@ -848,19 +881,22 @@ fn bool_(args: &[Value]) -> ExprResult<Value> {
     Ok(Value::Bool(args.first().is_some_and(expr_truthy)))
 }
 
-/// A float as an `int`: `ValueError`/`OverflowError` for NaN and infinities
-/// (`int(float("nan"))`), and for anything outside `i64`.
+/// A float as an `int`: `ValueError` for NaN and `OverflowError` for the
+/// infinities (`int(float("nan"))`); any finite float is an exact integer, big
+/// where it exceeds `i64`.
 pub(super) fn float_to_int(f: f64) -> ExprResult<Value> {
     if f.is_nan() {
         return err("cannot convert float NaN to integer");
     }
     if f.is_infinite() {
-        return err("cannot convert float infinity to integer");
+        return Err(ExprError::Uncaught(
+            "cannot convert float infinity to integer".into(),
+        ));
     }
     if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f) {
         Ok(Value::Int(f as i64))
     } else {
-        overflow()
+        Ok(Value::from_bigint(pynum::float_to_bigint(f)))
     }
 }
 
@@ -881,9 +917,7 @@ fn decimal_to_int(d: &Decimal, mode: ToInt) -> ExprResult<Value> {
         None => (false, text.as_str()),
     };
     let (int_part, frac) = body.split_once('.').unwrap_or((body, ""));
-    let Ok(magnitude) = int_part.parse::<i64>() else {
-        return overflow();
-    };
+    let mut magnitude = int_part.parse::<BigInt>().unwrap_or_default();
     let frac_nonzero = frac.bytes().any(|b| b != b'0');
     let first = frac.bytes().next().unwrap_or(b'0');
     let rest_nonzero = frac.bytes().skip(1).any(|b| b != b'0');
@@ -891,16 +925,16 @@ fn decimal_to_int(d: &Decimal, mode: ToInt) -> ExprResult<Value> {
         ToInt::Floor => negative && frac_nonzero,
         ToInt::Ceil => !negative && frac_nonzero,
         ToInt::Trunc => false,
-        ToInt::HalfEven => first > b'5' || (first == b'5' && (rest_nonzero || magnitude % 2 == 1)),
+        ToInt::HalfEven => first > b'5' || (first == b'5' && (rest_nonzero || magnitude.bit(0))),
     };
-    let Some(magnitude) = (if bump {
-        magnitude.checked_add(1)
+    if bump {
+        magnitude += 1;
+    }
+    Ok(Value::from_bigint(if negative {
+        -magnitude
     } else {
-        Some(magnitude)
-    }) else {
-        return overflow();
-    };
-    Ok(Value::Int(if negative { -magnitude } else { magnitude }))
+        magnitude
+    }))
 }
 
 /// `int(text, base)`: CPython's `PyLong_FromString` (surrounding whitespace, a
@@ -956,7 +990,7 @@ pub(super) fn parse_int(text: &str, base: i64) -> ExprResult<Value> {
     if digits.is_empty() {
         return invalid();
     }
-    let mut value: i128 = 0;
+    let mut clean = String::with_capacity(digits.len());
     let mut previous_underscore = true; // a leading underscore is invalid
     for c in digits.chars() {
         if c == '_' {
@@ -966,25 +1000,18 @@ pub(super) fn parse_int(text: &str, base: i64) -> ExprResult<Value> {
             previous_underscore = true;
             continue;
         }
-        let Some(d) = c.to_digit(36).filter(|&d| i64::from(d) < radix) else {
+        if !c.to_digit(36).is_some_and(|d| i64::from(d) < radix) {
             return invalid();
-        };
+        }
         previous_underscore = false;
-        value = match value
-            .checked_mul(i128::from(radix))
-            .and_then(|v| v.checked_add(i128::from(d)))
-        {
-            Some(v) => v,
-            None => return overflow(),
-        };
+        clean.push(c);
     }
     if previous_underscore {
         return invalid();
     }
-    match i64::try_from(if negative { -value } else { value }) {
-        Ok(i) => Ok(Value::Int(i)),
-        Err(_) => overflow(),
-    }
+    // Only a literal that is otherwise valid reaches the digit limit.
+    let value = pynum::parse_signed_digits(negative, &clean, radix as u32)?;
+    Ok(Value::from_bigint(value))
 }
 
 /// `int(x)` / `int(x, base)`.
@@ -1001,7 +1028,7 @@ fn int(args: &[Value]) -> ExprResult<Value> {
         return parse_int(text, base);
     }
     match x {
-        Value::Int(i) => Ok(Value::Int(*i)),
+        Value::Int(_) | Value::BigInt(_) => Ok(x.clone()),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::Float(f) => float_to_int(f.trunc()),
         Value::Decimal(d) => decimal_to_int(d, ToInt::Trunc),
@@ -1018,6 +1045,7 @@ fn float(args: &[Value]) -> ExprResult<Value> {
     match args.first() {
         None => Ok(Value::Float(0.0)),
         Some(Value::Int(i)) => Ok(Value::Float(*i as f64)),
+        Some(Value::BigInt(n)) => Ok(Value::Float(pynum::to_f64(IntRef::Big(n))?)),
         Some(Value::Bool(b)) => Ok(Value::Float(f64::from(u8::from(*b)))),
         Some(Value::Float(f)) => Ok(Value::Float(*f)),
         Some(Value::Decimal(d)) => Ok(Value::Float(d.to_f64())),
@@ -1038,12 +1066,13 @@ fn float(args: &[Value]) -> ExprResult<Value> {
 fn abs(args: &[Value]) -> ExprResult<Value> {
     check_arity("abs", args, 1, 1)?;
     match &args[0] {
-        Value::Int(i) => match i.checked_abs() {
-            Some(a) => Ok(Value::Int(a)),
-            None => overflow(),
-        },
+        Value::Int(i) => Ok(i
+            .checked_abs()
+            .map_or_else(|| Value::from_bigint(BigInt::from(*i).abs()), Value::Int)),
+        Value::BigInt(n) => Ok(Value::from_bigint(n.abs())),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::Float(f) => Ok(Value::Float(f.abs())),
+        Value::Complex(z) => Ok(Value::Float(pynum::complex::abs(**z)?)),
         Value::Decimal(d) => {
             let text = d.to_sci_string();
             match Decimal::parse_python(text.trim_start_matches('-')) {
@@ -1073,7 +1102,7 @@ fn floor_or_ceil(
 ) -> ExprResult<Value> {
     check_arity(name, args, 1, 1)?;
     match &args[0] {
-        Value::Int(i) => Ok(Value::Int(*i)),
+        Value::Int(_) | Value::BigInt(_) => Ok(args[0].clone()),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::Float(f) => float_to_int(on_float(*f)),
         Value::Decimal(d) => decimal_to_int(d, mode),
@@ -1088,12 +1117,13 @@ fn floor_or_ceil(
 /// is rounded from its exact decimal value (`round(2.675, 2)` is `2.67`).
 fn round(args: &[Value]) -> ExprResult<Value> {
     check_arity("round", args, 1, 2)?;
-    let ndigits = args.get(1).map(int_arg).transpose()?;
+    let ndigits = args.get(1).map(clamped_int_arg).transpose()?;
     match (&args[0], ndigits) {
-        (Value::Int(i), None) => Ok(Value::Int(*i)),
+        (Value::Int(_) | Value::BigInt(_), None) => Ok(args[0].clone()),
         (Value::Bool(b), None) => Ok(Value::Int(i64::from(*b))),
-        (Value::Int(i), Some(n)) => round_int(*i, n),
-        (Value::Bool(b), Some(n)) => round_int(i64::from(*b), n),
+        (Value::Int(i), Some(n)) => Ok(round_int(IntRef::Small(*i), n)),
+        (Value::BigInt(i), Some(n)) => Ok(round_int(IntRef::Big(i), n)),
+        (Value::Bool(b), Some(n)) => Ok(round_int(IntRef::Small(i64::from(*b)), n)),
         (Value::Float(f), None) => float_to_int(f.round_ties_even()),
         (Value::Float(f), Some(n)) => round_float(*f, n).map(Value::Float),
         (Value::Decimal(d), None) => decimal_to_int(d, ToInt::HalfEven),
@@ -1107,25 +1137,31 @@ fn round(args: &[Value]) -> ExprResult<Value> {
 
 /// `int.__round__(ndigits)`: negative `ndigits` rounds to a multiple of a power
 /// of ten, halves to even.
-pub(super) fn round_int(i: i64, ndigits: i64) -> ExprResult<Value> {
-    if ndigits >= 0 {
-        return Ok(Value::Int(i));
-    }
-    let Some(scale) = u32::try_from(-ndigits)
-        .ok()
-        .filter(|&k| k <= 38)
-        .map(|k| 10_i128.pow(k))
-    else {
-        return Ok(Value::Int(0));
+pub(super) fn round_int(n: IntRef<'_>, ndigits: i64) -> Value {
+    let value = |n: IntRef<'_>| match n {
+        IntRef::Small(i) => Value::Int(i),
+        IntRef::Big(b) => Value::from_bigint(b.clone()),
     };
-    let i = i128::from(i);
-    let remainder = i.rem_euclid(scale);
-    let base = i - remainder;
-    let up = 2 * remainder > scale || (2 * remainder == scale && (base / scale) % 2 != 0);
-    match i64::try_from(if up { base + scale } else { base }) {
-        Ok(rounded) => Ok(Value::Int(rounded)),
-        Err(_) => overflow(),
+    if ndigits >= 0 {
+        return value(n);
     }
+    let big = n.to_big();
+    // Past the number's own digits the nearest multiple is zero.
+    let digits = (big.magnitude().bits() as f64 * std::f64::consts::LOG10_2) as u64 + 2;
+    let Some(k) = u32::try_from(ndigits.unsigned_abs())
+        .ok()
+        .filter(|&k| u64::from(k) <= digits)
+    else {
+        return Value::Int(0);
+    };
+    let scale = BigInt::from(10).pow(k);
+    // `x - divmod_near(x, 10 ** k)[1]`: round half to even.
+    let remainder = num_integer::Integer::mod_floor(&*big, &scale);
+    let base = &*big - &remainder;
+    let twice = &remainder * 2;
+    let up =
+        twice > scale || (twice == scale && num_integer::Integer::div_floor(&base, &scale).bit(0));
+    Value::from_bigint(if up { base + scale } else { base })
 }
 
 /// `float.__round__(ndigits)` (CPython's correctly rounded `double_round`).
@@ -1275,7 +1311,7 @@ fn tail_match(name: &str, args: &[Value], at_start: bool) -> ExprResult<Value> {
             tn(item)
         ))
     };
-    let bound = |position: usize| args.get(position).map(int_arg).transpose();
+    let bound = |position: usize| args.get(position).map(clamped_int_arg).transpose();
     let (start, end) = (bound(2)?, bound(3)?);
     if start.is_none() && end.is_none() {
         for item in affixes {
@@ -1384,6 +1420,8 @@ fn substr(args: &[Value]) -> ExprResult<Value> {
     let bound = |v: &Value| match v {
         Value::Int(i) => Ok(*i),
         Value::Bool(b) => Ok(i64::from(*b)),
+        // A bound beyond `i64` clamps like any other out-of-range one.
+        Value::BigInt(_) => clamped_int_arg(v),
         _ => err("slice indices must be integers or None or have an __index__ method"),
     };
     let start = bound(&args[1])?;
@@ -1515,7 +1553,10 @@ fn is_str(args: &[Value]) -> ExprResult<Value> {
 /// `isinstance(value, int) and not isinstance(value, bool)`.
 fn is_int(args: &[Value]) -> ExprResult<Value> {
     check_arity("_is_int", args, 1, 1)?;
-    Ok(Value::Bool(matches!(args[0], Value::Int(_))))
+    Ok(Value::Bool(matches!(
+        args[0],
+        Value::Int(_) | Value::BigInt(_)
+    )))
 }
 
 fn is_float(args: &[Value]) -> ExprResult<Value> {
@@ -1549,7 +1590,7 @@ fn coalesce(args: &[Value]) -> ExprResult<Value> {
 fn is_numeric(args: &[Value]) -> ExprResult<Value> {
     check_arity("_is_numeric", args, 1, 1)?;
     Ok(Value::Bool(match &args[0] {
-        Value::Int(_) | Value::Float(_) => true,
+        Value::Int(_) | Value::BigInt(_) | Value::Float(_) => true,
         Value::Str(s) => pystr::float_from_str(s).is_some(),
         _ => false,
     }))

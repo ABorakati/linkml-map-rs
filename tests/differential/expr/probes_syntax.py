@@ -26,12 +26,10 @@ from codec import show  # noqa: E402
 from oracle import Oracle  # noqa: E402
 
 KNOWN = [
-    ("bigint", "integers beyond i64 have no Value (a literal becomes a float, a result is an error)", lambda e, py, rs: any(c in e for c in ("9223372036854775808", "0xffffffffffffffff", "1e20"))),
     ("tuple-vs-list", "Value has no tuple or set: they evaluate as lists", lambda e, py, rs: "f'{1,2}'" in e or "f'{ {1,2} }'" in e),
     ("dict-keys-stringified", "dict displays stringify non-string keys", lambda e, py, rs: "{1: 2," in e),
     ("unrestricted-statements", "statement forms beyond the interpreter's (chained assignment, augmented assignment)", lambda e, py, rs: e.startswith("a += ") or "src.a = 1" in e),
     ("unrestricted-namespace", "the asteval namespace is not the LinkML function table", lambda e, py, rs: any(w in e for w in ("upper(", "key=len", "target = type", "target = print", "bytes(1)"))),
-    ("complex-attr", "complex numbers have no Value (`1j.real` is evaluated by asteval)", lambda e, py, rs: "1j.real" in e),
     ("dict-methods", "a dict display in asteval is a real dict (`{}.keys()`); here it is a map read like the engine's DynObj", lambda e, py, rs: e.endswith("{}.keys()")),
     ("str-format-attr", "`'{0.__class__}'.format(..)` reads attributes of arbitrary objects", lambda e, py, rs: "__class__" in e and "format" in e),
 ]

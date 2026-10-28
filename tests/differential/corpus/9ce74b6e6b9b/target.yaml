@@ -1,0 +1,28 @@
+id: https://example.org/tgt
+name: tgt
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+classes:
+  Person:
+    attributes:
+      id:
+        range: integer
+        identifier: true
+      name: {}
+      big:
+        range: integer
+      bigs:
+        range: integer
+        multivalued: true
+      plus1: {}
+      sq: {}
+      fdiv: {}
+      tdiv: {}
+      txt:
+        range: string
+      fl: {}
+      cmp: {}

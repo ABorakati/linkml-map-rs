@@ -97,10 +97,6 @@ RULES = [
     ("rust-gap: schema slot absent from the row must evaluate to None",
      "Upstream resolves a slot declared in the schema but absent from the row to None (even with --strict); Rust raises `name 'x' is not defined`.",
      lambda c, f: "is not defined" in rs_msg(f) and f["up_out"] is not None),
-    ("rust-gap: integers beyond 64 bits",
-     "Rust's YAML/spec reader rejects integers outside i64/u64 (`JSON number out of range`) and TSV integers above i64 stay strings; Python ints are arbitrary precision.",
-     lambda c, f: "number out of range" in rs_msg(f) or has(c, r"\d{19,}") or any(
-         re.search(r"\d{19,}", p.read_text()) for p in (c["dir"] / "data").rglob("*") if p.is_file())),
     ("rust-gap: nested class_derivations list with repeated names keeps only the last",
      "Two entries with the same `name` in a slot-level `class_derivations:` list must both emit an object; Rust (mapping-keyed) drops all but the last.",
      lambda c, f: (lambda names: len(names) != len(set(names)))(re.findall(r"(?m)^\s+- name: (\w+)", c["spec"].split("slot_derivations:", 1)[-1]))

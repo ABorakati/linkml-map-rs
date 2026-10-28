@@ -39,7 +39,8 @@ outs = t.transform_many([obj1, obj2])     # schema/spec parsed once
   `decimal.Decimal` in a source object stays exact through the engine. A
   non-finite `Decimal` (`NaN`, `Infinity`) is carried as its `str()`. Other
   values are converted directly rather than through JSON, so `None`, `bool`,
-  `int`, `float`, `str`, `list` and `dict` (in insertion order) keep their Python
+  `int` (of any size: an integer beyond 64 bits stays an exact `int`), `float`,
+  `complex`, `str`, `list`, `tuple`, `set` and `dict` (in insertion order) keep their Python
   types; any other scalar (`datetime.date`, `pathlib.Path`, ...) becomes its
   `str()`.
 - `t.register_join_table(name, rows, key_column)` registers a joined table's

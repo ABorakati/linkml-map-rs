@@ -133,7 +133,7 @@ fn methods_and_attributes_of_scalars() {
 
 #[test]
 fn a_bound_method_or_function_has_no_value() {
-    for expr in ["s.upper", "upper", "b'x'", "1j", "..."] {
+    for expr in ["s.upper", "upper", "b'x'", "..."] {
         let err = eval(expr, json!({"s": "x"})).unwrap_err();
         assert!(err.is_unrepresentable(), "{expr}: {err}");
     }

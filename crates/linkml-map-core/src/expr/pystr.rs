@@ -130,6 +130,22 @@ pub(crate) fn int_from_str(text: &str) -> Option<i64> {
     trimmed.parse().ok()
 }
 
+/// `int(text)` for a `str` in base 10 as a value of any size (`None` for an
+/// invalid literal and for more than 4300 digits, both a `ValueError`).
+pub fn int_value_from_str(text: &str) -> Option<crate::value::Value> {
+    if let Some(i) = int_from_str(text) {
+        return Some(crate::value::Value::Int(i));
+    }
+    let digits = int_literal(text)?;
+    let (negative, body) = match digits.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, digits.as_str()),
+    };
+    crate::pynum::parse_signed_digits(negative, body, 10)
+        .ok()
+        .map(crate::value::Value::from_bigint)
+}
+
 /// The digits of `int(text)` for a `str` in base 10, of any size: an optional `-`
 /// followed by ASCII digits (`None` for an invalid literal). The surrounding
 /// whitespace, Unicode digit and underscore rules are those of [`float_from_str`].

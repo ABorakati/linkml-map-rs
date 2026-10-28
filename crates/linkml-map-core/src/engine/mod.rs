@@ -1530,6 +1530,7 @@ impl<'s> ObjectTransformer<'s> {
                     let key_str = match source_map.get(join_source_key(ac)?)? {
                         Value::Str(s) => s.clone(),
                         Value::Int(i) => i.to_string(),
+                        Value::BigInt(n) => n.to_string(),
                         _ => return None,
                     };
                     let table = ac.class_named.as_deref().unwrap_or(alias.as_str());
@@ -1748,9 +1749,11 @@ impl<'s> ObjectTransformer<'s> {
         match value {
             Value::Str(s) => index.contains_id(s),
             Value::Int(i) => index.contains_id(&i.to_string()),
+            Value::BigInt(n) => index.contains_id(&n.to_string()),
             Value::List(items) => items.iter().any(|it| match it {
                 Value::Str(s) => index.contains_id(s),
                 Value::Int(i) => index.contains_id(&i.to_string()),
+                Value::BigInt(n) => index.contains_id(&n.to_string()),
                 _ => false,
             }),
             _ => false,
@@ -1777,6 +1780,7 @@ impl<'s> ObjectTransformer<'s> {
             let id = match v {
                 Value::Str(s) => Some(s.clone()),
                 Value::Int(i) => Some(i.to_string()),
+                Value::BigInt(n) => Some(n.to_string()),
                 _ => None,
             };
             match id {
@@ -2271,6 +2275,7 @@ impl<'s> ObjectTransformer<'s> {
         let key_str = match source_map.get(source_key) {
             Some(Value::Str(s)) => s.clone(),
             Some(Value::Int(i)) => i.to_string(),
+            Some(Value::BigInt(n)) => n.to_string(),
             // Null / absent / non-scalar key ⇒ no join possible ⇒ miss.
             _ => return Ok(true),
         };
@@ -2729,6 +2734,7 @@ fn resolve_aggregation_source(
                 let key_str = match key_val {
                     Value::Str(s) => s.clone(),
                     Value::Int(i) => i.to_string(),
+                    Value::BigInt(n) => n.to_string(),
                     _ => String::new(),
                 };
                 let items: Vec<Value> = li
@@ -2764,6 +2770,8 @@ fn apply_offset(off: &Offset, value: Value, source_map: &IndexMap<String, Value>
     };
     let operand = |v: &Value| match v {
         Value::Int(i) => Some(*i as f64),
+        // Python raises `OverflowError` past the float range; `inf` stands in.
+        Value::BigInt(_) => v.try_numeric(),
         Value::Float(f) => Some(*f),
         Value::Bool(b) => Some(f64::from(u8::from(*b))),
         _ => None,
@@ -2966,7 +2974,12 @@ fn write_py_json(out: &mut String, v: &Value) -> std::result::Result<(), String>
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
+        Value::BigInt(n) => out.push_str(&n.to_string()),
         Value::Float(f) => out.push_str(&py_json_float(*f)),
+        // PARITY: simplejson raises `TypeError: Object of type complex is not
+        // JSON serializable`; the `str()` text is written (a run that fails
+        // part-way is worse), as for a date below.
+        Value::Complex(z) => write_py_json_str(out, &crate::pynum::complex::repr(**z)),
         // PARITY: utils/serialization.py::dumps_json (simplejson, use_decimal)
         // writes a Decimal as its exact `str()` literal.
         Value::Decimal(d) => out.push_str(&d.to_sci_string()),

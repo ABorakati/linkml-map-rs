@@ -18,6 +18,7 @@ use std::borrow::Cow;
 
 use super::error::{ExprError, ExprResult, UNREPRESENTABLE_PREFIX};
 use super::pymethods::{is_identifier_continue, is_identifier_start};
+use crate::pynum::{self, BigInt};
 
 /// A lexical token.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,8 +26,9 @@ pub enum Token {
     // Literals
     Int(i64),
     Float(f64),
-    /// An imaginary literal (`1j`): the value of the imaginary part. The
-    /// evaluator has no complex numbers.
+    /// An integer literal beyond `i64`.
+    BigInt(Box<BigInt>),
+    /// An imaginary literal (`1j`): the value of the imaginary part.
     Imag(f64),
     Str(String),
     /// A `b'...'` literal.
@@ -922,7 +924,7 @@ fn scan_number(src: &str, start: usize) -> ExprResult<(Token, usize)> {
             )));
         }
         verify_end_of_number(b, i, name)?;
-        return Ok((radix_token(&src[digits_start..i], radix), i));
+        return Ok((radix_token(&src[digits_start..i], radix)?, i));
     }
 
     if b[i] == b'.' {
@@ -963,7 +965,7 @@ fn scan_number(src: &str, start: usize) -> ExprResult<(Token, usize)> {
                 ));
             }
             verify_end_of_number(b, i, "decimal")?;
-            return Ok((decimal_int_token(&src[start..i]), i));
+            return Ok((decimal_int_token(&src[start..i])?, i));
         }
     } else {
         i = decimal_tail(b, i + 1)?;
@@ -987,7 +989,7 @@ fn scan_number(src: &str, start: usize) -> ExprResult<(Token, usize)> {
         } else if !is_digit(j) {
             // `1else`: the `e` begins a keyword, not an exponent.
             verify_end_of_number(b, i, "decimal")?;
-            return Ok((number_token(&src[start..i], is_float), i));
+            return Ok((number_token(&src[start..i], is_float)?, i));
         }
         i = decimal_tail(b, j + 1)?;
         is_float = true;
@@ -1000,7 +1002,7 @@ fn scan_number(src: &str, start: usize) -> ExprResult<(Token, usize)> {
         return Ok((Token::Imag(parse_float(digits)?), i));
     }
     verify_end_of_number(b, i, "decimal")?;
-    Ok((number_token(&src[start..i], is_float), i))
+    Ok((number_token(&src[start..i], is_float)?, i))
 }
 
 /// Digits and underscores after the first digit, which has been consumed (an
@@ -1059,32 +1061,31 @@ fn parse_float(text: &str) -> ExprResult<f64> {
         .map_err(|_| err(format!("invalid float literal: {digits}")))
 }
 
-/// PARITY: `Value` has no big integers, so an integer literal beyond `i64`
-/// becomes a float rather than failing the whole expression to lex.
-fn decimal_int_token(text: &str) -> Token {
+/// A decimal integer literal: [`Token::Int`] while it fits `i64`, else
+/// [`Token::BigInt`]. CPython refuses more than 4300 digits (a `SyntaxError`).
+fn decimal_int_token(text: &str) -> ExprResult<Token> {
     let digits = without_underscores(text);
     match digits.parse::<i64>() {
-        Ok(v) => Token::Int(v),
-        Err(_) => Token::Float(digits.parse::<f64>().unwrap_or(f64::INFINITY)),
+        Ok(v) => Ok(Token::Int(v)),
+        Err(_) => pynum::parse_digits(&digits, 10)
+            .map(|n| Token::BigInt(Box::new(n)))
+            .map_err(|e| err(format!("{e} - Consider hexadecimal for huge integer literals to avoid decimal conversion limits."))),
     }
 }
 
-fn radix_token(text: &str, radix: u32) -> Token {
+fn radix_token(text: &str, radix: u32) -> ExprResult<Token> {
     let digits = without_underscores(text);
     match i64::from_str_radix(&digits, radix) {
-        Ok(v) => Token::Int(v),
-        Err(_) => Token::Float(digits.chars().fold(0.0, |acc, c| {
-            acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
-        })),
+        Ok(v) => Ok(Token::Int(v)),
+        Err(_) => pynum::parse_digits(&digits, radix)
+            .map(|n| Token::BigInt(Box::new(n)))
+            .map_err(|e| err(e.to_string())),
     }
 }
 
-fn number_token(text: &str, is_float: bool) -> Token {
+fn number_token(text: &str, is_float: bool) -> ExprResult<Token> {
     if is_float {
-        match parse_float(text) {
-            Ok(f) => Token::Float(f),
-            Err(_) => Token::Float(f64::NAN),
-        }
+        Ok(Token::Float(parse_float(text).unwrap_or(f64::NAN)))
     } else {
         decimal_int_token(text)
     }

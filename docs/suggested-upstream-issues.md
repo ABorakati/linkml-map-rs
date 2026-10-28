@@ -41,6 +41,8 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 
 ## asteval (unrestricted statement blocks)
 
+- `safe_pow`/`safe_lshift` compare their right operand with `exp > MAX_EXPONENT` for any `numbers.Number`, so a
+  `complex` exponent (`2 ** 1j`) or shift count is a `TypeError` ('>' not supported between 'complex' and 'int').
 - `safe_getattr` calls `getattr(obj, attr)` without a default, so any missing attribute raises, contradicting the
   `getattr(obj, attr, None)` that follows.
 - `raise_exception` leaves `_interrupt` set after a handled error, silently skipping later statements in a loop
@@ -112,6 +114,11 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - `DataLoader._find_file` matches lowercase extensions only while `get_available_identifiers` lowercases them, so
   `X.TSV` is listed as available but never found; `.jsonl` is omitted, and the "no input" error prints `found []`
   with no hint.
+- A slot expression that evaluates to a `complex` (`(-8) ** 0.5`, `1j`) reaches the writers: `map-data -f json`/`jsonl`
+  abort part-way with `TypeError: Object of type complex is not JSON serializable`, while `-f yaml` writes
+  `!!python/complex '1.7e-16+2.83j'` (the full `yaml.Dumper`, which also emits `!!python/tuple`/`!!set`, and a file
+  `safe_load` then refuses) and the delimited writers write `str(z)`. An integer above 4300 digits likewise aborts
+  every writer with CPython's `ValueError: Exceeds the limit (4300 digits)`.
 - `-O` is silently ignored for single-object input; `chunked(it, 0)` (`--chunk-size 0`) drops all output.
 
 ## derive-schema (`SchemaMapper`)

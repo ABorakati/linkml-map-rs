@@ -29,6 +29,8 @@ fn value_to_key(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
         Value::Int(i) => i.to_string(),
+        Value::BigInt(n) => n.to_string(),
+        Value::Complex(z) => crate::pynum::complex::repr(**z),
         Value::Float(f) => f.to_string(),
         Value::Decimal(d) => d.to_sci_string(),
         Value::Temporal(t) => t.to_string(),

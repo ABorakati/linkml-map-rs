@@ -148,7 +148,17 @@ pub fn canonical(
         Value::Str(s) => Ok(Canon::Str(s.clone())),
         Value::Int(i) => Ok(Canon::Num(canonical_int(*i))),
         Value::Float(f) => Ok(Canon::Num(canonical_float(*f))),
+        // `Decimal(value)` is exact for any integer; `normalize()` then rounds to
+        // the context precision like any other decimal.
+        Value::BigInt(n) => Decimal::parse_python(&n.to_string())
+            .map_err(|_| "invalid integer".to_string())
+            .and_then(|d| canonical_decimal(&d))
+            .map(Canon::Num),
         Value::Decimal(d) => canonical_decimal(d).map(Canon::Num),
+        Value::Complex(z) => Err(format!(
+            "Cannot synthesize an identifier from a value of type complex: {}",
+            crate::pynum::complex::repr(**z)
+        )),
         // PARITY: content_id.py::_canonical raises `TypeError("Cannot synthesize
         // an identifier from a value of type {type(value).__name__}:
         // {value!r}")`; the only value type left here is a date or datetime.

@@ -246,7 +246,7 @@ async fn jsonl_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Resul
                     if trimmed.is_empty() {
                         continue; // skip blank lines
                     }
-                    let val: Result<Value> = serde_json::from_str(&trimmed)
+                    let val: Result<Value> = linkml_map_core::value::parse_json(&trimmed)
                         .map_err(|e| anyhow::anyhow!("JSONL parse error: {}: {}", e, trimmed));
                     return Some((val, lines));
                 }
@@ -264,9 +264,9 @@ async fn json_stream(path: impl AsRef<Path>) -> Result<BoxStream<'static, Result
         .await
         .with_context(|| format!("opening {:?}", path.as_ref()))?;
 
-    let val: serde_json::Value = serde_json::from_slice(&bytes).context("JSON parse error")?;
+    let val = linkml_map_core::value::parse_json_bytes(&bytes).context("JSON parse error")?;
 
-    let items = serde_json_value_to_values(val);
+    let items = values_of(val);
     Ok(stream::iter(items.into_iter().map(Ok)).boxed())
 }
 
@@ -338,10 +338,10 @@ pub async fn load_stream_single_object(
         Ok(items) => items,
         Err(LoadError::Value(msg)) => anyhow::bail!("{path:?}: {msg}"),
         Err(LoadError::Yaml(yaml_error)) => {
-            let json: serde_json::Value = serde_json::from_str(&text).map_err(|json_error| {
+            let json = linkml_map_core::value::parse_json(&text).map_err(|json_error| {
                 anyhow::anyhow!("{path:?}: {yaml_error}; as JSON: {json_error}")
             })?;
-            serde_json_value_to_values(json)
+            values_of(json)
         }
     };
     Ok(stream::iter(items.into_iter().map(Ok)).boxed())
@@ -365,18 +365,4 @@ fn values_of(v: Value) -> Vec<Value> {
         Value::List(items) => items,
         other => vec![other],
     }
-}
-
-/// Convert a `serde_json::Value` into a `Vec<Value>`.
-/// Arrays are expanded; single objects/scalars yield a one-element vec.
-fn serde_json_value_to_values(v: serde_json::Value) -> Vec<Value> {
-    match v {
-        serde_json::Value::Array(items) => items.into_iter().map(json_to_value).collect(),
-        other => vec![json_to_value(other)],
-    }
-}
-
-/// Recursively convert `serde_json::Value` → [`Value`].
-pub(crate) fn json_to_value(v: serde_json::Value) -> Value {
-    Value::from(&v)
 }

@@ -619,11 +619,7 @@ impl<'a> Interp<'a> {
             Const::None => Py::None,
             Const::Bool(b) => Py::Bool(*b),
             Const::Int(i) => Py::Int(*i),
-            Const::BigInt(_) => {
-                return overflow_err(
-                    "integer literal out of range (big integers are not supported)",
-                );
-            }
+            Const::BigInt(n) => Py::BigInt(Rc::new(n.clone())),
             Const::Float(f) => Py::Float(*f),
             Const::Str(s) => Py::Str(s.clone()),
             Const::Bytes(b) => Py::Bytes(b.clone()),
@@ -660,9 +656,12 @@ impl<'a> Interp<'a> {
             } => {
                 let mut val = self.run_e(value)?;
                 match conversion {
-                    Some('s') => val = Py::str(to_str(&val)),
-                    Some('r') => val = Py::str(repr(&val)),
-                    Some('a') => val = Py::str(ascii_repr(&val)),
+                    Some('s') => val = Py::str(to_str_checked(&val)?),
+                    Some('r') => val = Py::str(repr_checked(&val)?),
+                    Some('a') => {
+                        check_str_digits(&val)?;
+                        val = Py::str(ascii_repr(&val));
+                    }
                     _ => {}
                 }
                 let spec_text = match spec {

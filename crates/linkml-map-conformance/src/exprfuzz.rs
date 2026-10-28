@@ -18,7 +18,7 @@
 //! `null`, booleans, strings and arrays are native JSON; an `int` is a JSON
 //! integer (`{"$i": "<digits>"}` outside the `i64` range); a `float` is
 //! `{"$f": "<16 hex digits of the IEEE-754 bits>"}` so NaN, infinities, `-0.0`
-//! and every last bit survive; a map is a JSON object (keys never start with
+//! and every last bit survive; a `complex` is `{"$c": ["<re bits>", "<im bits>"]}`; a map is a JSON object (keys never start with
 //! `$`). A `tuple` is `{"$tuple": [...]}`, a `set` `{"$set": [...]}` (in
 //! iteration order) and a dict with any non-string key `{"$dict": [[k, v], ...]}`,
 //! both sides; the Python side additionally emits `{"$other": "<type>"}` for
@@ -39,6 +39,8 @@ use linkml_map_core::expr::{
     Bindings, EvalMode, ExprError, eval_expr_with_mapping, eval_parsed_gated, parse_expr,
 };
 use linkml_map_core::pyfmt;
+use linkml_map_core::pynum::BigInt;
+use linkml_map_core::pynum::complex::Complex64;
 use linkml_map_core::pyset::PySet;
 use linkml_map_core::value::{Value, parse_python_float};
 use serde_json::{Value as J, json};
@@ -81,10 +83,20 @@ pub fn decode(j: &J) -> Result<Value, String> {
                 return Ok(Value::Float(f64::from_bits(bits)));
             }
             if let Some(i) = m.get("$i") {
-                return match i.as_str().and_then(|s| s.parse::<i64>().ok()) {
-                    Some(v) => Ok(Value::Int(v)),
+                return match i.as_str().and_then(|s| s.parse::<BigInt>().ok()) {
+                    Some(v) => Ok(Value::from_bigint(v)),
                     None => Err(format!("unrepresentable integer {i}")),
                 };
+            }
+            if let Some(parts) = m.get("$c").and_then(J::as_array) {
+                let bits = |j: Option<&J>| {
+                    j.and_then(J::as_str)
+                        .and_then(|h| u64::from_str_radix(h, 16).ok())
+                        .map(f64::from_bits)
+                        .ok_or_else(|| "bad $c".to_owned())
+                };
+                let (re, im) = (bits(parts.first())?, bits(parts.get(1))?);
+                return Ok(Value::from_complex(Complex64::new(re, im)));
             }
             if let Some(items) = m.get("$tuple") {
                 return Ok(Value::Tuple(decode_all(items)?));
@@ -132,7 +144,12 @@ pub fn encode(v: &Value) -> J {
         Value::Null => J::Null,
         Value::Bool(b) => J::Bool(*b),
         Value::Int(i) => J::from(*i),
+        Value::BigInt(n) => json!({"$i": n.to_string()}),
         Value::Float(f) => json!({"$f": format!("{:016x}", f.to_bits())}),
+        Value::Complex(z) => json!({"$c": [
+            format!("{:016x}", z.re.to_bits()),
+            format!("{:016x}", z.im.to_bits()),
+        ]}),
         Value::Decimal(d) => json!({"$dec": d.to_sci_string()}),
         Value::Temporal(t) => json!({"$temporal": t.to_string()}),
         Value::Str(s) => J::String(s.clone()),
@@ -184,7 +201,7 @@ pub fn eval_case(expr: &str, bindings: &J, mode: &str, strict: bool) -> Outcome 
         match outcome {
             Ok(v) => Outcome::Ok(v),
             // A result Python can produce but `Value` cannot hold (a bound
-            // method, bytes, a complex number): not comparable, not a divergence.
+            // method, bytes): not comparable, not a divergence.
             Err(e) if e.is_unrepresentable() => fail("unrepresentable", e.to_string()),
             Err(e) => fail(err_kind(&e), e.to_string()),
         }
@@ -455,8 +472,13 @@ fn strict_eq(a: &Value, b: &Value) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => {
             (x.is_nan() && y.is_nan()) || x.to_bits() == y.to_bits()
+        }
+        (Value::Complex(x), Value::Complex(y)) => {
+            let same = |p: f64, q: f64| (p.is_nan() && q.is_nan()) || p.to_bits() == q.to_bits();
+            same(x.re, y.re) && same(x.im, y.im)
         }
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {

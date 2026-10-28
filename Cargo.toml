@@ -36,3 +36,8 @@ unicode_names2 = "4"
 # Property-based tests (dev-dependency only); see `tests/proptest_*.rs` in each crate.
 proptest = { version = "1", default-features = false, features = ["std"] }
 foldhash = "0.2"
+# Python's arbitrary-precision `int` and `complex` (see `linkml_map_core::pynum`).
+num-bigint = "0.5"
+num-complex = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"

@@ -1,0 +1,20 @@
+id: https://example.org/tgt
+name: tgt
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+classes:
+  Agent:
+    attributes:
+      id:
+        range: string
+        identifier: true
+      inner:
+        range: InnerAgent0
+        inlined: true
+  InnerAgent0:
+    attributes:
+      out_a: {}

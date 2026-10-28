@@ -75,7 +75,15 @@ fn write_json(
         Value::Int(i) => {
             let _ = write!(out, "{i}");
         }
+        // simplejson writes an `int` with `int.__repr__`: every digit.
+        Value::BigInt(n) => {
+            let _ = write!(out, "{n}");
+        }
         Value::Float(f) => out.push_str(&json_float(*f)),
+        // simplejson: `TypeError: Object of type complex is not JSON serializable`.
+        Value::Complex(_) => {
+            return Err("Object of type complex is not JSON serializable".to_owned());
+        }
         // simplejson(use_decimal=True) writes `str(Decimal)` as a numeric literal.
         Value::Decimal(d) => out.push_str(&d.to_sci_string()),
         // PARITY (lenient): simplejson raises `TypeError: Object of type date is
@@ -215,7 +223,9 @@ pub fn tabular_cell(value: &Value) -> Result<String, String> {
         Value::Null => String::new(),
         Value::Bool(b) => py_bool(*b).to_owned(),
         Value::Int(i) => i.to_string(),
+        Value::BigInt(n) => n.to_string(),
         Value::Float(f) => py_float_repr(*f),
+        Value::Complex(z) => complex_repr(**z),
         // `format_decimal`: fixed-point, every digit kept.
         Value::Decimal(d) => d.to_fixed_string(),
         // `str(date)`.
@@ -243,7 +253,9 @@ pub fn py_repr(value: &Value) -> String {
         Value::Null => "None".to_owned(),
         Value::Bool(b) => py_bool(*b).to_owned(),
         Value::Int(i) => i.to_string(),
+        Value::BigInt(n) => n.to_string(),
         Value::Float(f) => py_float_repr(*f),
+        Value::Complex(z) => complex_repr(**z),
         Value::Decimal(d) => format!("Decimal('{}')", d.to_sci_string()),
         Value::Temporal(t) => t.repr(),
         Value::Str(s) => py_str_repr(s),
@@ -283,6 +295,10 @@ pub fn py_repr(value: &Value) -> String {
     }
 }
 
+fn complex_repr(z: linkml_map_core::pynum::complex::Complex64) -> String {
+    linkml_map_core::pynum::complex::repr(z)
+}
+
 fn py_bool(b: bool) -> &'static str {
     if b { "True" } else { "False" }
 }
@@ -316,7 +332,9 @@ pub fn strip_nulls(value: &Value) -> Value {
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
         | Value::Str(_)
@@ -351,7 +369,9 @@ pub fn strip_empty(value: &Value) -> Value {
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
         | Value::Str(_)
@@ -369,7 +389,9 @@ fn is_empty(value: &Value) -> bool {
         Value::Dict(dict) => dict.is_empty(),
         Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
         | Value::Str(_)
@@ -395,7 +417,9 @@ pub fn sort_keys(value: &Value) -> Value {
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
         | Value::Str(_)
@@ -454,7 +478,9 @@ fn flatten_value<'a>(
         leaf @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Decimal(_)
         | Value::Temporal(_)
         | Value::Str(_)

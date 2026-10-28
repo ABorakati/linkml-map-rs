@@ -17,6 +17,10 @@ deunicode = { workspace = true }
 unicode-normalization = { workspace = true }
 unicode_names2 = { workspace = true }
 foldhash = { workspace = true }
+num-bigint = { workspace = true }
+num-complex = { workspace = true }
+num-integer = { workspace = true }
+num-traits = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

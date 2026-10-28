@@ -18,7 +18,8 @@ from hypothesis import strategies as st
 
 # ─── value pools ─────────────────────────────────────────────────────────────
 
-INT_EDGES = [0, 1, -1, 2, 3, 7, 10, 12, 100, 255, 2**31, 2**53, 2**53 + 1, 2**63 - 1, -(2**63), 2**63, 10**20, -(10**20)]
+INT_EDGES = [0, 1, -1, 2, 3, 7, 10, 12, 100, 255, 2**31, 2**53, 2**53 + 1, 2**63 - 1, -(2**63), 2**63, 10**20, -(10**20),
+             2**64, -(2**63) - 1, 2**100 + 1, -(2**100), 10**30, 2**1023, 2**1024, 2**1100, 10**400]
 FLOAT_EDGE_TEXT = [
     "0.0", "-0.0", "1.0", "0.5", "1.5", "2.5", "3.14", "0.1", "0.2", "0.3", "1e16", "1e15", "1e22", "1.5e300", "1e308", "1e309",
     "5e-324", "1e-5", "1e-4", "0.0001", "123456789.123456789", "1e-320", "2.675", "0.5e1", "100.0", "1_0.5", ".5", "5.",
@@ -88,8 +89,8 @@ def float_edges() -> list[str]:
 
 
 def int_edges() -> list[int]:
-    lim = 2**31 if "bigint" in MASK else 2**63
-    return [i for i in INT_EDGES if -lim <= i <= lim]
+    lim = 2**31 if "bigint" in MASK else None
+    return [i for i in INT_EDGES if lim is None or -lim <= i <= lim]
 
 
 # ─── tiny weighted-choice helper ─────────────────────────────────────────────
@@ -121,7 +122,7 @@ def gen_scalar(draw, ty: str = "any"):
     if ty == "bool":
         return draw(st.booleans())
     if ty in ("int", "num"):
-        return draw(st.one_of(st.sampled_from([i for i in int_edges() if -(2**63) <= i < 2**63]), st.integers(-1000, 1000)))
+        return draw(st.one_of(st.sampled_from(int_edges()), st.integers(-1000, 1000)))
     if ty == "float":
         t = draw(st.sampled_from(float_edges()))
         return float(t.replace("_", ""))

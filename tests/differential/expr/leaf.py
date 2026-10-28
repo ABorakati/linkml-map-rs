@@ -72,13 +72,23 @@ def rfloat(rng: random.Random) -> float:
     return rng.uniform(-1e6, 1e6)
 
 
+def _float_or_inf(v):
+    """``float(v)``; an int beyond the float range is +-inf (the Rust ``try_numeric`` has no way to raise)."""
+    try:
+        return float(v)
+    except OverflowError:
+        return math.inf if v > 0 else -math.inf
+
+
 def rint(rng: random.Random) -> int:
     r = rng.random()
     if r < 0.2:
-        return rng.choice([0, 1, -1, 2**31, 2**53, 2**53 + 1, -(2**53) - 1, 2**63 - 1, -(2**63), 255])
-    if r < 0.7:
+        return rng.choice([0, 1, -1, 2**31, 2**53, 2**53 + 1, -(2**53) - 1, 2**63 - 1, -(2**63), 255, 2**63, -(2**63) - 1, 2**64, 10**30])
+    if r < 0.6:
         return rng.randint(-100, 100)
-    return rng.randint(-(2**62), 2**62)
+    if r < 0.85:
+        return rng.randint(-(2**62), 2**62)
+    return rng.randint(-(2**200), 2**200) * rng.choice([1, 1, 2**rng.randint(0, 900)])  # beyond i64, up to the float range and past it
 
 
 def rscalar(rng: random.Random):
@@ -197,16 +207,10 @@ LEAF_REASONS = {
     "str": "str(list/dict) uses repr() of elements: non-printable escapes missing; float tie digits",
     "str_float": "shortest-repr ties: Python rounds half to even, Rust half up",
     "decimal": "Decimal() accepts unicode digits, leading/trailing underscores, \\x1c-\\x1f padding; Rust accepts ASCII digits and single inner underscores only",
-    "int": "int() and float(): Rust accepts \\x1c-\\x1f padding (CPython rejects); floats beyond i64 raise 'big integers' in Rust",
-    "int_any": "int(float) beyond i64 raises in Rust (Python big int); \\x1c-\\x1f padding accepted by Rust",
+    "int": "int() and float(): Rust accepts \\x1c-\\x1f padding (CPython rejects)",
+    "int_any": "\\x1c-\\x1f padding accepted by Rust",
     "float": "Rust float() accepts \\x1c-\\x1f padding that CPython rejects",
     "float_any": "Rust float() accepts \\x1c-\\x1f padding that CPython rejects",
-    "abs": "i64 overflow (abs(i64::MIN)) -> 'big integers' error instead of a Python big int",
-    "sum": "i64 overflow in sum -> 'big integers' error instead of a Python big int",
-    "round1": "round(float) beyond i64 -> 'big integers' error instead of a Python big int",
-    "round2": "round(int, -n) beyond i64 -> 'big integers' error instead of a Python big int",
-    "floor": "floor(float) beyond i64 -> 'big integers' error instead of a Python big int",
-    "ceil": "ceil(float) beyond i64 -> 'big integers' error instead of a Python big int",
     "title": "Unicode data skew: Rust's tables are newer than CPython 3.13's (Unicode 16 vs 15.1)",
     "capitalize": "Unicode data skew: Rust's tables are newer than CPython 3.13's (Unicode 16 vs 15.1)",
     "upper": "Unicode data skew: Rust's tables are newer than CPython 3.13's (Unicode 16 vs 15.1)",
@@ -220,7 +224,7 @@ LEAF_REASONS = {
 SPECS: dict[str, dict] = {
     "py_eq": {"rust": "py_eq", "gen": lambda r: [rvalue(r, 1), rvalue(r, 1)] if r.random() < 0.5 else [rfloat(r), rint(r)] if r.random() < 0.5 else [rscalar(r)] * 2, "ref": lambda a, b: a == b},
     "truthy": {"rust": "truthy", "gen": lambda r: [rvalue(r)], "ref": _bool},
-    "try_numeric": {"rust": "try_numeric", "gen": lambda r: [rvalue(r, 2) if r.random() < 0.5 else numeric_text(r)], "ref": lambda x: (lambda v: float(v) if v is not None else None)(EU._try_numeric(x)) if not (isinstance(x, int) and abs(x) > 2**1000) else None},
+    "try_numeric": {"rust": "try_numeric", "gen": lambda r: [rvalue(r, 2) if r.random() < 0.5 else numeric_text(r)], "ref": lambda x: (lambda v: _float_or_inf(v) if v is not None else None)(EU._try_numeric(x))},
     "parse_float": {"rust": "parse_float", "gen": lambda r: [numeric_text(r)], "ref": lambda s: _pf(s)},
     "float_repr": {"rust": "float_repr", "gen": lambda r: [rfloat(r)], "ref": repr},
     "float_repr_io": {"rust": "float_repr_io", "gen": lambda r: [rfloat(r)], "ref": repr},

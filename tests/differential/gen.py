@@ -139,7 +139,7 @@ def scalar_values(rng: str, feats, enums: dict, ids: dict):
     if rng in ("string", "MyStr"):
         return _mix(_STR_COMMON, _STR_WEIRD, awk)
     if rng in ("integer", "MyInt"):
-        weird = [w for w in _INT_WEIRD if not (isinstance(w, int) and abs(w) > 2**62) and w not in _INT_NUMPARSE] \
+        weird = [w for w in _INT_WEIRD if w not in _INT_NUMPARSE] \
             if "knownfree" in feats else _INT_WEIRD
         return _mix(_INT_COMMON, weird, awk)
     if rng == "float":
@@ -325,7 +325,7 @@ def const_value(draw):
 def _cv(v, feats):
     if "knownfree" in feats and isinstance(v, list):
         return "k"  # list-valued `value:` is truncated by upstream's loader (reported upstream quirk)
-    return 10**15 if ("knownfree" in feats and isinstance(v, int) and not isinstance(v, bool) and abs(v) > 2**62) else v
+    return v
 
 
 @st.composite

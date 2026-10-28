@@ -14,8 +14,9 @@ use indexmap::IndexMap;
 
 use super::ast::FuncDef;
 use crate::pyfmt::{py_float_repr, py_repr_str};
+use crate::pynum::{self, BigInt, IntRef};
 use crate::temporal::Temporal;
-use crate::value::{Value, cmp_int_float};
+use crate::value::Value;
 
 pub(crate) type Rf<T> = Rc<RefCell<T>>;
 
@@ -29,6 +30,8 @@ pub(crate) fn rf<T>(v: T) -> Rf<T> {
 pub(crate) enum HKey {
     None,
     Int(i64),
+    /// An integer beyond `i64`, or an integral float that large.
+    Big(BigInt),
     Float(u64),
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
@@ -57,6 +60,7 @@ impl crate::pyset::SetItem for Py {
             Py::None => Some(HASH_NONE),
             Py::Bool(b) => Some(hash_i64(i64::from(*b))),
             Py::Int(i) => Some(hash_i64(*i)),
+            Py::BigInt(n) => Some(pynum::hash(pynum::IntRef::Big(n))),
             Py::Float(f) => hash_f64(*f),
             // `hash(real) + 1000003 * hash(imag)`, modulo 2**64.
             Py::Complex(r, i) => match (hash_f64(*r), hash_f64(*i)) {
@@ -136,6 +140,8 @@ pub(crate) enum Py {
     None,
     Bool(bool),
     Int(i64),
+    /// An integer outside `i64`; built only by [`Py::from_big`].
+    BigInt(Rc<BigInt>),
     Float(f64),
     Complex(f64, f64),
     Str(Arc<str>),
@@ -196,6 +202,14 @@ impl Py {
         Py::Str(s.into())
     }
 
+    /// An integer result: [`Py::Int`] when it fits `i64`.
+    pub(crate) fn from_big(n: BigInt) -> Py {
+        match i64::try_from(&n) {
+            Ok(i) => Py::Int(i),
+            Err(_) => Py::BigInt(Rc::new(n)),
+        }
+    }
+
     pub(crate) fn list(v: Vec<Py>) -> Py {
         Py::List(rf(v))
     }
@@ -213,7 +227,7 @@ impl Py {
         match self {
             Py::None => "NoneType".into(),
             Py::Bool(_) => "bool".into(),
-            Py::Int(_) => "int".into(),
+            Py::Int(_) | Py::BigInt(_) => "int".into(),
             Py::Float(_) => "float".into(),
             Py::Complex(..) => "complex".into(),
             Py::Str(_) => "str".into(),
@@ -245,6 +259,7 @@ impl Py {
             Py::None => false,
             Py::Bool(b) => *b,
             Py::Int(i) => *i != 0,
+            Py::BigInt(_) => true,
             Py::Float(f) => *f != 0.0,
             Py::Complex(r, i) => *r != 0.0 || *i != 0.0,
             Py::Str(s) => !s.is_empty(),
@@ -266,6 +281,7 @@ impl Py {
             // CPython caches the small ints; other numbers are fresh objects (a
             // value held in two names is not tracked).
             (Py::Int(a), Py::Int(b)) => a == b && (-5..=256).contains(a),
+            (Py::BigInt(a), Py::BigInt(b)) => Rc::ptr_eq(a, b),
             (Py::Float(_), Py::Float(_)) => false,
             (Py::Str(a), Py::Str(b)) => {
                 Arc::ptr_eq(a, b)
@@ -303,6 +319,7 @@ impl Py {
             Py::Iter(a) => Rc::as_ptr(a) as *const u8 as usize,
             Py::Str(a) => a.as_ptr() as usize,
             Py::Int(i) => 0x7f00_0000_0000 + (*i as usize).wrapping_mul(32),
+            Py::BigInt(a) => Rc::as_ptr(a) as *const u8 as usize,
             _ => 0x7f00_dead_0000,
         }
     }
@@ -471,11 +488,16 @@ pub(crate) fn hkey(v: &Py) -> PyRes<HKey> {
         Py::None => HKey::None,
         Py::Bool(b) => HKey::Int(*b as i64),
         Py::Int(i) => HKey::Int(*i),
+        Py::BigInt(n) => HKey::Big((**n).clone()),
         Py::Complex(r, i) if *i == 0.0 => hkey(&Py::Float(*r))?,
         Py::Complex(r, i) => HKey::Tuple(vec![HKey::Float(r.to_bits()), HKey::Float(i.to_bits())]),
         Py::Float(f) => {
-            if f.fract() == 0.0 && f.abs() < 9.2e18 {
-                HKey::Int(*f as i64)
+            if f.is_finite() && f.fract() == 0.0 {
+                // An integral float is the integer it equals.
+                match i64::try_from(&pynum::float_to_bigint(*f)) {
+                    Ok(i) => HKey::Int(i),
+                    Err(_) => HKey::Big(pynum::float_to_bigint(*f)),
+                }
             } else {
                 HKey::Float(f.to_bits())
             }
@@ -505,31 +527,32 @@ pub(crate) fn hkey(v: &Py) -> PyRes<HKey> {
 
 // --- equality and ordering --------------------------------------------------
 
-fn num_of(v: &Py) -> Option<NumV> {
+fn num_of(v: &Py) -> Option<NumV<'_>> {
     match v {
-        Py::Bool(b) => Some(NumV::I(*b as i64)),
-        Py::Int(i) => Some(NumV::I(*i)),
+        Py::Bool(b) => Some(NumV::I(IntRef::Small(*b as i64))),
+        Py::Int(i) => Some(NumV::I(IntRef::Small(*i))),
+        Py::BigInt(n) => Some(NumV::I(IntRef::Big(n))),
         Py::Float(f) => Some(NumV::F(*f)),
         _ => None,
     }
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum NumV {
-    I(i64),
+pub(crate) enum NumV<'a> {
+    I(IntRef<'a>),
     F(f64),
 }
 
-pub(crate) fn as_num(v: &Py) -> Option<NumV> {
+pub(crate) fn as_num(v: &Py) -> Option<NumV<'_>> {
     num_of(v)
 }
 
-pub(crate) fn cmp_num(a: NumV, b: NumV) -> Option<Ordering> {
+pub(crate) fn cmp_num(a: NumV<'_>, b: NumV<'_>) -> Option<Ordering> {
     match (a, b) {
-        (NumV::I(x), NumV::I(y)) => Some(x.cmp(&y)),
+        (NumV::I(x), NumV::I(y)) => Some(pynum::cmp(x, y)),
         (NumV::F(x), NumV::F(y)) => x.partial_cmp(&y),
-        (NumV::I(x), NumV::F(y)) => cmp_int_float(x, y),
-        (NumV::F(x), NumV::I(y)) => cmp_int_float(y, x).map(Ordering::reverse),
+        (NumV::I(x), NumV::F(y)) => pynum::cmp_int_f64(x, y),
+        (NumV::F(x), NumV::I(y)) => pynum::cmp_int_f64(y, x).map(Ordering::reverse),
     }
 }
 
@@ -541,7 +564,16 @@ pub(crate) fn py_eq(a: &Py, b: &Py) -> bool {
     if (matches!(a, Py::Complex(..)) || matches!(b, Py::Complex(..)))
         && let (Some((a1, b1)), Some((a2, b2))) = (complex_parts(a), complex_parts(b))
     {
-        return a1 == a2 && b1 == b2;
+        // `complex == int` compares the real part with the integer exactly.
+        return match (a, b) {
+            (Py::Complex(..), Py::Complex(..)) => a1 == a2 && b1 == b2,
+            (Py::Complex(re, im), other) | (other, Py::Complex(re, im)) => {
+                *im == 0.0
+                    && num_of(other)
+                        .is_some_and(|n| cmp_num(NumV::F(*re), n) == Some(Ordering::Equal))
+            }
+            _ => false,
+        };
     }
     match (a, b) {
         (Py::None, Py::None) | (Py::Ellipsis, Py::Ellipsis) => true,
@@ -664,6 +696,43 @@ pub(crate) fn repr(v: &Py) -> String {
     out
 }
 
+/// Raise the `ValueError` CPython gives when `str`/`repr` of `v` meets an
+/// integer with more than 4300 digits.
+pub(crate) fn check_str_digits(v: &Py) -> PyRes<()> {
+    fn walk(v: &Py, depth: usize) -> PyRes<()> {
+        if depth > 100 {
+            return Ok(());
+        }
+        match v {
+            Py::BigInt(n) => pynum::big_to_string(n)
+                .map(drop)
+                .map_err(super::ops::num_err),
+            Py::List(l) => l.borrow().iter().try_for_each(|x| walk(x, depth + 1)),
+            Py::Tuple(t) => t.iter().try_for_each(|x| walk(x, depth + 1)),
+            Py::Set(s) => s.borrow().iter().try_for_each(|x| walk(x, depth + 1)),
+            Py::Dict(d) => d
+                .borrow()
+                .values()
+                .try_for_each(|(k, x)| walk(k, depth + 1).and_then(|()| walk(x, depth + 1))),
+            Py::Obj(o) => o.borrow().values().try_for_each(|x| walk(x, depth + 1)),
+            _ => Ok(()),
+        }
+    }
+    walk(v, 0)
+}
+
+/// [`to_str`], raising where Python's `str()` would.
+pub(crate) fn to_str_checked(v: &Py) -> PyRes<String> {
+    check_str_digits(v)?;
+    Ok(to_str(v))
+}
+
+/// [`repr`], raising where Python's `repr()` would.
+pub(crate) fn repr_checked(v: &Py) -> PyRes<String> {
+    check_str_digits(v)?;
+    Ok(repr(v))
+}
+
 pub(crate) fn to_str(v: &Py) -> String {
     match v {
         Py::Str(s) => s.to_string(),
@@ -725,6 +794,10 @@ fn write_repr(v: &Py, out: &mut String, seen: &mut Vec<usize>, _top: bool) {
         Py::Bool(true) => out.push_str("True"),
         Py::Bool(false) => out.push_str("False"),
         Py::Int(i) => out.push_str(&i.to_string()),
+        // Past the 4300-digit limit `repr` raises (see `check_str_digits`); this
+        // linear-time spelling only serves messages.
+        Py::BigInt(n) if n.magnitude().bits() > 14_400 => out.push_str(&format!("{:#x}", &**n)),
+        Py::BigInt(n) => out.push_str(&n.to_string()),
         Py::Float(f) => out.push_str(&py_float_repr(*f)),
         Py::Complex(r, i) => out.push_str(&complex_repr(*r, *i)),
         Py::Str(s) => out.push_str(&py_repr_str(s)),
@@ -874,7 +947,9 @@ pub(crate) fn from_value(v: &Value) -> Py {
         Value::Null => Py::None,
         Value::Bool(b) => Py::Bool(*b),
         Value::Int(i) => Py::Int(*i),
+        Value::BigInt(n) => Py::BigInt(Rc::new((**n).clone())),
         Value::Float(f) => Py::Float(*f),
+        Value::Complex(z) => Py::Complex(z.re, z.im),
         Value::Str(s) => Py::str(s.as_str()),
         Value::List(l) => Py::list(l.iter().map(from_value).collect()),
         Value::Map(m) => Py::Obj(rf(m
@@ -912,7 +987,9 @@ pub(crate) fn to_value(v: &Py, depth: usize) -> Value {
         Py::None => Value::Null,
         Py::Bool(b) => Value::Bool(*b),
         Py::Int(i) => Value::Int(*i),
+        Py::BigInt(n) => Value::from_bigint((**n).clone()),
         Py::Float(f) => Value::Float(*f),
+        Py::Complex(r, i) => Value::from_complex(crate::pynum::complex::Complex64::new(*r, *i)),
         Py::Str(s) => Value::Str(s.to_string()),
         Py::Temporal(t) => Value::Temporal(*t),
         Py::List(l) => Value::List(l.borrow().iter().map(|x| to_value(x, depth + 1)).collect()),
@@ -1007,7 +1084,6 @@ pub(crate) fn unrepresentable_kind(v: &Py, depth: usize) -> Option<&'static str>
     }
     match v {
         Py::Bytes(_) => Some("bytes"),
-        Py::Complex(..) => Some("complex"),
         Py::Builtin(_) | Py::Type(_) | Py::Method(_) | Py::Proc(_) => Some("function"),
         Py::Iter(_) | Py::Range(..) => Some("iterator"),
         Py::Exc(_) => Some("exception"),
@@ -1034,11 +1110,20 @@ pub(crate) fn unrepresentable_kind(v: &Py, depth: usize) -> Option<&'static str>
     }
 }
 
-/// A number as `(real, imag)`.
+/// A number as `(real, imag)` (an integer beyond the float range is `inf`; a
+/// caller that raises the `OverflowError` checks first).
 pub(crate) fn complex_parts(v: &Py) -> Option<(f64, f64)> {
     match v {
         Py::Complex(r, i) => Some((*r, *i)),
         Py::Int(i) => Some((*i as f64, 0.0)),
+        Py::BigInt(n) => Some((
+            pynum::big_to_f64(n).unwrap_or(if n.sign() == num_bigint::Sign::Minus {
+                f64::NEG_INFINITY
+            } else {
+                f64::INFINITY
+            }),
+            0.0,
+        )),
         Py::Bool(b) => Some((*b as i64 as f64, 0.0)),
         Py::Float(f) => Some((*f, 0.0)),
         _ => None,
@@ -1047,17 +1132,5 @@ pub(crate) fn complex_parts(v: &Py) -> Option<(f64, f64)> {
 
 /// `repr(complex)`.
 pub(crate) fn complex_repr(r: f64, i: f64) -> String {
-    let part = |x: f64| {
-        let s = py_float_repr(x);
-        s.strip_suffix(".0").map_or(s.clone(), str::to_string)
-    };
-    if r == 0.0 && r.is_sign_positive() {
-        return format!("{}j", part(i));
-    }
-    let sign = if i.is_sign_negative() || i.is_nan() && false {
-        ""
-    } else {
-        "+"
-    };
-    format!("({}{sign}{}j)", part(r), part(i))
+    pynum::complex::repr(pynum::complex::Complex64::new(r, i))
 }

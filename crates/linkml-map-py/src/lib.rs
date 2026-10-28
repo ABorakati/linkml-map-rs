@@ -68,8 +68,9 @@
 //! |-------------------|------------------|--------------------|
 //! | `None`            | `Null`           | `None`             |
 //! | `bool`            | `Bool`           | `bool`             |
-//! | `int`             | `Int` (`i64`)    | `int`              |
+//! | `int`             | `Int` (`i64`), `BigInt` beyond it | `int`   |
 //! | `float`           | `Float`          | `float`            |
+//! | `complex`         | `Complex`        | `complex`          |
 //! | `decimal.Decimal` | `Decimal`        | `decimal.Decimal`  |
 //! | `str`             | `Str`            | `str`              |
 //! | *(never built from Python)* | `Temporal` (YAML input) | `datetime.date` / `datetime.datetime` |
@@ -86,8 +87,9 @@
 //! non-finite `Decimal` (`NaN`, `Infinity`) has no exact form and is carried as
 //! its `str()`.
 //!
-//! The rules are those of the former `json.dumps(obj, default=str)` bridge:
-//! an `int` beyond `i64` becomes a float; a non-finite `float` becomes `None`
+//! The rules are those of the former `json.dumps(obj, default=str)` bridge,
+//! except that an `int` beyond `i64` stays an exact `int` (and a `complex`
+//! a `complex`) in both directions: a non-finite `float` becomes `None`
 //! on the way out and raises `ValueError` on the way in, as does nesting
 //! beyond 128 levels (`serde_json`'s old parse limit).
 //!
@@ -120,7 +122,8 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::{
-    PyBool, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple, PyType,
+    PyBool, PyComplex, PyDict, PyFloat, PyFrozenSet, PyInt, PyList, PySet, PyString, PyTuple,
+    PyType,
 };
 
 use linkml_map_core::{
@@ -161,7 +164,7 @@ fn decimal_type<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyType>> {
 /// and a `set` or `frozenset` a set ([`Value::Set`], iterating as the Python set
 /// does); a `dict` whose keys are all `str` is a record map and any other
 /// dict keeps its hashable keys ([`Value::Dict`]); an `int` beyond `i64`
-/// becomes a float; a non-finite float raises `ValueError`; a cyclic structure
+/// stays an exact integer and a `complex` a complex number; a non-finite float raises `ValueError`; a cyclic structure
 /// or nesting beyond 128 levels raises `ValueError`. Anything else is
 /// stringified with `str()` (`datetime.date`, `pathlib.Path`, ...), except
 /// `decimal.Decimal`, which stays exact as `Value::Decimal`.
@@ -186,12 +189,21 @@ fn py_to_value_at(
     if obj.is_instance_of::<PyInt>() {
         return Ok(match obj.extract::<i64>() {
             Ok(i) => Value::Int(i),
-            // Beyond `i64`: the JSON bridge parsed these as floats.
-            Err(_) => Value::Float(
-                obj.extract::<f64>()
-                    .map_err(|e| PyValueError::new_err(format!("Value conversion error: {e}")))?,
-            ),
+            // Beyond `i64`: Python's unbounded `int`, through its digits (so
+            // `str()`'s 4300-digit limit raises its own `ValueError`).
+            Err(_) => {
+                let digits: String = obj.str()?.extract()?;
+                let n = digits
+                    .parse::<linkml_map_core::pynum::BigInt>()
+                    .map_err(|e| PyValueError::new_err(format!("Value conversion error: {e}")))?;
+                Value::from_bigint(n)
+            }
         });
+    }
+    if let Ok(z) = obj.downcast::<PyComplex>() {
+        return Ok(Value::from_complex(
+            linkml_map_core::pynum::complex::Complex64::new(z.real(), z.imag()),
+        ));
     }
     if obj.is_instance_of::<PyFloat>() {
         let f: f64 = obj.extract()?;
@@ -288,6 +300,20 @@ fn value_to_bound<'py>(py: Python<'py>, val: &Value) -> PyResult<Bound<'py, PyAn
         Value::Null => py.None().into_bound(py),
         Value::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
         Value::Int(i) => i.into_pyobject(py)?.into_any(),
+        // `int.from_bytes` has no digit limit, unlike building the `int` from text.
+        Value::BigInt(n) => {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("signed", true)?;
+            py.get_type::<PyInt>().call_method(
+                "from_bytes",
+                (
+                    pyo3::types::PyBytes::new(py, &n.to_signed_bytes_le()),
+                    "little",
+                ),
+                Some(&kwargs),
+            )?
+        }
+        Value::Complex(z) => PyComplex::from_doubles(py, z.re, z.im).into_any(),
         Value::Float(f) if f.is_finite() => PyFloat::new(py, *f).into_any(),
         Value::Float(_) => py.None().into_bound(py),
         // `to_sci_string` is Python's `str(Decimal)`, so this rebuilds the

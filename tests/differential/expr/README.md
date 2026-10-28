@@ -87,7 +87,7 @@ shrink it as divergences are fixed.
 * **`sorted`** reproduces CPython 3.13's `count_run` and binary insertion exactly
   for fewer than 64 items (so NaNs land where CPython puts them); longer lists use
   a stable merge sort.
-* **Not ported:** big integers (`int(1e22)`), `text-unidecode`'s tables
+* **Not ported:** `text-unidecode`'s tables
   (Artistic/GPL, so `slugify` keeps `deunicode`), object identity (so `a | a` and
   `s.update(s)` on a set bound twice differ from CPython's identity special cases
   in the restricted evaluator; asteval keeps identity), `frozenset` (a plain set).

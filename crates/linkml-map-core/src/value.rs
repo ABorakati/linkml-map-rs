@@ -9,8 +9,13 @@ use indexmap::IndexMap;
 use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
+mod json;
+
 pub use crate::decimal::Decimal;
+use crate::pynum::complex::Complex64;
+use crate::pynum::{self, BigInt, IntRef};
 pub use crate::temporal::Temporal;
+pub use json::{parse_json, parse_json_bytes};
 
 mod containers;
 use crate::pyset::PySet;
@@ -20,7 +25,7 @@ pub use containers::{PyDict, PyKey, dict_value, json_key, set_value, simplejson_
 ///
 /// Objects (dicts) are represented as [`Value::Map`]; an unbound variable
 /// resolves to [`Value::Null`] rather than an error (SQL-style semantics).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 #[derive(Default)]
 pub enum Value {
@@ -62,6 +67,68 @@ pub enum Value {
     /// `json.dumps` would write.
     #[serde(serialize_with = "serialize_dict")]
     Dict(Box<PyDict>),
+    /// An integer outside `i64` (Python's `int` is unbounded). Only ever built
+    /// by [`Value::from_bigint`], which normalises: a value that fits `i64` is
+    /// an [`Value::Int`], so the two never overlap. A generic serialisation is
+    /// the decimal digits in a string; the writers spell it as a number.
+    #[serde(serialize_with = "serialize_bigint")]
+    BigInt(Box<BigInt>),
+    /// Python's `complex`, from `1j` literals and results such as
+    /// `(-8) ** 0.5`. Never read from data. A generic serialisation is its
+    /// `str()` text.
+    #[serde(serialize_with = "serialize_complex")]
+    Complex(Box<Complex64>),
+}
+
+// `Value` is moved and cloned on every row: a new variant must not widen it.
+const _: () = assert!(std::mem::size_of::<Value>() <= 72);
+
+fn serialize_bigint<S: serde::Serializer>(n: &BigInt, s: S) -> Result<S::Ok, S::Error> {
+    s.collect_str(n)
+}
+
+fn serialize_complex<S: serde::Serializer>(z: &Complex64, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&pynum::complex::repr(*z))
+}
+
+/// `Clone` with the scalar cases inline: every binding read and operand copy of
+/// the evaluator clones a `Value`, and the derived implementation (one arm per
+/// variant, including the boxed integers and the containers) is too big for the
+/// compiler to inline into those loops.
+impl Clone for Value {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Value::Null => Value::Null,
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Int(i) => Value::Int(*i),
+            Value::Float(f) => Value::Float(*f),
+            other => other.clone_heap(),
+        }
+    }
+}
+
+impl Value {
+    /// The rest of [`Clone::clone`]: variants that own heap data (or are large).
+    #[inline(never)]
+    fn clone_heap(&self) -> Value {
+        match self {
+            Value::Null => Value::Null,
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Int(i) => Value::Int(*i),
+            Value::Float(f) => Value::Float(*f),
+            Value::Decimal(d) => Value::Decimal(d.clone()),
+            Value::Temporal(t) => Value::Temporal(*t),
+            Value::Str(s) => Value::Str(s.clone()),
+            Value::List(items) => Value::List(items.clone()),
+            Value::Map(map) => Value::Map(map.clone()),
+            Value::BigInt(n) => Value::BigInt(n.clone()),
+            Value::Complex(z) => Value::Complex(z.clone()),
+            Value::Tuple(items) => Value::Tuple(items.clone()),
+            Value::Set(set) => Value::Set(set.clone()),
+            Value::Dict(dict) => Value::Dict(dict.clone()),
+        }
+    }
 }
 
 fn serialize_set<S: serde::Serializer>(set: &PySet<Value>, s: S) -> Result<S::Ok, S::Error> {
@@ -71,10 +138,6 @@ fn serialize_set<S: serde::Serializer>(set: &PySet<Value>, s: S) -> Result<S::Ok
 fn serialize_dict<S: serde::Serializer>(dict: &PyDict, s: S) -> Result<S::Ok, S::Error> {
     s.collect_map(dict.iter().map(|(k, v)| (containers::json_key(k), v)))
 }
-
-// `Value` is moved and cloned on every row: the new variants add nothing to its size (72 bytes before them), so
-// the size must not grow (box what is large).
-const _: () = assert!(std::mem::size_of::<Value>() <= 72);
 
 fn serialize_temporal<S: serde::Serializer>(t: &Temporal, s: S) -> Result<S::Ok, S::Error> {
     s.collect_str(t)
@@ -120,12 +183,19 @@ impl<'de> Visitor<'de> for ValueVisitor {
     }
 
     fn visit_u64<E: de::Error>(self, v: u64) -> Result<Value, E> {
-        // An integer beyond `i64` is not an `Int`; the next variant, `Float`,
-        // takes it (as the untagged derive's second attempt did).
+        // An integer beyond `i64` is a Python `int` still.
         Ok(match i64::try_from(v) {
             Ok(int) => Value::Int(int),
-            Err(_) => Value::Float(v as f64),
+            Err(_) => Value::BigInt(Box::new(BigInt::from(v))),
         })
+    }
+
+    fn visit_i128<E: de::Error>(self, v: i128) -> Result<Value, E> {
+        Ok(Value::from_bigint(BigInt::from(v)))
+    }
+
+    fn visit_u128<E: de::Error>(self, v: u128) -> Result<Value, E> {
+        Ok(Value::from_bigint(BigInt::from(v)))
     }
 
     fn visit_f64<E: de::Error>(self, v: f64) -> Result<Value, E> {
@@ -180,6 +250,9 @@ impl Value {
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
             Value::Decimal(d) => !d.is_zero(),
+            // Normalised, so never zero.
+            Value::BigInt(_) => true,
+            Value::Complex(z) => pynum::complex::is_truthy(**z),
             // A `datetime.date` is always truthy (a `datetime.time` is not a case here).
             Value::Temporal(_) => true,
             Value::Str(s) => !s.is_empty(),
@@ -209,6 +282,15 @@ impl Value {
             // PARITY: Python `float(Decimal)` works; arithmetic mixing a
             // Decimal with a float raises TypeError upstream, here it is numeric.
             Value::Decimal(d) => Some(d.to_f64()),
+            // The integer itself upstream; its nearest float here (`inf` beyond
+            // the float range, where Python's later `float()` would raise).
+            Value::BigInt(n) => Some(pynum::big_to_f64(n).unwrap_or(
+                if n.sign() == num_bigint::Sign::Minus {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                },
+            )),
             Value::Str(s) => parse_python_float(s),
             _ => None,
         }
@@ -265,6 +347,23 @@ impl From<IndexMap<String, Value>> for Value {
     }
 }
 
+/// The string standing for an integer beyond `u64` inside a `serde_json::Value`
+/// tree: its digits between U+0001 and U+0003 (the placeholder the JSON writers
+/// replace with a plain number, see `linkml-map-io::serialization`).
+fn bigint_sentinel(n: &BigInt) -> String {
+    format!("\u{1}{n}\u{3}")
+}
+
+/// The integer a [`bigint_sentinel`] string stands for.
+fn bigint_from_sentinel(s: &str) -> Option<BigInt> {
+    let digits = s.strip_prefix('\u{1}')?.strip_suffix('\u{3}')?;
+    let body = digits.strip_prefix('-').unwrap_or(digits);
+    if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<BigInt>().ok()
+}
+
 /// Convert a `serde_json::Value` reference into a [`Value`].
 /// Non-finite floats (NaN/±Inf) cannot appear in JSON but are mapped to `Value::Float`
 /// with the raw `f64` value if somehow constructed.
@@ -276,11 +375,16 @@ impl From<&serde_json::Value> for Value {
             serde_json::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     Value::Int(i)
+                } else if let Some(u) = n.as_u64() {
+                    Value::BigInt(Box::new(BigInt::from(u)))
                 } else {
                     Value::Float(n.as_f64().unwrap_or(f64::NAN))
                 }
             }
-            serde_json::Value::String(s) => Value::Str(s.clone()),
+            serde_json::Value::String(s) => match bigint_from_sentinel(s) {
+                Some(n) => Value::BigInt(Box::new(n)),
+                None => Value::Str(s.clone()),
+            },
             serde_json::Value::Array(arr) => Value::List(arr.iter().map(Value::from).collect()),
             serde_json::Value::Object(map) => Value::Map(
                 map.iter()
@@ -306,6 +410,14 @@ impl From<&Value> for serde_json::Value {
             // Lossless generic form: the exact text as a string. Exact numeric
             // output is the writers' job (see linkml-map-io).
             Value::Decimal(d) => serde_json::Value::String(d.to_sci_string()),
+            // A number while it fits `u64`; beyond that `serde_json::Value` has no
+            // number to hold it, so the digits travel in a sentinel string that
+            // `From<&serde_json::Value>` reads back (and the JSON writers restore).
+            Value::BigInt(n) => match u64::try_from(&**n) {
+                Ok(u) => serde_json::Value::Number(u.into()),
+                Err(_) => serde_json::Value::String(bigint_sentinel(n)),
+            },
+            Value::Complex(z) => serde_json::Value::String(pynum::complex::repr(**z)),
             // Generic form only; JSON *output* refuses these like upstream does.
             Value::Temporal(t) => serde_json::Value::String(t.to_string()),
             Value::Str(s) => serde_json::Value::String(s.clone()),
@@ -356,7 +468,47 @@ pub(crate) fn cmp_int_float(i: i64, f: f64) -> Option<Ordering> {
     }))
 }
 
+/// `complex == real`: the imaginary part is zero and the real part equals the
+/// number (`complex_richcompare`).
+fn complex_eq_real(z: &Complex64, other: &Value) -> bool {
+    if z.im != 0.0 {
+        return false;
+    }
+    match other {
+        Value::Bool(b) => z.re == f64::from(u8::from(*b)),
+        Value::Int(i) => cmp_int_float(*i, z.re) == Some(Ordering::Equal),
+        Value::BigInt(n) => pynum::big_eq_f64(n, z.re),
+        Value::Float(f) => z.re == *f,
+        _ => false,
+    }
+}
+
 impl Value {
+    /// The integer a [`Value::Int`] or [`Value::BigInt`] holds (a `bool` is not
+    /// one here).
+    pub fn as_int_ref(&self) -> Option<IntRef<'_>> {
+        match self {
+            Value::Int(i) => Some(IntRef::Small(*i)),
+            Value::BigInt(n) => Some(IntRef::Big(n)),
+            _ => None,
+        }
+    }
+
+    /// An integer result as a value: [`Value::Int`] when it fits `i64`, else
+    /// [`Value::BigInt`]. The only way a `BigInt` is built, so the two variants
+    /// never hold the same number.
+    pub fn from_bigint(n: BigInt) -> Value {
+        match i64::try_from(&n) {
+            Ok(i) => Value::Int(i),
+            Err(_) => Value::BigInt(Box::new(n)),
+        }
+    }
+
+    /// A complex number as a value.
+    pub fn from_complex(z: Complex64) -> Value {
+        Value::Complex(Box::new(z))
+    }
+
     /// Python-native equality between two values (used by `==` / `!=`).
     ///
     /// `None == "x"` is `False`; `None == None` is `True`; numeric types
@@ -373,6 +525,13 @@ impl Value {
             (Bool(a), Float(b)) | (Float(b), Bool(a)) => (if *a { 1.0 } else { 0.0 }) == *b,
             (Int(a), Float(b)) | (Float(b), Int(a)) => {
                 cmp_int_float(*a, *b) == Some(Ordering::Equal)
+            }
+            (BigInt(a), BigInt(b)) => a == b,
+            (BigInt(a), Float(b)) | (Float(b), BigInt(a)) => pynum::big_eq_f64(a, *b),
+            (Complex(a), Complex(b)) => pynum::complex::eq(**a, **b),
+            (Complex(z), other) | (other, Complex(z)) => complex_eq_real(z, other),
+            (BigInt(a), Decimal(b)) | (Decimal(b), BigInt(a)) => {
+                self::Decimal::parse_python(&a.to_string()).is_ok_and(|d| d == *b)
             }
             // Python compares a Decimal with int/bool/Decimal numerically and with
             // a float exactly (`Decimal("0.1") != 0.1`).
@@ -404,6 +563,8 @@ impl PartialEq for Value {
             (Bool(a), Bool(b)) => a == b,
             (Int(a), Int(b)) => a == b,
             (Float(a), Float(b)) => a == b,
+            (BigInt(a), BigInt(b)) => a == b,
+            (Complex(a), Complex(b)) => pynum::complex::eq(**a, **b),
             (Decimal(a), Decimal(b)) => a == b,
             (Temporal(a), Temporal(b)) => a == b,
             (Str(a), Str(b)) => a == b,
@@ -457,9 +618,7 @@ mod tests {
         "-42",
         "9223372036854775807",
         "-9223372036854775808",
-        // Beyond i64: a float, as the untagged derive's second attempt made it.
-        "9223372036854775808",
-        "18446744073709551615",
+        // Beyond `u64`: a float from `serde_json` itself (see `parse_json`).
         "18446744073709551616",
         "1.5",
         "-0.0",
@@ -513,6 +672,24 @@ mod tests {
     }
 
     #[test]
+    fn integers_beyond_i64_are_big_integers() {
+        for text in ["9223372036854775808", "18446744073709551615"] {
+            let v: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(format!("{v:?}"), format!("BigInt({text})"));
+            let via_value: Value =
+                serde_json::from_value(serde_json::from_str::<serde_json::Value>(text).unwrap())
+                    .unwrap();
+            assert_eq!(v, via_value);
+        }
+        // Normalised: a result inside `i64` is an `Int`.
+        assert_eq!(Value::from_bigint(BigInt::from(5)), Value::Int(5));
+        assert_eq!(
+            Value::from_bigint(BigInt::from(i64::MIN)),
+            Value::Int(i64::MIN)
+        );
+    }
+
+    #[test]
     fn map_order_and_nesting_are_kept() {
         let v: Value = serde_json::from_str(r#"{"z": 1, "a": {"y": [1, 2], "b": null}}"#).unwrap();
         let Value::Map(m) = v else { panic!("map") };
@@ -532,5 +709,21 @@ mod tests {
             serde_json::from_str::<Value>(&text).unwrap(),
             Value::Str(_)
         ));
+    }
+
+    #[test]
+    fn a_big_integer_survives_a_generic_json_tree() {
+        let digits = "1000000000000000000000000000000";
+        let big = Value::from_bigint(digits.parse::<BigInt>().unwrap());
+        let json = serde_json::Value::from(&big);
+        assert!(matches!(json, serde_json::Value::String(_)));
+        assert_eq!(Value::from(&json), big);
+        let neg = Value::from_bigint(format!("-{digits}").parse::<BigInt>().unwrap());
+        assert_eq!(Value::from(&serde_json::Value::from(&neg)), neg);
+        // An ordinary string that merely looks similar stays a string.
+        for s in [digits, "\u{1}12x\u{3}", "\u{1}\u{3}", "\u{1}-\u{3}"] {
+            let j = serde_json::Value::String(s.to_owned());
+            assert_eq!(Value::from(&j), Value::Str(s.to_owned()));
+        }
     }
 }

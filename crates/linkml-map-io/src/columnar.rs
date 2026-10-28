@@ -29,7 +29,9 @@ fn contains_decimal(value: &Value) -> bool {
         Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Str(_)
         | Value::Temporal(_)
         | Value::Set(_) => false,
@@ -56,7 +58,9 @@ fn decimals_as_strings(value: &Value) -> Value {
         scalar @ (Value::Null
         | Value::Bool(_)
         | Value::Int(_)
+        | Value::BigInt(_)
         | Value::Float(_)
+        | Value::Complex(_)
         | Value::Str(_)
         | Value::Temporal(_)
         | Value::Set(_)) => scalar.clone(),

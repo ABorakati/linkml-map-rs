@@ -1,5 +1,5 @@
 {"expr": "True * y", "bindings": {"y": []}, "mode": "restricted", "strict": false, "upstream": {"ok": []}, "status": "pass", "class": "bigint"}
-{"expr": "-9223372036854775808", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": -9223372036854775808}, "status": "divergence", "class": "bigint", "reason": "arbitrary-precision int vs i64 (literals above i64 become floats, overflow wraps or errors)"}
+{"expr": "-9223372036854775808", "bindings": {}, "mode": "unrestricted", "strict": false, "upstream": {"ok": -9223372036854775808}, "status": "pass", "class": "bigint"}
 {"expr": "0 << 1.5", "bindings": {}, "mode": "restricted", "strict": false, "upstream": {"err": "TypeError"}, "status": "pass", "class": "bitwise-on-float"}
 {"expr": "to_camel(t)", "bindings": {"t": ""}, "mode": "unrestricted", "strict": false, "upstream": {"err": "IndexError"}, "status": "divergence", "class": "decimal-or-unicode-numstr", "reason": "numeric strings with unicode digits / underscores / \\x1c-\\x1f whitespace coerce differently"}
 {"expr": "uuid5(z < z)", "bindings": {"z": []}, "mode": "restricted", "strict": false, "upstream": {"err": "TypeError"}, "status": "pass", "class": "decimal-or-unicode-numstr"}

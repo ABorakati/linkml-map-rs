@@ -6,6 +6,9 @@ use std::rc::Rc;
 
 use super::ast::{BinOp, CmpOp, UnaryOp};
 use super::value::*;
+use crate::pynum::complex::{self, Complex64};
+use crate::pynum::{self, BigInt, Bitwise, IntRef, NumError};
+use num_traits::Signed;
 
 /// `astutils.MAX_EXPONENT`.
 pub(crate) const MAX_EXPONENT: i64 = 10000;
@@ -14,19 +17,42 @@ pub(crate) const MAX_STR_LEN: i64 = 2 << 17;
 /// `astutils.MAX_SHIFT`.
 pub(crate) const MAX_SHIFT: i64 = 1000;
 
-fn int_overflow<T>() -> PyRes<T> {
-    overflow_err("integer result out of range (big integers are not supported)")
-}
-
 fn zero_div<T>(msg: &str) -> PyRes<T> {
     Err(exc("ZeroDivisionError", msg))
 }
 
+/// An integer or bool as an index or count; an integer beyond `i64` saturates
+/// (which clamps a slice bound as Python does and still fails an item index).
 fn is_int_like(v: &Py) -> Option<i64> {
     match v {
         Py::Bool(b) => Some(*b as i64),
         Py::Int(i) => Some(*i),
+        Py::BigInt(n) => Some(if n.sign() == num_bigint::Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        }),
         _ => None,
+    }
+}
+
+/// An integer or bool as an arithmetic operand.
+fn int_ref(v: &Py) -> Option<IntRef<'_>> {
+    match v {
+        Py::Bool(b) => Some(IntRef::Small(*b as i64)),
+        Py::Int(i) => Some(IntRef::Small(*i)),
+        Py::BigInt(n) => Some(IntRef::Big(n)),
+        _ => None,
+    }
+}
+
+/// The Python exception of a [`NumError`].
+pub(crate) fn num_err(e: NumError) -> Box<ExcObj> {
+    match e {
+        NumError::ZeroDivision(m) => exc("ZeroDivisionError", m),
+        NumError::Overflow(m) => exc("OverflowError", m),
+        NumError::Value(m) => exc("ValueError", m),
+        NumError::Memory => exc("MemoryError", ""),
     }
 }
 
@@ -74,26 +100,25 @@ pub(crate) fn float_floordiv(x: f64, y: f64) -> PyRes<f64> {
     Ok(floordiv)
 }
 
-fn pow_int(base: i64, exp: i64) -> PyRes<Py> {
-    if exp < 0 {
-        if base == 0 {
+fn pow_int(base: IntRef<'_>, exp: IntRef<'_>) -> PyRes<Py> {
+    if exp.is_negative() {
+        if base.is_zero() {
             return zero_div("0.0 cannot be raised to a negative power");
         }
-        return Ok(Py::Float((base as f64).powf(exp as f64)));
+        // `float(base) ** float(exp)`; an operand beyond float range overflows.
+        let (x, y) = (
+            pynum::to_f64(base).map_err(num_err)?,
+            pynum::to_f64(exp).map_err(num_err)?,
+        );
+        return pow_float(x, y);
     }
-    let mut result: i64 = 1;
-    let mut b = base;
-    let mut e = exp;
-    while e > 0 {
-        if e & 1 == 1 {
-            result = result.checked_mul(b).map_or_else(int_overflow, Ok)?;
-        }
-        e >>= 1;
-        if e > 0 {
-            b = b.checked_mul(b).map_or_else(int_overflow, Ok)?;
-        }
+    if let (IntRef::Small(b), IntRef::Small(e)) = (base, exp)
+        && let Ok(e) = u32::try_from(e)
+        && let Some(r) = b.checked_pow(e)
+    {
+        return Ok(Py::Int(r));
     }
-    Ok(Py::Int(result))
+    pynum::pow(base, exp).map(Py::from_big).map_err(num_err)
 }
 
 fn pow_float(x: f64, y: f64) -> PyRes<Py> {
@@ -101,8 +126,9 @@ fn pow_float(x: f64, y: f64) -> PyRes<Py> {
         return zero_div("0.0 cannot be raised to a negative power");
     }
     if x < 0.0 && y.is_finite() && y.fract() != 0.0 {
-        let (a, b) = (Py::Float(x), Py::Float(y));
-        return complex_binop(BinOp::Pow, (x, 0.0), (y, 0.0), &a, &b);
+        return complex::pow(Complex64::new(x, 0.0), Complex64::new(y, 0.0))
+            .map(|z| Py::Complex(z.re, z.im))
+            .map_err(num_err);
     }
     let r = x.powf(y);
     if r.is_infinite() && x.is_finite() && y.is_finite() {
@@ -126,9 +152,9 @@ fn repeat_len(len: usize, n: i64) -> PyRes<usize> {
 /// wrappers.
 pub(crate) fn binop(op: BinOp, a: &Py, b: &Py) -> PyRes<Py> {
     if (matches!(a, Py::Complex(..)) || matches!(b, Py::Complex(..)))
-        && let (Some(x), Some(y)) = (complex_parts(a), complex_parts(b))
+        && let (Some(x), Some(y)) = (complex_operand(a), complex_operand(b))
     {
-        return complex_binop(op, x, y, a, b);
+        return complex_binop(op, x?, y?, a, b);
     }
     match op {
         BinOp::Add => add(a, b),
@@ -160,8 +186,13 @@ fn add(a: &Py, b: &Py) -> PyRes<Py> {
     }
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(match (x, y) {
-            (NumV::I(x), NumV::I(y)) => Py::Int(x.checked_add(y).map_or_else(int_overflow, Ok)?),
-            (x, y) => Py::Float(to_f(x) + to_f(y)),
+            (NumV::I(x), NumV::I(y)) => match (x, y) {
+                (IntRef::Small(p), IntRef::Small(q)) => p
+                    .checked_add(q)
+                    .map_or_else(|| Py::from_big(pynum::add(x, y)), Py::Int),
+                _ => Py::from_big(pynum::add(x, y)),
+            },
+            (x, y) => Py::Float(to_f(x)? + to_f(y)?),
         });
     }
     match (a, b) {
@@ -196,10 +227,11 @@ fn add(a: &Py, b: &Py) -> PyRes<Py> {
     }
 }
 
-pub(crate) fn to_f(n: NumV) -> f64 {
+/// `float(n)`: an integer beyond the float range is an `OverflowError`.
+pub(crate) fn to_f(n: NumV) -> PyRes<f64> {
     match n {
-        NumV::I(i) => i as f64,
-        NumV::F(f) => f,
+        NumV::I(i) => pynum::to_f64(i).map_err(num_err),
+        NumV::F(f) => Ok(f),
     }
 }
 
@@ -217,8 +249,13 @@ fn set_binary(x: &Rf<PySet>, y: &Rf<PySet>, op: impl Fn(&PySet, &PySet) -> PySet
 fn sub(a: &Py, b: &Py) -> PyRes<Py> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(match (x, y) {
-            (NumV::I(x), NumV::I(y)) => Py::Int(x.checked_sub(y).map_or_else(int_overflow, Ok)?),
-            (x, y) => Py::Float(to_f(x) - to_f(y)),
+            (NumV::I(x), NumV::I(y)) => match (x, y) {
+                (IntRef::Small(p), IntRef::Small(q)) => p
+                    .checked_sub(q)
+                    .map_or_else(|| Py::from_big(pynum::sub(x, y)), Py::Int),
+                _ => Py::from_big(pynum::sub(x, y)),
+            },
+            (x, y) => Py::Float(to_f(x)? - to_f(y)?),
         });
     }
     if let (Py::Set(x), Py::Set(y)) = (a, b) {
@@ -230,8 +267,8 @@ fn sub(a: &Py, b: &Py) -> PyRes<Py> {
 
 fn mult(a: &Py, b: &Py) -> PyRes<Py> {
     // safe_mult
-    if let (Py::Str(s), Some(n)) = (a, is_int_like(b))
-        && (s.chars().count() as i128) * (n as i128) > MAX_STR_LEN as i128
+    if let (Py::Str(s), Some(n)) = (a, int_ref(b))
+        && (BigInt::from(s.chars().count()) * &*n.to_big()) > BigInt::from(MAX_STR_LEN)
     {
         return runtime_err(format!(
             "String length exceeded, max string length is {MAX_STR_LEN}"
@@ -239,11 +276,16 @@ fn mult(a: &Py, b: &Py) -> PyRes<Py> {
     }
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return Ok(match (x, y) {
-            (NumV::I(x), NumV::I(y)) => Py::Int(x.checked_mul(y).map_or_else(int_overflow, Ok)?),
-            (x, y) => Py::Float(to_f(x) * to_f(y)),
+            (NumV::I(x), NumV::I(y)) => match (x, y) {
+                (IntRef::Small(p), IntRef::Small(q)) => p
+                    .checked_mul(q)
+                    .map_or_else(|| Py::from_big(pynum::mul(x, y)), Py::Int),
+                _ => Py::from_big(pynum::mul(x, y)),
+            },
+            (x, y) => Py::Float(to_f(x)? * to_f(y)?),
         });
     }
-    let (seq, n) = match (a, is_int_like(a), b, is_int_like(b)) {
+    let (seq, n) = match (a, int_ref(a), b, int_ref(b)) {
         (_, _, _, Some(n)) if is_seq(a) => (a, n),
         (_, Some(n), _, _) if is_seq(b) => (b, n),
         _ => {
@@ -261,6 +303,10 @@ fn mult(a: &Py, b: &Py) -> PyRes<Py> {
             }
             return unsupported_operand("*", a, b);
         }
+    };
+    // A count that is no `ssize_t` cannot repeat anything.
+    let Some(n) = n.to_i64() else {
+        return overflow_err("cannot fit 'int' into an index-sized integer");
     };
     Ok(match seq {
         Py::Str(s) => {
@@ -298,16 +344,14 @@ fn is_seq(v: &Py) -> bool {
 
 fn div(a: &Py, b: &Py) -> PyRes<Py> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
-        let both_int = matches!((x, y), (NumV::I(_), NumV::I(_)));
-        let d = to_f(y);
-        if d == 0.0 {
-            return zero_div(if both_int {
-                "division by zero"
-            } else {
-                "float division by zero"
-            });
+        if let (NumV::I(p), NumV::I(q)) = (x, y) {
+            return pynum::true_div(p, q).map(Py::Float).map_err(num_err);
         }
-        return Ok(Py::Float(to_f(x) / d));
+        let (n, d) = (to_f(x)?, to_f(y)?);
+        if d == 0.0 {
+            return zero_div("float division by zero");
+        }
+        return Ok(Py::Float(n / d));
     }
     unsupported_operand("/", a, b)
 }
@@ -316,18 +360,20 @@ fn floordiv(a: &Py, b: &Py) -> PyRes<Py> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return match (x, y) {
             (NumV::I(x), NumV::I(y)) => {
-                if y == 0 {
-                    return zero_div("integer division or modulo by zero");
+                if let (IntRef::Small(p), IntRef::Small(q)) = (x, y)
+                    && q != 0
+                    && let Some(d) = p.checked_div(q)
+                {
+                    let r = p % q;
+                    return Ok(Py::Int(if r != 0 && ((r < 0) != (q < 0)) {
+                        d - 1
+                    } else {
+                        d
+                    }));
                 }
-                let q = x.checked_div(y).map_or_else(int_overflow, Ok)?;
-                let r = x % y;
-                Ok(Py::Int(if r != 0 && ((r < 0) != (y < 0)) {
-                    q - 1
-                } else {
-                    q
-                }))
+                pynum::floordiv(x, y).map(Py::from_big).map_err(num_err)
             }
-            (x, y) => Ok(Py::Float(float_floordiv(to_f(x), to_f(y))?)),
+            (x, y) => Ok(Py::Float(float_floordiv(to_f(x)?, to_f(y)?)?)),
         };
     }
     unsupported_operand("//", a, b)
@@ -337,17 +383,19 @@ fn modulo(a: &Py, b: &Py) -> PyRes<Py> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return match (x, y) {
             (NumV::I(x), NumV::I(y)) => {
-                if y == 0 {
-                    return zero_div("integer modulo by zero");
+                if let (IntRef::Small(p), IntRef::Small(q)) = (x, y)
+                    && q != 0
+                {
+                    let r = p.checked_rem(q).unwrap_or(0);
+                    return Ok(Py::Int(if r != 0 && ((r < 0) != (q < 0)) {
+                        r + q
+                    } else {
+                        r
+                    }));
                 }
-                let r = x.checked_rem(y).unwrap_or(0);
-                Ok(Py::Int(if r != 0 && ((r < 0) != (y < 0)) {
-                    r + y
-                } else {
-                    r
-                }))
+                pynum::modulo(x, y).map(Py::from_big).map_err(num_err)
             }
-            (x, y) => Ok(Py::Float(float_mod(to_f(x), to_f(y))?)),
+            (x, y) => Ok(Py::Float(float_mod(to_f(x)?, to_f(y)?)?)),
         };
     }
     if let Py::Str(fmt) = a {
@@ -357,10 +405,17 @@ fn modulo(a: &Py, b: &Py) -> PyRes<Py> {
 }
 
 fn pow(a: &Py, b: &Py) -> PyRes<Py> {
-    // safe_pow: `isinstance(exp, numbers.Number)`.
+    // PARITY: asteval `astutils.safe_pow` (`isinstance(exp, numbers.Number)`
+    // then `exp > MAX_EXPONENT`), so a complex exponent is the `TypeError` of
+    // `complex > int`; `safe_lshift` does the same with its count.
+    if let Py::Complex(..) = b {
+        return type_err("'>' not supported between instances of 'complex' and 'int'");
+    }
     if let Some(e) = as_num(b) {
         let too_big = match e {
-            NumV::I(i) => i > MAX_EXPONENT,
+            // An integer beyond `i64` is positive or negative: only the former is too big.
+            NumV::I(IntRef::Small(i)) => i > MAX_EXPONENT,
+            NumV::I(IntRef::Big(n)) => !n.is_negative(),
             NumV::F(f) => f > MAX_EXPONENT as f64,
         };
         if too_big {
@@ -370,7 +425,7 @@ fn pow(a: &Py, b: &Py) -> PyRes<Py> {
     if let (Some(x), Some(y)) = (as_num(a), as_num(b)) {
         return match (x, y) {
             (NumV::I(x), NumV::I(y)) => pow_int(x, y),
-            (x, y) => pow_float(to_f(x), to_f(y)),
+            (x, y) => pow_float(to_f(x)?, to_f(y)?),
         };
     }
     unsupported_operand("** or pow()", a, b)
@@ -378,44 +433,47 @@ fn pow(a: &Py, b: &Py) -> PyRes<Py> {
 
 fn lshift(a: &Py, b: &Py) -> PyRes<Py> {
     // safe_lshift
+    if let Py::Complex(..) = b {
+        return type_err("'>' not supported between instances of 'complex' and 'int'");
+    }
     if let Some(e) = as_num(b) {
         let too_big = match e {
-            NumV::I(i) => i > MAX_SHIFT,
+            NumV::I(IntRef::Small(i)) => i > MAX_SHIFT,
+            NumV::I(IntRef::Big(n)) => !n.is_negative(),
             NumV::F(f) => f > MAX_SHIFT as f64,
         };
         if too_big {
             return runtime_err(format!("Invalid left shift, max left shift is {MAX_SHIFT}"));
         }
     }
-    match (is_int_like(a), is_int_like(b)) {
+    match (int_ref(a), int_ref(b)) {
         (Some(x), Some(n)) => {
-            if n < 0 {
+            if n.is_negative() {
                 return value_err("negative shift count");
             }
-            if x == 0 {
-                return Ok(Py::Int(0));
+            if let (IntRef::Small(v), IntRef::Small(c)) = (x, n)
+                && c < 63
+                && let Some(r) = v.checked_shl(c as u32).filter(|r| (r >> c) == v)
+            {
+                return Ok(Py::Int(r));
             }
-            if n >= 63 {
-                return int_overflow();
-            }
-            let r = x.checked_shl(n as u32).filter(|r| (r >> n) == x);
-            r.map_or_else(int_overflow, |r| Ok(Py::Int(r)))
+            // The count is at most `MAX_SHIFT`.
+            let count = n.to_i64().unwrap_or(i64::MAX) as u64;
+            pynum::lshift(x, count).map(Py::from_big).map_err(num_err)
         }
         _ => unsupported_operand("<<", a, b),
     }
 }
 
 fn rshift(a: &Py, b: &Py) -> PyRes<Py> {
-    match (is_int_like(a), is_int_like(b)) {
+    match (int_ref(a), int_ref(b)) {
         (Some(x), Some(n)) => {
-            if n < 0 {
+            if n.is_negative() {
                 return value_err("negative shift count");
             }
-            Ok(Py::Int(if n >= 64 {
-                if x < 0 { -1 } else { 0 }
-            } else {
-                x >> n
-            }))
+            // A count beyond `i64` shifts everything out.
+            let count = n.to_i64().map_or(u64::MAX, |c| c as u64);
+            Ok(Py::from_big(pynum::rshift(x, count)))
         }
         _ => unsupported_operand(">>", a, b),
     }
@@ -434,12 +492,20 @@ fn bitop(op: BinOp, a: &Py, b: &Py) -> PyRes<Py> {
             _ => x ^ y,
         }));
     }
-    if let (Some(x), Some(y)) = (is_int_like(a), is_int_like(b)) {
-        return Ok(Py::Int(match op {
-            BinOp::BitAnd => x & y,
-            BinOp::BitOr => x | y,
-            _ => x ^ y,
-        }));
+    if let (Some(x), Some(y)) = (int_ref(a), int_ref(b)) {
+        if let (IntRef::Small(p), IntRef::Small(q)) = (x, y) {
+            return Ok(Py::Int(match op {
+                BinOp::BitAnd => p & q,
+                BinOp::BitOr => p | q,
+                _ => p ^ q,
+            }));
+        }
+        let kind = match op {
+            BinOp::BitAnd => Bitwise::And,
+            BinOp::BitOr => Bitwise::Or,
+            _ => Bitwise::Xor,
+        };
+        return Ok(Py::from_big(pynum::bitwise(kind, x, y)));
     }
     if let (Py::Set(x), Py::Set(y)) = (a, b) {
         let out = match op {
@@ -496,21 +562,27 @@ pub(crate) fn unaryop(op: UnaryOp, a: &Py) -> PyRes<Py> {
             let Py::Complex(r, i) = a else { unreachable!() };
             Ok(Py::Complex(-r, -i))
         }
+        UnaryOp::USub if matches!(a, Py::BigInt(_)) => Ok(Py::from_big(pynum::neg(
+            int_ref(a).unwrap_or(IntRef::Small(0)),
+        ))),
+        UnaryOp::Invert if matches!(a, Py::BigInt(_)) => Ok(Py::from_big(pynum::invert(
+            int_ref(a).unwrap_or(IntRef::Small(0)),
+        ))),
         UnaryOp::UAdd if matches!(a, Py::Complex(..)) => Ok(a.clone()),
         UnaryOp::USub => match a {
             Py::Bool(b) => Ok(Py::Int(-(*b as i64))),
-            Py::Int(i) => i
+            Py::Int(i) => Ok(i
                 .checked_neg()
-                .map_or_else(int_overflow, |v| Ok(Py::Int(v))),
+                .map_or_else(|| Py::from_big(pynum::neg(IntRef::Small(*i))), Py::Int)),
             Py::Float(f) => Ok(Py::Float(-f)),
             _ => type_err(format!("bad operand type for unary -: '{}'", a.type_name())),
         },
         UnaryOp::UAdd => match a {
             Py::Bool(b) => Ok(Py::Int(*b as i64)),
-            Py::Int(_) | Py::Float(_) => Ok(a.clone()),
+            Py::Int(_) | Py::BigInt(_) | Py::Float(_) => Ok(a.clone()),
             _ => type_err(format!("bad operand type for unary +: '{}'", a.type_name())),
         },
-        UnaryOp::Invert => match is_int_like(a) {
+        UnaryOp::Invert => match is_int_like(a).filter(|_| !matches!(a, Py::BigInt(_))) {
             Some(i) => Ok(Py::Int(!i)),
             None => type_err(format!("bad operand type for unary ~: '{}'", a.type_name())),
         },
@@ -1014,41 +1086,40 @@ pub(crate) fn deepcopy(v: &Py) -> Py {
     }
 }
 
-fn complex_binop(op: BinOp, x: (f64, f64), y: (f64, f64), a: &Py, b: &Py) -> PyRes<Py> {
-    let c = |r: f64, i: f64| Ok(Py::Complex(r, i));
+/// A number as a complex operand (an integer beyond the float range overflows).
+fn complex_operand(v: &Py) -> Option<PyRes<Complex64>> {
+    match v {
+        Py::Complex(r, i) => Some(Ok(Complex64::new(*r, *i))),
+        other => as_num(other).map(|n| to_f(n).map(|f| Complex64::new(f, 0.0))),
+    }
+}
+
+fn complex_binop(op: BinOp, x: Complex64, y: Complex64, a: &Py, b: &Py) -> PyRes<Py> {
+    let c = |z: Complex64| Ok(Py::Complex(z.re, z.im));
     match op {
-        BinOp::Add => c(x.0 + y.0, x.1 + y.1),
-        BinOp::Sub => c(x.0 - y.0, x.1 - y.1),
-        BinOp::Mult => c(x.0 * y.0 - x.1 * y.1, x.0 * y.1 + x.1 * y.0),
-        BinOp::Div => {
-            let d = y.0 * y.0 + y.1 * y.1;
-            if d == 0.0 {
-                return zero_div("division by zero");
-            }
-            c((x.0 * y.0 + x.1 * y.1) / d, (x.1 * y.0 - x.0 * y.1) / d)
-        }
+        BinOp::Add => c(Complex64::new(x.re + y.re, x.im + y.im)),
+        BinOp::Sub => c(Complex64::new(x.re - y.re, x.im - y.im)),
+        BinOp::Mult => c(complex::prod(x, y)),
+        BinOp::Div => c(complex::quot(x, y).map_err(num_err)?),
         BinOp::Pow => {
-            if y.0 > MAX_EXPONENT as f64 {
+            // `safe_pow` compares the exponent with `MAX_EXPONENT`: a complex one
+            // is a `TypeError`, a real one is checked.
+            if let Py::Complex(..) = b {
+                return type_err("'>' not supported between instances of 'complex' and 'int'");
+            }
+            if y.re > MAX_EXPONENT as f64 {
                 return runtime_err(format!("Invalid exponent, max exponent is {MAX_EXPONENT}"));
             }
-            if x == (0.0, 0.0) {
-                return if y == (0.0, 0.0) {
-                    c(1.0, 0.0)
-                } else {
-                    c(0.0, 0.0)
-                };
-            }
-            let (r, theta) = (x.0.hypot(x.1), x.1.atan2(x.0));
-            let (lr, li) = (r.ln(), theta);
-            let (er, ei) = (y.0 * lr - y.1 * li, y.0 * li + y.1 * lr);
-            let m = er.exp();
-            if m.is_infinite() {
-                return overflow_err("complex exponentiation");
-            }
-            c(m * ei.cos(), m * ei.sin())
+            c(complex::pow(x, y).map_err(num_err)?)
         }
         BinOp::FloorDiv => unsupported_operand("//", a, b),
         BinOp::Mod => unsupported_operand("%", a, b),
+        BinOp::LShift if matches!(b, Py::Complex(..)) => {
+            type_err("'>' not supported between instances of 'complex' and 'int'")
+        }
+        BinOp::LShift if y.re > MAX_SHIFT as f64 => {
+            runtime_err(format!("Invalid left shift, max left shift is {MAX_SHIFT}"))
+        }
         _ => {
             let sym = match op {
                 BinOp::LShift => "<<",

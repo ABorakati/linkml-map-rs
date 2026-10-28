@@ -22,6 +22,8 @@ use super::eval::type_name;
 use super::pyformat;
 use super::pystr;
 use super::pytables::{self, CASE_IGNORABLE, LOWERCASE, TITLECASE_LETTERS, UPPERCASE};
+use crate::pynum::complex::Complex64;
+use crate::pynum::{self, BigInt, IntRef};
 use crate::pyset::PySet;
 use crate::value::{PyDict, Value, dict_value, set_value};
 
@@ -113,6 +115,7 @@ const INT_METHODS: &[&str] = &[
     "is_integer",
     "to_bytes",
 ];
+const COMPLEX_METHODS: &[&str] = &["conjugate"];
 const FLOAT_METHODS: &[&str] = &[
     "as_integer_ratio",
     "conjugate",
@@ -125,8 +128,9 @@ const FLOAT_METHODS: &[&str] = &[
 pub(super) fn lookup(recv: &Value, name: &str) -> Lookup {
     let methods = match recv {
         Value::Str(_) => STR_METHODS,
-        Value::Int(_) | Value::Bool(_) => INT_METHODS,
+        Value::Int(_) | Value::BigInt(_) | Value::Bool(_) => INT_METHODS,
         Value::Float(_) => FLOAT_METHODS,
+        Value::Complex(_) => COMPLEX_METHODS,
         Value::Tuple(_) => TUPLE_METHODS,
         Value::Set(_) => SET_METHODS,
         _ => return Lookup::Missing,
@@ -136,9 +140,14 @@ pub(super) fn lookup(recv: &Value, name: &str) -> Lookup {
     }
     match (recv, name) {
         (Value::Int(i), "real" | "numerator") => Lookup::Data(Value::Int(*i)),
+        (Value::BigInt(n), "real" | "numerator") => Lookup::Data(Value::BigInt(n.clone())),
         (Value::Bool(b), "real" | "numerator") => Lookup::Data(Value::Int(i64::from(*b))),
-        (Value::Int(_) | Value::Bool(_), "imag") => Lookup::Data(Value::Int(0)),
-        (Value::Int(_) | Value::Bool(_), "denominator") => Lookup::Data(Value::Int(1)),
+        (Value::Int(_) | Value::BigInt(_) | Value::Bool(_), "imag") => Lookup::Data(Value::Int(0)),
+        (Value::Int(_) | Value::BigInt(_) | Value::Bool(_), "denominator") => {
+            Lookup::Data(Value::Int(1))
+        }
+        (Value::Complex(z), "real") => Lookup::Data(Value::Float(z.re)),
+        (Value::Complex(z), "imag") => Lookup::Data(Value::Float(z.im)),
         (Value::Float(f), "real") => Lookup::Data(Value::Float(*f)),
         (Value::Float(_), "imag") => Lookup::Data(Value::Float(0.0)),
         _ => Lookup::Missing,
@@ -252,10 +261,26 @@ impl Bound {
             Some(Value::Null) if none_ok => Ok(None),
             Some(Value::Int(n)) => Ok(Some(*n)),
             Some(Value::Bool(b)) => Ok(Some(i64::from(*b))),
+            Some(Value::BigInt(_)) => Err(ExprError::Uncaught(
+                "OverflowError: Python int too large to convert to C ssize_t".into(),
+            )),
             Some(other) => Err(type_error(format!(
                 "{method}() argument must be an integer, not '{}'",
                 python_type(other)
             ))),
+        }
+    }
+
+    /// A slice-style index (`start`/`end`): an integer beyond `i64` clamps, as
+    /// `_PyEval_SliceIndex` does, instead of overflowing.
+    fn index(&self, method: &str, i: usize) -> ExprResult<Option<i64>> {
+        match self.get(i) {
+            Some(Value::BigInt(n)) => Ok(Some(if n.sign() == num_bigint::Sign::Minus {
+                i64::MIN
+            } else {
+                i64::MAX
+            })),
+            _ => self.int(method, i, true),
         }
     }
 }
@@ -286,15 +311,25 @@ pub(super) fn call_method(
 ) -> ExprResult<Value> {
     match recv {
         Value::Str(s) => str_method(s, name, args, kwargs),
-        Value::Int(_) | Value::Bool(_) => {
+        Value::Int(_) | Value::BigInt(_) | Value::Bool(_) => {
             let n = match recv {
-                Value::Int(i) => i128::from(*i),
-                Value::Bool(b) => i128::from(*b),
+                Value::Int(i) => IntRef::Small(*i),
+                Value::Bool(b) => IntRef::Small(i64::from(*b)),
+                Value::BigInt(n) => IntRef::Big(n),
                 _ => unreachable!(),
             };
             int_method(n, matches!(recv, Value::Bool(_)), name, args, kwargs)
         }
         Value::Float(f) => float_method(*f, name, args, kwargs),
+        Value::Complex(z) => match name {
+            "conjugate" => {
+                no_args(name, &args, &kwargs)?;
+                Ok(Value::from_complex(Complex64::new(z.re, -z.im)))
+            }
+            _ => Err(type_error(format!(
+                "'complex' object has no method '{name}'"
+            ))),
+        },
         Value::List(items) => list_method(items, name, args, kwargs),
         Value::Tuple(items) => tuple_method(items, name, args, kwargs),
         Value::Set(set) => set_method(set, name, args, kwargs),
@@ -629,29 +664,32 @@ fn set_method(
 // === int and float =========================================================
 
 fn int_method(
-    n: i128,
+    n: IntRef<'_>,
     is_bool: bool,
     name: &str,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
 ) -> ExprResult<Value> {
-    let int = |v: i128| {
-        i64::try_from(v)
-            .map(Value::Int)
-            .map_err(|_| ExprError::big_int())
+    let value = |n: IntRef<'_>| match n {
+        IntRef::Small(i) => Value::Int(i),
+        IntRef::Big(b) => Value::from_bigint(b.clone()),
     };
     match name {
         "conjugate" => {
             no_args(name, &args, &kwargs)?;
-            int(n)
+            Ok(value(n))
         }
         "bit_length" => {
             no_args(name, &args, &kwargs)?;
-            int(i128::from(128 - n.unsigned_abs().leading_zeros()))
+            Ok(Value::from_bigint(BigInt::from(pynum::bit_length(
+                &n.to_big(),
+            ))))
         }
         "bit_count" => {
             no_args(name, &args, &kwargs)?;
-            int(i128::from(n.unsigned_abs().count_ones()))
+            Ok(Value::from_bigint(BigInt::from(pynum::bit_count(
+                &n.to_big(),
+            ))))
         }
         "is_integer" => {
             no_args(name, &args, &kwargs)?;
@@ -659,7 +697,7 @@ fn int_method(
         }
         "as_integer_ratio" => {
             no_args(name, &args, &kwargs)?;
-            Ok(Value::Tuple(vec![int(n)?, Value::Int(1)]))
+            Ok(Value::Tuple(vec![value(n), Value::Int(1)]))
         }
         // `to_bytes` yields bytes; `from_bytes` needs bytes, which no expression can build.
         "to_bytes" | "from_bytes" => {
@@ -750,23 +788,16 @@ fn float_ratio(f: f64) -> ExprResult<Value> {
     let trailing = mantissa.trailing_zeros() as i32;
     mantissa >>= trailing;
     exp += trailing;
-    let signed = |m: u64| i64::try_from(m).map(|m| if f < 0.0 { -m } else { m });
-    let numerator = signed(mantissa).map_err(|_| ExprError::big_int())?;
+    let numerator = BigInt::from(mantissa) * if f < 0.0 { -1 } else { 1 };
     if exp >= 0 {
-        let scaled = 1i128
-            .checked_shl(exp as u32)
-            .and_then(|s| i128::from(numerator).checked_mul(s))
-            .and_then(|v| i64::try_from(v).ok())
-            .ok_or_else(ExprError::big_int)?;
-        Ok(Value::Tuple(vec![Value::Int(scaled), Value::Int(1)]))
-    } else {
-        let denominator = 1i64
-            .checked_shl((-exp) as u32)
-            .filter(|d| *d > 0 && (-exp) < 63)
-            .ok_or_else(ExprError::big_int)?;
         Ok(Value::Tuple(vec![
-            Value::Int(numerator),
-            Value::Int(denominator),
+            Value::from_bigint(numerator << exp as usize),
+            Value::Int(1),
+        ]))
+    } else {
+        Ok(Value::Tuple(vec![
+            Value::from_bigint(numerator),
+            Value::from_bigint(BigInt::from(1) << (-exp) as usize),
         ]))
     }
 }
@@ -928,8 +959,8 @@ fn str_method(
                 args,
                 kwargs,
             )?;
-            let start = bound.int(name, 1, true)?;
-            let end = bound.int(name, 2, true)?;
+            let start = bound.index(name, 1)?;
+            let end = bound.index(name, 2)?;
             let chars: Vec<char> = s.chars().collect();
             let (start, end) = adjust_indices(chars.len(), start, end);
             let window: String = if start <= end {
@@ -981,11 +1012,8 @@ fn str_method(
             )?;
             let sub: Vec<char> = bound.str(name, 0)?.expect("required").chars().collect();
             let hay: Vec<char> = s.chars().collect();
-            let (start, end) = adjust_indices(
-                hay.len(),
-                bound.int(name, 1, true)?,
-                bound.int(name, 2, true)?,
-            );
+            let (start, end) =
+                adjust_indices(hay.len(), bound.index(name, 1)?, bound.index(name, 2)?);
             if name == "count" {
                 return count(count_sub(&hay, &sub, start, end));
             }

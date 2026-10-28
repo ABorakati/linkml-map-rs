@@ -1829,7 +1829,7 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Constant(match num {
                     Num::Int(i) => Const::Int(*i),
-                    Num::Big(s) => Const::BigInt(s.clone()),
+                    Num::Big(n) => Const::BigInt(n.clone()),
                     Num::Float(f) => Const::Float(*f),
                     Num::Imag(f) => Const::Complex(*f),
                 }))

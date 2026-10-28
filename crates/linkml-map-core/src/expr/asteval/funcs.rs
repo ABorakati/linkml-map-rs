@@ -10,7 +10,9 @@ use super::ops::*;
 use super::value::*;
 use crate::expr::builtins;
 use crate::pyfmt::py_float_repr;
+use crate::pynum::{self, BigInt, IntRef};
 use crate::value::Value;
+use num_traits::Signed;
 
 /// What built-ins need from the interpreter: calling a Python callable.
 pub(crate) trait Caller {
@@ -235,6 +237,7 @@ fn int_arg(v: &Py) -> PyRes<i64> {
     match v {
         Py::Int(i) => Ok(*i),
         Py::Bool(b) => Ok(*b as i64),
+        Py::BigInt(_) => overflow_err("Python int too large to convert to C ssize_t"),
         other => type_err(format!(
             "'{}' object cannot be interpreted as an integer",
             other.type_name()
@@ -245,6 +248,9 @@ fn int_arg(v: &Py) -> PyRes<i64> {
 fn real_arg(v: &Py) -> PyRes<f64> {
     match v {
         Py::Int(i) => Ok(*i as f64),
+        Py::BigInt(n) => {
+            pynum::big_to_f64(n).map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok)
+        }
         Py::Bool(b) => Ok(*b as i64 as f64),
         Py::Float(f) => Ok(*f),
         other => type_err(format!("must be real number, not {}", other.type_name())),
@@ -271,12 +277,14 @@ pub(crate) fn call_builtin(
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 1, 1)?;
             match &args[0] {
-                Py::Complex(r, i) => Ok(Py::Float(r.hypot(*i))),
+                Py::Complex(r, i) => pynum::complex::abs(pynum::complex::Complex64::new(*r, *i))
+                    .map(Py::Float)
+                    .map_err(super::ops::num_err),
                 Py::Bool(b) => Ok(Py::Int(*b as i64)),
-                Py::Int(i) => i.checked_abs().map_or_else(
-                    || overflow_err("integer result out of range"),
-                    |v| Ok(Py::Int(v)),
-                ),
+                Py::Int(i) => Ok(i
+                    .checked_abs()
+                    .map_or_else(|| Py::from_big(pynum::abs(IntRef::Small(*i))), Py::Int)),
+                Py::BigInt(n) => Ok(Py::from_big(pynum::abs(IntRef::Big(n)))),
                 Py::Float(f) => Ok(Py::Float(f.abs())),
                 other => type_err(format!(
                     "bad operand type for abs(): '{}'",
@@ -299,15 +307,25 @@ pub(crate) fn call_builtin(
         "bin" | "hex" | "oct" => {
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 1, 1)?;
-            let i = int_arg(&args[0])?;
+            let i = match &args[0] {
+                Py::Int(i) => BigInt::from(*i),
+                Py::Bool(b) => BigInt::from(*b),
+                Py::BigInt(n) => (**n).clone(),
+                other => {
+                    return type_err(format!(
+                        "'{}' object cannot be interpreted as an integer",
+                        other.type_name()
+                    ));
+                }
+            };
             let (p, body) = match name {
-                "bin" => ("0b", format!("{:b}", i.unsigned_abs())),
-                "hex" => ("0x", format!("{:x}", i.unsigned_abs())),
-                _ => ("0o", format!("{:o}", i.unsigned_abs())),
+                "bin" => ("0b", i.magnitude().to_str_radix(2)),
+                "hex" => ("0x", i.magnitude().to_str_radix(16)),
+                _ => ("0o", i.magnitude().to_str_radix(8)),
             };
             Ok(Py::str(format!(
                 "{}{p}{body}",
-                if i < 0 { "-" } else { "" }
+                if i.is_negative() { "-" } else { "" }
             )))
         }
         "chr" => {
@@ -403,7 +421,7 @@ pub(crate) fn call_builtin(
         "repr" => {
             no_kwargs(name, &kwargs)?;
             check_args(name, &args, 1, 1)?;
-            Ok(Py::str(repr(&args[0])))
+            Ok(Py::str(repr_checked(&args[0])?))
         }
         "round" => {
             check_args(name, &args, 1, 2)?;
@@ -557,6 +575,12 @@ fn py_hash(v: &Py) -> PyRes<i64> {
         Py::None => 0xFCA8_6420,
         Py::Bool(b) => *b as i64,
         Py::Int(i) => hash_int(*i as i128),
+        Py::BigInt(n) => pynum::hash(IntRef::Big(n)),
+        Py::Complex(r, i) => {
+            // `complex.__hash__`: `hash(real) + 1000003 * hash(imag)`.
+            let h = hash_float(*r).wrapping_add(hash_float(*i).wrapping_mul(1_000_003));
+            if h == -1 { -2 } else { h }
+        }
         Py::Float(f) => hash_float(*f),
         Py::Str(s) if s.is_empty() => 0,
         Py::Str(s) => {
@@ -612,7 +636,7 @@ fn instance_of(obj: &Py, t: &str) -> bool {
         (_, "object") => true,
         (Py::Type(_), "type") => true,
         (Py::Bool(_), "bool" | "int") => true,
-        (Py::Int(_), "int") => true,
+        (Py::Int(_) | Py::BigInt(_), "int") => true,
         (Py::Float(_), "float") => true,
         (Py::Complex(..), "complex") => true,
         (Py::Str(_), "str") => true,
@@ -687,17 +711,14 @@ fn min_max(c: &mut dyn Caller, name: &str, args: Vec<Py>, kwargs: Kwargs) -> PyR
 
 pub(crate) fn py_round(x: &Py, nd: Option<i64>) -> PyRes<Py> {
     match (x, nd) {
-        (Py::Int(i), None) => Ok(Py::Int(*i)),
+        (Py::Int(_) | Py::BigInt(_), None) => Ok(x.clone()),
         (Py::Bool(b), None) => Ok(Py::Int(*b as i64)),
-        (Py::Int(i), Some(n)) => match builtins::round_int(*i, n) {
-            Ok(Value::Int(v)) => Ok(Py::Int(v)),
-            Ok(_) => Ok(Py::Int(*i)),
-            Err(e) => Err(eval_err_to_exc(e, "OverflowError")),
-        },
-        (Py::Bool(b), Some(n)) => Ok(Py::Int(match builtins::round_int(*b as i64, n) {
-            Ok(Value::Int(v)) => v,
-            _ => *b as i64,
-        })),
+        (Py::Int(i), Some(n)) => Ok(round_to_py(builtins::round_int(IntRef::Small(*i), n))),
+        (Py::BigInt(i), Some(n)) => Ok(round_to_py(builtins::round_int(IntRef::Big(i), n))),
+        (Py::Bool(b), Some(n)) => Ok(round_to_py(builtins::round_int(
+            IntRef::Small(i64::from(*b)),
+            n,
+        ))),
         (Py::Float(f), None) => float_to_int(f.round_ties_even()),
         (Py::Float(f), Some(n)) => builtins::round_float(*f, n)
             .map(Py::Float)
@@ -706,6 +727,14 @@ pub(crate) fn py_round(x: &Py, nd: Option<i64>) -> PyRes<Py> {
             "type {} doesn't define __round__ method",
             other.type_name()
         )),
+    }
+}
+
+fn round_to_py(v: Value) -> Py {
+    match v {
+        Value::Int(i) => Py::Int(i),
+        Value::BigInt(n) => Py::BigInt(Rc::new(*n)),
+        _ => Py::Int(0),
     }
 }
 
@@ -719,7 +748,7 @@ pub(crate) fn float_to_int(f: f64) -> PyRes<Py> {
     if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f) {
         Ok(Py::Int(f as i64))
     } else {
-        overflow_err("integer result out of range (big integers are not supported)")
+        Ok(Py::from_big(pynum::float_to_bigint(f)))
     }
 }
 
@@ -819,39 +848,37 @@ fn py_sum(c: &mut dyn Caller, args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
     }
     let mut acc = start;
     // CPython's fast paths: exact ints, then floats with Neumaier compensation.
-    if matches!(acc, Py::Int(_) | Py::Bool(_)) {
-        let mut i_acc = match acc {
-            Py::Int(i) => i,
-            Py::Bool(b) => b as i64,
-            _ => 0,
+    if matches!(acc, Py::Int(_) | Py::Bool(_) | Py::BigInt(_)) {
+        let mut total = match &acc {
+            Py::Int(i) => BigInt::from(*i),
+            Py::Bool(b) => BigInt::from(*b),
+            Py::BigInt(n) => (**n).clone(),
+            _ => BigInt::default(),
         };
         loop {
             let Some(item) = it.next() else {
-                return Ok(Py::Int(i_acc));
+                return Ok(Py::from_big(total));
             };
             match &item {
-                Py::Int(_) | Py::Bool(_) => {
-                    let v = match item {
-                        Py::Int(i) => i,
-                        Py::Bool(b) => b as i64,
-                        _ => 0,
+                Py::Int(_) | Py::Bool(_) | Py::BigInt(_) => {
+                    let v = match &item {
+                        Py::Int(i) => BigInt::from(*i),
+                        Py::Bool(b) => BigInt::from(*b),
+                        Py::BigInt(n) => (**n).clone(),
+                        _ => BigInt::default(),
                     };
-                    i_acc = i_acc.checked_add(v).map_or_else(
-                        || {
-                            overflow_err(
-                                "integer result out of range (big integers are not supported)",
-                            )
-                        },
-                        Ok,
-                    )?;
+                    total += v;
                 }
                 Py::Float(_) => {
-                    acc = Py::Float(i_acc as f64);
+                    // `float(total)` for the accumulator (CPython adds the exact
+                    // sum of the integers so far).
+                    acc =
+                        Py::Float(pynum::to_f64(IntRef::Big(&total)).map_err(super::ops::num_err)?);
                     // fall into the float loop with this item pending
                     return sum_floats(it, acc, Some(item));
                 }
                 _ => {
-                    acc = binop(super::ast::BinOp::Add, &Py::Int(i_acc), &item)?;
+                    acc = binop(super::ast::BinOp::Add, &Py::from_big(total), &item)?;
                     break;
                 }
             }
@@ -1020,7 +1047,7 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
         "ceil" | "floor" | "trunc" => {
             check_args(name, args, 1, 1)?;
             match &args[0] {
-                Py::Int(i) => Ok(Py::Int(*i)),
+                Py::Int(_) | Py::BigInt(_) => Ok(args[0].clone()),
                 Py::Bool(b) => Ok(Py::Int(*b as i64)),
                 Py::Float(f) => float_to_int(match name {
                     "ceil" => f.ceil(),
@@ -1039,6 +1066,14 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
             let n = match &args[0] {
                 Py::Int(i) => *i,
                 Py::Bool(b) => *b as i64,
+                Py::BigInt(n) if n.is_negative() => {
+                    return value_err("factorial() not defined for negative values");
+                }
+                Py::BigInt(_) => {
+                    return overflow_err(
+                        "factorial() argument should not exceed 9223372036854775807",
+                    );
+                }
                 Py::Float(_) => {
                     return type_err("'float' object cannot be interpreted as an integer");
                 }
@@ -1052,14 +1087,12 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
             if n < 0 {
                 return value_err("factorial() not defined for negative values");
             }
-            let mut r: i64 = 1;
+            // Python computes the exact product; 21! is already beyond `i64`.
+            let mut r = BigInt::from(1);
             for k in 2..=n {
-                r = r.checked_mul(k).map_or_else(
-                    || overflow_err("integer result out of range (big integers are not supported)"),
-                    Ok,
-                )?;
+                r *= k;
             }
-            Ok(Py::Int(r))
+            Ok(Py::from_big(r))
         }
         "frexp" => {
             let x = one(args)?;
@@ -1232,7 +1265,7 @@ pub(crate) fn call_type(
                 };
             }
             match x {
-                Py::Int(_) => Ok(x.clone()),
+                Py::Int(_) | Py::BigInt(_) => Ok(x.clone()),
                 Py::Bool(b) => Ok(Py::Int(*b as i64)),
                 Py::Float(f) => float_to_int(f.trunc()),
                 Py::Str(s) => parse_int_py(s, 10),
@@ -1250,6 +1283,9 @@ pub(crate) fn call_type(
                 None => Ok(Py::Float(0.0)),
                 Some(Py::Float(f)) => Ok(Py::Float(*f)),
                 Some(Py::Int(i)) => Ok(Py::Float(*i as f64)),
+                Some(Py::BigInt(n)) => pynum::big_to_f64(n)
+                    .map(Py::Float)
+                    .map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok),
                 Some(Py::Bool(b)) => Ok(Py::Float(*b as i64 as f64)),
                 Some(Py::Str(s)) => crate::expr::pystr::float_from_str(s)
                     .map(Py::Float)
@@ -1275,7 +1311,7 @@ pub(crate) fn call_type(
                 Some(Py::Bytes(b)) if args.len() > 1 => {
                     Py::str(String::from_utf8_lossy(b).to_string())
                 }
-                Some(v) => Py::str(to_str(v)),
+                Some(v) => Py::str(to_str_checked(v)?),
             })
         }
         "bool" => {
@@ -1496,6 +1532,7 @@ fn no_kwargs_except(name: &str, kwargs: &Kwargs, allowed: &[&str]) -> PyRes<()> 
 fn parse_int_py(s: &str, base: i64) -> PyRes<Py> {
     match builtins::parse_int(s, base) {
         Ok(Value::Int(i)) => Ok(Py::Int(i)),
+        Ok(Value::BigInt(n)) => Ok(Py::BigInt(Rc::new(*n))),
         Ok(_) => Ok(Py::Int(0)),
         Err(e) => {
             let msg = match &e {

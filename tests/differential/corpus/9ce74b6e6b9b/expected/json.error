@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "cannot convert float infinity to integer; class_derivation=Person (from Person); slot_derivation=big (from big)"
+}

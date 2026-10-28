@@ -3,6 +3,8 @@
 
 use super::value::*;
 use crate::pyfmt::{py_float_repr, py_repr_str};
+use crate::pynum::{self, BigInt};
+use num_traits::{Signed, ToPrimitive};
 
 #[derive(Default)]
 struct Spec {
@@ -247,10 +249,14 @@ fn format_float_spec(x: f64, s: &Spec) -> PyRes<String> {
     Ok(pad(&body, sign_prefix, s, '>', true))
 }
 
-fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
+fn format_int_spec(i: &BigInt, s: &Spec, is_bool: bool) -> PyRes<String> {
     let ty = s.ty.unwrap_or('d');
     match ty {
-        'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%' => return format_float_spec(i as f64, s),
+        'e' | 'E' | 'f' | 'F' | 'g' | 'G' | '%' => {
+            let x = pynum::big_to_f64(i)
+                .map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok)?;
+            return format_float_spec(x, s);
+        }
         _ if s.precision.is_some() => {
             return value_err("Precision not allowed in integer format specifier");
         }
@@ -263,20 +269,21 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
         }
     }
     if ty == 'c' {
-        let c = u32::try_from(i).ok().and_then(char::from_u32);
+        let c = i.to_u32().and_then(char::from_u32);
         return match c {
             Some(c) => Ok(pad(&c.to_string(), "", s, '<', false)),
             None => overflow_err("%c arg not in range(0x110000)"),
         };
     }
-    let neg = i < 0;
-    let mag = i.unsigned_abs();
+    let neg = i.is_negative();
+    let mag = i.magnitude();
     let mut body = match ty {
-        'b' => format!("{mag:b}"),
-        'o' => format!("{mag:o}"),
-        'x' => format!("{mag:x}"),
-        'X' => format!("{mag:X}"),
-        _ => mag.to_string(),
+        'b' => mag.to_str_radix(2),
+        'o' => mag.to_str_radix(8),
+        'x' => mag.to_str_radix(16),
+        'X' => mag.to_str_radix(16).to_uppercase(),
+        // Decimal conversion has CPython's digit limit.
+        _ => pynum::big_to_string(&BigInt::from(mag.clone())).map_err(super::ops::num_err)?,
     };
     let prefix = if s.alt {
         match ty {
@@ -312,7 +319,7 @@ fn format_int_spec(i: i64, s: &Spec, is_bool: bool) -> PyRes<String> {
 /// `format(value, spec)`.
 pub(crate) fn format_value(v: &Py, spec: &str) -> PyRes<String> {
     if spec.is_empty() {
-        return Ok(to_str(v));
+        return to_str_checked(v);
     }
     let s = parse_spec(spec)?;
     match v {
@@ -343,14 +350,18 @@ pub(crate) fn format_value(v: &Py, spec: &str) -> PyRes<String> {
             };
             Ok(pad(&t, "", &s, '<', false))
         }
-        Py::Int(i) => format_int_spec(*i, &s, false),
+        Py::Int(i) => format_int_spec(&BigInt::from(*i), &s, false),
+        Py::BigInt(n) => format_int_spec(n, &s, false),
         Py::Bool(b) => {
             if s.ty.is_none() {
                 return Ok(pad(if *b { "True" } else { "False" }, "", &s, '<', false));
             }
-            format_int_spec(*b as i64, &s, true)
+            format_int_spec(&BigInt::from(*b), &s, true)
         }
         Py::Float(f) => format_float_spec(*f, &s),
+        Py::Complex(re, im) => {
+            crate::expr::pyformat_complex(*re, *im, spec).map_or_else(value_err, Ok)
+        }
         other => type_err(format!(
             "unsupported format string passed to {}.__format__",
             other.type_name()
@@ -514,9 +525,9 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
         let piece = match conv {
             's' | 'r' | 'a' => {
                 let t = if conv == 's' {
-                    to_str(&arg)
+                    to_str_checked(&arg)?
                 } else {
-                    repr(&arg)
+                    repr_checked(&arg)?
                 };
                 let t: String = match precision {
                     Some(p) => t.chars().take(p).collect(),
@@ -535,9 +546,16 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
             }
             'd' | 'i' | 'u' => {
                 let n = match &arg {
-                    Py::Int(n) => *n,
-                    Py::Bool(b) => *b as i64,
-                    Py::Float(f) => f.trunc() as i64,
+                    Py::Int(n) => BigInt::from(*n),
+                    Py::BigInt(n) => (**n).clone(),
+                    Py::Bool(b) => BigInt::from(*b),
+                    Py::Float(f) if f.is_finite() => pynum::float_to_bigint(*f),
+                    Py::Float(f) if f.is_nan() => {
+                        return value_err("cannot convert float NaN to integer");
+                    }
+                    Py::Float(_) => {
+                        return overflow_err("cannot convert float infinity to integer");
+                    }
                     other => {
                         return pct_err(format!(
                             "%{conv} format: a real number is required, not {}",
@@ -546,7 +564,7 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
                     }
                 };
                 format_int_spec(
-                    n,
+                    &n,
                     &Spec {
                         ty: Some('d'),
                         precision: None,
@@ -557,8 +575,9 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
             }
             'o' | 'x' | 'X' => {
                 let n = match &arg {
-                    Py::Int(n) => *n,
-                    Py::Bool(b) => *b as i64,
+                    Py::Int(n) => BigInt::from(*n),
+                    Py::BigInt(n) => (**n).clone(),
+                    Py::Bool(b) => BigInt::from(*b),
                     other => {
                         return pct_err(format!(
                             "%{conv} format: an integer is required, not {}",
@@ -567,7 +586,7 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
                     }
                 };
                 format_int_spec(
-                    n,
+                    &n,
                     &Spec {
                         ty: Some(conv),
                         precision: None,
@@ -579,6 +598,8 @@ pub(crate) fn percent_format(fmt: &str, args: &Py) -> PyRes<String> {
             'e' | 'E' | 'f' | 'F' | 'g' | 'G' => {
                 let x = match &arg {
                     Py::Int(n) => *n as f64,
+                    Py::BigInt(n) => pynum::big_to_f64(n)
+                        .map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok)?,
                     Py::Bool(b) => *b as i64 as f64,
                     Py::Float(f) => *f,
                     other => {

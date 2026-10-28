@@ -15,6 +15,8 @@ pub enum FuzzValue {
     Null,
     Bool(bool),
     Int(i64),
+    /// Digits of an integer of any size (anything else is 0).
+    BigInt(String),
     Float(f64),
     Decimal(String),
     /// A `datetime.date` / `datetime.datetime` from timestamp text (a fixed date if invalid).
@@ -30,6 +32,12 @@ impl FuzzValue {
             FuzzValue::Null => Value::Null,
             FuzzValue::Bool(b) => Value::Bool(b),
             FuzzValue::Int(i) => Value::Int(i),
+            FuzzValue::BigInt(s) => Value::from_bigint(
+                // Within CPython's 4300-digit limit, as the readers enforce.
+                s.get(..s.len().min(4_000))
+                    .and_then(|t| t.parse::<linkml_map_core::pynum::BigInt>().ok())
+                    .unwrap_or_default(),
+            ),
             FuzzValue::Float(f) => Value::Float(f),
             FuzzValue::Decimal(s) => {
                 let d = Decimal::parse_python(&s).unwrap_or_else(|_| Decimal::from_i64(0));
