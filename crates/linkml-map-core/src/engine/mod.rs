@@ -301,6 +301,11 @@ pub struct ObjectTransformer<'s> {
     /// `slot()` references instead of silently yielding null (#232). Default
     /// false (lax). Set via [`with_strict_exprs`].
     strict: bool,
+    /// When true, the rows of a block were joined up front, as upstream's set-based
+    /// join engine does: every join of the block (and of its nested derivations) is
+    /// resolved from the primary row into a `MergedRow` before the row is mapped.
+    /// Set via [`with_prejoined_joins`].
+    prejoined: bool,
     /// When true, `expr:` may use the unrestricted (asteval-style) evaluator:
     /// statement blocks with `src`, and the fallback for an expression the
     /// restricted evaluator rejects. Default false (restricted), as upstream
@@ -350,6 +355,7 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            prejoined: false,
             unrestricted_eval: false,
             target_coercions: None,
             resolved_derivations: None,
@@ -380,6 +386,7 @@ impl<'s> ObjectTransformer<'s> {
             compiled: None,
             lookup_index: None,
             strict: false,
+            prejoined: false,
             unrestricted_eval: false,
             target_coercions: None,
             resolved_derivations: None,
@@ -448,6 +455,17 @@ impl<'s> ObjectTransformer<'s> {
     /// (once-per-value) warning. Default lax. Mirrors upstream `strict`.
     pub fn with_strict_exprs(mut self, strict: bool) -> Self {
         self.strict = strict;
+        self
+    }
+
+    /// Declare that the rows of a block with `joins:` are read by upstream's set-based
+    /// join engine (`join_engine.transform_block_via_join`): the row is mapped as a
+    /// `MergedRow` that already holds the row of every join of the block, found by the
+    /// primary row's key, so a nested `class_derivations` resolves its joins from the
+    /// primary row rather than from the merged parent. Applies to a call that names its
+    /// class derivation ([`ObjectTransformer::map_object_with_derivation`]).
+    pub fn with_prejoined_joins(mut self, prejoined: bool) -> Self {
+        self.prejoined = prejoined;
         self
     }
 
@@ -649,7 +667,23 @@ impl<'s> ObjectTransformer<'s> {
 
         let mut tgt_attrs: IndexMap<String, Value> =
             IndexMap::with_capacity(slot_derivations.len());
-        let row = RowBindings::default();
+        // PARITY: `transform_block_via_join` hands `map_object` a `MergedRow` of the
+        // primary row with the rows of all the block's joins (`primary = class_deriv
+        // .populated_from or class_deriv.name`).
+        let prejoin = (self.prejoined && class_derivation.is_some()).then(|| {
+            let primary = class_deriv
+                .populated_from
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(class_deriv.name.as_str());
+            MergedRow::prejoin(self, primary, source_map, class_deriv)
+        });
+        let row = RowBindings(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            prejoin.as_ref(),
+        );
 
         for (_, slot_deriv) in slot_derivations {
             let slot_name = slot_deriv.name.as_str();
@@ -1542,7 +1576,10 @@ impl<'s> ObjectTransformer<'s> {
                 // A merged row that holds the join's row hands it over (the pre-joined
                 // fast path of `_resolve_joined_row`).
                 if let Some(joined) = merged.and_then(|m| m.table(alias)) {
-                    bindings.insert(alias.clone(), Value::Map(joined.clone()));
+                    bindings.insert(
+                        alias.clone(),
+                        joined.map_or(Value::Null, |row| Value::Map(row.clone())),
+                    );
                     continue;
                 }
                 let row = self.lookup_index.as_deref().and_then(|li| {
@@ -1699,6 +1736,7 @@ impl<'s> ObjectTransformer<'s> {
         // is not worth paying for every expression.
         if let Some(m) = row.3 {
             for (table, original) in m.tables() {
+                let Some(original) = original else { continue };
                 if !bindings.contains_key(*table)
                     && !m.is_ambiguous(table)
                     && expr.contains(table)

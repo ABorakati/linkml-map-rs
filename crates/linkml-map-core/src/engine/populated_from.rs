@@ -79,7 +79,10 @@ impl<'s> ObjectTransformer<'s> {
             // A merged row that holds the table's row hands it over as it is
             // (`_resolve_joined_row`'s pre-joined fast path).
             let v = match merged.and_then(|m| m.table(table_name)) {
-                Some(row) => row.get(field_path).cloned().unwrap_or(Value::Null),
+                Some(row) => row
+                    .and_then(|row| row.get(field_path))
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 None => self.resolve_join_value(table_name, field_path, ac, source_map)?,
             };
             // PARITY: `_perform_join_resolution` looks the slot up with
@@ -93,6 +96,11 @@ impl<'s> ObjectTransformer<'s> {
         }
         if let Some(row) = merged.and_then(|m| m.table(table_name)) {
             // A table of the merged row: `rows_by_table[table].get(field)`.
+            let Some(row) = row else {
+                return Err(Error::Python(
+                    "AttributeError: 'NoneType' object has no attribute 'get'".to_owned(),
+                ));
+            };
             // PARITY: the slot is `induced_slot(field, table)` when the table is a
             // class of the source schema (which raises for a field it lacks), else none.
             let slot = match self.source_schema {

@@ -1,0 +1,16 @@
+id: p1
+inner:
+  a: o1
+  b: o1
+  sz: 5
+---
+id: p2
+inner:
+  a: o2
+  b: o2
+  sz: 7
+---
+id: p3
+---
+id: p4
+---

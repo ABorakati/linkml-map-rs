@@ -42,7 +42,8 @@ pub(super) struct MergedRow<'a> {
     pub(super) ambiguous: Option<Arc<[String]>>,
     /// The original row of each table merged so far, parent first
     /// (upstream's `rows_by_table`).
-    rows_by_table: Vec<(&'a str, &'a IndexMap<String, Value>)>,
+    /// A table with no row (a miss of the set-based engine's `LEFT JOIN`) is `None`.
+    rows_by_table: Vec<(&'a str, Option<&'a IndexMap<String, Value>>)>,
 }
 
 impl<'a> MergedRow<'a> {
@@ -92,13 +93,14 @@ impl<'a> MergedRow<'a> {
         // place and takes the new row.
         // `{parent_source: parent_row}` is the start only for a parent that is no merge;
         // a merge carries its own tables.
-        let mut rows_by_table: Vec<(&'a str, &'a IndexMap<String, Value>)> = match parent_merged {
-            Some(m) => m.rows_by_table.clone(),
-            None => vec![(parent_source, parent)],
-        };
+        let mut rows_by_table: Vec<(&'a str, Option<&'a IndexMap<String, Value>>)> =
+            match parent_merged {
+                Some(m) => m.rows_by_table.clone(),
+                None => vec![(parent_source, Some(parent))],
+            };
         match rows_by_table.iter_mut().find(|(t, _)| *t == nested_source) {
-            Some(entry) => entry.1 = joined_row,
-            None => rows_by_table.push((nested_source, joined_row)),
+            Some(entry) => entry.1 = Some(joined_row),
+            None => rows_by_table.push((nested_source, Some(joined_row))),
         }
         Self {
             map,
@@ -114,16 +116,77 @@ impl<'a> MergedRow<'a> {
             .is_some_and(|names| names.iter().any(|n| n == name))
     }
 
-    /// The original row of `table` (upstream `rows_by_table[table]`).
-    pub(super) fn table(&self, table: &str) -> Option<&'a IndexMap<String, Value>> {
+    /// `rows_by_table[table]`: `None` when the table is not one of the merged row's
+    /// (`table in rows_by_table` is false), `Some(None)` when it is but had no row.
+    pub(super) fn table(&self, table: &str) -> Option<Option<&'a IndexMap<String, Value>>> {
         self.rows_by_table
             .iter()
             .find_map(|(t, row)| (*t == table).then_some(*row))
     }
 
     /// The tables whose original rows are available, with those rows.
-    pub(super) fn tables(&self) -> &[(&'a str, &'a IndexMap<String, Value>)] {
+    pub(super) fn tables(&self) -> &[(&'a str, Option<&'a IndexMap<String, Value>>)] {
         &self.rows_by_table
+    }
+
+    /// The `MergedRow(primary_row, rows_by_table=...)` of the set-based join engine
+    /// (`join_engine.transform_block_via_join`): the primary row and, for every join of
+    /// the block and of its nested derivations, the row its `source_key` finds, or none.
+    ///
+    /// The row is read through the engine's `source_map`; this value only carries the
+    /// tables, so its [`map`](Self::map) is empty and nothing is ambiguous.
+    pub(super) fn prejoin(
+        engine: &'a ObjectTransformer<'_>,
+        primary: &'a str,
+        row: &'a IndexMap<String, Value>,
+        class_deriv: &'a ClassDerivation,
+    ) -> Self {
+        let mut rows_by_table: Vec<(&'a str, Option<&'a IndexMap<String, Value>>)> =
+            vec![(primary, Some(row))];
+        let mut joins: Vec<(&'a str, &'a crate::datamodel::AliasedClass)> = Vec::new();
+        collect_joins(class_deriv, &mut joins);
+        for (name, ac) in joins {
+            let joined = join_source_key(ac)
+                .and_then(|key| row.get(key))
+                .and_then(|key| match key {
+                    Value::Str(s) => Some(s.clone()),
+                    Value::Int(i) => Some(i.to_string()),
+                    Value::BigInt(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .and_then(|key| {
+                    let table = ac.class_named.as_deref().unwrap_or(name);
+                    engine.lookup_index.as_deref()?.lookup_row(table, &key)
+                });
+            // `rows_by_table[table] = ...` for each join, after the primary's own entry.
+            match rows_by_table.iter_mut().find(|(t, _)| *t == name) {
+                Some(entry) => entry.1 = joined,
+                None => rows_by_table.push((name, joined)),
+            }
+        }
+        Self {
+            map: IndexMap::new(),
+            ambiguous: None,
+            rows_by_table,
+        }
+    }
+}
+
+/// `join_engine._collect_joins`: this derivation's joins and its nested derivations',
+/// keyed by join name; a name already seen keeps its first spec.
+fn collect_joins<'a>(
+    class_deriv: &'a ClassDerivation,
+    acc: &mut Vec<(&'a str, &'a crate::datamodel::AliasedClass)>,
+) {
+    for (name, join) in class_deriv.joins.iter().flatten() {
+        if !acc.iter().any(|(seen, _)| seen == name) {
+            acc.push((name, join));
+        }
+    }
+    for (_, slot_deriv) in class_deriv.slot_derivations.iter().flatten() {
+        for nested in slot_deriv.class_derivations.iter().flatten() {
+            collect_joins(nested, acc);
+        }
     }
 }
 
@@ -155,8 +218,9 @@ impl ObjectTransformer<'_> {
         merged: Option<&MergedRow<'r>>,
         class_deriv: &ClassDerivation,
     ) -> Result<Option<&'r IndexMap<String, Value>>> {
+        // `table_name in source_obj.rows_by_table`: a table the merge holds, row or not.
         if let Some(row) = merged.and_then(|m| m.table(table_name)) {
-            return Ok(Some(row));
+            return Ok(row);
         }
         let Some(ac) = class_deriv
             .joins

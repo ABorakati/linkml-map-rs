@@ -1,0 +1,4 @@
+{"id": "p1", "inner": {"sz": 5, "deep": {"nm": "Norway", "pl": "pl1", "ol": "ol1", "lbl": "cl1"}}}
+{"id": "p2", "inner": {"sz": 7, "deep": {"nm": "Sweden", "pl": "pl2", "ol": "ol2", "lbl": "cl2"}}}
+{"id": "p3"}
+{"id": "p4"}

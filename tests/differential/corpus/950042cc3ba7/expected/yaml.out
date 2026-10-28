@@ -1,0 +1,20 @@
+id: p1
+inner:
+  a: pl1
+  sz: 30
+---
+id: p2
+inner:
+  a: pl2
+  sz: 40
+---
+id: p3
+inner:
+  a: pl3
+  sz: 50
+---
+id: p4
+inner:
+  a: pl4
+  sz: 60
+---

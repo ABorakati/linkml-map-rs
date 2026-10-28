@@ -1,0 +1,18 @@
+id: p1
+inner:
+  a: ol1pl1
+  b: '35'
+  dbl: 10
+  sz: 5
+---
+id: p2
+inner:
+  a: ol2pl2
+  b: '47'
+  dbl: 14
+  sz: 7
+---
+id: p3
+---
+id: p4
+---

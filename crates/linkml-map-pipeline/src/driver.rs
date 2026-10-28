@@ -453,6 +453,7 @@ async fn stream_segment(
     // join engine, which reads the primary table through DuckDB (see `join_rows`) and whose
     // query returns the primary rows in DuckDB's probe order.
     let engine = JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup.as_ref());
+    let prejoined = engine.is_some();
     let mut source_stream = match &engine {
         Some(engine) => engine.primary_stream(seg).await,
         None => open_stream(plan, seg).await,
@@ -510,7 +511,7 @@ async fn stream_segment(
             // Back-pressure the dispatcher when all worker slots are busy.
             let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
             tokio::task::spawn_blocking(move || {
-                let result = plan3.transform_segment(&seg3, row, lookup3.as_ref());
+                let result = plan3.transform_segment(&seg3, row, lookup3.as_ref(), prejoined);
                 // Best-effort send; if the receiver dropped, ignore.
                 let _ = res_tx3.blocking_send((seq, result));
                 drop(permit); // free the slot when this row is done
@@ -606,6 +607,8 @@ async fn stream_segment(
 struct FkBlock {
     rows: Vec<Value>,
     index: Arc<ObjectIndex>,
+    /// Whether upstream's set-based join engine reads the block (see [`JoinEngine`]).
+    prejoined: bool,
 }
 
 /// FK resolution is NOT row-streamable: the referenced collection may appear
@@ -640,10 +643,9 @@ async fn load_fk_block(
     ));
     // PARITY: as in `stream_segment`, upstream's set-based join engine returns the rows of a
     // block with joins in DuckDB's probe order, whether or not a foreign key is also followed.
-    let rows = match (
-        JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup),
-        lookup,
-    ) {
+    let engine = JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup);
+    let prejoined = engine.is_some();
+    let rows = match (engine, lookup) {
         (Some(engine), Some(lookup)) => {
             let rows = engine.primary_stream(seg).await?;
             engine
@@ -653,7 +655,11 @@ async fn load_fk_block(
         }
         _ => rows,
     };
-    Ok(FkBlock { rows, index })
+    Ok(FkBlock {
+        rows,
+        index,
+        prejoined,
+    })
 }
 
 /// Run `work` on the sized rayon pool when there is one, else the global pool.
@@ -672,7 +678,11 @@ async fn fk_values_segment(
     lookup: Option<Arc<LookupIndex>>,
     sink: &mut Sink,
 ) -> Result<SegmentStats> {
-    let FkBlock { rows, index } = load_fk_block(input, seg, lookup.as_ref()).await?;
+    let FkBlock {
+        rows,
+        index,
+        prejoined,
+    } = load_fk_block(input, seg, lookup.as_ref()).await?;
     let rows_in = rows.len();
     let (plan, seg2, pool) = (
         Arc::clone(&input.plan),
@@ -683,7 +693,15 @@ async fn fk_values_segment(
         use rayon::prelude::*;
         install(&pool, || {
             rows.par_iter()
-                .map(|row| plan.transform_segment_with_index(&seg2, row, &index, lookup.as_ref()))
+                .map(|row| {
+                    plan.transform_segment_with_index(
+                        &seg2,
+                        row,
+                        &index,
+                        lookup.as_ref(),
+                        prejoined,
+                    )
+                })
                 .collect()
         })
     })
@@ -724,7 +742,11 @@ async fn fk_jsonl_segment(
     let Sink::Jsonl(buf) = sink else {
         anyhow::bail!("internal error: JSONL strategy without a JSONL sink");
     };
-    let FkBlock { rows, index } = load_fk_block(input, seg, lookup.as_ref()).await?;
+    let FkBlock {
+        rows,
+        index,
+        prejoined,
+    } = load_fk_block(input, seg, lookup.as_ref()).await?;
     let rows_in = rows.len();
     let (plan, seg2, pool) = (
         Arc::clone(&input.plan),
@@ -738,7 +760,13 @@ async fn fk_jsonl_segment(
             rows.par_iter()
                 .enumerate()
                 .map(|(i, row)| {
-                    match plan.transform_segment_with_index(&seg2, row, &index, lookup.as_ref()) {
+                    match plan.transform_segment_with_index(
+                        &seg2,
+                        row,
+                        &index,
+                        lookup.as_ref(),
+                        prejoined,
+                    ) {
                         Ok(v) => jsonl_line(&v).map_err(|e| eprintln!("{e}")).ok(),
                         Err(e) => {
                             eprintln!("{}: {e:#}", seg2.error_context(&plan, i));
@@ -854,7 +882,8 @@ fn parse_transform_serialize(
             return None;
         }
     };
-    match plan.transform_segment(seg, v, lookup) {
+    // A JSONL table is never read by the set-based join engine.
+    match plan.transform_segment(seg, v, lookup, false) {
         Ok(out) => jsonl_line(&out).map_err(|e| eprintln!("{e}")).ok(),
         Err(e) => {
             eprintln!("{}: {e:#}", seg.error_context(plan, row));
