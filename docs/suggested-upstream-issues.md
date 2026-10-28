@@ -84,6 +84,10 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 
 ## Join engine and lookup index
 
+- Ambiguous merged-row columns (`_AMBIGUOUS`) are only checked at four read sites, so other reads (offset, `sources`,
+  unit conversion, inline paths) leak the sentinel; for a nested derivation the per-row path passes `_AMBIGUOUS` to
+  `lookup_row` as a key while the set-based engine resolves the same join from the primary row, so results depend on
+  which path ran; `Bindings.__getitem__` hands `DynObj(**None)` for a join miss in `rows_by_table`.
 - The two "Conflicting join specs" raise sites (`join_engine._collect_joins` and `engine._collect_all_joins`) word
   the message differently, only the join-engine one gives the "use distinct join names" advice, and
   `_collect_joins` prints an unresolved key as `None` where the per-row path raises a different `ValueError`.
