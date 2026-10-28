@@ -1,0 +1,4 @@
+{"id": "p1", "inner": {"a": "small", "sz": 5}}
+{"id": "p2", "inner": {"a": "big", "sz": 7}}
+{"id": "p3"}
+{"id": "p4"}

@@ -1,0 +1,12 @@
+id: p1
+inner:
+  sz: 35
+---
+id: p2
+inner:
+  sz: 47
+---
+id: p3
+---
+id: p4
+---

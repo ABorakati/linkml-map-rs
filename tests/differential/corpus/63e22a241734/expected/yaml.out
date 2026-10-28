@@ -1,0 +1,13 @@
+id: p1
+inner:
+  b: ONE
+  sz: 5
+---
+id: p2
+inner:
+  sz: 7
+---
+id: p3
+---
+id: p4
+---

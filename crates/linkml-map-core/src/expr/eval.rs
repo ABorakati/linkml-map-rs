@@ -188,6 +188,52 @@ pub(crate) fn with_declared_slots<T>(
     f()
 }
 
+thread_local! {
+    /// The columns of a merged row that both of its tables have, for the evaluation
+    /// in progress (see [`with_ambiguous_names`]).
+    static AMBIGUOUS_NAMES: RefCell<Option<Arc<[String]>>> = const { RefCell::new(None) };
+}
+
+/// Restores the previous [`AMBIGUOUS_NAMES`] when an evaluation ends, even by panic.
+struct AmbiguousNamesGuard(Option<Arc<[String]>>);
+
+impl Drop for AmbiguousNamesGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        AMBIGUOUS_NAMES.with(|a| *a.borrow_mut() = prev);
+    }
+}
+
+/// Run `f` with `names` as the ambiguous columns of the merged row being evaluated.
+///
+/// PARITY: upstream's `Bindings.__getitem__` raises a `TransformationError` for a name
+/// that holds the `_AMBIGUOUS` sentinel in the row (`_raise_ambiguous_column`), when the
+/// expression reads it. The restricted bindings leave such a name out and this set stands
+/// for it, so only a read of the name fails. The error is not one of the three
+/// `_eval_expr` hands to the unrestricted fallback.
+pub(crate) fn with_ambiguous_names<T>(names: &Arc<[String]>, f: impl FnOnce() -> T) -> T {
+    let _restore =
+        AmbiguousNamesGuard(AMBIGUOUS_NAMES.with(|a| a.replace(Some(Arc::clone(names)))));
+    f()
+}
+
+/// True when `name` is an ambiguous column of the merged row being evaluated.
+fn is_ambiguous_name(name: &str) -> bool {
+    AMBIGUOUS_NAMES.with(|a| {
+        a.borrow()
+            .as_ref()
+            .is_some_and(|names| names.iter().any(|n| n == name))
+    })
+}
+
+/// `_raise_ambiguous_column`.
+fn ambiguous_name_error(name: &str) -> ExprError {
+    ExprError::Uncaught(format!(
+        "Column '{name}' is ambiguous \u{2014} it exists in both the parent and nested source \
+         tables. Use dot notation (e.g., 'TableName.{name}') to disambiguate."
+    ))
+}
+
 /// True when `name` is a slot the source class declares but the row lacks.
 fn is_declared_slot(name: &str) -> bool {
     DECLARED_SLOTS.with(|d| d.borrow().as_ref().is_some_and(|s| s.contains(name)))
@@ -212,6 +258,7 @@ fn resolve_name(name: &str, vars: &Bindings) -> ExprResult<Value> {
         // lacks, and simpleeval's `_eval_name` reads `names` before `functions`, so
         // this also holds for a slot named like a function; strict mode and the
         // unbound-name warning never see it.
+        None if is_ambiguous_name(name) => Err(ambiguous_name_error(name)),
         None if is_declared_slot(name) => Ok(Value::Null),
         // PARITY: simpleeval's `_eval_name` falls back to `self.functions[name]`, so
         // a bare function name (`upper`, `max`) evaluates to the function itself,
@@ -476,6 +523,7 @@ pub(super) fn attribute_receiver<'a>(
         && !is_function_name(root)
         && !vars.contains_key(root)
         && !is_declared_slot(root)
+        && !is_ambiguous_name(root)
     {
         let message = format!(
             "Expression references unknown '{root}' in '{root}.{attr}': \

@@ -21,8 +21,8 @@ use std::borrow::Cow;
 use indexmap::IndexMap;
 
 use super::{
-    LookupIndex, ObjectIndex, ObjectTransformer, induced_slot_cow, join_source_key,
-    value_to_string_key, value_type_name,
+    LookupIndex, MergedRow, ObjectIndex, ObjectTransformer, induced_slot_cow, join_source_key,
+    merged_row::ambiguous_column_error, value_to_string_key, value_type_name,
 };
 use crate::{
     datamodel::{ClassDerivation, SlotDerivation},
@@ -41,6 +41,7 @@ impl<'s> ObjectTransformer<'s> {
     ///
     /// `_source_class` is a virtual slot naming the source class itself (#193), so
     /// it has no schema slot.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_populated_from(
         &self,
         populated_from: &str,
@@ -49,6 +50,7 @@ impl<'s> ObjectTransformer<'s> {
         source_type: &str,
         class_deriv: &ClassDerivation,
         index: Option<&ObjectIndex>,
+        merged: Option<&MergedRow<'_>>,
     ) -> Result<Populated<'s>> {
         if populated_from == "_source_class" {
             return Ok((Value::Str(source_type.to_string()), None));
@@ -56,6 +58,11 @@ impl<'s> ObjectTransformer<'s> {
         let Some((table_name, field_path)) = populated_from.split_once('.') else {
             // `_resolve_fk_or_literal` without a dot: the row's value, and the
             // source type's slot of that name (which must exist).
+            // PARITY: the value is read, and an ambiguous column raised, before the
+            // slot is looked up.
+            if merged.is_some_and(|m| m.is_ambiguous(populated_from)) {
+                return Err(ambiguous_column_error(populated_from));
+            }
             return Ok((
                 source_map
                     .get(populated_from)
@@ -70,7 +77,15 @@ impl<'s> ObjectTransformer<'s> {
             .as_ref()
             .and_then(|joins| joins.get(table_name))
         {
-            let v = self.resolve_join_value(table_name, field_path, ac, source_map)?;
+            // A merged row that holds the table's row hands it over as it is
+            // (`_resolve_joined_row`'s pre-joined fast path).
+            let v = match merged.and_then(|m| m.table(table_name)) {
+                Some(row) => row
+                    .and_then(|row| row.get(field_path))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                None => self.resolve_join_value(table_name, field_path, ac, source_map)?,
+            };
             // PARITY: `_perform_join_resolution` looks the slot up with
             // `field_path in context.sv.class_induced_slots(joined_class)`, but
             // `class_induced_slots` returns `SlotDefinition` objects, never
@@ -80,8 +95,28 @@ impl<'s> ObjectTransformer<'s> {
             // fixed.
             return Ok((v, None));
         }
+        if let Some(row) = merged.and_then(|m| m.table(table_name)) {
+            // A table of the merged row: `rows_by_table[table].get(field)`.
+            let Some(row) = row else {
+                return Err(Error::Python(
+                    "AttributeError: 'NoneType' object has no attribute 'get'".to_owned(),
+                ));
+            };
+            // PARITY: the slot is `induced_slot(field, table)` when the table is a
+            // class of the source schema (which raises for a field it lacks), else none.
+            let slot = match self.source_schema {
+                Some(schema) if schema.get_class(table_name).is_ok() => {
+                    self.require_source_slot(field_path, table_name)?
+                }
+                _ => None,
+            };
+            return Ok((row.get(field_path).cloned().unwrap_or(Value::Null), slot));
+        }
         if table_name == source_type {
             // `Class.field` on the row of that class.
+            if merged.is_some_and(|m| m.is_ambiguous(field_path)) {
+                return Err(ambiguous_column_error(field_path));
+            }
             return Ok((
                 source_map.get(field_path).cloned().unwrap_or(Value::Null),
                 self.require_source_slot(field_path, source_type)?,

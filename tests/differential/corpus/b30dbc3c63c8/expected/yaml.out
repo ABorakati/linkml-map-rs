@@ -1,0 +1,24 @@
+id: p1
+inners:
+- a: ol1
+  sz: 5
+- a: Norway
+  b: pl1
+---
+id: p2
+inners:
+- a: ol2
+  sz: 7
+- a: Sweden
+  b: pl2
+---
+id: p3
+inners:
+- a: Norway
+  b: pl3
+---
+id: p4
+inners:
+- a: Sweden
+  b: pl4
+---

@@ -322,6 +322,17 @@ with no file, or a YAML join table: upstream's `LookupIndex` reads CSV/TSV/JSON 
 An `expr:` the parser rejects is reported when a row first evaluates it, so a spec
 whose only fault is such an expression still runs over zero rows.
 
+**Nested derivations over a join.** A slot's nested `class_derivations` populated from another
+table than its parent maps the *merge* of the parent row and the joined row (upstream's
+`MergedRow`): parent columns first, then the joined row's. A column both rows have, other than
+the parent-side join key, is ambiguous: reading it (`populated_from`, a same-name copy, an
+`expr:` name, an `offset_field`) is an error, and `Table.column` (for the parent's table, the
+joined table, or an ancestor's) reads the original row instead. A join with no matching row
+emits no nested object. When upstream's set-based join engine reads the block (CSV, TSV or JSON
+tables), every join is resolved from the primary row up front; Rust callers that feed such a
+block row by row declare it with `ObjectTransformer::with_prejoined_joins(true)`, which the
+pipeline does itself.
+
 ### `validate-spec`
 
 ```bash

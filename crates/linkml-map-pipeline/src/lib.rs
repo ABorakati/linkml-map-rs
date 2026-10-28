@@ -558,13 +558,16 @@ impl CompiledPlan {
     /// Transform one row of a block through that block's class derivation
     /// (`map_object(row, source_type, class_derivation=cd)`), or — for
     /// single-object input — through the derivation found by source class.
+    /// `prejoined` is whether upstream's set-based join engine reads the block
+    /// (see [`JoinEngine`](join_order::JoinEngine)): its joins are resolved up front.
     fn transform_segment(
         &self,
         seg: &RowSegment,
         row: Value,
         lookup: Option<&Arc<LookupIndex>>,
+        prejoined: bool,
     ) -> Result<Value> {
-        let engine = self.row_engine(lookup);
+        let engine = self.row_engine(lookup).with_prejoined_joins(prejoined);
         match seg.block {
             Some(b) => engine.map_object_with_derivation(
                 &row,
@@ -583,8 +586,9 @@ impl CompiledPlan {
         row: &Value,
         index: &ObjectIndex,
         lookup: Option<&Arc<LookupIndex>>,
+        prejoined: bool,
     ) -> Result<Value> {
-        let engine = self.row_engine(lookup);
+        let engine = self.row_engine(lookup).with_prejoined_joins(prejoined);
         match seg.block {
             Some(b) => engine.map_object_with_derivation_and_index(
                 row,

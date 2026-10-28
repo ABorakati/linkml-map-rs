@@ -1,0 +1,20 @@
+id: p1
+inner:
+  a: ol1
+  b: pl1
+  c: p1
+  d: o1
+  sz: 5
+---
+id: p2
+inner:
+  a: ol2
+  b: pl2
+  c: p2
+  d: o2
+  sz: 7
+---
+id: p3
+---
+id: p4
+---

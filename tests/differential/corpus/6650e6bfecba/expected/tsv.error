@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "No such slot nope as an attribute of Org ancestors or as a slot definition in the schema; class_derivation=Inner (from Org); slot_derivation=a (from Org.nope)"
+}

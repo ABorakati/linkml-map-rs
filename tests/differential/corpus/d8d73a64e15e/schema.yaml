@@ -1,0 +1,29 @@
+id: https://example.org/src
+name: src
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+
+classes:
+  Country:
+    attributes:
+      id: {range: string, identifier: true}
+      name: {range: string}
+      label: {range: string}
+  Org:
+    attributes:
+      id: {range: string, identifier: true}
+      label: {range: string}
+      size: {range: integer}
+      country_id: {range: string}
+  Person:
+    attributes:
+      id: {range: string, identifier: true}
+      org_id: {range: string}
+      country_id: {range: string}
+      label: {range: string}
+      age: {range: integer}
+      boss: {range: Person}

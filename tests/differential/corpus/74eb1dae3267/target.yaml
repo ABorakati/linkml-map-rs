@@ -1,0 +1,31 @@
+id: https://example.org/tgt
+name: tgt
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/
+default_prefix: ex
+imports:
+- linkml:types
+
+classes:
+  Deep:
+    attributes:
+      nm: {range: string}
+      lbl: {range: string}
+      pl: {range: string}
+      ol: {range: string}
+  Inner:
+    attributes:
+      a: {range: string}
+      b: {range: string}
+      c: {range: string}
+      d: {range: string}
+      label: {range: string}
+      sz: {range: integer}
+      dbl: {range: integer}
+      deep: {range: Deep, inlined: true}
+  Agent:
+    attributes:
+      id: {range: string, identifier: true}
+      inner: {range: Inner, inlined: true}
+      inners: {range: Inner, inlined: true, multivalued: true}
