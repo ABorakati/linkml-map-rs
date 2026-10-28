@@ -248,8 +248,9 @@ fn int_arg(v: &Py) -> PyRes<i64> {
 fn real_arg(v: &Py) -> PyRes<f64> {
     match v {
         Py::Int(i) => Ok(*i as f64),
-        Py::BigInt(n) => pynum::big_to_f64(n)
-            .map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok),
+        Py::BigInt(n) => {
+            pynum::big_to_f64(n).map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok)
+        }
         Py::Bool(b) => Ok(*b as i64 as f64),
         Py::Float(f) => Ok(*f),
         other => type_err(format!("must be real number, not {}", other.type_name())),
@@ -280,10 +281,9 @@ pub(crate) fn call_builtin(
                     .map(Py::Float)
                     .map_err(super::ops::num_err),
                 Py::Bool(b) => Ok(Py::Int(*b as i64)),
-                Py::Int(i) => Ok(i.checked_abs().map_or_else(
-                    || Py::from_big(pynum::abs(IntRef::Small(*i))),
-                    Py::Int,
-                )),
+                Py::Int(i) => Ok(i
+                    .checked_abs()
+                    .map_or_else(|| Py::from_big(pynum::abs(IntRef::Small(*i))), Py::Int)),
                 Py::BigInt(n) => Ok(Py::from_big(pynum::abs(IntRef::Big(n)))),
                 Py::Float(f) => Ok(Py::Float(f.abs())),
                 other => type_err(format!(
@@ -872,7 +872,8 @@ fn py_sum(c: &mut dyn Caller, args: Vec<Py>, kwargs: Kwargs) -> PyRes<Py> {
                 Py::Float(_) => {
                     // `float(total)` for the accumulator (CPython adds the exact
                     // sum of the integers so far).
-                    acc = Py::Float(pynum::to_f64(IntRef::Big(&total)).map_err(super::ops::num_err)?);
+                    acc =
+                        Py::Float(pynum::to_f64(IntRef::Big(&total)).map_err(super::ops::num_err)?);
                     // fall into the float loop with this item pending
                     return sum_floats(it, acc, Some(item));
                 }
@@ -1069,7 +1070,9 @@ fn math_func(name: &'static str, args: &[Py], kwargs: &Kwargs) -> PyRes<Py> {
                     return value_err("factorial() not defined for negative values");
                 }
                 Py::BigInt(_) => {
-                    return overflow_err("factorial() argument should not exceed 9223372036854775807");
+                    return overflow_err(
+                        "factorial() argument should not exceed 9223372036854775807",
+                    );
                 }
                 Py::Float(_) => {
                     return type_err("'float' object cannot be interpreted as an integer");
@@ -1280,10 +1283,9 @@ pub(crate) fn call_type(
                 None => Ok(Py::Float(0.0)),
                 Some(Py::Float(f)) => Ok(Py::Float(*f)),
                 Some(Py::Int(i)) => Ok(Py::Float(*i as f64)),
-                Some(Py::BigInt(n)) => pynum::big_to_f64(n).map(Py::Float).map_or_else(
-                    || overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT),
-                    Ok,
-                ),
+                Some(Py::BigInt(n)) => pynum::big_to_f64(n)
+                    .map(Py::Float)
+                    .map_or_else(|| overflow_err(pynum::INT_TOO_LARGE_FOR_FLOAT), Ok),
                 Some(Py::Bool(b)) => Ok(Py::Float(*b as i64 as f64)),
                 Some(Py::Str(s)) => crate::expr::pystr::float_from_str(s)
                     .map(Py::Float)

@@ -52,8 +52,37 @@ pub fn py_float_repr(f: f64) -> String {
 /// ```
 pub fn dumps_json(value: &Value, indent: Option<usize>, skip_null: bool) -> String {
     let mut out = String::new();
-    write_json(&mut out, value, indent, 0, skip_null);
+    // Lenient: never fails.
+    let _ = write_json(&mut out, value, indent, 0, skip_null, false);
     out
+}
+
+/// `simplejson` refuses a value it has no encoding for: `TypeError: Object of
+/// type complex is not JSON serializable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotJsonSerializable(pub &'static str);
+
+impl std::fmt::Display for NotJsonSerializable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Object of type {} is not JSON serializable", self.0)
+    }
+}
+
+impl std::error::Error for NotJsonSerializable {}
+
+/// [`dumps_json`] as simplejson behaves: a `complex` anywhere in the value is a
+/// `TypeError` ([`NotJsonSerializable`]) where `dumps_json` writes its `str()`.
+///
+/// # Errors
+/// [`NotJsonSerializable`] for a complex number.
+pub fn try_dumps_json(
+    value: &Value,
+    indent: Option<usize>,
+    skip_null: bool,
+) -> Result<String, NotJsonSerializable> {
+    let mut out = String::new();
+    write_json(&mut out, value, indent, 0, skip_null, true)?;
+    Ok(out)
 }
 
 fn write_json(
@@ -62,7 +91,8 @@ fn write_json(
     indent: Option<usize>,
     level: usize,
     skip_null: bool,
-) {
+    strict: bool,
+) -> Result<(), NotJsonSerializable> {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(true) => out.push_str("true"),
@@ -75,10 +105,17 @@ fn write_json(
             let _ = write!(out, "{n}");
         }
         Value::Float(f) => out.push_str(&json_float(*f)),
-        // PARITY (lenient): simplejson raises `TypeError: Object of type
-        // complex is not JSON serializable`, aborting the run part-way through
-        // the output. The `str()` text is written instead.
-        Value::Complex(z) => write_json_str(out, &complex_repr(**z)),
+        // PARITY (lenient unless `strict`): simplejson raises `TypeError: Object
+        // of type complex is not JSON serializable`, aborting the run part-way
+        // through the output. The stream writers use the strict form; the
+        // pipeline's raw-line fast paths and nested table cells write the
+        // `str()` text.
+        Value::Complex(z) => {
+            if strict {
+                return Err(NotJsonSerializable("complex"));
+            }
+            write_json_str(out, &complex_repr(**z));
+        }
         // simplejson(use_decimal=True) writes `str(Decimal)` as a numeric literal.
         Value::Decimal(d) => out.push_str(&d.to_sci_string()),
         // PARITY (lenient): simplejson raises `TypeError: Object of type date is
@@ -90,12 +127,12 @@ fn write_json(
         Value::List(items) => {
             if items.is_empty() {
                 out.push_str("[]");
-                return;
+                return Ok(());
             }
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 write_item_separator(out, i == 0, indent, level + 1);
-                write_json(out, item, indent, level + 1, skip_null);
+                write_json(out, item, indent, level + 1, skip_null, strict)?;
             }
             write_close(out, ']', indent, level);
         }
@@ -106,18 +143,19 @@ fn write_json(
                 .peekable();
             if members.peek().is_none() {
                 out.push_str("{}");
-                return;
+                return Ok(());
             }
             out.push('{');
             for (i, (key, member)) in members.enumerate() {
                 write_item_separator(out, i == 0, indent, level + 1);
                 write_json_str(out, key);
                 out.push_str(": ");
-                write_json(out, member, indent, level + 1, skip_null);
+                write_json(out, member, indent, level + 1, skip_null, strict)?;
             }
             write_close(out, '}', indent, level);
         }
     }
+    Ok(())
 }
 
 fn write_item_separator(out: &mut String, first: bool, indent: Option<usize>, level: usize) {

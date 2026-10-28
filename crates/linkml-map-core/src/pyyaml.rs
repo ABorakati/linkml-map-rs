@@ -410,6 +410,9 @@ fn represent_float(f: f64) -> String {
 }
 
 /// `Representer.represent_complex`: `%r` of the parts, the zero part dropped.
+///
+/// PARITY: upstream dumps with the full `yaml.Dumper` (`_DecimalDumper`), which
+/// knows the `python/*` tags; `SafeDumper` would refuse a complex number.
 fn represent_complex(z: crate::pynum::complex::Complex64) -> String {
     use crate::pyfmt::py_float_repr;
     if z.im == 0.0 {

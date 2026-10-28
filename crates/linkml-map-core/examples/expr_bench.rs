@@ -1,6 +1,6 @@
 //! Evaluator micro-benchmark: parse once, evaluate many times.
 //!
-//! `cargo run --release -p linkml-map-core --example expr_bench [ITERATIONS]`
+//! `cargo run --release -p linkml-map-core --example expr_bench [ITERATIONS [CASE]]`
 //! prints nanoseconds per evaluation for a set of typical expressions, so
 //! changes to the numeric tower can be checked for a regression on the `i64`
 //! fast path.
@@ -26,15 +26,21 @@ const CASES: &[(&str, &str)] = &[
     ("abs/round/int", "abs(a) + round(x) + int(y)"),
     ("sum list", "sum([a, b, 1, 2, 3, 4])"),
     ("str(int)", "str(a) + str(b)"),
-    ("case", "case((a > 100, 'big'), (a > 10, 'mid'), (True, 'small'))"),
+    (
+        "case",
+        "case((a > 100, 'big'), (a > 10, 'mid'), (True, 'small'))",
+    ),
     ("numeric strings", "s * 3 + t"),
 ];
 
 fn main() {
-    let iterations: usize = std::env::args()
-        .nth(1)
+    let mut args = std::env::args().skip(1);
+    let iterations: usize = args
+        .next()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2_000_000);
+    // An optional case name (a substring) runs just the matching cases.
+    let only = args.next();
     let mut vars: Bindings = IndexMap::new();
     vars.insert("a".into(), Value::Int(123_456));
     vars.insert("b".into(), Value::Int(789));
@@ -43,6 +49,9 @@ fn main() {
     vars.insert("s".into(), Value::Str("71".into()));
     vars.insert("t".into(), Value::Int(4));
     for (name, expr) in CASES {
+        if only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+            continue;
+        }
         let parsed = parse_expr(expr).expect("parse");
         // Warm up, and fail loudly on an expression that stopped evaluating.
         eval_parsed(&parsed, &vars).expect("eval");

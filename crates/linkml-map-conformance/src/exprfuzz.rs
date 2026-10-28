@@ -505,9 +505,7 @@ fn upstream_value(j: &J) -> Option<(Value, bool)> {
                 .collect::<Option<Vec<_>>>()?;
             Some((Value::List(v), any_set))
         }
-        J::Object(m)
-            if !m.contains_key("$f") && !m.contains_key("$i") && !m.contains_key("$c") =>
-        {
+        J::Object(m) if !m.contains_key("$f") && !m.contains_key("$i") && !m.contains_key("$c") => {
             let mut out = IndexMap::new();
             let mut any_set = false;
             for (k, v) in m {

@@ -70,7 +70,9 @@ pub fn pow(z: Complex64, w: Complex64) -> Result<Complex64, NumError> {
         c_pow(z, w)
     };
     if edom {
-        return Err(NumError::ZeroDivision("zero to a negative or complex power"));
+        return Err(NumError::ZeroDivision(
+            "zero to a negative or complex power",
+        ));
     }
     // `_Py_ADJUST_ERANGE2`: an infinite component is an overflow.
     if result.re.is_infinite() || result.im.is_infinite() {
@@ -86,10 +88,7 @@ fn c_pow(a: Complex64, b: Complex64) -> (Complex64, bool) {
         return (Complex64::new(1.0, 0.0), false);
     }
     if a.re == 0.0 && a.im == 0.0 {
-        return (
-            Complex64::new(0.0, 0.0),
-            b.im != 0.0 || b.re < 0.0,
-        );
+        return (Complex64::new(0.0, 0.0), b.im != 0.0 || b.re < 0.0);
     }
     let vabs = a.re.hypot(a.im);
     let mut len = vabs.powf(b.re);

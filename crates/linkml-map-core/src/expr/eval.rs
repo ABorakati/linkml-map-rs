@@ -839,6 +839,18 @@ fn retry_numeric(v: &Value) -> Option<f64> {
 }
 
 fn eval_single_compare(op: CmpOp, left: &Value, right: &Value) -> ExprResult<Value> {
+    // Two plain integers: no coercion, no null, and the order is `i64`'s.
+    if let (Value::Int(a), Value::Int(b)) = (left, right) {
+        match op {
+            CmpOp::Eq => return Ok(Value::Bool(a == b)),
+            CmpOp::NotEq => return Ok(Value::Bool(a != b)),
+            CmpOp::Lt => return Ok(Value::Bool(a < b)),
+            CmpOp::LtE => return Ok(Value::Bool(a <= b)),
+            CmpOp::Gt => return Ok(Value::Bool(a > b)),
+            CmpOp::GtE => return Ok(Value::Bool(a >= b)),
+            _ => {}
+        }
+    }
     match op {
         CmpOp::Eq | CmpOp::NotEq => {
             // _coercing applied, but NOT null-propagating: native equality.
@@ -1022,7 +1034,10 @@ fn same_py_type(a: &Value, b: &Value) -> bool {
         (a, b),
         (Value::Null, Value::Null)
             | (Value::Bool(_), Value::Bool(_))
-            | (Value::Int(_) | Value::BigInt(_), Value::Int(_) | Value::BigInt(_))
+            | (
+                Value::Int(_) | Value::BigInt(_),
+                Value::Int(_) | Value::BigInt(_)
+            )
             | (Value::Float(_), Value::Float(_))
             | (Value::Complex(_), Value::Complex(_))
             | (Value::Str(_), Value::Str(_))
@@ -1102,6 +1117,21 @@ fn warn_non_numeric(op_name: &str, left: &Value, right: &Value) {
 // --- binary arithmetic / bitwise (null-propagating with numeric retry) ---
 
 fn eval_binary(op: BinOp, left: Value, right: Value) -> ExprResult<Value> {
+    // Two plain integers (by far the commonest operands): nothing to coerce, no
+    // strings to refuse, and the operators with limits fall through below.
+    match (&left, &right) {
+        (Value::Int(a), Value::Int(b)) => {
+            if let Some(v) = numeric::int_fast_path(op, *a, *b) {
+                return Ok(v);
+            }
+        }
+        (Value::Float(a), Value::Float(b)) => {
+            if let Some(v) = numeric::float_fast_path(op, *a, *b) {
+                return Ok(v);
+            }
+        }
+        _ => {}
+    }
     // Null propagation.
     if left.is_null() || right.is_null() {
         return Ok(Value::Null);
@@ -1330,7 +1360,11 @@ fn repeat_list(items: &[Value], n: &Value) -> ExprResult<Option<Value>> {
 /// `str(v)`; an integer with too many digits is written in full where
 /// [`try_py_str`] would raise (for messages and diagnostics).
 pub(crate) fn py_str(v: &Value) -> String {
-    render(v, false, false).unwrap_or_default()
+    match v {
+        Value::Int(i) => i.to_string(),
+        Value::Str(s) => s.clone(),
+        _ => render(v, false, false).unwrap_or_default(),
+    }
 }
 
 /// `repr(v)`; see [`py_str`].
@@ -1341,7 +1375,11 @@ pub(crate) fn py_repr(v: &Value) -> String {
 /// `str(v)` as Python computes it: the `ValueError` of an integer with more than
 /// 4300 digits propagates.
 pub(crate) fn try_py_str(v: &Value) -> ExprResult<String> {
-    Ok(render(v, false, true)?)
+    match v {
+        Value::Int(i) => Ok(i.to_string()),
+        Value::Str(s) => Ok(s.clone()),
+        _ => Ok(render(v, false, true)?),
+    }
 }
 
 /// `repr(v)`; see [`try_py_str`].

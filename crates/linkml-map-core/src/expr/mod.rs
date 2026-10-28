@@ -39,6 +39,16 @@ pub use eval::{
 pub use gate::{EvalMode, eval_enum_parsed, eval_parsed_gated};
 pub use parser::Ast;
 pub use pystr::int_literal as python_int_literal;
+
+/// `format(complex(re, im), spec)`, for the asteval port.
+pub(crate) fn pyformat_complex(re: f64, im: f64, spec: &str) -> Result<String, String> {
+    pyformat::format_complex(crate::pynum::complex::Complex64::new(re, im), spec).map_err(|e| {
+        match e {
+            ExprError::Eval(m) | ExprError::Uncaught(m) => m,
+            other => other.to_string(),
+        }
+    })
+}
 pub use pystr::int_value_from_str as python_int_value;
 
 #[cfg(test)]

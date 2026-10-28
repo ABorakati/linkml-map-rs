@@ -106,7 +106,10 @@ fn pow_int(base: IntRef<'_>, exp: IntRef<'_>) -> PyRes<Py> {
             return zero_div("0.0 cannot be raised to a negative power");
         }
         // `float(base) ** float(exp)`; an operand beyond float range overflows.
-        let (x, y) = (pynum::to_f64(base).map_err(num_err)?, pynum::to_f64(exp).map_err(num_err)?);
+        let (x, y) = (
+            pynum::to_f64(base).map_err(num_err)?,
+            pynum::to_f64(exp).map_err(num_err)?,
+        );
         return pow_float(x, y);
     }
     if let (IntRef::Small(b), IntRef::Small(e)) = (base, exp)
@@ -356,7 +359,11 @@ fn floordiv(a: &Py, b: &Py) -> PyRes<Py> {
                     && let Some(d) = p.checked_div(q)
                 {
                     let r = p % q;
-                    return Ok(Py::Int(if r != 0 && ((r < 0) != (q < 0)) { d - 1 } else { d }));
+                    return Ok(Py::Int(if r != 0 && ((r < 0) != (q < 0)) {
+                        d - 1
+                    } else {
+                        d
+                    }));
                 }
                 pynum::floordiv(x, y).map(Py::from_big).map_err(num_err)
             }
@@ -374,7 +381,11 @@ fn modulo(a: &Py, b: &Py) -> PyRes<Py> {
                     && q != 0
                 {
                     let r = p.checked_rem(q).unwrap_or(0);
-                    return Ok(Py::Int(if r != 0 && ((r < 0) != (q < 0)) { r + q } else { r }));
+                    return Ok(Py::Int(if r != 0 && ((r < 0) != (q < 0)) {
+                        r + q
+                    } else {
+                        r
+                    }));
                 }
                 pynum::modulo(x, y).map(Py::from_big).map_err(num_err)
             }
@@ -388,8 +399,9 @@ fn modulo(a: &Py, b: &Py) -> PyRes<Py> {
 }
 
 fn pow(a: &Py, b: &Py) -> PyRes<Py> {
-    // safe_pow: `isinstance(exp, numbers.Number)`, so a complex exponent is the
-    // `TypeError` of `complex > int`.
+    // PARITY: asteval `astutils.safe_pow` (`isinstance(exp, numbers.Number)`
+    // then `exp > MAX_EXPONENT`), so a complex exponent is the `TypeError` of
+    // `complex > int`; `safe_lshift` does the same with its count.
     if let Py::Complex(..) = b {
         return type_err("'>' not supported between instances of 'complex' and 'int'");
     }
@@ -538,9 +550,9 @@ pub(crate) fn unaryop(op: UnaryOp, a: &Py) -> PyRes<Py> {
             let Py::Complex(r, i) = a else { unreachable!() };
             Ok(Py::Complex(-r, -i))
         }
-        UnaryOp::USub if matches!(a, Py::BigInt(_)) => {
-            Ok(Py::from_big(pynum::neg(int_ref(a).unwrap_or(IntRef::Small(0)))))
-        }
+        UnaryOp::USub if matches!(a, Py::BigInt(_)) => Ok(Py::from_big(pynum::neg(
+            int_ref(a).unwrap_or(IntRef::Small(0)),
+        ))),
         UnaryOp::Invert if matches!(a, Py::BigInt(_)) => Ok(Py::from_big(pynum::invert(
             int_ref(a).unwrap_or(IntRef::Small(0)),
         ))),

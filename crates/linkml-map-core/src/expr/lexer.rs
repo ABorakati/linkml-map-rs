@@ -17,8 +17,8 @@
 use std::borrow::Cow;
 
 use super::error::{ExprError, ExprResult, UNREPRESENTABLE_PREFIX};
-use crate::pynum::{self, BigInt};
 use super::pymethods::{is_identifier_continue, is_identifier_start};
+use crate::pynum::{self, BigInt};
 
 /// A lexical token.
 #[derive(Debug, Clone, PartialEq)]

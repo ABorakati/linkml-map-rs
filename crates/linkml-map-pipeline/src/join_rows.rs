@@ -105,9 +105,9 @@ fn render(v: &Value, ty: &Ty, nested: bool) -> String {
         (Value::Bool(b), _) => b.to_string(),
         (Value::Int(i), Ty::Double) => py_float_repr(*i as f64),
         (Value::Int(i), _) => i.to_string(),
-        (Value::BigInt(n), Ty::Double) => py_float_repr(
-            linkml_map_core::pynum::big_to_f64(n).unwrap_or(f64::INFINITY),
-        ),
+        (Value::BigInt(n), Ty::Double) => {
+            py_float_repr(linkml_map_core::pynum::big_to_f64(n).unwrap_or(f64::INFINITY))
+        }
         (Value::BigInt(n), _) => n.to_string(),
         (Value::Complex(z), _) => linkml_map_core::pynum::complex::repr(**z),
         (Value::Decimal(d), _) => d.to_sci_string(),

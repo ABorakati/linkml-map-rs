@@ -180,18 +180,17 @@ fn py_to_value_at(
             // `str()`'s 4300-digit limit raises its own `ValueError`).
             Err(_) => {
                 let digits: String = obj.str()?.extract()?;
-                let n = digits.parse::<linkml_map_core::pynum::BigInt>().map_err(|e| {
-                    PyValueError::new_err(format!("Value conversion error: {e}"))
-                })?;
+                let n = digits
+                    .parse::<linkml_map_core::pynum::BigInt>()
+                    .map_err(|e| PyValueError::new_err(format!("Value conversion error: {e}")))?;
                 Value::from_bigint(n)
             }
         });
     }
     if let Ok(z) = obj.downcast::<PyComplex>() {
-        return Ok(Value::from_complex(linkml_map_core::pynum::complex::Complex64::new(
-            z.real(),
-            z.imag(),
-        )));
+        return Ok(Value::from_complex(
+            linkml_map_core::pynum::complex::Complex64::new(z.real(), z.imag()),
+        ));
     }
     if obj.is_instance_of::<PyFloat>() {
         let f: f64 = obj.extract()?;
@@ -293,14 +292,18 @@ fn value_to_bound<'py>(py: Python<'py>, val: &Value) -> PyResult<Bound<'py, PyAn
         Value::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
         Value::Int(i) => i.into_pyobject(py)?.into_any(),
         // `int.from_bytes` has no digit limit, unlike building the `int` from text.
-        Value::BigInt(n) => py.get_type::<PyInt>().call_method1(
-            "from_bytes",
-            (
-                pyo3::types::PyBytes::new(py, &n.to_signed_bytes_le()),
-                "little",
-                true,
-            ),
-        )?,
+        Value::BigInt(n) => {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("signed", true)?;
+            py.get_type::<PyInt>().call_method(
+                "from_bytes",
+                (
+                    pyo3::types::PyBytes::new(py, &n.to_signed_bytes_le()),
+                    "little",
+                ),
+                Some(&kwargs),
+            )?
+        }
         Value::Complex(z) => PyComplex::from_doubles(py, z.re, z.im).into_any(),
         Value::Float(f) if f.is_finite() => PyFloat::new(py, *f).into_any(),
         Value::Float(_) => py.None().into_bound(py),

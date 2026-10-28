@@ -38,7 +38,9 @@ use tokio::fs::File;
 use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter};
 
 use crate::format::Format;
-use crate::pycompat::{dumps_json, flatten, py_str, strip_empty, strip_nulls, tabular_cell};
+use crate::pycompat::{
+    dumps_json, flatten, py_str, strip_empty, strip_nulls, tabular_cell, try_dumps_json,
+};
 use crate::serialization::decimal_placeholder;
 use linkml_map_core::pyyaml::{self, DumpOptions};
 
@@ -168,7 +170,7 @@ impl StreamWriter for JsonStreamWriter {
             self.first_object = false;
             // PARITY: output_streams.py::JSONStreamWriter.write_chunk — `_strip_nulls`
             // then `dumps_json(indent=2)`.
-            out.push_str(&dumps_json(obj, Some(2), true));
+            out.push_str(&try_dumps_json(obj, Some(2), true)?);
         }
         Ok(out)
     }
@@ -191,7 +193,7 @@ impl StreamWriter for JsonlStreamWriter {
     fn write_chunk(&mut self, chunk: &[Value]) -> Result<String> {
         let mut out = String::new();
         for obj in chunk {
-            out.push_str(&jsonl_line(obj));
+            out.push_str(&try_jsonl_line(obj)?);
             out.push('\n');
         }
         Ok(out)
@@ -204,6 +206,15 @@ impl StreamWriter for JsonlStreamWriter {
 /// generic writer.
 pub fn jsonl_line(obj: &Value) -> String {
     dumps_json(obj, None, true)
+}
+
+/// [`jsonl_line`] as simplejson behaves: a complex number is a `TypeError`
+/// (see [`try_dumps_json`]).
+///
+/// # Errors
+/// [`crate::pycompat::NotJsonSerializable`] for a complex number.
+pub fn try_jsonl_line(obj: &Value) -> Result<String, crate::pycompat::NotJsonSerializable> {
+    try_dumps_json(obj, None, true)
 }
 
 // ─── YAML ────────────────────────────────────────────────────────────────────
@@ -613,13 +624,16 @@ pub fn dump_output(data: &Value, format: Format) -> Result<String> {
             dump_yaml_into(&mut text, &strip_empty(data), false);
             text
         }
-        Format::Json => format!("{}\n", dumps_json(data, Some(2), true)),
+        Format::Json => format!("{}\n", try_dumps_json(data, Some(2), true)?),
         Format::Jsonl => match data {
             Value::List(items) => {
-                let lines: Vec<String> = items.iter().map(jsonl_line).collect();
+                let lines = items
+                    .iter()
+                    .map(try_jsonl_line)
+                    .collect::<Result<Vec<String>, _>>()?;
                 format!("{}\n", lines.join("\n"))
             }
-            other => format!("{}\n", jsonl_line(other)),
+            other => format!("{}\n", try_jsonl_line(other)?),
         },
         Format::Csv => dump_delimited(data, ",")?,
         Format::Tsv => dump_delimited(data, "\t")?,
@@ -907,10 +921,8 @@ pub fn value_to_json(v: &Value) -> Result<serde_json::Value> {
         // An integer beyond `i64` travels like a decimal: a placeholder string
         // restored to its digits after serialising.
         Value::BigInt(n) => serde_json::Value::String(crate::serialization::bigint_placeholder(n)),
-        // Lenient, as in `pycompat::write_json`: the `str()` text.
-        Value::Complex(z) => serde_json::Value::String(
-            linkml_map_core::pynum::complex::repr(**z),
-        ),
+        // simplejson: `TypeError: Object of type complex is not JSON serializable`.
+        Value::Complex(_) => bail!("TypeError: Object of type complex is not JSON serializable"),
         Value::Float(f) => {
             let n = serde_json::Number::from_f64(*f)
                 .with_context(|| format!("non-finite float: {}", f))?;

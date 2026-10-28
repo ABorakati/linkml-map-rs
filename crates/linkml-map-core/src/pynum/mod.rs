@@ -251,10 +251,18 @@ pub fn cmp(a: IntRef<'_>, b: IntRef<'_>) -> Ordering {
         (IntRef::Small(x), IntRef::Small(y)) => x.cmp(&y),
         (IntRef::Small(_), IntRef::Big(y)) => {
             // `y` is outside `i64`: its sign decides.
-            if y.is_negative() { Ordering::Greater } else { Ordering::Less }
+            if y.is_negative() {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
         }
         (IntRef::Big(x), IntRef::Small(_)) => {
-            if x.is_negative() { Ordering::Less } else { Ordering::Greater }
+            if x.is_negative() {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
         }
         (IntRef::Big(x), IntRef::Big(y)) => x.cmp(y),
     }
@@ -483,7 +491,11 @@ pub fn hash(n: IntRef<'_>) -> i64 {
     let n = n.to_big();
     let reduced = n.magnitude() % BigUint::from(MODULUS as u64);
     let magnitude = reduced.to_i64().unwrap_or(0);
-    let signed = if n.is_negative() { -magnitude } else { magnitude };
+    let signed = if n.is_negative() {
+        -magnitude
+    } else {
+        magnitude
+    };
     if signed == -1 { -2 } else { signed }
 }
 

@@ -2892,6 +2892,8 @@ fn apply_offset(off: &Offset, value: Value, source_map: &IndexMap<String, Value>
     };
     let operand = |v: &Value| match v {
         Value::Int(i) => Some(*i as f64),
+        // Python raises `OverflowError` past the float range; `inf` stands in.
+        Value::BigInt(_) => v.try_numeric(),
         Value::Float(f) => Some(*f),
         Value::Bool(b) => Some(f64::from(u8::from(*b))),
         _ => None,

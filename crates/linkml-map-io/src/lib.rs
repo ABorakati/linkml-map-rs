@@ -47,8 +47,9 @@ pub use loaders::{
 };
 pub use writers::{
     DEFAULT_CHUNK_SIZE, MultiStreamWriter, StreamWriter, Target, WriteOptions, columnar_needs_file,
-    dump_output, jsonl_line, make_stream_writer, validate_additional_outputs, value_to_json,
-    write_all, write_all_auto, write_all_with, write_all_writer, write_all_writer_with, write_vec,
+    dump_output, jsonl_line, make_stream_writer, try_jsonl_line, validate_additional_outputs,
+    value_to_json, write_all, write_all_auto, write_all_with, write_all_writer,
+    write_all_writer_with, write_vec,
 };
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

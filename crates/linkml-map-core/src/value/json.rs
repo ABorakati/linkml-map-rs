@@ -262,8 +262,8 @@ impl<'a> Reader<'a> {
         }
         self.saw_big = true;
         let negative = literal.starts_with('-');
-        let magnitude = pynum::parse_digits(&self.text[int_start..int_end], 10)
-            .map_err(|e| e.to_string())?;
+        let magnitude =
+            pynum::parse_digits(&self.text[int_start..int_end], 10).map_err(|e| e.to_string())?;
         Ok(Value::from_bigint(if negative {
             -magnitude
         } else {
@@ -284,7 +284,9 @@ mod tests {
             format!("{:?}", m["a"]),
             "BigInt(123456789012345678901234567890)"
         );
-        let Value::List(l) = &m["b"] else { panic!("list") };
+        let Value::List(l) = &m["b"] else {
+            panic!("list")
+        };
         assert_eq!(format!("{:?}", l[0]), "BigInt(-9223372036854775809)");
         assert_eq!(l[1], Value::Float(1500.0));
         assert_eq!(l[2], Value::Str("12345678901234567890123".into()));

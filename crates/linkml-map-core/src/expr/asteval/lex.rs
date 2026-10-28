@@ -486,9 +486,9 @@ impl Lexer {
                 self.verify_end_of_number(what)?;
                 return Ok(match i64::from_str_radix(&ds, radix) {
                     Ok(v) => Num::Int(v),
-                    Err(_) => Num::Big(
-                        crate::pynum::parse_digits(&ds, radix).map_err(|e| e.to_string())?,
-                    ),
+                    Err(_) => {
+                        Num::Big(crate::pynum::parse_digits(&ds, radix).map_err(|e| e.to_string())?)
+                    }
                 });
             }
         }

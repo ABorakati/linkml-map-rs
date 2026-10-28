@@ -301,12 +301,12 @@ fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
         (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "conjugate") => {
             Ok(Py::from_big(int_value(recv).unwrap_or_default()))
         }
-        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "bit_length") => Ok(Py::from_big(
-            BigInt::from(pynum::bit_length(&int_value(recv).unwrap_or_default())),
-        )),
-        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "bit_count") => Ok(Py::from_big(
-            BigInt::from(pynum::bit_count(&int_value(recv).unwrap_or_default())),
-        )),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "bit_length") => Ok(Py::from_big(BigInt::from(
+            pynum::bit_length(&int_value(recv).unwrap_or_default()),
+        ))),
+        (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "bit_count") => Ok(Py::from_big(BigInt::from(
+            pynum::bit_count(&int_value(recv).unwrap_or_default()),
+        ))),
         (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "is_integer") => Ok(Py::Bool(true)),
         (Py::Int(_) | Py::BigInt(_) | Py::Bool(_), "as_integer_ratio") => Ok(Py::tuple(vec![
             Py::from_big(int_value(recv).unwrap_or_default()),
@@ -339,7 +339,10 @@ fn num_method(recv: &Py, name: &str) -> PyRes<Py> {
             exp += trailing;
             let numerator = BigInt::from(mantissa) * if *f < 0.0 { -1 } else { 1 };
             if exp >= 0 {
-                Ok(Py::tuple(vec![Py::from_big(numerator << exp as usize), Py::Int(1)]))
+                Ok(Py::tuple(vec![
+                    Py::from_big(numerator << exp as usize),
+                    Py::Int(1),
+                ]))
             } else {
                 Ok(Py::tuple(vec![
                     Py::from_big(numerator),

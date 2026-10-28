@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TypeError",
+  "message": "Object of type complex is not JSON serializable"
+}

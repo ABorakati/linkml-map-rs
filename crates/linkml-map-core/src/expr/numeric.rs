@@ -87,11 +87,7 @@ impl From<NumError> for ExprError {
 }
 
 /// `x op y` for two numbers, after the `safe_*` checks of simpleeval.
-pub(super) fn native_binary(
-    op: BinOp,
-    left: &Value,
-    right: &Value,
-) -> ExprResult<Option<Value>> {
+pub(super) fn native_binary(op: BinOp, left: &Value, right: &Value) -> ExprResult<Option<Value>> {
     let (Some(l), Some(r)) = (as_arith(left), as_arith(right)) else {
         return Ok(None);
     };
@@ -156,6 +152,38 @@ fn check_shift_limits(
 
 // --- int ---
 
+/// `a op b` for two `i64`s when the result is a plain integer or float and no
+/// limit or error is involved; `None` sends the operation down the general path
+/// (overflow, division by zero, `**` and the shifts with their simpleeval limits).
+#[inline]
+pub(super) fn int_fast_path(op: BinOp, a: i64, b: i64) -> Option<Value> {
+    match op {
+        BinOp::Add => a.checked_add(b).map(Value::Int),
+        BinOp::Sub => a.checked_sub(b).map(Value::Int),
+        BinOp::Mul => a.checked_mul(b).map(Value::Int),
+        BinOp::FloorDiv if b != 0 => python_floordiv_int(a, b).map(Value::Int),
+        BinOp::Mod if b != 0 => Some(Value::Int(python_mod_int(a, b))),
+        BinOp::Div if b != 0 => Some(Value::Float(int_truediv(a, b))),
+        BinOp::BitAnd => Some(Value::Int(a & b)),
+        BinOp::BitOr => Some(Value::Int(a | b)),
+        BinOp::BitXor => Some(Value::Int(a ^ b)),
+        _ => None,
+    }
+}
+
+/// `a op b` for two floats where the result is a plain float (`None` for the
+/// operators with limits, errors or a retry path).
+#[inline]
+pub(super) fn float_fast_path(op: BinOp, a: f64, b: f64) -> Option<Value> {
+    match op {
+        BinOp::Add => Some(Value::Float(a + b)),
+        BinOp::Sub => Some(Value::Float(a - b)),
+        BinOp::Mul => Some(Value::Float(a * b)),
+        BinOp::Div if b != 0.0 => Some(Value::Float(a / b)),
+        _ => None,
+    }
+}
+
 /// What the `i64` fast path of an integer operator made of its operands.
 enum Fast {
     Done(Value),
@@ -176,7 +204,11 @@ fn int_binary(op: BinOp, a: IntRef<'_>, b: IntRef<'_>) -> ExprResult<Option<Valu
 
 /// An integer operator on two `i64`s. `None` is the retry path (`@`).
 fn small_int_binary(op: BinOp, a: i64, b: i64) -> ExprResult<Option<Fast>> {
-    let done = |v: Option<i64>| Ok(Some(v.map_or(Fast::Overflow, |i| Fast::Done(Value::Int(i)))));
+    let done = |v: Option<i64>| {
+        Ok(Some(
+            v.map_or(Fast::Overflow, |i| Fast::Done(Value::Int(i))),
+        ))
+    };
     match op {
         BinOp::Add => done(a.checked_add(b)),
         BinOp::Sub => done(a.checked_sub(b)),
@@ -472,8 +504,6 @@ pub(super) fn cmp_ordered(a: &Ordered<'_>, b: &Ordered<'_>) -> Option<Ordering> 
         (Ordered::Int(x), Ordered::Int(y)) => Some(pynum::cmp(*x, *y)),
         (Ordered::Float(x), Ordered::Float(y)) => x.partial_cmp(y),
         (Ordered::Int(x), Ordered::Float(y)) => pynum::cmp_int_f64(*x, *y),
-        (Ordered::Float(x), Ordered::Int(y)) => {
-            pynum::cmp_int_f64(*y, *x).map(Ordering::reverse)
-        }
+        (Ordered::Float(x), Ordered::Int(y)) => pynum::cmp_int_f64(*y, *x).map(Ordering::reverse),
     }
 }

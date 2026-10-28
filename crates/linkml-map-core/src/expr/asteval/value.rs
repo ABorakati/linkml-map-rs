@@ -14,8 +14,8 @@ use indexmap::IndexMap;
 
 use super::ast::FuncDef;
 use crate::pyfmt::{py_float_repr, py_repr_str};
-use crate::temporal::Temporal;
 use crate::pynum::{self, BigInt, IntRef};
+use crate::temporal::Temporal;
 use crate::value::Value;
 
 pub(crate) type Rf<T> = Rc<RefCell<T>>;
@@ -642,7 +642,9 @@ pub(crate) fn check_str_digits(v: &Py) -> PyRes<()> {
             return Ok(());
         }
         match v {
-            Py::BigInt(n) => pynum::big_to_string(n).map(drop).map_err(super::ops::num_err),
+            Py::BigInt(n) => pynum::big_to_string(n)
+                .map(drop)
+                .map_err(super::ops::num_err),
             Py::List(l) => l.borrow().iter().try_for_each(|x| walk(x, depth + 1)),
             Py::Tuple(t) => t.iter().try_for_each(|x| walk(x, depth + 1)),
             Py::Set(s) => s.borrow().values().try_for_each(|x| walk(x, depth + 1)),

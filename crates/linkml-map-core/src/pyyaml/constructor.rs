@@ -154,7 +154,7 @@ fn parse_radix(digits: &str, base: u32, original: &str) -> Result<BigInt, LoadEr
         Some(b'+') => (false, &trimmed[1..]),
         _ => (false, trimmed),
     };
-    if body.is_empty() || !body.chars().all(|c| c.to_digit(base).is_some()) {
+    if body.is_empty() || !body.chars().all(|c| c.is_digit(base)) {
         return Err(invalid());
     }
     // More than 4300 decimal digits is the `ValueError` of `int()`.

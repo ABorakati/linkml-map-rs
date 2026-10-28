@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use linkml_map_core::value::Value;
 
 use crate::format::Format;
-use crate::writers::{StreamWriter, jsonl_line};
+use crate::writers::{StreamWriter, try_jsonl_line};
 
 fn contains_decimal(value: &Value) -> bool {
     match value {
@@ -31,6 +31,7 @@ fn contains_decimal(value: &Value) -> bool {
         | Value::BigInt(_)
         | Value::Float(_)
         | Value::Complex(_)
+        | Value::Temporal(_)
         | Value::Str(_) => false,
     }
 }
@@ -51,6 +52,7 @@ fn decimals_as_strings(value: &Value) -> Value {
         | Value::BigInt(_)
         | Value::Float(_)
         | Value::Complex(_)
+        | Value::Temporal(_)
         | Value::Str(_)) => scalar.clone(),
     }
 }
@@ -96,9 +98,9 @@ impl StreamWriter for ColumnarStreamWriter {
         let mut out = String::new();
         for obj in chunk {
             if contains_decimal(obj) {
-                out.push_str(&jsonl_line(&decimals_as_strings(obj)));
+                out.push_str(&try_jsonl_line(&decimals_as_strings(obj))?);
             } else {
-                out.push_str(&jsonl_line(obj));
+                out.push_str(&try_jsonl_line(obj)?);
             }
             out.push('\n');
         }

@@ -303,7 +303,9 @@ pub(super) fn call_method(
                 no_args(name, &args, &kwargs)?;
                 Ok(Value::from_complex(Complex64::new(z.re, -z.im)))
             }
-            _ => Err(type_error(format!("'complex' object has no method '{name}'"))),
+            _ => Err(type_error(format!(
+                "'complex' object has no method '{name}'"
+            ))),
         },
         Value::List(items) => list_method(items, name, args, kwargs),
         other => Err(type_error(format!(
@@ -439,11 +441,15 @@ fn int_method(
         }
         "bit_length" => {
             no_args(name, &args, &kwargs)?;
-            Ok(Value::from_bigint(BigInt::from(pynum::bit_length(&n.to_big()))))
+            Ok(Value::from_bigint(BigInt::from(pynum::bit_length(
+                &n.to_big(),
+            ))))
         }
         "bit_count" => {
             no_args(name, &args, &kwargs)?;
-            Ok(Value::from_bigint(BigInt::from(pynum::bit_count(&n.to_big()))))
+            Ok(Value::from_bigint(BigInt::from(pynum::bit_count(
+                &n.to_big(),
+            ))))
         }
         "is_integer" => {
             no_args(name, &args, &kwargs)?;
@@ -765,11 +771,8 @@ fn str_method(
             )?;
             let sub: Vec<char> = bound.str(name, 0)?.expect("required").chars().collect();
             let hay: Vec<char> = s.chars().collect();
-            let (start, end) = adjust_indices(
-                hay.len(),
-                bound.index(name, 1)?,
-                bound.index(name, 2)?,
-            );
+            let (start, end) =
+                adjust_indices(hay.len(), bound.index(name, 1)?, bound.index(name, 2)?);
             if name == "count" {
                 return count(count_sub(&hay, &sub, start, end));
             }

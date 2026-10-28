@@ -163,6 +163,7 @@ pub(super) fn format_value(value: &Value, spec: &str) -> ExprResult<String> {
         Value::Int(i) => format_int(&BigInt::from(*i), spec),
         Value::BigInt(n) => format_int(n, spec),
         Value::Float(f) => format_float(*f, spec),
+        Value::Complex(z) => format_complex(**z, spec),
         other => Err(value_error(format!(
             "unsupported format string passed to {}.__format__",
             python_type(other)
@@ -479,6 +480,116 @@ fn format_float(value: f64, spec_text: &str) -> ExprResult<String> {
         text = format!("{grouped}{rest}");
     }
     Ok(spec.pad(&prefix, &text))
+}
+
+// === complex ===============================================================
+
+/// The digits of one finite part of a complex number (`abs` of it) for type
+/// `ty` (`None` is `repr`).
+fn complex_part_text(
+    abs: f64,
+    ty: Option<char>,
+    precision: Option<usize>,
+    alternate: bool,
+) -> String {
+    let upper = matches!(ty, Some('E' | 'F' | 'G'));
+    let mut text = match ty {
+        Some('f' | 'F') => fixed(abs, precision.unwrap_or(6)),
+        Some('e' | 'E') => exponent(abs, precision.unwrap_or(6), upper),
+        Some('g' | 'G' | 'n') => general(abs, precision.unwrap_or(6), upper, alternate, false),
+        // No type: `repr` without its `.0`, or `g` when given a precision.
+        _ => match precision {
+            None => {
+                let repr = crate::pyfmt::py_float_repr(abs);
+                repr.strip_suffix(".0").map_or(repr.clone(), str::to_owned)
+            }
+            Some(p) => general(abs, p, false, alternate, false),
+        },
+    };
+    // `#` keeps a decimal point that would otherwise be dropped.
+    if alternate && !text.contains('.') && !matches!(ty, Some('g' | 'G' | 'n')) {
+        match text.find(['e', 'E']) {
+            Some(at) => text.insert(at, '.'),
+            None => text.push('.'),
+        }
+    }
+    text
+}
+
+/// `format(z, spec)` for a `complex` (`format_complex_internal`).
+pub(super) fn format_complex(
+    z: crate::pynum::complex::Complex64,
+    spec_text: &str,
+) -> ExprResult<String> {
+    let spec = Spec::parse(spec_text, '>', "complex")?;
+    if spec.fill == '0' {
+        return Err(value_error(
+            "Zero padding is not allowed in complex format specifier",
+        ));
+    }
+    if spec.align == Some('=') {
+        return Err(value_error(
+            "'=' alignment flag is not allowed in complex format specifier",
+        ));
+    }
+    if let Some(t) = spec.ty
+        && !matches!(t, 'e' | 'E' | 'f' | 'F' | 'g' | 'G' | 'n')
+    {
+        return Err(value_error(format!(
+            "Unknown format code '{t}' for object of type 'complex'"
+        )));
+    }
+    let ty = spec.ty;
+    // With no type: like `str(z)`, a positive-zero real part is left out and
+    // anything else puts the number in parentheses.
+    let skip_re = ty.is_none() && z.re == 0.0 && z.re.is_sign_positive();
+    let add_parens = ty.is_none() && !skip_re;
+    let upper = matches!(ty, Some('E' | 'F' | 'G'));
+    let part = |value: f64, always_sign: bool| -> String {
+        let negative = value.is_sign_negative() && !value.is_nan();
+        let mut text = if value.is_finite() {
+            complex_part_text(value.abs(), ty, spec.precision, spec.alternate)
+        } else if value.is_nan() {
+            if upper { "NAN" } else { "nan" }.to_owned()
+        } else if upper {
+            "INF".to_owned()
+        } else {
+            "inf".to_owned()
+        };
+        let mantissa = text.split(['e', 'E']).next().unwrap_or("");
+        let zero = value.is_finite() && mantissa.chars().all(|c| matches!(c, '0' | '.'));
+        let minus = negative && !(spec.coerce_zero && zero);
+        if let Some(sep) = spec.grouping.filter(|_| ty.is_some() && value.is_finite()) {
+            let end = text.find(['.', 'e', 'E']).unwrap_or(text.len());
+            let (int_part, rest) = text.split_at(end);
+            text = format!("{}{rest}", group_digits(int_part, sep, 3));
+        }
+        let sign = if minus {
+            "-"
+        } else if always_sign {
+            "+"
+        } else {
+            match spec.sign {
+                Some('+') => "+",
+                Some(' ') => " ",
+                _ => "",
+            }
+        };
+        format!("{sign}{text}")
+    };
+    let mut body = String::new();
+    if add_parens {
+        body.push('(');
+    }
+    if !skip_re {
+        body.push_str(&part(z.re, false));
+    }
+    body.push_str(&part(z.im, !skip_re));
+    body.push('j');
+    if add_parens {
+        body.push(')');
+    }
+    Ok(spec.pad("", &body))
 }
 
 // === str.format ===========================================================

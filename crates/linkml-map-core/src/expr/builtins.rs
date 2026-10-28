@@ -477,7 +477,9 @@ fn cmp_num(a: &Num<'_>, b: &Num<'_>) -> Option<Ordering> {
 fn int_to_decimal(n: IntRef<'_>) -> Decimal {
     match n {
         IntRef::Small(i) => Decimal::from_i64(i),
-        IntRef::Big(b) => Decimal::parse_python(&b.to_string()).unwrap_or_else(|_| Decimal::from_i64(0)),
+        IntRef::Big(b) => {
+            Decimal::parse_python(&b.to_string()).unwrap_or_else(|_| Decimal::from_i64(0))
+        }
     }
 }
 
@@ -599,17 +601,23 @@ fn sum(args: &[Value]) -> ExprResult<Value> {
         None => Value::Int(0),
     };
     let mut rest: &[Value] = &items;
+    if let Value::Int(mut total) = acc {
+        // The `i64` accumulator, as CPython's `C long` fast path.
+        while let Some((Value::Int(i), tail)) = rest.split_first() {
+            let Some(t) = total.checked_add(*i) else {
+                break;
+            };
+            total = t;
+            rest = tail;
+        }
+        acc = Value::Int(total);
+    }
     if matches!(acc, Value::Int(_) | Value::BigInt(_)) {
-        // An exact integer accumulator: the `i64` sum until it overflows.
+        // Past an overflow, or with a big integer: the exact sum.
         while let Some((item @ (Value::Int(_) | Value::BigInt(_)), tail)) = rest.split_first() {
-            acc = match (&acc, item) {
-                (Value::Int(a), Value::Int(b)) => a
-                    .checked_add(*b)
-                    .map_or_else(|| Value::from_bigint(BigInt::from(*a) + BigInt::from(*b)), Value::Int),
-                (a, b) => match (a.as_int_ref(), b.as_int_ref()) {
-                    (Some(x), Some(y)) => Value::from_bigint(pynum::add(x, y)),
-                    _ => unreachable!("integer operands"),
-                },
+            acc = match (acc.as_int_ref(), item.as_int_ref()) {
+                (Some(x), Some(y)) => Value::from_bigint(pynum::add(x, y)),
+                _ => unreachable!("integer operands"),
             };
             rest = tail;
         }
@@ -827,7 +835,10 @@ fn last(args: &[Value]) -> ExprResult<Value> {
 fn str_(args: &[Value]) -> ExprResult<Value> {
     check_arity("str", args, 0, 1)?;
     Ok(Value::Str(
-        args.first().map(try_py_str).transpose()?.unwrap_or_default(),
+        args.first()
+            .map(try_py_str)
+            .transpose()?
+            .unwrap_or_default(),
     ))
 }
 
@@ -885,14 +896,16 @@ fn decimal_to_int(d: &Decimal, mode: ToInt) -> ExprResult<Value> {
         ToInt::Floor => negative && frac_nonzero,
         ToInt::Ceil => !negative && frac_nonzero,
         ToInt::Trunc => false,
-        ToInt::HalfEven => {
-            first > b'5' || (first == b'5' && (rest_nonzero || magnitude.bit(0)))
-        }
+        ToInt::HalfEven => first > b'5' || (first == b'5' && (rest_nonzero || magnitude.bit(0))),
     };
     if bump {
         magnitude += 1;
     }
-    Ok(Value::from_bigint(if negative { -magnitude } else { magnitude }))
+    Ok(Value::from_bigint(if negative {
+        -magnitude
+    } else {
+        magnitude
+    }))
 }
 
 /// `int(text, base)`: CPython's `PyLong_FromString` (surrounding whitespace, a
@@ -1106,7 +1119,10 @@ pub(super) fn round_int(n: IntRef<'_>, ndigits: i64) -> Value {
     let big = n.to_big();
     // Past the number's own digits the nearest multiple is zero.
     let digits = (big.magnitude().bits() as f64 * std::f64::consts::LOG10_2) as u64 + 2;
-    let Some(k) = u32::try_from(ndigits.unsigned_abs()).ok().filter(|&k| u64::from(k) <= digits) else {
+    let Some(k) = u32::try_from(ndigits.unsigned_abs())
+        .ok()
+        .filter(|&k| u64::from(k) <= digits)
+    else {
         return Value::Int(0);
     };
     let scale = BigInt::from(10).pow(k);
@@ -1114,8 +1130,8 @@ pub(super) fn round_int(n: IntRef<'_>, ndigits: i64) -> Value {
     let remainder = num_integer::Integer::mod_floor(&*big, &scale);
     let base = &*big - &remainder;
     let twice = &remainder * 2;
-    let up = twice > scale
-        || (twice == scale && num_integer::Integer::div_floor(&base, &scale).bit(0));
+    let up =
+        twice > scale || (twice == scale && num_integer::Integer::div_floor(&base, &scale).bit(0));
     Value::from_bigint(if up { base + scale } else { base })
 }
 
@@ -1463,7 +1479,10 @@ fn is_str(args: &[Value]) -> ExprResult<Value> {
 /// `isinstance(value, int) and not isinstance(value, bool)`.
 fn is_int(args: &[Value]) -> ExprResult<Value> {
     check_arity("_is_int", args, 1, 1)?;
-    Ok(Value::Bool(matches!(args[0], Value::Int(_) | Value::BigInt(_))))
+    Ok(Value::Bool(matches!(
+        args[0],
+        Value::Int(_) | Value::BigInt(_)
+    )))
 }
 
 fn is_float(args: &[Value]) -> ExprResult<Value> {

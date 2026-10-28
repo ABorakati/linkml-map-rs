@@ -21,7 +21,7 @@ pub use json::{parse_json, parse_json_bytes};
 ///
 /// Objects (dicts) are represented as [`Value::Map`]; an unbound variable
 /// resolves to [`Value::Null`] rather than an error (SQL-style semantics).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(untagged)]
 #[derive(Default)]
 pub enum Value {
@@ -73,6 +73,43 @@ fn serialize_bigint<S: serde::Serializer>(n: &BigInt, s: S) -> Result<S::Ok, S::
 
 fn serialize_complex<S: serde::Serializer>(z: &Complex64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&pynum::complex::repr(*z))
+}
+
+/// `Clone` with the scalar cases inline: every binding read and operand copy of
+/// the evaluator clones a `Value`, and the derived implementation (one arm per
+/// variant, including the boxed integers and the containers) is too big for the
+/// compiler to inline into those loops.
+impl Clone for Value {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Value::Null => Value::Null,
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Int(i) => Value::Int(*i),
+            Value::Float(f) => Value::Float(*f),
+            other => other.clone_heap(),
+        }
+    }
+}
+
+impl Value {
+    /// The rest of [`Clone::clone`]: variants that own heap data (or are large).
+    #[inline(never)]
+    fn clone_heap(&self) -> Value {
+        match self {
+            Value::Null => Value::Null,
+            Value::Bool(b) => Value::Bool(*b),
+            Value::Int(i) => Value::Int(*i),
+            Value::Float(f) => Value::Float(*f),
+            Value::Decimal(d) => Value::Decimal(d.clone()),
+            Value::Temporal(t) => Value::Temporal(*t),
+            Value::Str(s) => Value::Str(s.clone()),
+            Value::List(items) => Value::List(items.clone()),
+            Value::Map(map) => Value::Map(map.clone()),
+            Value::BigInt(n) => Value::BigInt(n.clone()),
+            Value::Complex(z) => Value::Complex(z.clone()),
+        }
+    }
 }
 
 fn serialize_temporal<S: serde::Serializer>(t: &Temporal, s: S) -> Result<S::Ok, S::Error> {
@@ -217,11 +254,13 @@ impl Value {
             Value::Decimal(d) => Some(d.to_f64()),
             // The integer itself upstream; its nearest float here (`inf` beyond
             // the float range, where Python's later `float()` would raise).
-            Value::BigInt(n) => Some(pynum::big_to_f64(n).unwrap_or(if n.sign() == num_bigint::Sign::Minus {
-                f64::NEG_INFINITY
-            } else {
-                f64::INFINITY
-            })),
+            Value::BigInt(n) => Some(pynum::big_to_f64(n).unwrap_or(
+                if n.sign() == num_bigint::Sign::Minus {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                },
+            )),
             Value::Str(s) => parse_python_float(s),
             _ => None,
         }
@@ -576,7 +615,10 @@ mod tests {
         }
         // Normalised: a result inside `i64` is an `Int`.
         assert_eq!(Value::from_bigint(BigInt::from(5)), Value::Int(5));
-        assert_eq!(Value::from_bigint(BigInt::from(i64::MIN)), Value::Int(i64::MIN));
+        assert_eq!(
+            Value::from_bigint(BigInt::from(i64::MIN)),
+            Value::Int(i64::MIN)
+        );
     }
 
     #[test]

@@ -283,8 +283,7 @@ fn format_int_spec(i: &BigInt, s: &Spec, is_bool: bool) -> PyRes<String> {
         'x' => mag.to_str_radix(16),
         'X' => mag.to_str_radix(16).to_uppercase(),
         // Decimal conversion has CPython's digit limit.
-        _ => pynum::big_to_string(&BigInt::from(mag.clone()))
-            .map_err(super::ops::num_err)?,
+        _ => pynum::big_to_string(&BigInt::from(mag.clone())).map_err(super::ops::num_err)?,
     };
     let prefix = if s.alt {
         match ty {
@@ -360,6 +359,9 @@ pub(crate) fn format_value(v: &Py, spec: &str) -> PyRes<String> {
             format_int_spec(&BigInt::from(*b), &s, true)
         }
         Py::Float(f) => format_float_spec(*f, &s),
+        Py::Complex(re, im) => {
+            crate::expr::pyformat_complex(*re, *im, spec).map_or_else(value_err, Ok)
+        }
         other => type_err(format!(
             "unsupported format string passed to {}.__format__",
             other.type_name()
