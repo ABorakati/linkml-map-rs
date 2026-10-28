@@ -64,7 +64,7 @@ CMPOPS = ["==", "!=", "<", "<=", ">", ">=", "in", "not in", "is", "is not"]
 
 # Features switched off to expose divergences hidden behind an already-known one
 # (``campaign.py --mask rawint,bigint,...``). Known names: rawint bigint slice strstyle
-# fstr lambda method matmul setdisp stmt (for/aug/unpack/del/pass statements).
+# fstr lambda method matmul setdisp emptymap stmt (for/aug/unpack/del/pass statements).
 MASK: set[str] = set()
 
 
@@ -143,7 +143,9 @@ def gen_value(draw, depth: int = 0, ty: str = "any"):
         elem_ty = pick(draw, [(3, "any"), (2, "int"), (2, "str"), (1, "float"), (1, "map")])
         return [gen_value(draw, depth + 1, elem_ty) if depth < 2 else gen_scalar(draw) for _ in range(n)]
     if ty == "map" or (ty == "any" and depth < 3 and chance(draw, 12)):
-        n = draw(st.integers(0, 3))
+        # `emptymap`: an empty bound map is a DynObj (always truthy) upstream, but the
+        # other operations on it (`in`, `len`, `==`) are those of a plain dict here.
+        n = draw(st.integers(1 if "emptymap" in MASK else 0, 3))
         keys = draw(st.lists(st.sampled_from(KEY_EDGES), min_size=n, max_size=n, unique=True))
         return {k: gen_value(draw, depth + 1) if depth < 2 else gen_scalar(draw) for k in keys}
     return gen_scalar(draw, "any")

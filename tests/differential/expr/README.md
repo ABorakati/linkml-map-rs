@@ -25,6 +25,7 @@ into `{"err": "crash"}` and carries on.
 | `shrink.py` | tree/bindings shrinker. |
 | `campaign.py` | generate, evaluate, cluster, shrink, write `divergences.jsonl` / `clusters.md`. |
 | `probes.py` | hand-written probes, one group per divergence class; `--write corpus/curated.jsonl`. |
+| `probes_containers.py` | probes for tuple, set, dicts with non-string keys and `DynObj` truthiness (restricted and as asteval blocks); `--write corpus/containers.jsonl`. |
 | `stmtprobe.py` | block/statement probes (`----`-separated file) compared against upstream asteval: `python stmtprobe.py FILE [-v]`. |
 | `leaf.py`, `chars.py` | leaf oracles (py_eq, truthiness, float repr, str/repr, Decimal, json.dumps, int()/float(), round, casing, slugify...) with random inputs, and an exhaustive per-code-point scan. |
 | `corpus/*.jsonl` | stored cases with the upstream result, replayed by `cargo test -p linkml-map-conformance --test expr_differential` (no Python needed). `status: divergence` entries are skipped by the default run and replayed by `-- --ignored`. |
@@ -40,26 +41,43 @@ $PY campaign.py run --n 30000 --seed 1 --out /tmp/run1 --mode restricted
 $PY campaign.py run --n 30000 --seed 2 --out /tmp/run2 --mode unrestricted 
 $PY campaign.py run --n 3000 --seed 7 --out /tmp/ci --profile clean --fail-on-divergence   # the CI profile
 $PY probes.py                       # curated probes
+$PY probes_containers.py            # tuple / set / non-string-key dict / DynObj truthiness probes
 $PY leaf.py --n 20000               # leaf oracles
 $PY chars.py                        # every code point through casing/repr/slugify/...
 ```
 
 `--mask a,b,c` disables grammar features that are already known to diverge so the
 campaign can see what they hide (`rawint bigint slice strstyle fstr lambda method
-matmul setdisp is tuple pow bitwise strescape numstr-unicode methodattr
-numattr`; `in`, `div`, `strescape` and `numstr-unicode` are fixed and no longer masked). `--profile clean` is the mask set that currently yields no divergences;
+matmul setdisp emptymap is tuple pow bitwise strescape numstr-unicode methodattr
+numattr`; `in`, `div`, `strescape`, `numstr-unicode`, `tuple` and `setdisp` are fixed and no longer masked). `--profile clean` is the mask set that currently yields no divergences;
 shrink it as divergences are fixed.
 
 ## Value semantics decided by this harness
 
-* **Map attributes.** The engine binds a nested map as upstream's `DynObj` (missing
-  key is `None`); only a dict built inside the expression (`{...}`, a dict
-  comprehension, `dict(...)`) distributes over its values like a plain `dict`.
-  `Value::Map` cannot tell a bound `any`-ranged dict from a `DynObj`, so that rarer
-  flavour is not reproduced. The campaign accepts a Rust result that matches
-  either flavour; stored `agree.jsonl` expectations are the `DynObj` one where the
-  two differ. Truthiness is the remaining gap (class `dynobj-truthiness`): an empty
-  bound map is falsy in Rust, a `DynObj` is always truthy.
+* **Map attributes and truthiness.** The engine binds a nested map as upstream's
+  `DynObj` (missing key is `None`, always truthy even when empty); a dict built
+  inside the expression (`{...}`, a dict comprehension, `dict(...)`) is a
+  `Value::Dict`: any hashable key, falsy when empty, and attributes distribute over
+  its values like a plain `dict`. `Value::Map` cannot tell a bound `any`-ranged
+  (or inlined-as-dict) value, a plain `dict` upstream, from a `DynObj`, so that
+  flavour is only partly reproduced: every operation other than attribute access
+  and truthiness treats a bound map as a dict. The campaign accepts a Rust result
+  that matches either flavour; stored `agree.jsonl` expectations are the `DynObj`
+  one where the two differ. Because those two halves can disagree inside one
+  expression (`z or 0` on an empty `z`, then `in`), the `clean` profile masks
+  `emptymap` (an empty bound map is never generated); `probes_containers.py`
+  (class `dynobj-truthiness`) covers it by hand.
+* **Containers.** `tuple`, `set` and a dict with any hashable key are
+  `Value::Tuple`, `Value::Set` and `Value::Dict`. A set iterates in the order of
+  CPython 3.13's table (`crates/linkml-map-core/src/pyset.rs`) when every element
+  has a deterministic hash (`int`, `bool`, `None`, `float`, `Decimal`, tuples of
+  those); a set with a `str` (whose hash Python randomises per process) keeps
+  insertion order, and `codec.canon` compares such results order-insensitively.
+  A dict with only string keys becomes a string-keyed `Value::Map` when it leaves
+  an expression; one with other keys stays a dict through the engine, and is
+  written the way upstream's writers write it (JSON: `str` keys; YAML: its real
+  keys; a set is a `TypeError` in JSON and a `!!set` in YAML, a tuple an array and
+  `!!python/tuple`). `probes_containers.py` writes `corpus/containers.jsonl`.
 * **Unicode data** for `repr`, `isprintable`, case mapping, `Cased`, decimal digits
   and whitespace is generated from CPython 3.13 (Unicode 15.1) by
   `crates/linkml-map-core/tools/gen_pytables.py`, not taken from Rust's `char`.
@@ -70,5 +88,6 @@ shrink it as divergences are fixed.
   for fewer than 64 items (so NaNs land where CPython puts them); longer lists use
   a stable merge sort.
 * **Not ported:** big integers (`int(1e22)`), `text-unidecode`'s tables
-  (Artistic/GPL, so `slugify` keeps `deunicode`), list-vs-tuple affixes of
-  `startswith`/`endswith`.
+  (Artistic/GPL, so `slugify` keeps `deunicode`), object identity (so `a | a` and
+  `s.update(s)` on a set bound twice differ from CPython's identity special cases
+  in the restricted evaluator; asteval keeps identity), `frozenset` (a plain set).

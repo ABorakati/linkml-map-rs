@@ -1,0 +1,72 @@
+{"leaf": "py_eq", "ref": "py_eq", "args": [[[true, true], [{"$f": "18571afce4c19fcc"}, "foo_bar"], []], true], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [499059632974791868, 499059632974791868], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": ["1e", true], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [[{"$tuple": ["1.2.3"]}, {"\n": "a-b c"}], {"$set": [1099511627776, {"$f": "4004000000000000"}, {"$tuple": [1, 2]}]}], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [false, {"$f": "4340000000000000"}], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [[{"$set": [0, {"$f": "4004000000000000"}, {"$tuple": [1, 2]}, -1]}, {}], " nbsp "], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": ["ΐ∂ʼ本", [{"1": {"$f": "40af0b570a3d70a4"}}, [true, 31]]], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": ["\t3\n", true], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": ["NaN", "NaN"], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [{}, {"$set": [1099511627776, 0, {"$f": "4004000000000000"}]}], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [{"$f": "094d05244fe5066a"}, 0], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_eq", "ref": "py_eq", "args": [[",Ǆø１n̈zǅ"], [""]], "upstream": {"ok": false}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": ["Hello World"], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [{"b": {"$set": [1099511627776, true, {"$f": "4004000000000000"}, {"$tuple": []}]}}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [{"$dict": [[-3, []]]}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [{"$f": "c11ce55ba80de01e"}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [[34]], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": ["ǰbü"], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [{"$f": "4340000000000000"}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": ["ǅ"], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [[["\u001c글ǰǈ"]]], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [{"b": "3cç²", "1": null}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": ["1_000"], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "truthy", "ref": "truthy", "args": [{"$tuple": [true, {}, {"$tuple": [{"$tuple": ["ǈ"]}, {"$f": "c114658ba3dd982a"}]}]}], "upstream": {"ok": true}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [[{"$tuple": []}, [false, {"$dict": [[{"$f": "3ff0000000000000"}, {"$f": "c08ef60000000000"}]]}, null]]], "upstream": {"ok": "[(), [False, {1.0: -990.75}, None]]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [{"$set": [null, 0, {"$tuple": [1, 2]}, {"$tuple": []}]}], "upstream": {"ok": "{None, 0, (1, 2), ()}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [{"$tuple": [[9]]}], "upstream": {"ok": "([9],)"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": ["Σçﬂ글X\\ǆ "], "upstream": {"ok": "'Σçﬂ글X\\\\ǆ '"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [[false, {"$f": "4340000000000000"}]], "upstream": {"ok": "[False, 9007199254740992.0]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [{"$f": "031943230adb5f07"}], "upstream": {"ok": "9.888634585257269e-294"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [{"$f": "0000000000000001"}], "upstream": {"ok": "5e-324"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [[[{"1": "-1", "é": true, "": true}], false]], "upstream": {"ok": "[[{'1': '-1', 'é': True, '': True}], False]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [{"$f": "410d7caa63883af8"}], "upstream": {"ok": "241557.29859968252"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [{"$f": "40091eb851eb851f"}], "upstream": {"ok": "3.14"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": ["ẞ,Σŉ\"ǊB"], "upstream": {"ok": "'ẞ,Σŉ\"ǊB'"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_repr", "ref": "py_repr", "args": [-22], "upstream": {"ok": "-22"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [{"$f": "4014000000000000"}], "upstream": {"ok": "5.0"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [[{"$dict": [[-3, 255]]}]], "upstream": {"ok": "[{-3: 255}]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [{"$f": "c1104c1027749a6e"}], "upstream": {"ok": "-267012.03853074356"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [["ͅ,ǅяü1x\u001f", [null, true], 2554010635839410600]], "upstream": {"ok": "['ͅ,ǅяü1x\\x1f', [None, True], 2554010635839410600]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": ["ǰ"], "upstream": {"ok": "ǰ"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [[{"$f": "7ff0000000000000"}, "٣", true]], "upstream": {"ok": "[inf, '٣', True]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [-14], "upstream": {"ok": "-14"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [[[false, {"k 1": -9223372036854775808}]]], "upstream": {"ok": "[[False, {'k 1': -9223372036854775808}]]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": ["NaN"], "upstream": {"ok": "NaN"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [{"\n": "Hello World", "x\"y": {"a": -1079620449105960401}, "é": {"$f": "c127a577a6e257a5"}}], "upstream": {"ok": "{'\\n': 'Hello World', 'x\"y': {'a': -1079620449105960401}, 'é': -774843.8259456052}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [{"$tuple": [[true, [1682525853048031348], -3704384285396560845], -1, {"é": [], "\n": "ǈ 5α\u0000"}]}], "upstream": {"ok": "([True, [1682525853048031348], -3704384285396560845], -1, {'é': [], '\\n': 'ǈ\\u20285\\x7fα\\x00'})"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "py_str", "ref": "py_str", "args": [-23], "upstream": {"ok": "-23"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [["5ǅ ü,ǈ１ ", {"\n": "aaa", "é": {"$f": "240c77f28c0ded3e"}, "": []}], 0], "upstream": {"ok": "[\n\"5ǅ ü,ǈ１ \",\n{\n\"\\n\": \"aaa\",\n\"é\": 4.895952804460743e-135,\n\"\": []\n}\n]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": ["Ⅷ\\", 1], "upstream": {"ok": "\"Ⅷ\\\\\""}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [{"\n": false, "1": {"": false}}, 0], "upstream": {"ok": "{\n\"\\n\": false,\n\"1\": {\n\"\": false\n}\n}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [{"k 1": [{"$dict": [[null, {"$f": "c0f457cec928e8c0"}]]}, {"$f": "430c6bf526340000"}], "1": {"$tuple": ["𚷂Ǩο"]}}, 2], "upstream": {"ok": "{\n  \"k 1\": [\n    {\n      \"null\": -83324.92411127966\n    },\n    1000000000000000.0\n  ],\n  \"1\": [\n    \"𚷂Ǩο\"\n  ]\n}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [{"x\"y": {"$tuple": [[true, -684990042121115054], [true, "3🎉글0\""]]}, "k 1": true}, 0], "upstream": {"ok": "{\n\"x\\\"y\": [\n[\ntrue,\n-684990042121115054\n],\n[\ntrue,\n\"3🎉글0\\\"\"\n]\n],\n\"k 1\": true\n}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [{"$f": "c0a8c5cccccccccd"}, 4], "upstream": {"ok": "-3170.9"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": ["ΐ", 1], "upstream": {"ok": "\"ΐ\""}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": ["ç", null], "upstream": {"ok": "\"ç\""}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [true, 4], "upstream": {"ok": "true"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [27, null], "upstream": {"ok": "27"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": [[null], null], "upstream": {"ok": "[null]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps", "ref": "json_dumps", "args": ["x", null], "upstream": {"ok": "\"x\""}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [[["́øͅΣ本∂", null]], null], "upstream": {"ok": "[[\"́øͅΣ本∂\", null]]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [[1, "ΔǆǰǆǄn\u001fΣ", []], 2], "upstream": {"ok": "[\n  1,\n  \"ΔǆǰǆǄn\\u001fΣ\",\n  []\n]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [" em ", null], "upstream": {"ok": "\" em \""}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [{"$f": "42ef2c0e80168094"}, 2], "upstream": {"ok": "274192658379780.62"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": ["1e-3", 2], "upstream": {"ok": "\"1e-3\""}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [{"$f": "430241eede2ad10f"}, 2], "upstream": {"ok": "642380470770209.9"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [[], 2], "upstream": {"ok": "[]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [{"b": true}, 2], "upstream": {"ok": "{\n  \"b\": true\n}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [-373778306998573223, 2], "upstream": {"ok": "-373778306998573223"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [[["Åӎ‣ϛ⁆", "ÑΣ­Ñ", [null]], false], null], "upstream": {"ok": "[[\"Åӎ‣ϛ⁆\", \"ÑΣ­Ñ\", [null]], false]"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [{"$dict": [[0, "1ñẞ,ſΣ"]]}, 2], "upstream": {"ok": "{\n  \"0\": \"1ñẞ,ſΣ\"\n}"}, "status": "pass", "class": "leaf-agree", "reason": ""}
+{"leaf": "json_dumps_skipnull", "ref": "json_dumps_skipnull", "args": [["⁅ӎm‿𕚼ёг", [-30, 90, []], null], 2], "upstream": {"ok": "[\n  \"⁅ӎm‿𕚼ёг\",\n  [\n    -30,\n    90,\n    []\n  ],\n  null\n]"}, "status": "pass", "class": "leaf-agree", "reason": ""}

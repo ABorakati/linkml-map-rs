@@ -283,13 +283,15 @@ The complete, grouped list (including everything found by the later fuzzing roun
   `expr/syntax.rs`, `expr/pymethods.rs`, `expr/pyformat.rs`): results with no `Value`
   (`bytes`, complex numbers, `...`, functions and bound methods such as `s.upper`
   or a bare `upper`) raise an "unrepresentable" error where upstream succeeds; a
-  list method called in a statement block does not mutate the binding; a tuple of
-  affixes for `startswith` is recognised by how it is written (`(..)` or `tuple(..)`)
-  because `Value` has no tuple; a lone-surrogate escape (`'\ud800'`) and an integer
+  list method called in a statement block does not mutate the binding; a lone-surrogate escape (`'\ud800'`) and an integer
   literal beyond `i64` cannot be held; `str.casefold` folds the common special
   cases, not all of `CaseFolding.txt`; `'{0.__class__}'.format(..)` is refused.
-- **`Value` has no tuple, set, bytes or big-integer variant**, so for example
-  `is_list((1, 2))` is true, and integer results beyond `i64` raise.
+- **`Value` has no bytes or big-integer variant**, so integer results beyond `i64`
+  raise. (Tuples, sets and dicts with non-string keys have since been added as
+  `Value::Tuple`, `Value::Set` and `Value::Dict`: a tuple is not a list, a set
+  iterates in CPython 3.13's table order for elements with a deterministic hash
+  and in insertion order for strings, whose order Python itself randomises, and a
+  dict an expression builds keeps its key types.)
 - **Joined/dotted `populated_from` values** are not coerced to the target range.
 - **`type: Agent`.** linkml 1.12's `transformer_model` drops the abstract `Agent`
   from the `creator`/`author`/`reviewer` union; Rust still accepts and injects
