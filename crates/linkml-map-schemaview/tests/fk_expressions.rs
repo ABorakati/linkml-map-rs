@@ -366,3 +366,42 @@ fn indexing_without_a_target_needs_exactly_one_tree_root() {
         "{err}"
     );
 }
+
+#[test]
+fn a_top_level_slot_the_class_does_not_use_still_resolves() {
+    // upstream's `induced_slot` finds `id` as a top-level slot definition even on `Container`
+    // (`attic/personinfo_s1.yaml` indexes a Person object as its tree-root Container).
+    let schema = SchemaViewProvider::from_yaml_str(
+        r"
+id: https://example.org/top
+name: top
+prefixes: {linkml: 'https://w3id.org/linkml/'}
+default_prefix: top
+default_range: string
+imports: [linkml:types]
+slots:
+  id: {identifier: true}
+  persons: {range: Person, multivalued: true}
+classes:
+  Container:
+    tree_root: true
+    slots: [persons]
+  Person:
+    slots: [id]
+",
+    )
+    .unwrap();
+    let engine =
+        ObjectTransformer::new(TransformationSpecification::default(), Some(&schema), None);
+    engine
+        .check_indexable(&data("{id: A}"), Some("Container"))
+        .unwrap();
+    let err = engine
+        .check_indexable(&data("{zzz: 1}"), Some("Container"))
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("No such slot zzz as an attribute of Container ancestors"),
+        "{err}"
+    );
+}

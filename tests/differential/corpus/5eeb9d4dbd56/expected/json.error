@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ValueError",
+  "message": "No such slot zzz as an attribute of Container ancestors or as a slot definition in the schema"
+}

@@ -1,0 +1,15 @@
+id: https://example.org/top
+name: top
+prefixes: {linkml: https://w3id.org/linkml/, ex: https://example.org/}
+default_prefix: ex
+imports: [linkml:types]
+slots:
+  id: {identifier: true, range: string}
+  label: {range: string}
+  persons: {range: Person, multivalued: true}
+classes:
+  Container:
+    tree_root: true
+    slots: [persons]
+  Person:
+    slots: [id, label]

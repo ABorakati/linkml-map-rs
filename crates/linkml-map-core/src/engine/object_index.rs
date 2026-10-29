@@ -522,6 +522,11 @@ pub fn dynamic_object_error(sp: &dyn SchemaProvider, obj: &Value, class: &str) -
     let Value::Map(m) = obj else { return None };
     for (k, v) in m {
         let Ok(slot) = sp.induced_slot(k, class) else {
+            if sp.get_class(class).is_ok() && sp.has_slot_definition(k) {
+                // A top-level slot the class does not use still resolves; its value is not
+                // followed (a range class cannot be told).
+                continue;
+            }
             return Some(if sp.get_class(class).is_ok() {
                 format!(
                     "ValueError: No such slot {k} as an attribute of {class} ancestors or as a slot definition in the schema"

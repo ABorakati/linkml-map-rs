@@ -947,6 +947,15 @@ impl SchemaProvider for SchemaViewProvider {
         class.slot_index.get(slot_name).map(|&i| &class.slots[i])
     }
 
+    fn has_slot_definition(&self, slot_name: &str) -> bool {
+        self.sv
+            .get_slot(
+                &Identifier::Name(slot_name.to_owned()),
+                &self.cache.converter,
+            )
+            .is_ok_and(|slot| slot.is_some())
+    }
+
     fn induced_slot(&self, slot_name: &str, class_name: &str) -> SchemaResult<SlotDef> {
         self.with_class(class_name, |c| {
             c.slot_index.get(slot_name).map(|&i| c.slots[i].clone())

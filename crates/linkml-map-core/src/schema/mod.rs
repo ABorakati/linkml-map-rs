@@ -304,6 +304,17 @@ pub trait SchemaProvider: Send + Sync {
         vec![type_name.to_owned()]
     }
 
+    /// Whether the schema defines a top-level slot named `slot_name`.
+    ///
+    /// Upstream's `SchemaView.induced_slot(slot, class)` resolves a slot the class does not
+    /// use when the schema defines it at the top level (it raises only for a name that is
+    /// neither an attribute of the class's ancestors nor a top-level definition). The default
+    /// is `false`, for providers that do not keep top-level slot definitions apart.
+    fn has_slot_definition(&self, slot_name: &str) -> bool {
+        let _ = slot_name;
+        false
+    }
+
     /// Return the tree-root class name, if exactly one exists.
     ///
     /// Mirrors the pattern `[c.name for c in sv.all_classes().values() if c.tree_root]`.
