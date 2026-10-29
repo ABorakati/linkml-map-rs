@@ -576,11 +576,23 @@ impl CompiledPlan {
             ),
             // PARITY: single-object input is indexed (`tr.index(...)`) before it is mapped,
             // which rejects a key the schema does not know even if the spec reads no reference.
-            None => engine
-                .check_indexable(&row, self.source_class_hint.as_deref())
-                .and_then(|()| engine.map_object(&row, self.source_class.as_deref())),
+            None => {
+                let source_type = self.single_object_type();
+                engine
+                    .check_indexable(&row, self.source_class_hint.as_deref())
+                    .and_then(|()| engine.map_object(&row, source_type.as_deref()))
+            }
         }
         .map_err(anyhow::Error::from)
+    }
+
+    /// The source type of single-object input: upstream's `map_object(input_obj, source_type)`
+    /// with the CLI's `--source-type`, else resolved from the schema's tree-root class
+    /// (`_resolve_source_type`). `None` when neither exists, which the engine resolves itself.
+    fn single_object_type(&self) -> Option<String> {
+        self.source_class_hint
+            .clone()
+            .or_else(|| self.source_provider.tree_root_class())
     }
 
     /// [`CompiledPlan::transform_segment`] with a pre-built [`ObjectIndex`] (FK).
@@ -600,11 +612,12 @@ impl CompiledPlan {
                 &self.blocks[b].class_derivation,
                 index,
             ),
-            None => engine
-                .check_indexable(row, self.source_class_hint.as_deref())
-                .and_then(|()| {
-                    engine.map_object_with_index(row, self.source_class.as_deref(), index)
-                }),
+            None => {
+                let source_type = self.single_object_type();
+                engine
+                    .check_indexable(row, self.source_class_hint.as_deref())
+                    .and_then(|()| engine.map_object_with_index(row, source_type.as_deref(), index))
+            }
         }
         .map_err(anyhow::Error::from)
     }

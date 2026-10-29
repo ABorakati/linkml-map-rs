@@ -4,4 +4,3 @@ class_derivations:
     populated_from: Person
     slot_derivations:
       id: {populated_from: id}
-      l: {populated_from: label}
