@@ -1,0 +1,8 @@
+
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {}
+      age:
+        unit_conversion: {target_unit: g, source_unit: kg}

@@ -1,0 +1,10 @@
+id: p1
+org:
+  label: !!python/object/apply:linkml_map.transformer.object_transformer._AmbiguousType []
+---
+id: p2
+org:
+  label: !!python/object/apply:linkml_map.transformer.object_transformer._AmbiguousType []
+---
+id: p3
+---

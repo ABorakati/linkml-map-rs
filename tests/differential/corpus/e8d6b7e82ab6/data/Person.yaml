@@ -1,0 +1,7 @@
+- id: p1
+  name: Al
+- id: p2
+  alias: Bo
+- id: p3
+  name: X
+  alias: Y

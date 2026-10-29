@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Column 'name' is ambiguous — it exists in both the parent and nested source tables. Use dot notation (e.g., 'TableName.name') to disambiguate.; class_derivation=OrgT (from Org); slot_derivation=label (from name)"
+}

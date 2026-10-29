@@ -1,0 +1,8 @@
+
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {}
+      alias:
+        offset: {offset_field: age, offset_value: 2}

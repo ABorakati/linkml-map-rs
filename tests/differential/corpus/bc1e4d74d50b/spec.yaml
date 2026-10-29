@@ -1,0 +1,8 @@
+
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {}
+      name:
+        sources: [alias, nick]

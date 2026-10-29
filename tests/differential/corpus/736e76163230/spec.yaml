@@ -1,0 +1,11 @@
+
+class_derivations:
+  Base:
+    slot_derivations:
+      label:
+        sources: [name, alias]
+  Agent:
+    is_a: Base
+    populated_from: Person
+    slot_derivations:
+      id: {}

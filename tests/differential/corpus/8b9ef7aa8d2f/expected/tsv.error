@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "invalid literal for int() with base 10: 'oops'; class_derivation=Agent (from Person); slot_derivation=label"
+}

@@ -1,0 +1,21 @@
+
+id: http://example.org/s
+name: s
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: http://example.org/
+default_prefix: ex
+imports: [linkml:types]
+classes:
+  Person:
+    attributes:
+      id: {identifier: true}
+      name: {}
+      org_id: {}
+      pnick: {}
+  Org:
+    attributes:
+      id: {identifier: true}
+      name: {}
+      onick: {}
+      size: {range: integer}
