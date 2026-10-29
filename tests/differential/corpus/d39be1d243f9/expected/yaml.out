@@ -1,0 +1,8 @@
+addr:
+  street: a
+id: p1
+---
+addr:
+  street: n
+id: p2
+---

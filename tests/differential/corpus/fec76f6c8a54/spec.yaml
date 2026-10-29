@@ -1,0 +1,16 @@
+
+class_derivations:
+  Agent:
+    populated_from: Person
+    joins:
+      Org:
+        source_key: org_id
+        lookup_key: id
+    slot_derivations:
+      id: {}
+      org:
+        class_derivations:
+          OrgT:
+            populated_from: Org
+            slot_derivations:
+              label: {sources: [Org.name, onick]}

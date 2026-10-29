@@ -1,0 +1,7 @@
+- id: p1
+  tags:
+  - a
+  - b
+- id: p2
+  labels:
+  - x

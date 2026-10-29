@@ -1,0 +1,18 @@
+
+class_derivations:
+  Base:
+    slot_derivations:
+      label:
+        sources: [color, nick]
+        range: TColor
+  Agent:
+    is_a: Base
+    populated_from: Person
+    slot_derivations:
+      id: {}
+enum_derivations:
+  TColor:
+    populated_from: Color
+    permissible_value_derivations:
+      RED: {populated_from: red}
+      GREEN: {populated_from: green}

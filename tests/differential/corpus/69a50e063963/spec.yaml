@@ -1,0 +1,15 @@
+
+class_derivations:
+  Base:
+    slot_derivations:
+      label:
+        sources: [age, years]
+        offset:
+          offset_field: years
+          offset_value: 2
+
+  Agent:
+    is_a: Base
+    populated_from: Person
+    slot_derivations:
+      id: {}

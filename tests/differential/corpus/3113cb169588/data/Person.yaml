@@ -1,0 +1,6 @@
+- id: p1
+  name: Al
+  age: 3
+- id: p2
+  alias: Bo
+  years: 7

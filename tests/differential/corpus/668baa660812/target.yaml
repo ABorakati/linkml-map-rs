@@ -1,0 +1,19 @@
+
+id: http://example.org/t
+name: t
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: http://example.org/
+default_prefix: ex
+imports: [linkml:types]
+classes:
+  Agent:
+    attributes:
+      id: {identifier: true}
+      label: {range: TColor}
+      many: {multivalued: true}
+      num: {range: integer}
+      col: {range: TColor}
+enums:
+  TColor:
+    permissible_values: {RED: {}, GREEN: {}}

@@ -1,0 +1,12 @@
+- id: p1
+  name: Al
+  age: 3
+- id: p2
+  alias: Bo
+  years: 7
+- id: p3
+- id: p4
+  name: 0
+- id: p5
+  name: null
+  alias: Z

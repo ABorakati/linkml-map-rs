@@ -101,6 +101,7 @@ pub fn with_inherited_fields(
     all: &[ClassDerivation],
 ) -> Result<ClassDerivation> {
     let mut merged = cd.clone();
+    induce_populated_from(&mut merged);
     for ancestor in class_derivation_ancestors(cd, all)?.values() {
         // PARITY: transformer.py::_with_inherited_fields iterates
         // `ancestor.__dict__`, so every datamodel field is merged, scalars
@@ -130,6 +131,36 @@ pub fn with_inherited_fields(
         fill_unset(&mut merged.mint_ids, &ancestor.mint_ids);
     }
     Ok(merged)
+}
+
+/// The part of upstream `induce_missing_values` that rewrites slot derivations: a slot
+/// derivation of `cd` itself with none of `populated_from`, `expr`, `value` or (non-empty)
+/// `class_derivations` gets `populated_from = <its name>` (the "null mapping copies the
+/// same-named source slot" default).
+///
+/// Everything that reads `populated_from` then sees what it sees upstream: `value_mappings`,
+/// `missing_values`, `offset` and unit conversion apply to the copied value, and `sources`
+/// is dead (`_derive_slot` tries `populated_from` first). Only `cd`'s own slot derivations are
+/// induced: those inherited through `is_a` / `mixins` come from the raw specification, and
+/// nested `class_derivations` are never visited, so both stay bare and keep their `sources`.
+/// Induction also infers `range` from the source slot's class range; that step is not ported.
+///
+/// A slot named `_source_class` is left bare: `populated_from: _source_class` is the engine's own
+/// virtual slot (#193), which upstream does not have, so upstream reads a source slot of that name.
+///
+/// "Unset" is `None`, not falsy, as in upstream: `populated_from: ""` or `expr: ""` is set,
+/// so it is not induced, and (being falsy) it matches no arm at run time.
+fn induce_populated_from(cd: &mut ClassDerivation) {
+    for sd in cd.slot_derivations.iter_mut().flat_map(|m| m.values_mut()) {
+        if sd.populated_from.is_none()
+            && sd.name != "_source_class"
+            && sd.expr.is_none()
+            && sd.value.is_none()
+            && sd.class_derivations.as_ref().is_none_or(Vec::is_empty)
+        {
+            sd.populated_from = Some(sd.name.clone());
+        }
+    }
 }
 
 /// Upstream `curr_v.update({**v, **curr_v})`: the descendant's entries win and

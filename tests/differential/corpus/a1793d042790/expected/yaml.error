@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "can only concatenate str (not \"float\") to str; class_derivation=Agent (from Person); slot_derivation=alias (from alias)"
+}

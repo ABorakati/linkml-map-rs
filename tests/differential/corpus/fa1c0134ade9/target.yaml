@@ -1,0 +1,17 @@
+
+id: http://example.org/t
+name: t
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: http://example.org/
+default_prefix: ex
+imports: [linkml:types]
+classes:
+  Agent:
+    attributes:
+      id: {identifier: true}
+      org: {range: OrgT, inlined: true}
+  OrgT:
+    attributes:
+      label: {}
+      sz: {range: integer}

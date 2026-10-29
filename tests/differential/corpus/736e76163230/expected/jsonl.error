@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Multiple sources for label: {'name': 'Al', 'alias': 'B'}; class_derivation=Agent (from Person); slot_derivation=label"
+}

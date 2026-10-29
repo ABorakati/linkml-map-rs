@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Multiple sources for street: {'name': 'a', 'alias': 'b'}; class_derivation=Addr (from Person); slot_derivation=street"
+}
