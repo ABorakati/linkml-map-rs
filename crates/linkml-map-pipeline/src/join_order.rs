@@ -377,7 +377,7 @@ impl JoinEngine {
         if self.format == Format::Json {
             let rows =
                 load_all_with_numeric_hints(&seg.file, seg.format, Default::default()).await?;
-            let rows = join_rows::json_rows(rows);
+            let rows = join_rows::json_rows(rows)?;
             return Ok(futures::stream::iter(rows.into_iter().map(Ok)).boxed());
         }
         load_stream_with_numeric_hints(&seg.file, seg.format, Default::default()).await

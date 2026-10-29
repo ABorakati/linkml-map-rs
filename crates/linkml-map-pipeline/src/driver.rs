@@ -352,6 +352,7 @@ async fn lookup_index_for(
         // to `VARCHAR` and run `_parse_numeric` over each cell (see `join_rows`).
         let rows = if fmt == Format::Json {
             join_rows::json_rows(rows)
+                .with_context(|| format!("reading joined table {table:?} with DuckDB"))?
         } else {
             rows
         };
