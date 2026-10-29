@@ -1,0 +1,4 @@
+id,out_age,out_score,out_flag,out_when,out_note
+a,,9.223372036854776e+18,,,
+b,,1.5,,,
+c,,-9.223372036854776e+18,,,

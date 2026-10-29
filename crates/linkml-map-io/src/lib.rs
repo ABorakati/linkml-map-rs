@@ -27,7 +27,7 @@
 #[cfg(feature = "columnar")]
 pub mod columnar;
 mod delimited;
-pub use delimited::parse_numeric;
+pub use delimited::{parse_numeric, parse_numeric_owned};
 pub mod format;
 mod libyaml;
 pub mod loaders;

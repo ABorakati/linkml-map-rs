@@ -100,6 +100,42 @@ pub async fn load_all(path: impl AsRef<Path>, format: Format) -> Result<Vec<Valu
     Ok(out)
 }
 
+/// [`load_stream_with_numeric_hints`] (no hints) for a table upstream reads with DuckDB's
+/// `read_csv_auto(..., all_varchar=true)`: the join engine's primary table and every joined table. A CSV/TSV
+/// file keeps the spaces at the start of its fields and loses a leading byte-order mark; the other formats
+/// are read as usual.
+pub async fn load_stream_duckdb(
+    path: impl AsRef<Path>,
+    format: Format,
+) -> Result<BoxStream<'static, Result<Value>>> {
+    let path = path.as_ref().to_owned();
+    match format {
+        Format::Csv => Ok(delimited_stream_with(
+            path,
+            ',',
+            NumericColumnHints::new(),
+            true,
+        )),
+        Format::Tsv => Ok(delimited_stream_with(
+            path,
+            '\t',
+            NumericColumnHints::new(),
+            true,
+        )),
+        other => load_stream_with_numeric_hints(path, other, NumericColumnHints::new()).await,
+    }
+}
+
+/// Collect all values from [`load_stream_duckdb`].
+pub async fn load_all_duckdb(path: impl AsRef<Path>, format: Format) -> Result<Vec<Value>> {
+    let mut stream = load_stream_duckdb(path, format).await?;
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        out.push(item?);
+    }
+    Ok(out)
+}
+
 /// Collect all values from [`load_stream_with_numeric_hints`].
 pub async fn load_all_with_numeric_hints(
     path: impl AsRef<Path>,
@@ -130,6 +166,8 @@ struct DelimitedState {
     dict: DictReader,
     ready: VecDeque<Value>,
     done: bool,
+    /// DuckDB's reader drops a leading byte-order mark.
+    strip_bom: bool,
 }
 
 impl DelimitedState {
@@ -161,7 +199,11 @@ impl DelimitedState {
             ),
         };
         let mut text = String::with_capacity(valid + 1);
-        let decoded = std::str::from_utf8(&self.pending[..valid])?;
+        let mut decoded = std::str::from_utf8(&self.pending[..valid])?;
+        if self.strip_bom && !decoded.is_empty() {
+            decoded = decoded.strip_prefix('\u{feff}').unwrap_or(decoded);
+            self.strip_bom = false;
+        }
         self.newlines.translate(decoded, &mut text);
         self.pending.drain(..valid);
         if at_eof {
@@ -197,15 +239,32 @@ fn delimited_stream(
     delimiter: char,
     numeric_hints: NumericColumnHints,
 ) -> BoxStream<'static, Result<Value>> {
+    delimited_stream_with(path, delimiter, numeric_hints, false)
+}
+
+/// [`delimited_stream`], optionally as DuckDB's `read_csv_auto(..., all_varchar=true)` reads the file: a
+/// leading byte-order mark is dropped and spaces at the start of a field are kept.
+fn delimited_stream_with(
+    path: std::path::PathBuf,
+    delimiter: char,
+    numeric_hints: NumericColumnHints,
+    duckdb: bool,
+) -> BoxStream<'static, Result<Value>> {
+    let reader = CsvReader::new(delimiter);
     let state = DelimitedState {
         path,
         file: None,
         pending: Vec::new(),
         newlines: NewlineTranslator::default(),
-        reader: CsvReader::new(delimiter),
+        reader: if duckdb {
+            reader.without_initial_space_skipping()
+        } else {
+            reader
+        },
         dict: DictReader::new(Some(numeric_hints)),
         ready: VecDeque::new(),
         done: false,
+        strip_bom: duckdb,
     };
     stream::unfold(state, |mut state| async move {
         loop {
@@ -364,5 +423,30 @@ fn values_of(v: Value) -> Vec<Value> {
     match v {
         Value::List(items) => items,
         other => vec![other],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn duckdb_csv_keeps_leading_spaces_and_drops_the_bom() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.csv");
+        std::fs::write(&path, "\u{feff}id,note\na,  x \n").unwrap();
+        let rows = load_all_duckdb(&path, Format::Csv).await.unwrap();
+        let Value::Map(row) = &rows[0] else {
+            panic!("map")
+        };
+        assert_eq!(row["id"], Value::Str("a".into()));
+        assert_eq!(row["note"], Value::Str("  x ".into()));
+        // upstream's own loader keeps the BOM in the header and skips the spaces
+        let rows = load_all(&path, Format::Csv).await.unwrap();
+        let Value::Map(row) = &rows[0] else {
+            panic!("map")
+        };
+        assert_eq!(row["note"], Value::Str("x ".into()));
+        assert!(row.contains_key("\u{feff}id"));
     }
 }

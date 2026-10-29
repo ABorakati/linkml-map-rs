@@ -5,13 +5,47 @@
 //! `int` is exact. [`parse_json`] therefore hands the text to `serde_json` as
 //! before and only when it holds an integer literal of 19 or more digits (outside
 //! a string) reads it with a small parser of its own, which keeps such integers
-//! as [`Value::BigInt`]. Everything else about the two readers is the same.
+//! as [`Value::BigInt`]. Everything else about the two readers is the same, except
+//! three things `json.loads` does and `serde_json` does not, for which the same
+//! reader is used: `-0` is the integer `0` (`serde_json` makes it the float `-0.0`),
+//! a float beyond `f64` such as `1e400` is `inf`, and `NaN`, `Infinity` and
+//! `-Infinity` are numbers.
 
 use indexmap::IndexMap;
 use serde::de::Error as _;
 
 use super::Value;
 use crate::pynum;
+
+thread_local! {
+    /// Set by the `Value` visitor when `serde_json` hands it the float `-0.0`: the text may have held the
+    /// integer `-0`, which `json.loads` reads as `0`.
+    static NEGATIVE_ZERO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Called by `Value`'s `visit_f64` for `-0.0`.
+pub(super) fn note_negative_zero() {
+    NEGATIVE_ZERO.with(|flag| flag.set(true));
+}
+
+/// `serde_json`'s reading of `text`, unless it holds a `-0` (see [`NEGATIVE_ZERO`]) or `serde_json`
+/// rejects it (`1e400`, `NaN` and `Infinity`, which `json.loads` reads): then the reader of this module.
+fn read_with_serde(
+    text: Option<&str>,
+    serde: impl FnOnce() -> Result<Value, serde_json::Error>,
+) -> Result<Value, serde_json::Error> {
+    NEGATIVE_ZERO.with(|flag| flag.set(false));
+    let parsed = serde();
+    let reader = |text: &str| Reader::new(text).document_any().map(|(value, _)| value);
+    match (parsed, text) {
+        (Ok(value), Some(text)) if NEGATIVE_ZERO.with(std::cell::Cell::get) => {
+            Ok(reader(text).unwrap_or(value))
+        }
+        (Ok(value), _) => Ok(value),
+        (Err(e), Some(text)) => reader(text).map_err(|_| e),
+        (Err(e), None) => Err(e),
+    }
+}
 
 /// Parse `text` as one JSON document.
 ///
@@ -20,11 +54,12 @@ use crate::pynum;
 /// digits, the `ValueError` message `json.loads` raises.
 pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
     if !may_hold_big_integer(text.as_bytes()) {
-        return serde_json::from_str(text);
+        return read_with_serde(Some(text), || serde_json::from_str(text));
     }
-    match Reader::new(text).document() {
-        Ok(Some(value)) => Ok(value),
-        Ok(None) => serde_json::from_str(text),
+    match Reader::new(text).document_any() {
+        Ok((value, true)) => Ok(value),
+        // the same as `serde_json` reads, unless it rejects it (`1e400`)
+        Ok((value, false)) => serde_json::from_str(text).or(Ok(value)),
         Err(message) => Err(serde_json::Error::custom(message)),
     }
 }
@@ -35,7 +70,9 @@ pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
 /// As [`parse_json`], and for bytes that are not UTF-8.
 pub fn parse_json_bytes(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     if !may_hold_big_integer(bytes) {
-        return serde_json::from_slice(bytes);
+        return read_with_serde(std::str::from_utf8(bytes).ok(), || {
+            serde_json::from_slice(bytes)
+        });
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => parse_json(text),
@@ -99,8 +136,9 @@ struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
     depth: usize,
-    /// Whether an integer beyond `i64` was read (otherwise `serde_json` would
-    /// have read the same value, and its errors are the better ones).
+    /// Whether something `serde_json` reads differently was read: an integer
+    /// beyond `i64`, or `-0` (otherwise `serde_json` would have read the same
+    /// value, and its errors are the better ones).
     saw_big: bool,
 }
 
@@ -118,15 +156,15 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `Ok(None)` when the text holds no integer beyond `i64` after all.
-    fn document(mut self) -> Result<Option<Value>, String> {
+    /// The document, and whether `serde_json` would have read it differently.
+    fn document_any(mut self) -> Result<(Value, bool), String> {
         self.skip_ws();
         let value = self.value()?;
         self.skip_ws();
         if self.at != self.bytes.len() {
             return Err(format!("trailing characters at byte {}", self.at));
         }
-        Ok(self.saw_big.then_some(value))
+        Ok((value, self.saw_big))
     }
 
     fn skip_ws(&mut self) {
@@ -152,6 +190,12 @@ impl<'a> Reader<'a> {
             Some(b't') if self.eat("true") => Ok(Value::Bool(true)),
             Some(b'f') if self.eat("false") => Ok(Value::Bool(false)),
             Some(b'n') if self.eat("null") => Ok(Value::Null),
+            Some(b'N') if self.eat("NaN") => Ok(Value::Float(f64::NAN)),
+            Some(b'I') if self.eat("Infinity") => Ok(Value::Float(f64::INFINITY)),
+            Some(b'-') if self.text[self.at..].starts_with("-Infinity") => {
+                self.at += "-Infinity".len();
+                Ok(Value::Float(f64::NEG_INFINITY))
+            }
             Some(b'-' | b'0'..=b'9') => self.number(),
             _ => Err(format!("expected a value at byte {}", self.at)),
         }
@@ -286,12 +330,12 @@ impl<'a> Reader<'a> {
         }
         let literal = &self.text[start..self.at];
         if is_float {
-            return literal
-                .parse::<f64>()
-                .map(Value::Float)
-                .map_err(|e| e.to_string());
+            let f = literal.parse::<f64>().map_err(|e| e.to_string())?;
+            return Ok(Value::Float(f));
         }
         if let Ok(i) = literal.parse::<i64>() {
+            // `-0` is `serde_json`'s float; `json.loads` makes it the integer `0`
+            self.saw_big |= literal == "-0";
             return Ok(Value::Int(i));
         }
         self.saw_big = true;
@@ -309,6 +353,47 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_zero_alone_is_the_integer() {
+        let Value::List(l) = parse_json("[-0]").unwrap() else {
+            panic!("list")
+        };
+        assert_eq!(l[0], Value::Int(0));
+        let Value::List(l) = parse_json_bytes(b"[-0.0, -0]").unwrap() else {
+            panic!("list")
+        };
+        assert!(matches!(l[0], Value::Float(f) if f.is_sign_negative()));
+        assert_eq!(l[1], Value::Int(0));
+        let Value::Map(m) = parse_json(r#"{"a": 1, "d": "2020-01-31"}"#).unwrap() else {
+            panic!("map")
+        };
+        assert_eq!(m["a"], Value::Int(1));
+    }
+
+    #[test]
+    fn json_loads_extras() {
+        // `json.loads('-0')` is the int 0, `serde_json` reads the float -0.0
+        assert!(parse_json("[-0, -0.0, -01]").is_err());
+        let v = parse_json("[-0, -0.0, 1e400, -1e400, NaN, Infinity, -Infinity]").unwrap();
+        let Value::List(l) = v else { panic!("list") };
+        assert_eq!(l[0], Value::Int(0));
+        assert!(matches!(l[1], Value::Float(f) if f == 0.0 && f.is_sign_negative()));
+        assert_eq!(l[2], Value::Float(f64::INFINITY));
+        assert_eq!(l[3], Value::Float(f64::NEG_INFINITY));
+        assert!(matches!(l[4], Value::Float(f) if f.is_nan()));
+        assert_eq!(l[5], Value::Float(f64::INFINITY));
+        assert_eq!(l[6], Value::Float(f64::NEG_INFINITY));
+        // `serde_json` rejects this one; `float("1e999999999999999999999")` is `inf`
+        assert_eq!(
+            parse_json("1e999999999999999999999").unwrap(),
+            Value::Float(f64::INFINITY)
+        );
+        let Value::Map(m) = parse_json(r#"{"a": "-0"}"#).unwrap() else {
+            panic!("map")
+        };
+        assert_eq!(m["a"], Value::Str("-0".into()));
+    }
 
     #[test]
     fn big_integers_are_exact() {
@@ -332,7 +417,6 @@ mod tests {
         for text in [
             r#"{"a": "12345678901234567890123", "b": 0.12345678901234567890}"#,
             "[1, 2, 3]",
-            "1e999999999999999999999",
         ] {
             let ours = parse_json(text).map(|v| format!("{v:?}"));
             let theirs = serde_json::from_str::<Value>(text).map(|v| format!("{v:?}"));

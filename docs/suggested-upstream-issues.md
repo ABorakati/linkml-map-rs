@@ -132,6 +132,15 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - The join engine hands the transformer a different primary row than the per-row path: every column goes through
   `_parse_numeric` and JSON is cast to `VARCHAR`, so `"007"` becomes `7` only when a block has joins.
   `LookupIndex.lookup_row` likewise coerces text cells to numbers.
+- The join engine lets DuckDB infer the type of every JSON column (`read_json_auto`) and casts it back to `VARCHAR`, so
+  the text changes with the inference: `-9223372036854775809` reads back as `-9223372036854775808` (a `DOUBLE`; up to
+  `2^64 - 1` it is a `HUGEINT` and stays exact), `2020-01-01T10:00:00Z` as `2020-01-01 10:00:00`, `7F0D...` UUIDs in
+  lower case, `10:00` as `10:00:00`, and the text `epoch` or `infinity` in a date-shaped column as `1900-01-01`
+  (`StrpTimeFormat::ParseResult::TryToDate` ignores `is_special`). A column is typed from the first 20,480 records,
+  vector by vector (2,048): a candidate type dropped in one vector is never reconsidered, so 2,048 dates followed by
+  one UUID make the column a `UUID` and the read raises `Could not convert string '2020-01-01' to INT128`. A newline-
+  delimited file's last line (no final newline) is a vector of its own. Reading the columns as `VARCHAR`
+  (`columns=` from `DESCRIBE`, or `all_varchar`-style options) would make the JSON path as predictable as the CSV one.
 - A joined table whose name is a SQL keyword (for example `Order`) fails, because the table name is interpolated
   into SQL; a join over a table with no file fails with DuckDB's `CatalogException` instead of naming the join.
 - `read_json_auto`'s default `sample_size` (20,480 rows) silently drops columns that first appear later in
