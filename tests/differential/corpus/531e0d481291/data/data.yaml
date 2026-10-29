@@ -1,0 +1,5 @@
+persons:
+  - {id: A, label: LA, boss: X, org: X}
+  - {id: X, label: PX}
+orgs:
+  - {id: X, label: OX}

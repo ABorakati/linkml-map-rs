@@ -1,0 +1,7 @@
+persons:
+- id: A
+  x: true
+- id: B
+  x: false
+- id: C
+  x: false

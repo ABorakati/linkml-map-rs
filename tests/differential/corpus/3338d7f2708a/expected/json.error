@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "No such slot zzz as an attribute of Person ancestors or as a slot definition in the schema; class_derivation=Agent (from Person); slot_derivation=x"
+}

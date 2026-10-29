@@ -1,0 +1,5 @@
+persons:
+- id: A
+  x: 2
+- id: B
+- id: C

@@ -1,0 +1,16 @@
+{
+  "persons": [
+    {
+      "id": "A",
+      "x": "ProxyFor: {'id': 'B', 'name': 'bob', 'label': 'LB', 'boss': 'C', 'org': 'O1'}"
+    },
+    {
+      "id": "B",
+      "x": "ProxyFor: {'id': 'C', 'name': 'cy', 'label': 'LC', 'boss': 'A', 'friends': ['A']}"
+    },
+    {
+      "id": "C",
+      "x": "ProxyFor: {'id': 'A', 'name': 'ann', 'label': 'LA', 'boss': 'B', 'org': 'O1', 'friends': ['B', 'C']}"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+id: https://example.org/spec
+class_derivations:
+  Container:
+    populated_from: Container
+    slot_derivations:
+      persons:
+        populated_from: persons
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {populated_from: id}
+      x: {expr: '{boss.boss.boss.label}'}

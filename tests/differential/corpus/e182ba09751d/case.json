@@ -1,0 +1,13 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data/data.yaml",
+  "source_type": "Container",
+  "target_schema": null,
+  "flags": [
+    "--unrestricted-eval"
+  ],
+  "formats": [
+    "yaml"
+  ]
+}

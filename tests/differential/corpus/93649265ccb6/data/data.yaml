@@ -1,0 +1,4 @@
+id: A
+label: LA
+boss: B
+friends: [{id: B, label: LB}]

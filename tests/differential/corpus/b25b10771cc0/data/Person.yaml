@@ -1,0 +1,2 @@
+- {id: A, label: LA, boss: {id: B, label: LB}, friends: [{id: B, label: LB}]}
+- {id: B, label: LB}

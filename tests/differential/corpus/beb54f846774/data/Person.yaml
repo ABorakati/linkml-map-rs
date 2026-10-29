@@ -1,0 +1,2 @@
+- {id: A, label: LA, boss: B, friends: [B]}
+- {id: B, label: LB}

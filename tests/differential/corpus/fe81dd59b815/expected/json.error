@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Inlined path 'friends.label' reaches a multivalued segment 'friends'; per-item fan-out to a matching class_derivation is not yet supported (see #265); slot_derivation=x (from friends.label)"
+}

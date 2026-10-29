@@ -1,0 +1,13 @@
+{
+  "schema": "schema.yaml",
+  "spec": "spec.yaml",
+  "input": "data",
+  "source_type": "Person",
+  "target_schema": null,
+  "flags": [
+    "--unrestricted-eval"
+  ],
+  "formats": [
+    "yaml"
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "'str' object has no attribute 'label'; class_derivation=Agent (from Person); slot_derivation=ol"
+}
