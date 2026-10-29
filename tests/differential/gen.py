@@ -3,7 +3,12 @@
 A *world* is rendered to files by :func:`write_world`, giving a :class:`harness.Case`.
 
 Feature flags (``feats``) switch generator families on so a campaign can focus on one area:
-``core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch``.
+``core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch refs``.
+
+``refs`` generates reference slots (class-ranged, not inlined) read through ``{ref.slot}`` expressions, ``src.ref.slot`` statement
+blocks and ``populated_from: ref.slot`` paths, over every input kind. Upstream builds its ``ObjectIndex`` only for single-object
+input (a YAML / JSON file; ``yaml_container`` / ``json_container`` hold every class's rows as one ``Container``), so a table or
+directory leaves a reference as its bare identifier.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from hypothesis import strategies as st
 import harness as H
 
 ALL_FEATS = frozenset(
-    "core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch".split()
+    "core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch refs".split()
 )
 CLASS_NAMES = ["Person", "Order", "Item"]
 TGT_NAMES = ["Agent", "Record", "Row", "Entry"]
@@ -103,6 +108,8 @@ class World:
     source_type: str | None
     flags: list[str]
     class_by_name: dict = field(default_factory=dict)
+    #: the input is one ``Container`` object holding every class's rows (single-object input, so upstream builds an index)
+    container: bool = False
 
     def induced(self, cname: str) -> list[Slot]:
         c = next(c for c in self.classes if c.name == cname)
@@ -230,6 +237,14 @@ def source_classes(draw, feats):
             if "units" in feats and kind in ("float", "integer", "decimal") and draw(st.booleans()):
                 unit = draw(st.sampled_from(UNIT_PAIRS))[0]
             slots.append(Slot(nm, kind, multivalued=mv, unit=unit))
+        if "refs" in feats:
+            # reference slots: to every class (a class's own included, so chains `{x_ref.x_ref.slot}` exist)
+            for rng in names:
+                nm = f"{rng.lower()}_ref"
+                if nm in used or draw(st.sampled_from([False, True, True])):
+                    continue
+                used.add(nm)
+                slots.append(Slot(nm, rng, multivalued=draw(st.sampled_from([False, False, True]))))
         classes.append(Cls(cname, slots, is_a=parent))
     default_range = draw(st.sampled_from([None, None, "string"]))
     return classes, enums, typeof, default_range
@@ -249,6 +264,10 @@ def expression(draw, srcslots: list[Slot], joinrefs: list[str], feats):
     sc = [s for s in srcslots if not s.multivalued and s.range in ("string", "MyStr")]
     nu = [s for s in srcslots if not s.multivalued and s.range in ("integer", "float", "MyInt", "decimal")]
     anyv = [s for s in srcslots if not s.multivalued]
+    if "knownfree" in feats and "indexed" in feats:
+        # With an index upstream binds a reference to a ProxyObject, which leaks as `!!python/object` / 'ProxyFor: ...' /
+        # unequal to its identifier (documented in docs/suggested-upstream-issues.md); read it through an attribute instead.
+        anyv = [s for s in anyv if not s.name.endswith("_ref")]
     options = []
     if sc:
         options += [("str1", sc), ("str2", sc), ("str3", sc), ("str4", sc), ("str5", sc), ("str6", sc)]
@@ -367,11 +386,19 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
                 alias_files[alias] = js.range
             for oc in _induced(w_classes, js.range):
                 joinrefs.append(f"{{{alias}.{oc.name}}}")
+    refpfs: list[str] = []
+    if "refs" in feats:
+        refexprs, refpfs = _reference_expressions(w_classes, srcslots, names)
+        joinrefs = joinrefs + refexprs
     tslots: list[TSlot] = []
     used: set[str] = set()
     n = draw(st.integers(1, 4))
     for i in range(n):
         kinds = ["copy"] * 6
+        if refpfs:
+            kinds += ["refpf"] * 4
+        if joinrefs and "refs" in feats:
+            kinds += ["refexpr"] * 9
         if "expr" in feats:
             kinds += ["expr"] * 5
         else:
@@ -393,7 +420,7 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
             kinds += ["hide"]
         kind = draw(st.sampled_from(kinds))
         t = _build_tslot(draw, kind, i, srcslots, joinrefs, joins, w_classes, enums, feats, has_target, tgt_enums, enum_derivs,
-                         used, nested_depth, src, tgt_name)
+                         used, nested_depth, src, tgt_name, refpfs=refpfs)
         if isinstance(t, tuple):
             tslots.extend(t)
         elif t is not None:
@@ -410,8 +437,34 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
     return Block(tgt_name, src, tslots, joins=joins, mint_ids=mint, alias_files=alias_files)
 
 
+def _reference_expressions(classes, srcslots, names):
+    """Expressions reading through the reference slots of ``srcslots``, and the ``populated_from`` paths through them.
+
+    ``{ref.slot}`` (restricted evaluator), ``target = src.ref.slot`` (statement block), a chain through a second
+    reference, ``len({mv_ref})`` and a comprehension over a multivalued reference.
+    """
+    exprs: list[str] = []
+    pfs: list[str] = []
+    for r in [x for x in srcslots if x.range in names]:
+        inner = _induced(classes, r.range)
+        scal = [x for x in inner if x.range not in names][:3]
+        for t in scal:
+            exprs += [f"{{{r.name}.{t.name}}}", f"target = src.{r.name}.{t.name}"]
+            if not r.multivalued:
+                pfs.append(f"{r.name}.{t.name}")
+        if r.multivalued:
+            exprs += [f"len({{{r.name}}})"]
+            if scal:
+                exprs += [f"target = [x.{scal[0].name} for x in src.{r.name}]"]
+        else:
+            for r2 in [x for x in inner if x.range in names and not x.multivalued]:
+                for t in [x for x in _induced(classes, r2.range) if x.range not in names][:2]:
+                    exprs += [f"{{{r.name}.{r2.name}.{t.name}}}", f"target = src.{r.name}.{r2.name}.{t.name}"]
+    return exprs, pfs
+
+
 def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats, has_target, tgt_enums, enum_derivs, used,
-                 nested_depth, src, tgt_name):
+                 nested_depth, src, tgt_name, refpfs=()):
     def tname(default):
         nm = default
         k = 0
@@ -464,6 +517,12 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
         if not has_target and draw(st.sampled_from([False, False, True])):
             deriv["range"] = rr or "string"
         return TSlot(name, rng, deriv=deriv)
+    if kind in ("refexpr", "refpf"):
+        name = tname(draw(st.sampled_from(TGT_POOL)))
+        rng = draw(st.sampled_from([None, "string", "integer"])) if has_target else None
+        if kind == "refpf":
+            return TSlot(name, rng, deriv={"populated_from": draw(st.sampled_from(list(refpfs)))})
+        return TSlot(name, rng, deriv={"expr": draw(st.sampled_from(joinrefs))})
     if kind in ("joinpf", "joinexpr"):
         jr = draw(st.sampled_from(joinrefs))
         name = tname(draw(st.sampled_from(TGT_POOL)))
@@ -559,8 +618,18 @@ def _enum_slot(draw, s, name, enums, feats, has_target, tgt_enums, enum_derivs, 
 @st.composite
 def worlds(draw, feats=ALL_FEATS):
     feats = frozenset(feats) | {"core"}
+    input_kinds = ["tsv_dir", "tsv_dir", "csv_dir", "tsv_file", "yaml_dir", "json_dir", "yaml_single", "json_single"]
+    if "refs" in feats and "joins" not in feats:
+        input_kinds += ["yaml_container"] * 4 + ["json_container"] * 2
+    input_kind = draw(st.sampled_from(input_kinds))
+    # Upstream indexes single-object input only (`cli.py::_map_data_single`); a table or directory is streamed.
+    container = input_kind.endswith("container")
+    if input_kind.endswith(("single", "container")):
+        feats = feats | {"indexed"}
     classes, enums, typeof, default_range = draw(source_classes(feats))
     has_target = draw(st.sampled_from([True, True, True, False]))
+    if container:
+        has_target = False  # (the Container class has no target class)
     if "knownfree" in feats and "nested" in feats:
         has_target = True  # nested derivations without a target schema: upstream raises, Rust does not (reported)
     tgt_enums: dict = {}
@@ -606,14 +675,22 @@ def worlds(draw, feats=ALL_FEATS):
             spec_extra["class_defaults"] = {blocks[0].name: {"mint_ids": draw(st.booleans())}}
     if not blocks:
         blocks.append(Block("Out", classes[0].name, [TSlot("out_a", "string", deriv={"value": "k"})]))
-    input_kind = draw(st.sampled_from(["tsv_dir", "tsv_dir", "csv_dir", "tsv_file", "yaml_dir", "json_dir", "yaml_single", "json_single"]))
     ids = {c.name: [f"{c.name[0].lower()}{k}" for k in range(1, 5)] for c in classes}
-    yaml_native = input_kind in ("yaml_dir", "json_dir", "yaml_single", "json_single")
+    yaml_native = input_kind in ("yaml_dir", "json_dir", "yaml_single", "json_single", "yaml_container", "json_container")
     rows: dict[str, list[dict]] = {}
+    nrows_of = {c.name: (1 if input_kind.endswith("single") else draw(st.integers(1, 3) if container else st.integers(0, 4)))
+                for c in classes}
+    ref_ids = ids
+    if "refs" in feats:
+        # a reference names a row that exists (typed as the row's identifier), most of the time
+        ref_ids = {}
+        for c in classes:
+            idslot = next((x for x in _induced(classes, c.name) if x.identifier), None)
+            ref_ids[c.name] = [ids[c.name][k] if idslot is None or idslot.range == "string" else k + 1
+                               for k in range(nrows_of[c.name])] or ["missing"]
     for c in classes:
-        nrows = 1 if input_kind.endswith("single") else draw(st.integers(0, 4))
         crow = []
-        for k in range(nrows):
+        for k in range(nrows_of[c.name]):
             row = {}
             for s in _induced(classes, c.name):
                 if s.identifier:
@@ -622,13 +699,18 @@ def worlds(draw, feats=ALL_FEATS):
                         idv = draw(scalar_values(s.range, feats, enums, ids))
                     row[s.name] = idv
                 else:
-                    v = draw(slot_value(s, feats, enums, {n: ids[n] for n in ids}, yaml_native))
+                    v = draw(slot_value(s, feats, enums, {n: ref_ids[n] for n in ref_ids}, yaml_native))
                     if v is not None:
                         row[s.name] = v
             crow.append(row)
         rows[c.name] = crow
     st_name = None
-    if input_kind in ("tsv_file", "yaml_single", "json_single"):
+    if container:
+        st_name = draw(st.sampled_from(["Container", None]))  # (the one tree-root class is the default)
+        mapped = [c.name for c in classes if any(b.populated_from == c.name or (b.omit_pf and b.name == c.name) for b in blocks)]
+        blocks.insert(0, Block("Container", "Container", [TSlot(f"{n.lower()}s", None, deriv={"populated_from": f"{n.lower()}s"})
+                                                             for n in mapped] or [TSlot("out_a", None, deriv={"value": "k"})]))
+    elif input_kind in ("tsv_file", "yaml_single", "json_single"):
         st_name = draw(st.sampled_from([b.populated_from for b in blocks if b.populated_from] or [classes[0].name]))
     elif draw(st.sampled_from([False, False, False, True])) and not ("knownfree" in feats and len(blocks) > 1):
         st_name = blocks[0].populated_from  # (--source-type with several blocks: upstream forces it on all of them)
@@ -638,7 +720,7 @@ def worlds(draw, feats=ALL_FEATS):
     if draw(st.sampled_from([False, False, True])):
         flags.append("--strict")
     return World(feats, classes, enums, default_range, typeof, blocks, tgt_enums, enum_derivs, has_target, spec_extra, list_form,
-                 rows, input_kind, st_name, flags)
+                 rows, input_kind, st_name, flags, container=container)
 
 
 # ── rendering ────────────────────────────────────────────────────────────────
@@ -673,6 +755,11 @@ def render_source(w: World) -> dict:
         if c.is_a:
             cd["is_a"] = c.is_a
         d["classes"][c.name] = cd
+    if w.container:
+        d["classes"]["Container"] = {
+            "tree_root": True,
+            "attributes": {f"{c.name.lower()}s": {"range": c.name, "multivalued": True, "inlined_as_list": True} for c in w.classes},
+        }
     return d
 
 
@@ -864,6 +951,18 @@ def write_world(w: World, root: Path) -> H.Case:
         c = w.source_type or w.classes[0].name
         (data / f"{c}-001.json").write_text(_json.dumps(_plain(w.rows[c][0]), ensure_ascii=False))
         inp = f"data/{c}-001.json"
+    elif kind == "json_container":
+        body = {f"{c.name.lower()}s": [_plain(r) for r in w.rows[c.name]] for c in w.classes}
+        (data / "Container-001.json").write_text(_json.dumps(body, ensure_ascii=False))
+        inp = "data/Container-001.json"
+    elif kind == "yaml_container":
+        text = ""
+        for c in w.classes:
+            rows_text = render_yaml_rows(w.rows[c.name])
+            text += f"{c.name.lower()}s: []\n" if rows_text == "[]\n" else f"{c.name.lower()}s:\n" + "".join(
+                "  " + ln + "\n" for ln in rows_text.splitlines())
+        (data / "Container-001.yaml").write_text(text)
+        inp = "data/Container-001.yaml"
     return H.Case(root=str(root), schema="schema.yaml", spec="spec.yaml", input=inp, source_type=w.source_type,
                   target_schema="target.yaml" if tgt is not None else None, flags=list(w.flags))
 

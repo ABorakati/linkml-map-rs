@@ -321,3 +321,48 @@ persons:
         ]
     );
 }
+
+// ── what `ObjectTransformer.index` rejects before it indexes anything ────────
+
+#[test]
+fn single_object_input_rejects_a_key_the_schema_does_not_know() {
+    let sv = provider();
+    let engine = ObjectTransformer::new(
+        spec("Container", "persons", "      x: {populated_from: label}"),
+        Some(&sv),
+        None,
+    );
+    // upstream (`dynamic_object` in `index()`): the run aborts whatever the spec reads.
+    let root = data("{id: A, label: LA, zzz: 1}");
+    let err = engine.check_indexable(&root, Some("Person")).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("No such slot zzz as an attribute of Person ancestors"),
+        "{err}"
+    );
+    // ...at any depth: an object inlined below the container's collections.
+    let nested = data("persons:\n  - {id: A, label: LA, zzz: 1}\n");
+    assert!(engine.check_indexable(&nested, Some("Container")).is_err());
+    assert!(engine.map_container(&nested, Some("Container")).is_err());
+    let fine = data("persons:\n  - {id: A, label: LA, org: O1}\n");
+    engine.check_indexable(&fine, Some("Container")).unwrap();
+}
+
+#[test]
+fn indexing_without_a_target_needs_exactly_one_tree_root() {
+    // `[target] = [c.name for c in all_classes().values() if c.tree_root]`: this schema has two.
+    let sv = provider();
+    let engine = ObjectTransformer::new(
+        spec("Container", "persons", "      x: {populated_from: label}"),
+        Some(&sv),
+        None,
+    );
+    let err = engine
+        .check_indexable(&data("persons: []"), None)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("too many values to unpack (expected 1)"),
+        "{err}"
+    );
+}

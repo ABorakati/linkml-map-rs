@@ -589,9 +589,51 @@ impl<'s> ObjectTransformer<'s> {
     /// it across workers) is a follow-up.
     pub fn map_container(&self, container: &Value, source_type: Option<&str>) -> Result<Value> {
         let source_type = self.resolve_source_type(source_type)?;
+        self.check_indexable(container, Some(&source_type))?;
         let index = self.build_index(container, Some(&source_type));
         let idx_ref = if index.is_empty() { None } else { Some(&index) };
         self.map_object_with_type(container, &source_type, idx_ref)
+    }
+
+    /// The failures of upstream's `ObjectTransformer.index(container, target)` before it indexes
+    /// anything: with no `target` the schema must have exactly one tree-root class, and
+    /// `dynamic_object` rejects a key the schema does not know (see
+    /// [`object_index::dynamic_object_error`]). Single-object input is indexed whatever the spec
+    /// reads, so these abort the run even for a spec with no foreign key.
+    // gate:internal — engine entry used by the pipeline, not part of the binding-consumed surface.
+    pub fn check_indexable(&self, container: &Value, source_type: Option<&str>) -> Result<()> {
+        let Some(ss) = self.source_schema else {
+            return Ok(());
+        };
+        let target = match (source_type, container) {
+            (Some(t), _) => t.to_owned(),
+            (None, Value::Map(_)) => {
+                // PARITY: `[target] = [c.name for c in all_classes().values() if c.tree_root]`.
+                let roots: Vec<String> = ss
+                    .all_class_names()
+                    .into_iter()
+                    .filter(|name| ss.get_class(name).is_ok_and(|c| c.tree_root))
+                    .collect();
+                match roots.as_slice() {
+                    [root] => root.clone(),
+                    [] => {
+                        return Err(Error::Python(
+                            "ValueError: not enough values to unpack (expected 1, got 0)".into(),
+                        ));
+                    }
+                    _ => {
+                        return Err(Error::Python(
+                            "ValueError: too many values to unpack (expected 1)".into(),
+                        ));
+                    }
+                }
+            }
+            (None, _) => return Ok(()),
+        };
+        match object_index::dynamic_object_error(ss, container, &target) {
+            Some(message) => Err(Error::Python(message)),
+            None => Ok(()),
+        }
     }
 
     /// Upstream's `ObjectTransformer.index(container, target)`: the index over `container`, a

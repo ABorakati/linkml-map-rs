@@ -1,0 +1,2 @@
+persons:
+  - {id: A, label: LA, boss: A}

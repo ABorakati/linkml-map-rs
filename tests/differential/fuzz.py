@@ -41,6 +41,9 @@ PROFILES = {
     "mint": frozenset({"mint"}),
     "yaml": frozenset({"yamlraw", "awkward", "multivalued"}),
     "tsv": frozenset({"rawtsv", "awkward"}),
+    # reference slots read through `{ref.slot}`, `src.ref.slot` and `populated_from: ref.slot`, over every input kind
+    # (single-object input builds an index upstream, a table or directory does not)
+    "refs": frozenset({"refs", "expr", "multivalued"}),
 }
 
 
@@ -209,7 +212,7 @@ def main() -> int:
     ap.add_argument("--per-find", type=int, default=400, help="max examples per hypothesis.find round")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--time-budget", type=float, default=None, help="seconds")
-    ap.add_argument("--profiles", default="all,joins,enums,expr,nested,multivalued,awkward,inherit,units,mint,yaml,tsv,core")
+    ap.add_argument("--profiles", default="all,joins,enums,expr,nested,multivalued,awkward,inherit,units,mint,yaml,tsv,refs,core")
     ap.add_argument("--corpus", default=None)
     ap.add_argument("--max-found", type=int, default=60)
     ap.add_argument("--only-kind", action="append", default=[], help="only chase these divergence kinds (output_diff, rust_error, ...)")

@@ -901,29 +901,11 @@ impl PyTransformer {
     ) -> PyResult<()> {
         let value = py_to_value(py, &source_obj)?;
         let provider: &dyn linkml_map_core::schema::SchemaProvider = &self.source_provider;
-        let mut target = target.or_else(|| self.source_class.clone());
-        if target.is_none() && matches!(value, Value::Map(_)) {
-            // PARITY: `[target] = [c.name for c in all_classes().values() if c.tree_root]`.
-            let roots: Vec<String> = provider
-                .all_class_names()
-                .into_iter()
-                .filter(|name| provider.get_class(name).is_ok_and(|c| c.tree_root))
-                .collect();
-            match roots.as_slice() {
-                [root] => target = Some(root.clone()),
-                [] => {
-                    return Err(PyValueError::new_err(
-                        "not enough values to unpack (expected 1, got 0)",
-                    ));
-                }
-                _ => {
-                    return Err(PyValueError::new_err(
-                        "too many values to unpack (expected 1)",
-                    ));
-                }
-            }
-        }
+        let target = target.or_else(|| self.source_class.clone());
         let engine = ObjectTransformer::new(self.spec.clone(), Some(provider), None);
+        engine
+            .check_indexable(&value, target.as_deref())
+            .map_err(|e| PyValueError::new_err(e.to_string().replacen("ValueError: ", "", 1)))?;
         *self.object_index.borrow_mut() = Some(engine.build_index(&value, target.as_deref()));
         Ok(())
     }

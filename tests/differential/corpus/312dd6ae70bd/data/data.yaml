@@ -1,0 +1,3 @@
+id: A
+label: LA
+boss: {id: B, zzz: 1}

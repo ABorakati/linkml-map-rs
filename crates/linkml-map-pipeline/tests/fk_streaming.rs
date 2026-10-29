@@ -174,3 +174,34 @@ class_derivations:
     let text = std::fs::read_to_string(out).unwrap();
     assert!(text.contains("bl: LB"), "{text}");
 }
+
+#[tokio::test]
+async fn single_object_input_rejects_a_key_the_schema_does_not_know() {
+    // Even a spec that reads no reference: `tr.index(input_obj)` runs first upstream.
+    let err = run(
+        "person.yaml",
+        "id: A\nlabel: LA\nzzz: 1\n",
+        "l: {populated_from: label}",
+        "Person",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error_chain(&err).contains("No such slot zzz as an attribute of Person ancestors"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_table_with_an_unknown_column_is_not_indexed() {
+    // The streaming path never calls `index()`, so an unknown column is simply not read.
+    let out = run(
+        "Person.tsv",
+        "id\tlabel\tzzz\nA\tLA\t1\n",
+        "l: {populated_from: label}",
+        "Person",
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, "{\"id\": \"A\", \"l\": \"LA\"}\n");
+}

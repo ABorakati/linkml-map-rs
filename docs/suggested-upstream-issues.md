@@ -82,6 +82,36 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - `--source-type X` with directory input forces `X` on every class derivation, so a second block over another table
   fails with "No such slot".
 
+## Foreign keys (`ObjectIndex`, `ProxyObject`)
+
+- **A foreign key is dereferenced only for single-object input.** `cli.py::_map_data_single` (a YAML / JSON file)
+  calls `tr.index(...)`; `_map_data_streaming` (a `.tsv` / `.csv` file or a directory, including a YAML or JSON
+  table) never does, so there `{boss.label}` raises `'str' object has no attribute 'label'`, `src.boss.label` in a
+  statement block silently gives `None`, and `populated_from: boss.label` gives `None` (with a logged warning). The
+  same spec on the same data therefore succeeds or fails depending on the input kind. Dereferencing through the join
+  engine or an index over the directory's tables would make the two paths agree.
+- **`populated_from: boss.label` and `{boss.label}` resolve differently even with an index.** The path form looks up
+  `(class, str(fk_value))` in `_source_object_cache`, whose keys hold the identifier as it is in the data, so an
+  object with an integer identifier is never found; the expression form goes through `ProxyObject._map`, which looks
+  up `(class, raw value)` and does find it (and does not find `"2"` for the integer `2`). The path form also reads
+  the first object's attributes with `getattr` on the raw object, so it follows one reference only
+  (`boss.boss.label` is `None`) where `{boss.boss.label}` follows each.
+- **`ProxyObject` leaks.** With an index every slot read through `get_ctxt_obj_and_dict` becomes a `ProxyObject`:
+  `{boss}` evaluates to the proxy (YAML output is a `!!python/object` dump of the whole index and the schema view;
+  JSON output fails), `str({boss})` is `ProxyFor: {...}` and `{boss} == "B"` is false, so an expression that reads a
+  reference without an attribute behaves differently with and without `index()`. An unknown attribute raises
+  (`No such slot zzz as an attribute of Person ancestors or as a slot definition in the schema`) where a `DynObj`
+  gives `None`.
+- `ObjectIndex._index` keys the cache by `(class name, identifier)` with the last writer winning, and an object
+  with no identifier slot by `str(obj)`; an object lacking its identifier slot value is keyed `(class, None)`, and
+  `ProxyObject._map` would resolve a null reference to it (`_map(None, "Person")` finds `("Person", None)`), yet
+  the expression `{boss.label}` with `boss: null` still gives `None`.
+- `ObjectTransformer.index(dict)` with no `target` unpacks `[target] = [tree-root classes]`, so a schema with no or
+  several tree roots fails with "not enough values to unpack" instead of a message naming `target`.
+- `dynamic_object` raises on a key the schema does not know (`induced_slot`), so one stray key in a single-object
+  input aborts the whole run at `index()`, before any row is mapped and even for a spec that reads no reference,
+  while the same key in a table or directory row is ignored.
+
 ## Join engine and lookup index
 
 - Ambiguous merged-row columns (`_AMBIGUOUS`) are only checked at four read sites, so other reads (offset, `sources`,

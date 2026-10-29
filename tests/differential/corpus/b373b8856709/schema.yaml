@@ -1,0 +1,23 @@
+
+id: https://example.org/src
+name: src
+prefixes: {linkml: https://w3id.org/linkml/, ex: https://example.org/}
+default_prefix: ex
+imports: [linkml:types]
+classes:
+  Org:
+    attributes:
+      id: {range: string, identifier: true}
+      label: {range: string}
+  Person:
+    attributes:
+      id: {range: string, identifier: true}
+      name: {range: string}
+      label: {range: string}
+      boss: {range: Person}
+      friends: {range: Person, multivalued: true}
+      org: {range: Org}
+  Container:
+    attributes:
+      persons: {range: Person, multivalued: true, inlined: true}
+      orgs: {range: Org, multivalued: true, inlined: true}

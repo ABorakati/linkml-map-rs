@@ -574,7 +574,11 @@ impl CompiledPlan {
                 seg.source_type.as_deref(),
                 &self.blocks[b].class_derivation,
             ),
-            None => engine.map_object(&row, self.source_class.as_deref()),
+            // PARITY: single-object input is indexed (`tr.index(...)`) before it is mapped,
+            // which rejects a key the schema does not know even if the spec reads no reference.
+            None => engine
+                .check_indexable(&row, self.source_class_hint.as_deref())
+                .and_then(|()| engine.map_object(&row, self.source_class.as_deref())),
         }
         .map_err(anyhow::Error::from)
     }
@@ -596,7 +600,11 @@ impl CompiledPlan {
                 &self.blocks[b].class_derivation,
                 index,
             ),
-            None => engine.map_object_with_index(row, self.source_class.as_deref(), index),
+            None => engine
+                .check_indexable(row, self.source_class_hint.as_deref())
+                .and_then(|()| {
+                    engine.map_object_with_index(row, self.source_class.as_deref(), index)
+                }),
         }
         .map_err(anyhow::Error::from)
     }

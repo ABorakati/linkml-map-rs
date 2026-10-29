@@ -58,7 +58,10 @@ use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 
-use crate::{schema::SchemaProvider, value::Value};
+use crate::{
+    schema::{RangeKind, SchemaProvider},
+    value::Value,
+};
 
 /// A non-string identifier, as a Python dict key: numbers compare by value (`True == 1 == 1.0`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -359,7 +362,7 @@ impl ObjectIndex {
     }
 
     /// `ProxyObject._map` for a reference: the object `v` refers to, or `v` itself when the
-    /// reference is dangling; an inlined object and a list are mapped in turn. `range` is the
+    /// reference is dangling (a null one is); an inlined object and a list are mapped in turn. `range` is the
     /// slot's range class and `depth` how many references to follow below the result.
     pub fn map_reference(&self, v: &Value, range: &str, depth: usize) -> Value {
         match v {
@@ -370,15 +373,12 @@ impl ObjectIndex {
                     .collect(),
             ),
             Value::Map(_) => self.expand(v, range, depth),
-            Value::Str(_)
-            | Value::Int(_)
-            | Value::BigInt(_)
-            | Value::Float(_)
-            | Value::Bool(_)
-            | Value::Null => match self.get_typed(range, v) {
-                Some(obj) => self.expand(obj, range, depth),
-                None => v.clone(),
-            },
+            Value::Str(_) | Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_) => {
+                match self.get_typed(range, v) {
+                    Some(obj) => self.expand(obj, range, depth),
+                    None => v.clone(),
+                }
+            }
             other => other.clone(),
         }
     }
@@ -505,6 +505,48 @@ impl ObjectIndex {
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
+}
+
+/// The failure of `dynamic_object(obj, sv, class)`, which `ObjectTransformer.index` builds its tree
+/// with: a key the schema does not know on a class aborts the run before any row is mapped,
+/// whatever the spec reads. `None` when `obj` is acceptable.
+///
+/// Mirrors `linkml_map.utils.dynamic_object.dynamic_object`: a type or an enum, and a value
+/// that is not a mapping, are returned as they are; every key of a mapping must be an induced
+/// slot of its class, and the value is checked against the slot's class range, as a list or
+/// dict of objects when multivalued.
+pub fn dynamic_object_error(sp: &dyn SchemaProvider, obj: &Value, class: &str) -> Option<String> {
+    if sp.has_enum(class) || sp.has_type(class) {
+        return None;
+    }
+    let Value::Map(m) = obj else { return None };
+    for (k, v) in m {
+        let Ok(slot) = sp.induced_slot(k, class) else {
+            return Some(if sp.get_class(class).is_ok() {
+                format!(
+                    "ValueError: No such slot {k} as an attribute of {class} ancestors or as a slot definition in the schema"
+                )
+            } else {
+                format!("ValueError: Class: \"{class}\" not found")
+            });
+        };
+        let RangeKind::Class(range) = &slot.range else {
+            continue;
+        };
+        let items: Vec<&Value> = match v {
+            Value::List(items) if slot.multivalued => items.iter().collect(),
+            Value::Map(entries) if slot.multivalued => entries.values().collect(),
+            other if !slot.multivalued => vec![other],
+            _ => continue,
+        };
+        if let Some(err) = items
+            .into_iter()
+            .find_map(|item| dynamic_object_error(sp, item, range))
+        {
+            return Some(err);
+        }
+    }
+    None
 }
 
 /// Return a clone of `obj` (a `Value::Map`) guaranteed to carry its identifier
