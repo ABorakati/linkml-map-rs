@@ -339,7 +339,7 @@ impl StrpTimeFormat {
                     return None;
                 }
                 let pa = text.at(pos).to_ascii_lowercase();
-                if text.at(pos + 1).to_ascii_lowercase() != b'm' {
+                if !text.at(pos + 1).eq_ignore_ascii_case(&b'm') {
                     return None;
                 }
                 ampm = Some(match pa {
@@ -685,8 +685,8 @@ fn try_convert_date(input: &[u8]) -> Option<(i64, usize)> {
     if len - pos >= 5
         && is_space(buf.at(pos))
         && buf.at(pos + 1) == b'('
-        && buf.at(pos + 2).to_ascii_lowercase() == b'b'
-        && buf.at(pos + 3).to_ascii_lowercase() == b'c'
+        && buf.at(pos + 2).eq_ignore_ascii_case(&b'b')
+        && buf.at(pos + 3).eq_ignore_ascii_case(&b'c')
         && buf.at(pos + 4) == b')'
     {
         if year_negative || year == 0 {

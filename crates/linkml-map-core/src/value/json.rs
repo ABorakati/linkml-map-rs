@@ -152,12 +152,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// `Ok(None)` when the text holds no integer beyond `i64` after all.
-    fn document(self) -> Result<Option<Value>, String> {
-        let (value, differs) = self.document_any()?;
-        Ok(differs.then_some(value))
-    }
-
     /// The document, and whether `serde_json` would have read it differently.
     fn document_any(mut self) -> Result<(Value, bool), String> {
         self.skip_ws();

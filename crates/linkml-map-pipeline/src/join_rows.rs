@@ -817,8 +817,8 @@ fn deduplicate_columns<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> 
     names
         .map(|name| {
             let low = name.to_ascii_lowercase();
-            if !seen.contains_key(&low) {
-                seen.insert(low, 1);
+            if let std::collections::hash_map::Entry::Vacant(v) = seen.entry(low.clone()) {
+                v.insert(1);
                 return name.to_owned();
             }
             let mut candidate = format!("{name}_{}", seen[&low]);
