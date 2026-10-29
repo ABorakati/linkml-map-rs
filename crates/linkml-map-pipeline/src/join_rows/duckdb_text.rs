@@ -511,8 +511,10 @@ fn parse_double_digit(buf: &CStr<'_>, len: usize, pos: &mut usize) -> Option<i32
     None
 }
 
-/// `Time::TryConvertTime` with `strict = true` (`Time::TryConvertInternal`): microseconds since midnight.
-pub(super) fn try_convert_time(input: &[u8]) -> Option<i64> {
+/// `Time::TryConvertInternal`: the time of day in microseconds (hours may exceed 24: intervals) and the
+/// position after it.  Non-strict, a missing minute or second reads as zero and the rest of the string is
+/// left alone.
+fn try_convert_internal(input: &[u8], strict: bool) -> Option<(i64, usize)> {
     let buf = CStr(input);
     let len = input.len();
     let mut pos = 0;
@@ -543,24 +545,36 @@ pub(super) fn try_convert_time(input: &[u8]) -> Option<i64> {
         return None;
     }
     let sep_pos = pos;
-    let min = parse_double_digit(&buf, len, &mut pos)?;
-    if !(0..60).contains(&min) {
+    let min = if pos == len && !strict {
+        0
+    } else {
+        let min = parse_double_digit(&buf, len, &mut pos)?;
+        if !(0..60).contains(&min) {
+            return None;
+        }
+        min
+    };
+    if pos > len {
         return None;
     }
-    let sec;
-    if pos == len && sep_pos + 2 == pos {
-        sec = 0;
+    let sec = if pos == len && (!strict || sep_pos + 2 == pos) {
+        0
     } else {
         let next = buf.at(pos);
         pos += 1;
         if next != sep {
             return None;
         }
-        sec = parse_double_digit(&buf, len, &mut pos)?;
-        if !(0..60).contains(&sec) {
-            return None;
+        if pos == len && !strict {
+            0
+        } else {
+            let sec = parse_double_digit(&buf, len, &mut pos)?;
+            if !(0..60).contains(&sec) {
+                return None;
+            }
+            sec
         }
-    }
+    };
     let mut micros: i64 = 0;
     if pos < len && buf.at(pos) == b'.' {
         pos += 1;
@@ -573,30 +587,185 @@ pub(super) fn try_convert_time(input: &[u8]) -> Option<i64> {
             mult /= 10;
         }
     }
+    if strict {
+        while pos < len && is_space(buf.at(pos)) {
+            pos += 1;
+        }
+        if pos < len {
+            return None;
+        }
+    }
+    let total = ((hour * 60 + i64::from(min)) * 60 + i64::from(sec)) * 1_000_000 + micros;
+    Some((total, pos))
+}
+
+/// `Time::TryConvertTime` with `strict = true`: microseconds since midnight.  This is the `TIME` candidate of
+/// type detection.
+pub(super) fn try_convert_time(input: &[u8]) -> Option<i64> {
+    let (micros, _) = try_convert_internal(input, true)?;
+    (micros <= MICROS_PER_DAY).then_some(micros)
+}
+
+/// `Time::TryConvertTime` with `strict = false`, the cast of a JSON string to a `TIME` column: a time, or
+/// failing that the time of day of a timestamp (`2020-01-02 11:00:00` reads as `11:00:00`).
+pub(super) fn try_convert_time_lenient(input: &[u8]) -> Option<i64> {
+    match try_convert_internal(input, false) {
+        Some((micros, _)) => (micros <= MICROS_PER_DAY).then_some(micros),
+        None => {
+            let ts = try_convert_timestamp(input)?;
+            Some(ts.rem_euclid(MICROS_PER_DAY))
+        }
+    }
+}
+
+/// `Date::TryConvertDate` with `strict = false`: days since the epoch and the position after the date, or
+/// `None` for a string that is not a date, or for the specials (`infinity`, `-infinity`), which are not a
+/// finite day.
+fn try_convert_date(input: &[u8]) -> Option<(i64, usize)> {
+    let buf = CStr(input);
+    let len = input.len();
+    let mut pos = 0;
     while pos < len && is_space(buf.at(pos)) {
         pos += 1;
     }
-    if pos < len {
+    if pos >= len {
         return None;
     }
-    let total = ((hour * 60 + i64::from(min)) * 60 + i64::from(sec)) * 1_000_000 + micros;
-    (total <= MICROS_PER_DAY).then_some(total)
+    let mut year_negative = false;
+    if buf.at(pos) == b'-' {
+        year_negative = true;
+        pos += 1;
+        if pos >= len {
+            return None;
+        }
+    }
+    if !is_digit(buf.at(pos)) {
+        // `epoch` is a day; `infinity` is not a finite one
+        let rest = &input[pos..];
+        if try_convert_date_special(rest, "infinity", 3).is_some() {
+            return None;
+        }
+        let end = try_convert_date_special(rest, "epoch", 5)?;
+        pos += end;
+        while pos < len && is_space(buf.at(pos)) {
+            pos += 1;
+        }
+        return (pos == len).then_some((0, pos));
+    }
+    let mut year: i32 = 0;
+    while pos < len && is_digit(buf.at(pos)) {
+        if year >= 100_000_000 {
+            return None;
+        }
+        year = i32::from(buf.at(pos) - b'0') + year * 10;
+        pos += 1;
+    }
+    if year_negative {
+        year = -year;
+    }
+    if pos >= len {
+        return None;
+    }
+    let sep = buf.at(pos);
+    pos += 1;
+    if !matches!(sep, b' ' | b'-' | b'/' | b'\\') {
+        return None;
+    }
+    let month = parse_double_digit(&buf, len, &mut pos)?;
+    if pos >= len {
+        return None;
+    }
+    let next = buf.at(pos);
+    pos += 1;
+    if next != sep || pos >= len {
+        return None;
+    }
+    let day = parse_double_digit(&buf, len, &mut pos)?;
+    // an optional trailing " (BC)"
+    if len - pos >= 5
+        && is_space(buf.at(pos))
+        && buf.at(pos + 1) == b'('
+        && buf.at(pos + 2).to_ascii_lowercase() == b'b'
+        && buf.at(pos + 3).to_ascii_lowercase() == b'c'
+        && buf.at(pos + 4) == b')'
+    {
+        if year_negative || year == 0 {
+            return None;
+        }
+        year = -year + 1;
+        pos += 5;
+    }
+    // non-strict: only a digit right after the date is an error
+    if pos < len && is_digit(buf.at(pos)) {
+        return None;
+    }
+    date_is_valid(year, month, day).then(|| (days_from_civil(year, month, day), pos))
 }
 
-/// `BaseUUID::FromString` with `strict = true` followed by `BaseUUID::ToString`: the canonical lower-case
-/// text, or `None` when the string is not a UUID.
-pub(super) fn uuid_text(input: &[u8]) -> Option<String> {
+/// `Timestamp::TryConvertTimestamp` (`use_offset = false`): microseconds since the epoch of a date, with a
+/// time of day, a `Z` or an offset, or a `UTC` zone after it.
+fn try_convert_timestamp(input: &[u8]) -> Option<i64> {
+    let buf = CStr(input);
+    let len = input.len();
+    let (days, mut pos) = try_convert_date(input)?;
+    let from_datetime = |micros: i64| days.checked_mul(MICROS_PER_DAY)?.checked_add(micros);
+    if pos == len {
+        return from_datetime(0);
+    }
+    if buf.at(pos) == b' ' || buf.at(pos) == b'T' {
+        pos += 1;
+    }
+    let (time, used) = try_convert_internal(&input[pos.min(len)..], false)?;
+    if time > MICROS_PER_DAY {
+        return None;
+    }
+    pos += used;
+    let result = from_datetime(time)?;
+    if pos < len {
+        let mut cur = pos;
+        if buf.at(pos) == b'Z' {
+            cur += 1;
+        } else if try_parse_utc_offset(&buf, &mut cur, len).is_none() {
+            // a time zone name: only UTC is known without ICU
+            if buf.at(cur) != b' ' {
+                return None;
+            }
+            cur += 1;
+            let start = cur;
+            while cur < len
+                && (buf.at(cur).is_ascii_alphanumeric() || matches!(buf.at(cur), b'/' | b'_'))
+            {
+                cur += 1;
+            }
+            let name = &input[start..cur];
+            if !name.is_empty() && !name.eq_ignore_ascii_case(b"utc") {
+                return None;
+            }
+        }
+        while cur < len && is_space(buf.at(cur)) {
+            cur += 1;
+        }
+        if cur < len {
+            return None;
+        }
+    }
+    Some(result)
+}
+
+/// `BaseUUID::FromString` followed by `BaseUUID::ToString`: the canonical lower-case text, or `None` when the
+/// string is not a UUID.  Strict (type detection) wants 36 characters with the four hyphens in place;
+/// otherwise (the cast of a later record) hyphens may be anywhere and braces are allowed.
+pub(super) fn uuid_text(input: &[u8], strict: bool) -> Option<String> {
     let front = *input.first()?;
     let braces = usize::from(front == b'{');
     if braces == 1 && input.last() != Some(&b'}') {
         return None;
     }
-    // strict: 36 characters and 4 hyphens in place
-    if input.len() != 36 || [8, 13, 18, 23].iter().any(|&i| input[i] != b'-') {
+    if strict && (input.len() != 36 || [8, 13, 18, 23].iter().any(|&i| input[i] != b'-')) {
         return None;
     }
     let mut hex = String::with_capacity(32);
-    for &b in &input[braces..input.len() - braces] {
+    for &b in input.get(braces..input.len().saturating_sub(braces))? {
         if b == b'-' {
             continue;
         }
@@ -691,9 +860,10 @@ mod tests {
         assert_eq!(try_convert_time(b"1:2"), None);
         assert_eq!(try_convert_time(b"24:00:01"), None);
         assert_eq!(
-            uuid_text(b"7F0Dcad7-862E-5CeC-4D8e-A544eb9c736F").as_deref(),
+            uuid_text(b"7F0Dcad7-862E-5CeC-4D8e-A544eb9c736F", true).as_deref(),
             Some("7f0dcad7-862e-5cec-4d8e-a544eb9c736f")
         );
-        assert_eq!(uuid_text(b"7F0Dcad7862E5CeC4D8eA544eb9c736F"), None);
+        assert_eq!(uuid_text(b"7F0Dcad7862E5CeC4D8eA544eb9c736F", true), None);
+        assert!(uuid_text(b"7F0Dcad7862E5CeC4D8eA544eb9c736F", false).is_some());
     }
 }

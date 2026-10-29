@@ -121,6 +121,14 @@ _INT_NUMPARSE = ["1.0", "1e3", "١٢٣", "1_000", " 5", "+5", "-0", "007", "0x10
 _FLT_COMMON = [0.5, 1.5, 2.0, 3.14, -2.5, 0.0, 10.0, 100.25]
 _FLT_WEIRD = [0.1, 1e20, 1e-7, -0.0, 123456789.123456789, 5e-324, 1.7976931348623157e308, "1e3", ".5", "1.", "abc", "", "nan", "inf",
               "1e400", 0.30000000000000004, 1e16, 1e15, 123456789012345680.0, 2.5e-5]
+# Extra values for the ``joins`` profile: a JSON (or CSV) primary table is read by DuckDB, which types each JSON column
+# on its own (``join_rows.rs``), so integers around the 64- and 128-bit limits, floats near them, and strings DuckDB
+# turns into DATE / TIME / TIMESTAMP / UUID matter.
+_JOIN_INT = [2**64 - 1, 2**64, -(2**63), 2**127, -(2**127) - 1, 10**25, -(10**25), 2**53 + 1, 9223372036854775807]
+_JOIN_FLT = [9223372036854775808.0, 1e21, 1e22, 1.5e300, -1e-7, 4.35, 2.0**63, 123456789012345678901234567890.0]
+_JOIN_STR = ["2020-01-31T10:00:00", "2020-01-31 10:00:00.5", "2020-01-31T10:00:00Z", "2020-01-31T10:00:00+02:00", "10:00:00", "01-31-2020",
+             "31-01-2020", "2020-01-31 ", "7f0dcad7-862e-5cec-4d8e-a544eb9c736f", "7F0DCAD7-862E-5CEC-4D8E-A544EB9C736F", "epoch", "24:00:00",
+             "2020-1-5", "20-01-31", "01-31-20 10:11:12 PM", "2020-01-31T10:00:00.123456789Z", "1900-01-01", "9999-12-31T23:00:00-02:00"]
 _BOOL_COMMON = [True, False, "true", "false"]
 _BOOL_WEIRD = ["True", "False", "0", "1", "yes", "no", "", "TRUE", "t", "maybe"]
 _DEC_COMMON = ["1.50", "0.10", 2.25, 10, "3", "0.5"]
@@ -139,20 +147,21 @@ def _mix(common, weird, awkward):
 
 def scalar_values(rng: str, feats, enums: dict, ids: dict):
     awk = "awkward" in feats
+    jn = "joins" in feats
     if rng in ("string", "MyStr"):
-        return _mix(_STR_COMMON, _STR_WEIRD, awk)
+        return _mix(_STR_COMMON, _STR_WEIRD + (_JOIN_STR if jn else []), awk)
     if rng in ("integer", "MyInt"):
         weird = [w for w in _INT_WEIRD if w not in _INT_NUMPARSE] \
             if "knownfree" in feats else _INT_WEIRD
-        return _mix(_INT_COMMON, weird, awk)
+        return _mix(_INT_COMMON, weird + (_JOIN_INT if jn else []), awk)
     if rng == "float":
-        return _mix(_FLT_COMMON, _FLT_WEIRD, awk)
+        return _mix(_FLT_COMMON, _FLT_WEIRD + (_JOIN_FLT if jn else []), awk)
     if rng == "boolean":
         return _mix(_BOOL_COMMON, _BOOL_WEIRD, awk)
     if rng == "decimal":
         return _mix(_DEC_COMMON, _DEC_WEIRD, awk)
     if rng == "date":
-        return _mix(_DATE_COMMON, _DATE_WEIRD, awk)
+        return _mix(_DATE_COMMON, _DATE_WEIRD + (_JOIN_STR if jn else []), awk)
     if rng in enums:
         return _mix(enums[rng], ["zz", "", enums[rng][0].upper(), "other"], awk)
     if rng in ids:

@@ -130,8 +130,12 @@ def gen_float(r: random.Random):
     return round(r.uniform(-1000, 1000), r.randint(0, 6))
 
 
-def raw_number(r: random.Random):
-    return Raw(r.choice(["1E2", "1e+2", "1.0E-5", "0.0", "-0.0", "2.50", "1E0", "12e-1", "0e5",
+def raw_number(r: random.Random, nested=False):
+    # A float beyond f64 is raw text for DuckDB: inside a JSON-typed list or object it keeps its spelling, which a
+    # parsed value cannot, so those only appear as whole cells.
+    if not nested and r.random() < 0.15:
+        return Raw(r.choice(["1e400", "-1e400", "1E400", "-1.5e+999"]))
+    return Raw(r.choice(["-0", "1E2", "1e+2", "1.0E-5", "0.0", "-0.0", "2.50", "1E0", "12e-1", "0e5",
                          "123456789012345678901234567890.0", "4e2", "1.5e300", "100000000000000000000", "-0.5e-3"]))
 
 
@@ -246,7 +250,7 @@ def gen_str(r: random.Random):
     return gen_plain_str(r)
 
 
-def gen_scalar(r: random.Random, family: str):
+def gen_scalar(r: random.Random, family: str, nested=False):
     if family == "int":
         return gen_int(r)
     if family == "smallint":
@@ -270,7 +274,7 @@ def gen_scalar(r: random.Random, family: str):
     if family == "str":
         return gen_str(r)
     if family == "raw":
-        return raw_number(r)
+        return raw_number(r, nested)
     if family == "mix":
         return gen_scalar(r, r.choice(["int", "float", "bool", "str", "date", "num"]))
     raise ValueError(family)
@@ -282,14 +286,17 @@ FAMILIES = ["int"] * 6 + ["smallint"] * 2 + ["float"] * 4 + ["num"] * 3 + ["bool
 
 def gen_value(r: random.Random, family: str, depth=0):
     k = r.random()
-    if depth == 0 and k < 0.06:
+    if k < 0.06:
         return None
-    if depth == 0 and k < 0.1:
-        n = r.randint(0, 3)
-        return [gen_value(r, family, 1) for _ in range(n)]
-    if depth == 0 and k < 0.13:
-        return {"k": gen_value(r, family, 1), "n": r.randint(0, 3)}
-    return gen_scalar(r, family)
+    if depth < 2:
+        if k < 0.10:
+            return [gen_value(r, family, depth + 1) for _ in range(r.randint(0, 3))]
+        if k < 0.13:
+            obj = {"k": gen_value(r, family, depth + 1), "n": r.randint(0, 3)}
+            if r.random() < 0.3:
+                obj["e"] = {} if r.random() < 0.5 else [None]
+            return obj
+    return gen_scalar(r, family, depth > 0)
 
 
 def gen_table(r: random.Random) -> str:
@@ -313,11 +320,74 @@ def gen_table(r: random.Random) -> str:
     return enc_json(rows) if r.random() < 0.5 else "[\n" + ",\n".join(enc_json(x) for x in rows) + "\n]"
 
 
+# ── tables past one scan vector (2048 records) or the type-detection sample (20480) ──────────────────
+
+BASE = {
+    "bool": True, "int": 7, "double": 1.5, "str": "abc", "date": "2020-01-01", "ts": "2020-01-01 10:00:00",
+    "time": "10:00:00", "uuid": "7f0dcad7-862e-5cec-4d8e-a544eb9c736f", "list": [1], "obj": {"a": 1}, "bigint": 2**63,
+    "dates": ["2020-01-01"],
+}
+LATER = [
+    None, True, 0, 1, -1, 2**63, 2**64, -(2**63) - 1, 1.5, 2.5, 2.0, 1e300, 1e-7, "5", " 5", "x", "true", "yes", "1.5", "0x10", "2020-01-02",
+    "01-02-2020", "2020-1-2", "epoch", "11:00", "2020-01-02 11:00:00", "2020-01-02T11:00:00Z", "8f0dcad7-862e-5cec-4d8e-a544eb9c736f", [2],
+    ["x"], {"a": 2}, {"a": "x"}, [], {},
+]
+
+
+def table_text(runs) -> str:
+    """``runs``: ``[(count, record), ...]``; the records as JSON text, comma-joined in an array."""
+    return "[" + ",".join(",".join([rec] * n) for n, rec in runs) + "]"
+
+
+def rle(rows):
+    out = []
+    for row in rows:
+        if out and out[-1][1] == row:
+            out[-1][0] += 1
+        else:
+            out.append([1, row])
+    return out
+
+
+def big_case(runs):
+    text = table_text(runs)
+    res = read(text)
+    case = {"runs": [[n, rec] for n, rec in runs]}
+    if "error" in res:
+        case["error"] = res["error"]
+    else:
+        case["rows_rle"] = rle(res["rows"])
+    return case
+
+
+def gen_big(r: random.Random, n: int, stride: int = 1):
+    """The cases: values of every kind after the sample (every ``stride``-th kind); kinds that change at a vector
+    boundary."""
+    for bn, bv in BASE.items():
+        for lv in LATER[::stride]:
+            yield big_case([(20480, enc_json({"a": bv})), (1, enc_json({"a": lv}))])
+    kinds = ["date", "ts", "time", "uuid", "str", "int", "double", "bool", "bigint"]
+    for _ in range(n):
+        a, b = r.choice(kinds), r.choice(kinds)
+        va, vb = gen_scalar(r, {"date": "date", "ts": "ts", "time": "time", "uuid": "uuid", "str": "str", "int": "int",
+                                "double": "float", "bool": "bool", "bigint": "int"}[a]), None
+        vb = gen_scalar(r, {"date": "date", "ts": "ts", "time": "time", "uuid": "uuid", "str": "str", "int": "int",
+                            "double": "float", "bool": "bool", "bigint": "int"}[b])
+        k = r.choice([1, 2047, 2048, 2049, 4095, 4096, 4097, 6000, 20479, 20480, 20481, 20482])
+        m = r.choice([1, 1, 2, 5, 2047, 2048, 3000])
+        runs = [(k, enc_json({"a": va})), (m, enc_json({"a": vb}))]
+        if r.random() < 0.3:
+            runs.append((r.choice([1, 2, 2048]), enc_json({"a": gen_scalar(r, r.choice(["date", "ts", "uuid", "time"]))})))
+        yield big_case(runs)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out")
+    ap.add_argument("--stride", type=int, default=1, help="with --big: use every n-th value kind after the sample")
+    ap.add_argument("--big", action="store_true", help="tables past one scan vector / the sample size (run-length encoded)")
     ap.add_argument("--check", help="re-run a fixture against the installed DuckDB")
     a = ap.parse_args()
     if a.check:
@@ -333,6 +403,11 @@ def main() -> int:
         print("changed:", bad)
         return 1 if bad else 0
     r = random.Random(a.seed)
+    if a.big:
+        out = open(a.out, "w", encoding="utf-8") if a.out else sys.stdout
+        for case in gen_big(r, a.n, a.stride):
+            out.write(json.dumps(case, ensure_ascii=False) + "\n")
+        return 0
     out = open(a.out, "w", encoding="utf-8") if a.out else sys.stdout
     seen = 0
     for _ in range(a.n):

@@ -5,7 +5,11 @@
 //! `int` is exact. [`parse_json`] therefore hands the text to `serde_json` as
 //! before and only when it holds an integer literal of 19 or more digits (outside
 //! a string) reads it with a small parser of its own, which keeps such integers
-//! as [`Value::BigInt`]. Everything else about the two readers is the same.
+//! as [`Value::BigInt`]. Everything else about the two readers is the same, except
+//! three things `json.loads` does and `serde_json` does not, for which the same
+//! reader is used: `-0` is the integer `0` (`serde_json` makes it the float `-0.0`),
+//! a float beyond `f64` such as `1e400` is `inf`, and `NaN`, `Infinity` and
+//! `-Infinity` are numbers.
 
 use indexmap::IndexMap;
 use serde::de::Error as _;
@@ -19,12 +23,17 @@ use crate::pynum;
 /// The `serde_json` error for malformed text; for an integer of more than 4300
 /// digits, the `ValueError` message `json.loads` raises.
 pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
-    if !may_hold_big_integer(text.as_bytes()) {
-        return serde_json::from_str(text);
+    if !needs_reader(text.as_bytes()) {
+        // `serde_json` rejects `1e400`, `NaN` and `Infinity`, which `json.loads` reads
+        return serde_json::from_str(text).or_else(|e| match Reader::new(text).document_any() {
+            Ok((value, _)) => Ok(value),
+            Err(_) => Err(e),
+        });
     }
-    match Reader::new(text).document() {
-        Ok(Some(value)) => Ok(value),
-        Ok(None) => serde_json::from_str(text),
+    match Reader::new(text).document_any() {
+        Ok((value, true)) => Ok(value),
+        // the same as `serde_json` reads, unless it rejects it (`1e400`)
+        Ok((value, false)) => serde_json::from_str(text).or(Ok(value)),
         Err(message) => Err(serde_json::Error::custom(message)),
     }
 }
@@ -34,13 +43,32 @@ pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
 /// # Errors
 /// As [`parse_json`], and for bytes that are not UTF-8.
 pub fn parse_json_bytes(bytes: &[u8]) -> Result<Value, serde_json::Error> {
-    if !may_hold_big_integer(bytes) {
-        return serde_json::from_slice(bytes);
+    if !needs_reader(bytes) {
+        return serde_json::from_slice(bytes).or_else(|e| {
+            match std::str::from_utf8(bytes).map(|t| Reader::new(t).document_any()) {
+                Ok(Ok((value, _))) => Ok(value),
+                _ => Err(e),
+            }
+        });
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => parse_json(text),
         Err(_) => serde_json::from_slice(bytes),
     }
+}
+
+/// Whether the reader of this module, rather than `serde_json`, should read `bytes`: it may hold an
+/// integer beyond `i64`, or a `-0`.
+fn needs_reader(bytes: &[u8]) -> bool {
+    may_hold_big_integer(bytes) || has_negative_zero(bytes)
+}
+
+/// Whether `bytes` may hold a `-0` that is not the start of a longer number (`-0.5`, `-0e3`).
+fn has_negative_zero(bytes: &[u8]) -> bool {
+    bytes
+        .windows(3)
+        .any(|w| w[0] == b'-' && w[1] == b'0' && !matches!(w[2], b'.' | b'e' | b'E'))
+        || bytes.ends_with(b"-0")
 }
 
 /// Whether `bytes` may hold an integer literal beyond `i64`: first the cheap
@@ -99,8 +127,9 @@ struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
     depth: usize,
-    /// Whether an integer beyond `i64` was read (otherwise `serde_json` would
-    /// have read the same value, and its errors are the better ones).
+    /// Whether something `serde_json` reads differently was read: an integer
+    /// beyond `i64`, or `-0` (otherwise `serde_json` would have read the same
+    /// value, and its errors are the better ones).
     saw_big: bool,
 }
 
@@ -119,14 +148,20 @@ impl<'a> Reader<'a> {
     }
 
     /// `Ok(None)` when the text holds no integer beyond `i64` after all.
-    fn document(mut self) -> Result<Option<Value>, String> {
+    fn document(self) -> Result<Option<Value>, String> {
+        let (value, differs) = self.document_any()?;
+        Ok(differs.then_some(value))
+    }
+
+    /// The document, and whether `serde_json` would have read it differently.
+    fn document_any(mut self) -> Result<(Value, bool), String> {
         self.skip_ws();
         let value = self.value()?;
         self.skip_ws();
         if self.at != self.bytes.len() {
             return Err(format!("trailing characters at byte {}", self.at));
         }
-        Ok(self.saw_big.then_some(value))
+        Ok((value, self.saw_big))
     }
 
     fn skip_ws(&mut self) {
@@ -152,6 +187,12 @@ impl<'a> Reader<'a> {
             Some(b't') if self.eat("true") => Ok(Value::Bool(true)),
             Some(b'f') if self.eat("false") => Ok(Value::Bool(false)),
             Some(b'n') if self.eat("null") => Ok(Value::Null),
+            Some(b'N') if self.eat("NaN") => Ok(Value::Float(f64::NAN)),
+            Some(b'I') if self.eat("Infinity") => Ok(Value::Float(f64::INFINITY)),
+            Some(b'-') if self.text[self.at..].starts_with("-Infinity") => {
+                self.at += "-Infinity".len();
+                Ok(Value::Float(f64::NEG_INFINITY))
+            }
             Some(b'-' | b'0'..=b'9') => self.number(),
             _ => Err(format!("expected a value at byte {}", self.at)),
         }
@@ -286,12 +327,12 @@ impl<'a> Reader<'a> {
         }
         let literal = &self.text[start..self.at];
         if is_float {
-            return literal
-                .parse::<f64>()
-                .map(Value::Float)
-                .map_err(|e| e.to_string());
+            let f = literal.parse::<f64>().map_err(|e| e.to_string())?;
+            return Ok(Value::Float(f));
         }
         if let Ok(i) = literal.parse::<i64>() {
+            // `-0` is `serde_json`'s float; `json.loads` makes it the integer `0`
+            self.saw_big |= literal == "-0";
             return Ok(Value::Int(i));
         }
         self.saw_big = true;
@@ -309,6 +350,30 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_loads_extras() {
+        // `json.loads('-0')` is the int 0, `serde_json` reads the float -0.0
+        assert!(parse_json("[-0, -0.0, -01]").is_err());
+        let v = parse_json("[-0, -0.0, 1e400, -1e400, NaN, Infinity, -Infinity]").unwrap();
+        let Value::List(l) = v else { panic!("list") };
+        assert_eq!(l[0], Value::Int(0));
+        assert!(matches!(l[1], Value::Float(f) if f == 0.0 && f.is_sign_negative()));
+        assert_eq!(l[2], Value::Float(f64::INFINITY));
+        assert_eq!(l[3], Value::Float(f64::NEG_INFINITY));
+        assert!(matches!(l[4], Value::Float(f) if f.is_nan()));
+        assert_eq!(l[5], Value::Float(f64::INFINITY));
+        assert_eq!(l[6], Value::Float(f64::NEG_INFINITY));
+        // `serde_json` rejects this one; `float("1e999999999999999999999")` is `inf`
+        assert_eq!(
+            parse_json("1e999999999999999999999").unwrap(),
+            Value::Float(f64::INFINITY)
+        );
+        let Value::Map(m) = parse_json(r#"{"a": "-0"}"#).unwrap() else {
+            panic!("map")
+        };
+        assert_eq!(m["a"], Value::Str("-0".into()));
+    }
 
     #[test]
     fn big_integers_are_exact() {
@@ -332,7 +397,6 @@ mod tests {
         for text in [
             r#"{"a": "12345678901234567890123", "b": 0.12345678901234567890}"#,
             "[1, 2, 3]",
-            "1e999999999999999999999",
         ] {
             let ours = parse_json(text).map(|v| format!("{v:?}"));
             let theirs = serde_json::from_str::<Value>(text).map(|v| format!("{v:?}"));

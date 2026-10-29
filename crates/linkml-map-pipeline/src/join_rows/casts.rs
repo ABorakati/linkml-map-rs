@@ -30,7 +30,7 @@ pub(super) fn to_bool(v: &Value) -> Option<bool> {
         Value::Int(i) => Some(*i != 0),
         // an integer in the `u64` range is a number, beyond it raw text, which is not a boolean
         Value::BigInt(_) => integer_of(v)
-            .filter(|i| *i <= i128::from(u64::MAX))
+            .filter(|i| (i128::from(i64::MAX) + 1..=i128::from(u64::MAX)).contains(i))
             .map(|_| true),
         Value::Float(f) if f.is_finite() => Some(*f != 0.0),
         Value::Str(s) => match s.to_ascii_lowercase().as_str() {
@@ -70,7 +70,7 @@ pub(super) fn to_integer(v: &Value, wide: bool) -> Option<String> {
                 r as i128
             }
         }
-        Value::Str(s) => integer_from_text(s)?,
+        Value::Str(s) => integer_from_text(s, wide)?,
         _ => return None,
     };
     (floor..=limit).contains(&n).then(|| n.to_string())
@@ -78,15 +78,17 @@ pub(super) fn to_integer(v: &Value, wide: bool) -> Option<String> {
 
 /// DuckDB's string to integer: spaces around, then `0` or an integer without leading zeros, or `0x`/`0b`
 /// digits.
-fn integer_from_text(s: &str) -> Option<i128> {
+fn integer_from_text(s: &str, wide: bool) -> Option<i128> {
     let t = s.trim_matches(|c: char| c.is_ascii() && is_space(c as u8));
     let (negative, digits) = match t.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, t),
     };
+    // hexadecimal and binary literals are read for `BIGINT` only
     let value = if let Some(hex) = digits
         .strip_prefix("0x")
         .or_else(|| digits.strip_prefix("0X"))
+        .filter(|_| !wide)
     {
         i128::from_str_radix(hex, 16)
             .ok()
@@ -94,6 +96,7 @@ fn integer_from_text(s: &str) -> Option<i128> {
     } else if let Some(bits) = digits
         .strip_prefix("0b")
         .or_else(|| digits.strip_prefix("0B"))
+        .filter(|_| !wide)
     {
         i128::from_str_radix(bits, 2)
             .ok()

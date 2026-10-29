@@ -343,7 +343,9 @@ fn eliminate_candidate_types<'a>(
             Candidate::Time => strings
                 .clone()
                 .all(|s| duckdb_text::try_convert_time(s).is_some()),
-            Candidate::Uuid => strings.clone().all(|s| duckdb_text::uuid_text(s).is_some()),
+            Candidate::Uuid => strings
+                .clone()
+                .all(|s| duckdb_text::uuid_text(s, true).is_some()),
         };
         if ok {
             return;
@@ -652,11 +654,13 @@ fn transform(ty: &Ty, vals: &[Option<&Value>], out: &mut Vec<Cell>) -> Result<()
             (Ty::Str, Value::BigInt(n)) => Cell::Text(n.to_string()),
             (Ty::Str, Value::Float(f)) => Cell::Text(double_text(*f)),
             (Ty::Str, other @ (Value::List(_) | Value::Map(_))) => Cell::Text(json_text(other)),
-            (Ty::Time, Value::Str(s)) => match duckdb_text::try_convert_time(s.as_bytes()) {
-                Some(micros) => Cell::Text(time_text(micros)),
-                None => return Err(transform_error(v, "TIME")),
-            },
-            (Ty::Uuid, Value::Str(s)) => match duckdb_text::uuid_text(s.as_bytes()) {
+            (Ty::Time, Value::Str(s)) => {
+                match duckdb_text::try_convert_time_lenient(s.as_bytes()) {
+                    Some(micros) => Cell::Text(time_text(micros)),
+                    None => return Err(transform_error(v, "TIME")),
+                }
+            }
+            (Ty::Uuid, Value::Str(s)) => match duckdb_text::uuid_text(s.as_bytes(), false) {
                 Some(text) => Cell::Text(text),
                 None => return Err(transform_error(v, "UUID")),
             },
@@ -880,7 +884,7 @@ mod tests {
     use super::*;
 
     fn rows(json: &str) -> Vec<Value> {
-        match serde_json::from_str::<Value>(json).unwrap() {
+        match linkml_map_core::value::parse_json(json).unwrap() {
             Value::List(items) => json_rows(items).unwrap(),
             other => panic!("not a list: {other:?}"),
         }
@@ -980,47 +984,90 @@ mod tests {
         }
     }
 
+    /// The table text of a fixture case: `json` as it is, or `runs` (`[count, record]` pairs) expanded.
+    fn table_text(case: &serde_json::Value) -> String {
+        if let Some(text) = case["json"].as_str() {
+            return text.to_owned();
+        }
+        let records: Vec<String> = case["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| {
+                let n = run[0].as_u64().unwrap() as usize;
+                vec![run[1].as_str().unwrap(); n].join(",")
+            })
+            .collect();
+        format!("[{}]", records.join(","))
+    }
+
+    fn row_matches(row: &Value, want: &serde_json::Value) -> bool {
+        let Value::Map(cells) = row else { return false };
+        let want = want.as_object().unwrap();
+        cells.len() == want.len()
+            && cells
+                .iter()
+                .zip(want)
+                .all(|((k, v), (wk, wv))| k == wk && same(v, &decode(wv)))
+    }
+
     fn replay(fixture: &str) -> usize {
         let mut failures = Vec::new();
         let mut cases = 0;
         for line in fixture.lines() {
             cases += 1;
             let case: serde_json::Value = serde_json::from_str(line).unwrap();
-            let text = case["json"].as_str().unwrap();
-            let table = linkml_map_core::value::parse_json(text);
-            let got = match table {
+            let text = table_text(&case);
+            let shown: String = text.chars().take(300).collect();
+            let got = match linkml_map_core::value::parse_json(&text) {
                 Ok(Value::List(items)) => json_rows(items),
                 Ok(other) => json_rows(vec![other]),
                 Err(e) => {
-                    failures.push(format!("{text}\n  loader: {e}"));
+                    failures.push(format!("{shown}\n  loader: {e}"));
                     continue;
                 }
             };
-            if let Some(want) = case.get("rows") {
-                let want = want.as_array().unwrap();
-                let ok = match &got {
-                    Ok(rows) => {
-                        rows.len() == want.len()
-                            && rows.iter().zip(want).all(|(row, want)| {
-                                let Value::Map(cells) = row else { return false };
-                                let want = want.as_object().unwrap();
-                                cells.len() == want.len()
-                                    && cells
-                                        .iter()
-                                        .zip(want)
-                                        .all(|((k, v), (wk, wv))| k == wk && same(v, &decode(wv)))
-                            })
-                    }
-                    Err(_) => false,
+            // expected rows: `rows`, or `rows_rle` (`[count, row]` pairs)
+            let want: Option<Vec<(usize, &serde_json::Value)>> =
+                if let Some(rows) = case.get("rows") {
+                    Some(rows.as_array().unwrap().iter().map(|r| (1, r)).collect())
+                } else {
+                    case.get("rows_rle").map(|runs| {
+                        runs.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|run| (run[0].as_u64().unwrap() as usize, &run[1]))
+                            .collect()
+                    })
                 };
-                if !ok {
-                    failures.push(format!("{text}\n  want {want:?}\n  got  {got:?}"));
+            match (&got, want) {
+                (Ok(rows), Some(want)) => {
+                    let mut at = 0;
+                    let ok = want.iter().all(|(n, row)| {
+                        let end = at + n;
+                        let fine =
+                            end <= rows.len() && rows[at..end].iter().all(|r| row_matches(r, row));
+                        at = end;
+                        fine
+                    }) && at == rows.len();
+                    if !ok {
+                        failures.push(format!(
+                            "{shown}\n  want {want:?}\n  got  {:?}",
+                            rows.iter().take(8).collect::<Vec<_>>()
+                        ));
+                    }
                 }
-            } else if got.is_ok() {
-                failures.push(format!(
-                    "{text}\n  want error {}\n  got  {got:?}",
-                    case["error"]
-                ));
+                (Err(_), None) => {}
+                (Ok(rows), None) => failures.push(format!(
+                    "{shown}\n  want error {}\n  got  {} rows, {:?}",
+                    case["error"],
+                    rows.len(),
+                    rows.last()
+                )),
+                (Err(e), Some(want)) => failures.push(format!(
+                    "{shown}\n  want {:?}\n  got error {e}",
+                    want.iter().take(3).collect::<Vec<_>>()
+                )),
             }
         }
         assert!(
@@ -1043,8 +1090,103 @@ mod tests {
     #[test]
     fn replays_duckdb_cells() {
         replay(include_str!("join_rows/duckdb_cells.jsonl"));
+        // tables past one scan vector (2048 records) and the type-detection sample (20480), run-length encoded
+        replay(include_str!("join_rows/duckdb_cells_big.jsonl"));
         if let Ok(path) = std::env::var("DUCKDB_CELLS") {
             replay(&std::fs::read_to_string(path).unwrap());
         }
+    }
+
+    #[test]
+    fn integers_beyond_64_bits_follow_duckdbs_choice() {
+        // below `i64::MIN` and above `u64::MAX` DuckDB reads a DOUBLE; up to `u64::MAX` it is a HUGEINT
+        let r = rows(
+            r#"[{"a": -9223372036854775809, "b": 9223372036854775808, "c": 18446744073709551616, "d": 18446744073709551615}]"#,
+        );
+        assert_eq!(col(&r, "a"), [Value::Float(-9.223372036854776e18)]);
+        assert_eq!(col(&r, "b"), [parse_numeric("9223372036854775808")]);
+        assert_eq!(col(&r, "c"), [Value::Float(1.8446744073709552e19)]);
+        assert_eq!(col(&r, "d"), [parse_numeric("18446744073709551615")]);
+        // in a column that also holds a float, every integer is a DOUBLE
+        let r = rows(r#"[{"a": 9223372036854775808}, {"a": 1.5}]"#);
+        assert_eq!(
+            col(&r, "a"),
+            [Value::Float(9.223372036854776e18), Value::Float(1.5)]
+        );
+    }
+
+    #[test]
+    fn strings_that_read_as_dates_times_and_uuids_print_in_duckdbs_form() {
+        let r = rows(
+            r#"[{"d": "2020-1-5", "t": "2020-01-01T10:00:00Z", "z": "2020-01-01T10:00:00+02:00", "u": "7F0DCAD7-862E-5CEC-4D8E-A544EB9C736F", "h": "10:00"},
+               {"d": "2021-02-03", "t": "2021-01-01T10:00:01Z", "z": "2020-01-01T10:00:01-0130", "u": "7f0dcad7-862e-5cec-4d8e-a544eb9c736f", "h": "24:00:00"}]"#,
+        );
+        assert_eq!(col(&r, "d"), [s("2020-01-05"), s("2021-02-03")]);
+        assert_eq!(
+            col(&r, "t"),
+            [s("2020-01-01 10:00:00"), s("2021-01-01 10:00:01")]
+        );
+        assert_eq!(
+            col(&r, "z"),
+            [s("2020-01-01 08:00:00"), s("2020-01-01 11:30:01")]
+        );
+        let uuid = "7f0dcad7-862e-5cec-4d8e-a544eb9c736f";
+        assert_eq!(col(&r, "u"), [s(uuid), s(uuid)]);
+        assert_eq!(col(&r, "h"), [s("10:00:00"), s("24:00:00")]);
+        // a column mixing a date and a timestamp is plain text, as are fractions of more than six digits
+        let r = rows(
+            r#"[{"a": "2020-01-01", "b": "2020-01-01T10:00:00.123456789Z"}, {"a": "2020-01-01T10:00:00", "b": "x"}]"#,
+        );
+        assert_eq!(col(&r, "a"), [s("2020-01-01"), s("2020-01-01T10:00:00")]);
+        assert_eq!(col(&r, "b"), [s("2020-01-01T10:00:00.123456789Z"), s("x")]);
+    }
+
+    #[test]
+    fn a_vector_of_its_own_can_change_the_type() {
+        // candidates are dropped vector by vector (2048 records), never restored: a UUID alone in the second
+        // vector makes the column UUID, and the dates of the first then fail to convert
+        let mut table = vec![r#"{"a": "2020-01-01"}"#; 2048];
+        table.push(r#"{"a": "7f0dcad7-862e-5cec-4d8e-a544eb9c736f"}"#);
+        let table = format!("[{}]", table.join(","));
+        let Ok(Value::List(items)) = linkml_map_core::value::parse_json(&table) else {
+            panic!()
+        };
+        assert!(json_rows(items).is_err());
+    }
+
+    #[test]
+    fn json_numbers_the_loader_reads_like_python() {
+        // `-0` is the integer 0, `1e400` is `inf` (text without a digit stays text)
+        let r = rows(r#"[{"a": -0, "b": 1e400, "c": 1.5}, {"a": 2, "b": 1.5, "c": 2}]"#);
+        assert_eq!(col(&r, "a"), [Value::Int(0), Value::Int(2)]);
+        assert_eq!(col(&r, "b"), [s("inf"), Value::Float(1.5)]);
+    }
+
+    /// `cargo test --release -p linkml-map-pipeline join_rows::tests::bench_json_rows -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark"]
+    fn bench_json_rows() {
+        let table: Vec<String> = (0..200_000)
+            .map(|i| {
+                format!(
+                    r#"{{"id": "p{i}", "age": {}, "score": {}.5, "flag": {}, "born": "19{:02}-0{}-1{}", "note": "item {i}", "tags": ["a", "b{}"]}}"#,
+                    i % 90,
+                    i % 1000,
+                    i % 2 == 0,
+                    i % 100,
+                    1 + i % 9,
+                    i % 9,
+                    i % 7
+                )
+            })
+            .collect();
+        let Ok(Value::List(items)) =
+            linkml_map_core::value::parse_json(&format!("[{}]", table.join(",")))
+        else {
+            panic!()
+        };
+        let start = std::time::Instant::now();
+        let out = json_rows(items).unwrap();
+        println!("json_rows: {} rows in {:?}", out.len(), start.elapsed());
     }
 }
