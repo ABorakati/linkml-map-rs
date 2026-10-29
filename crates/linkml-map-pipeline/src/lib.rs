@@ -709,6 +709,16 @@ impl CompiledPlan {
         })
     }
 
+    /// The [`ObjectIndex`] over a single-object input (upstream's `tr.index(input_obj,
+    /// source_type)`), followed as far as this spec's expressions reach.
+    pub(crate) fn build_object_index(
+        &self,
+        container: &Value,
+        source_type: Option<&str>,
+    ) -> ObjectIndex {
+        self.row_engine(None).build_index(container, source_type)
+    }
+
     /// Transform one row using a pre-built [`ObjectIndex`].
     ///
     /// The FK pipeline builds the index ONCE, wraps it in `Arc`, and passes
@@ -1001,7 +1011,7 @@ pub async fn run_pipeline_with_options(
         && fast_paths_ok
         && steps.iter().all(|step| match step {
             Step::Constant(_) => true,
-            Step::Rows(seg) => plan.requires_object_index() || seg.format == Format::Jsonl,
+            Step::Rows(seg) => seg.is_indexed(&plan) || seg.format == Format::Jsonl,
         });
 
     let input = DriveInput {

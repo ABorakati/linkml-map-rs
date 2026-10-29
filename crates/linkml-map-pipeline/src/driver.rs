@@ -19,9 +19,13 @@
 //! | sink        | spec            | strategy                                          |
 //! |-------------|-----------------|---------------------------------------------------|
 //! | values      | no FK           | [`stream_segment`]: reader → workers → collector  |
-//! | values      | FK (`requires_object_index`) | [`fk_values_segment`]: buffer, index once |
+//! | values      | FK (see below)  | [`fk_values_segment`]: buffer, index once         |
 //! | JSONL bytes | FK              | [`fk_jsonl_segment`]                              |
 //! | JSONL bytes | no FK, JSONL in | [`jsonl_segment`]: raw lines, parallel serialise  |
+//!
+//! FK: single-object input (a YAML / JSON file) of a plan that reads through an
+//! [`ObjectIndex`] ([`CompiledPlan::requires_object_index`]); see [`RowSegment::is_indexed`].
+//! A table or directory never is, as upstream's streaming path builds no index.
 
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 
@@ -94,6 +98,17 @@ async fn open_all(plan: &CompiledPlan, seg: &RowSegment) -> Result<Vec<Value>> {
 }
 
 impl RowSegment {
+    /// Whether the segment is transformed through an [`ObjectIndex`] (foreign keys
+    /// dereferenced): single-object input of a plan that reads through one.
+    ///
+    /// PARITY: only `cli.py::_map_data_single` calls `tr.index(...)`. The streaming path
+    /// (`_map_data_streaming`, a table or directory) never does, so there a foreign key
+    /// stays its bare identifier: `{boss.label}` raises `'str' object has no attribute
+    /// 'label'` and `populated_from: boss.label` yields null (with a warning).
+    pub(crate) fn is_indexed(&self, plan: &CompiledPlan) -> bool {
+        self.block.is_none() && plan.requires_object_index()
+    }
+
     /// The error context for a failed row, as upstream's `_map_rows` enriches a
     /// `TransformationError` with `row_index` and `class_derivation_name`.
     fn error_context(&self, plan: &CompiledPlan, row: usize) -> String {
@@ -386,7 +401,6 @@ async fn lookup_index_for(
 pub(crate) async fn drive(mut input: DriveInput, mut sink: Sink) -> Result<Driven> {
     let mut stats = DriveStats::default();
     let mut join_cache = None;
-    let fk = input.plan.requires_object_index();
     let steps = std::mem::take(&mut input.steps);
     for step in steps {
         match step {
@@ -398,6 +412,7 @@ pub(crate) async fn drive(mut input: DriveInput, mut sink: Sink) -> Result<Drive
                 }
             }
             Step::Rows(seg) => {
+                let fk = seg.is_indexed(&input.plan);
                 let lookup = match lookup_index_for(
                     &input.plan,
                     input.loader.as_ref(),
@@ -637,11 +652,7 @@ async fn load_fk_block(
         let json_container = serde_json::json!({ "items": json_list });
         serde_json::from_value::<Value>(json_container).unwrap_or(Value::Null)
     };
-    let index = Arc::new(ObjectIndex::build(
-        &container_val,
-        seg.source_type.as_deref(),
-        Some(plan.source_provider.as_ref()),
-    ));
+    let index = Arc::new(plan.build_object_index(&container_val, seg.source_type.as_deref()));
     // PARITY: as in `stream_segment`, upstream's set-based join engine returns the rows of a
     // block with joins in DuckDB's probe order, whether or not a foreign key is also followed.
     let engine = JoinEngine::for_segment(plan, input.loader.as_ref(), seg, lookup);

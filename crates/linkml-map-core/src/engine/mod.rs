@@ -24,6 +24,7 @@
 
 pub mod coerce;
 pub mod content_id;
+mod fk_expansion;
 pub mod lookup_index;
 mod merged_row;
 #[cfg(test)]
@@ -588,9 +589,22 @@ impl<'s> ObjectTransformer<'s> {
     /// it across workers) is a follow-up.
     pub fn map_container(&self, container: &Value, source_type: Option<&str>) -> Result<Value> {
         let source_type = self.resolve_source_type(source_type)?;
-        let index = ObjectIndex::build(container, Some(&source_type), self.source_schema);
+        let index = self.build_index(container, Some(&source_type));
         let idx_ref = if index.is_empty() { None } else { Some(&index) };
         self.map_object_with_type(container, &source_type, idx_ref)
+    }
+
+    /// Upstream's `ObjectTransformer.index(container, target)`: the index over `container`, a
+    /// `source_type` object (default: the schema's tree-root class), followed as far as this
+    /// spec's expressions can reach (see [`ObjectIndex::with_expansion`]).
+    // gate:internal — engine entry used by the pipeline, not part of the binding-consumed surface.
+    pub fn build_index(&self, container: &Value, source_type: Option<&str>) -> ObjectIndex {
+        let root = source_type
+            .map(str::to_owned)
+            .or_else(|| self.source_schema.and_then(|ss| ss.tree_root_class()));
+        let (names, depth) = fk_expansion::expression_attribute_access(&self.spec);
+        ObjectIndex::build(container, root.as_deref(), self.source_schema)
+            .with_expansion(names, depth)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -1568,6 +1582,7 @@ impl<'s> ObjectTransformer<'s> {
             // entity rather than failing on a bare string. Distributes over a
             // multivalued FK (list of ids → list of resolved objects).
             let bound = match index {
+                Some(idx) if idx.is_typed() => self.bind_reference_slot(k, source_type, v, idx),
                 Some(idx) if self.is_fk_slot(k, source_type, v, idx) => {
                     self.deref_fk_value(k, source_type, v, idx)
                 }
@@ -1843,6 +1858,23 @@ impl<'s> ObjectTransformer<'s> {
             slot: slot_name.to_string(),
             cause: e.to_string(),
         })
+    }
+
+    /// `Bindings.get_ctxt_obj_and_dict` over a typed index: `ProxyObject._map` maps the value
+    /// of a slot whose range is a class to the object it refers to (an identifier is looked up
+    /// by its class and its exact value), leaving a dangling reference as it is.
+    fn bind_reference_slot(
+        &self,
+        slot_name: &str,
+        source_type: &str,
+        value: &Value,
+        index: &ObjectIndex,
+    ) -> Value {
+        let slot = induced_slot_cow(self.source_schema, slot_name, source_type);
+        match slot.as_deref().and_then(SlotDef::range_class) {
+            Some(range) => index.bind_reference(value, range),
+            None => value.clone(),
+        }
     }
 
     /// Decide whether `(slot_name, value)` on `source_type` is a foreign-key
