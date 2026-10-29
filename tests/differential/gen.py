@@ -3,7 +3,8 @@
 A *world* is rendered to files by :func:`write_world`, giving a :class:`harness.Case`.
 
 Feature flags (``feats``) switch generator families on so a campaign can focus on one area:
-``core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch``.
+``core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch``
+(``joinvals``, outside ``ALL_FEATS``: the ``joins`` profile's extra values and JSON/CSV/TSV table inputs).
 """
 
 from __future__ import annotations
@@ -146,7 +147,7 @@ def _mix(common, weird, awkward):
 
 
 def scalar_values(rng: str, feats, enums: dict, ids: dict):
-    awk = "awkward" in feats
+    awk = "awkward" in feats or "joinvals" in feats
     jn = "joins" in feats
     if rng in ("string", "MyStr"):
         return _mix(_STR_COMMON, _STR_WEIRD + (_JOIN_STR if jn else []), awk)
@@ -615,7 +616,8 @@ def worlds(draw, feats=ALL_FEATS):
             spec_extra["class_defaults"] = {blocks[0].name: {"mint_ids": draw(st.booleans())}}
     if not blocks:
         blocks.append(Block("Out", classes[0].name, [TSlot("out_a", "string", deriv={"value": "k"})]))
-    input_kind = draw(st.sampled_from(["tsv_dir", "tsv_dir", "csv_dir", "tsv_file", "yaml_dir", "json_dir", "yaml_single", "json_single"]))
+    input_kind = draw(st.sampled_from(["tsv_dir", "tsv_dir", "csv_dir", "tsv_file", "yaml_dir", "json_dir", "yaml_single", "json_single"]
+                                      if "joinvals" not in feats else ["json_dir", "json_dir", "json_dir", "csv_dir", "tsv_dir"]))
     ids = {c.name: [f"{c.name[0].lower()}{k}" for k in range(1, 5)] for c in classes}
     yaml_native = input_kind in ("yaml_dir", "json_dir", "yaml_single", "json_single")
     rows: dict[str, list[dict]] = {}

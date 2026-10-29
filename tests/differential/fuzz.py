@@ -33,7 +33,7 @@ PROFILES = {
     "awkward": frozenset({"awkward", "typeof"}),
     "enums": frozenset({"enums"}),
     "expr": frozenset({"expr", "awkward"}),
-    "joins": frozenset({"joins"}),
+    "joins": frozenset({"joins", "joinvals"}),
     "nested": frozenset({"nested"}),
     "multivalued": frozenset({"multivalued"}),
     "inherit": frozenset({"inherit", "constants"}),

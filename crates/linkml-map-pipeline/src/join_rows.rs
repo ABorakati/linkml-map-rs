@@ -35,7 +35,7 @@ use std::sync::OnceLock;
 
 use anyhow::Result;
 use linkml_map_core::{pyfmt::py_float_repr, value::Value};
-use linkml_map_io::parse_numeric;
+use linkml_map_io::{parse_numeric, parse_numeric_owned};
 
 use duckdb_text::{StrpTimeFormat, date_formats, date_text, time_text, timestamp_formats};
 
@@ -438,6 +438,11 @@ enum Cell {
     Text(String),
     /// The text of a `JSON` value, which a list or struct prints as it is.
     Json(String),
+    /// A finite `DOUBLE`: its text reads back as the same float (`_parse_numeric`), so the text is not built
+    /// unless a list or struct needs it.
+    Float(f64),
+    /// A `BIGINT`: its digits read back as the same integer.
+    Int(i64),
     List(Vec<Cell>),
     Struct(Vec<(String, Cell)>),
 }
@@ -449,6 +454,8 @@ impl Cell {
             Self::Null => "NULL".to_owned(),
             Self::Text(s) if nested => quote_nested(s),
             Self::Text(s) | Self::Json(s) => s.clone(),
+            Self::Float(f) => double_text(*f),
+            Self::Int(i) => i.to_string(),
             Self::List(items) => {
                 let parts: Vec<String> = items.iter().map(|i| i.text(true)).collect();
                 format!("[{}]", parts.join(", "))
@@ -467,7 +474,9 @@ impl Cell {
     fn into_value(self) -> Value {
         match self {
             Self::Null => Value::Null,
-            Self::Text(s) | Self::Json(s) => parse_numeric(&s),
+            Self::Text(s) | Self::Json(s) => parse_numeric_owned(s),
+            Self::Float(f) => Value::Float(f),
+            Self::Int(i) => Value::Int(i),
             other => parse_numeric(&other.text(false)),
         }
     }
@@ -639,11 +648,13 @@ fn transform(ty: &Ty, vals: &[Option<&Value>], out: &mut Vec<Cell>) -> Result<()
                 Some(b) => Cell::Text(b.to_string()),
                 None => return Err(transform_error(v, "BOOLEAN")),
             },
+            (Ty::Bigint, Value::Int(i)) => Cell::Int(*i),
             (Ty::Bigint | Ty::Hugeint, v) => match casts::to_integer(v, *ty == Ty::Hugeint) {
                 Some(digits) => Cell::Text(digits),
                 None => return Err(transform_error(v, "numerical")),
             },
             (Ty::Double, v) => match casts::to_double(v) {
+                Some(f) if f.is_finite() => Cell::Float(f),
                 Some(f) => Cell::Text(double_text(f)),
                 None => return Err(transform_error(v, "numerical")),
             },
@@ -831,11 +842,18 @@ fn deduplicate_columns<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> 
 /// kind of string.
 pub(crate) fn json_rows(rows: Vec<Value>) -> Result<Vec<Value>> {
     let root = detect_structure(&rows);
+    let total = rows.len();
+    let mut out: Vec<Value> = Vec::with_capacity(total);
+    let mut rows = rows.into_iter();
     match structure_to_type(&root) {
         Ty::Struct(fields) => {
             let names = deduplicate_columns(fields.iter().map(|(name, _)| name.as_str()));
-            let mut out: Vec<Value> = Vec::with_capacity(rows.len());
-            for chunk in rows.chunks(VECTOR_SIZE) {
+            // a vector at a time, each dropped once cast: the table is not held twice
+            loop {
+                let chunk: Vec<Value> = rows.by_ref().take(VECTOR_SIZE).collect();
+                if chunk.is_empty() {
+                    break;
+                }
                 let mut columns: Vec<std::vec::IntoIter<Cell>> = Vec::with_capacity(fields.len());
                 for (name, ty) in &fields {
                     let vals: Vec<Option<&Value>> = chunk
@@ -849,7 +867,7 @@ pub(crate) fn json_rows(rows: Vec<Value>) -> Result<Vec<Value>> {
                     transform(ty, &vals, &mut cells)?;
                     columns.push(cells.into_iter());
                 }
-                for _ in chunk {
+                for _ in 0..chunk.len() {
                     out.push(Value::Map(
                         names
                             .iter()
@@ -861,22 +879,22 @@ pub(crate) fn json_rows(rows: Vec<Value>) -> Result<Vec<Value>> {
                     ));
                 }
             }
-            Ok(out)
         }
         // `record_type` falls back to `VALUES`: one column named `json`.
-        ty => {
-            let mut out: Vec<Value> = Vec::with_capacity(rows.len());
-            for chunk in rows.chunks(VECTOR_SIZE) {
-                let vals: Vec<Option<&Value>> = chunk.iter().map(Some).collect();
-                let mut cells = Vec::with_capacity(vals.len());
-                transform(&ty, &vals, &mut cells)?;
-                out.extend(cells.into_iter().map(|c| {
-                    Value::Map(std::iter::once(("json".to_owned(), c.into_value())).collect())
-                }));
+        ty => loop {
+            let chunk: Vec<Value> = rows.by_ref().take(VECTOR_SIZE).collect();
+            if chunk.is_empty() {
+                break;
             }
-            Ok(out)
-        }
+            let vals: Vec<Option<&Value>> = chunk.iter().map(Some).collect();
+            let mut cells = Vec::with_capacity(vals.len());
+            transform(&ty, &vals, &mut cells)?;
+            out.extend(cells.into_iter().map(|c| {
+                Value::Map(std::iter::once(("json".to_owned(), c.into_value())).collect())
+            }));
+        },
     }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1166,7 +1184,11 @@ mod tests {
     #[test]
     #[ignore = "benchmark"]
     fn bench_json_rows() {
-        let table: Vec<String> = (0..200_000)
+        let n: usize = std::env::var("BENCH_ROWS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200_000);
+        let table: Vec<String> = (0..n)
             .map(|i| {
                 format!(
                     r#"{{"id": "p{i}", "age": {}, "score": {}.5, "flag": {}, "born": "19{:02}-0{}-1{}", "note": "item {i}", "tags": ["a", "b{}"]}}"#,

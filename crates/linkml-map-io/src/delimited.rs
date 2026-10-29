@@ -345,6 +345,20 @@ pub fn parse_numeric(text: &str) -> Value {
     Value::Str(text.to_owned())
 }
 
+/// [`parse_numeric`] for text that is not needed again: a string that is not a number is kept, not copied.
+pub fn parse_numeric_owned(text: String) -> Value {
+    if !text.bytes().any(|b| b.is_ascii_digit()) {
+        return Value::Str(text);
+    }
+    if let Some(v) = py_int(&text) {
+        return v;
+    }
+    if let Some(f) = py_float(&text) {
+        return Value::Float(f);
+    }
+    Value::Str(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

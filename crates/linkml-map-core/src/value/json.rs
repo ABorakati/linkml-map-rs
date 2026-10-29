@@ -63,12 +63,17 @@ fn needs_reader(bytes: &[u8]) -> bool {
     may_hold_big_integer(bytes) || has_negative_zero(bytes)
 }
 
-/// Whether `bytes` may hold a `-0` that is not the start of a longer number (`-0.5`, `-0e3`).
+/// Whether `bytes` may hold a bare `-0` number: after a separator (a date such as `2020-01-31` in a string
+/// is not one) and not the start of a longer number (`-0.5`, `-0e3`).
 fn has_negative_zero(bytes: &[u8]) -> bool {
-    bytes
-        .windows(3)
-        .any(|w| w[0] == b'-' && w[1] == b'0' && !matches!(w[2], b'.' | b'e' | b'E'))
-        || bytes.ends_with(b"-0")
+    let follows = |b: Option<&u8>| !matches!(b, Some(b'0'..=b'9' | b'.' | b'e' | b'E'));
+    bytes.starts_with(b"-0") && follows(bytes.get(2))
+        || bytes.windows(3).enumerate().any(|(i, w)| {
+            matches!(w[0], b' ' | b':' | b',' | b'[' | b'\t' | b'\n' | b'\r')
+                && w[1] == b'-'
+                && w[2] == b'0'
+                && follows(bytes.get(i + 3))
+        })
 }
 
 /// Whether `bytes` may hold an integer literal beyond `i64`: first the cheap

@@ -1,0 +1,4 @@
+id	out_age	out_score	out_flag	out_when	out_note
+a					"""2020-01-01"""
+b					5
+c					true
