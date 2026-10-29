@@ -17,18 +17,44 @@ use serde::de::Error as _;
 use super::Value;
 use crate::pynum;
 
+thread_local! {
+    /// Set by the `Value` visitor when `serde_json` hands it the float `-0.0`: the text may have held the
+    /// integer `-0`, which `json.loads` reads as `0`.
+    static NEGATIVE_ZERO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Called by `Value`'s `visit_f64` for `-0.0`.
+pub(super) fn note_negative_zero() {
+    NEGATIVE_ZERO.with(|flag| flag.set(true));
+}
+
+/// `serde_json`'s reading of `text`, unless it holds a `-0` (see [`NEGATIVE_ZERO`]) or `serde_json`
+/// rejects it (`1e400`, `NaN` and `Infinity`, which `json.loads` reads): then the reader of this module.
+fn read_with_serde(
+    text: Option<&str>,
+    serde: impl FnOnce() -> Result<Value, serde_json::Error>,
+) -> Result<Value, serde_json::Error> {
+    NEGATIVE_ZERO.with(|flag| flag.set(false));
+    let parsed = serde();
+    let reader = |text: &str| Reader::new(text).document_any().map(|(value, _)| value);
+    match (parsed, text) {
+        (Ok(value), Some(text)) if NEGATIVE_ZERO.with(std::cell::Cell::get) => {
+            Ok(reader(text).unwrap_or(value))
+        }
+        (Ok(value), _) => Ok(value),
+        (Err(e), Some(text)) => reader(text).map_err(|_| e),
+        (Err(e), None) => Err(e),
+    }
+}
+
 /// Parse `text` as one JSON document.
 ///
 /// # Errors
 /// The `serde_json` error for malformed text; for an integer of more than 4300
 /// digits, the `ValueError` message `json.loads` raises.
 pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
-    if !needs_reader(text.as_bytes()) {
-        // `serde_json` rejects `1e400`, `NaN` and `Infinity`, which `json.loads` reads
-        return serde_json::from_str(text).or_else(|e| match Reader::new(text).document_any() {
-            Ok((value, _)) => Ok(value),
-            Err(_) => Err(e),
-        });
+    if !may_hold_big_integer(text.as_bytes()) {
+        return read_with_serde(Some(text), || serde_json::from_str(text));
     }
     match Reader::new(text).document_any() {
         Ok((value, true)) => Ok(value),
@@ -43,37 +69,15 @@ pub fn parse_json(text: &str) -> Result<Value, serde_json::Error> {
 /// # Errors
 /// As [`parse_json`], and for bytes that are not UTF-8.
 pub fn parse_json_bytes(bytes: &[u8]) -> Result<Value, serde_json::Error> {
-    if !needs_reader(bytes) {
-        return serde_json::from_slice(bytes).or_else(|e| {
-            match std::str::from_utf8(bytes).map(|t| Reader::new(t).document_any()) {
-                Ok(Ok((value, _))) => Ok(value),
-                _ => Err(e),
-            }
+    if !may_hold_big_integer(bytes) {
+        return read_with_serde(std::str::from_utf8(bytes).ok(), || {
+            serde_json::from_slice(bytes)
         });
     }
     match std::str::from_utf8(bytes) {
         Ok(text) => parse_json(text),
         Err(_) => serde_json::from_slice(bytes),
     }
-}
-
-/// Whether the reader of this module, rather than `serde_json`, should read `bytes`: it may hold an
-/// integer beyond `i64`, or a `-0`.
-fn needs_reader(bytes: &[u8]) -> bool {
-    may_hold_big_integer(bytes) || has_negative_zero(bytes)
-}
-
-/// Whether `bytes` may hold a bare `-0` number: after a separator (a date such as `2020-01-31` in a string
-/// is not one) and not the start of a longer number (`-0.5`, `-0e3`).
-fn has_negative_zero(bytes: &[u8]) -> bool {
-    let follows = |b: Option<&u8>| !matches!(b, Some(b'0'..=b'9' | b'.' | b'e' | b'E'));
-    bytes.starts_with(b"-0") && follows(bytes.get(2))
-        || bytes.windows(3).enumerate().any(|(i, w)| {
-            matches!(w[0], b' ' | b':' | b',' | b'[' | b'\t' | b'\n' | b'\r')
-                && w[1] == b'-'
-                && w[2] == b'0'
-                && follows(bytes.get(i + 3))
-        })
 }
 
 /// Whether `bytes` may hold an integer literal beyond `i64`: first the cheap
@@ -349,6 +353,23 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_zero_alone_is_the_integer() {
+        let Value::List(l) = parse_json("[-0]").unwrap() else {
+            panic!("list")
+        };
+        assert_eq!(l[0], Value::Int(0));
+        let Value::List(l) = parse_json_bytes(b"[-0.0, -0]").unwrap() else {
+            panic!("list")
+        };
+        assert!(matches!(l[0], Value::Float(f) if f.is_sign_negative()));
+        assert_eq!(l[1], Value::Int(0));
+        let Value::Map(m) = parse_json(r#"{"a": 1, "d": "2020-01-31"}"#).unwrap() else {
+            panic!("map")
+        };
+        assert_eq!(m["a"], Value::Int(1));
+    }
 
     #[test]
     fn json_loads_extras() {

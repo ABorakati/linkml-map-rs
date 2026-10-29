@@ -199,6 +199,9 @@ impl<'de> Visitor<'de> for ValueVisitor {
     }
 
     fn visit_f64<E: de::Error>(self, v: f64) -> Result<Value, E> {
+        if v == 0.0 && v.is_sign_negative() {
+            json::note_negative_zero();
+        }
         Ok(Value::Float(v))
     }
 
