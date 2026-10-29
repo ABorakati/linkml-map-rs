@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ParserException",
+  "message": "Parser Error: syntax error at or near \"Order\"\n\nLINE 1: CREATE OR REPLACE TABLE Order AS SELECT CAST(columns(*) AS VARCHAR) FROM read_json_...\n                                ^"
+}
