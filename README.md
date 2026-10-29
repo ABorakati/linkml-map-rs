@@ -312,6 +312,14 @@ identifier minting (see [Identifiers](#identifiers)), Parquet/DuckDB output
 > `class_derivations`, and `validate-spec` warns about them. `source_schema` /
 > `target_schema` are structured `SchemaReference` objects (`name`, `version`,
 > `schema_uri`, `source_file`; a bare string still parses as the schema name).
+>
+> Slot-level `sources: [a, b]` (the one candidate source slot with a value wins; several
+> is `ValueError: Multiple sources for <slot>: {...}`) behaves as upstream's
+> `_resolve_sources`, including where it is dead: a slot derivation of a class derivation
+> that sets none of `populated_from`, `expr`, `value` or `class_derivations` is a copy of
+> the same-named source slot (upstream's `induce_missing_values`), so its `sources` is never
+> read. It is read for slot derivations inherited through `is_a` / `mixins`, in nested
+> `class_derivations`, and where `populated_from` or `expr` is the empty string.
 
 **Errors follow upstream.** Where upstream raises, so does the engine, with a non-zero
 exit: a slot derivation whose `populated_from` (or same-name copy) is not a slot of the

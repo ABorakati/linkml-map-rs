@@ -645,6 +645,12 @@ def worlds(draw, feats=ALL_FEATS):
         b0.is_a = "BaseT"
         if draw(st.booleans()):
             base.populated_from = None
+        if base.populated_from:
+            # A base that reads a source class fails in `induce_missing_values` on a bare slot the class lacks, whether or not
+            # any block reads it (an open divergence); a `range` skips the lookup.
+            for t in base_slots[1:]:
+                if t.deriv and "sources" in t.deriv:
+                    t.deriv.setdefault("range", "string")
         blocks.insert(0, base)
     if len(blocks) >= 2 and draw(st.sampled_from([False, False, False, True])) and not any(b.is_a or b.name == "BaseT" for b in blocks):
         # two derivations for the same target class from different sources (list form)

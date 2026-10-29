@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ValueError",
+  "message": "No such slot src_0 as an attribute of Person ancestors or as a slot definition in the schema"
+}

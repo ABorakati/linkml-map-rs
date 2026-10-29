@@ -99,6 +99,9 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - `induce_missing_values` tests `populated_from is None and expr is None and value is None` while `_derive_slot` tests
   truthiness, so a slot derivation with `populated_from: ""` or `expr: ""` is never induced and then matches no arm
   (`sources`, the implicit same-name copy).
+- `induce_missing_values` raises eagerly: a bare slot derivation (no `populated_from`/`expr`/`value`/`range`) the source
+  class lacks fails `derived_specification` with a bare `ValueError: No such slot ...` before any row, for an empty
+  table, for an `is_a` template no block reads, and outside the `TransformationError` wrapper that names the derivation.
 
 ## Join engine and lookup index
 
