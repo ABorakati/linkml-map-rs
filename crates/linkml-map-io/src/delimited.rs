@@ -59,6 +59,8 @@ pub(crate) struct CsvReader {
     fields: Vec<String>,
     /// Characters have been fed since the last [`CsvReader::end_of_line`].
     dirty: bool,
+    /// `skipinitialspace`: upstream's loader sets it; DuckDB's reader does not.
+    skip_initial_space: bool,
 }
 
 impl CsvReader {
@@ -69,7 +71,14 @@ impl CsvReader {
             field: String::new(),
             fields: Vec::new(),
             dirty: false,
+            skip_initial_space: true,
         }
+    }
+
+    /// The reader of DuckDB's `read_csv_auto`: spaces at the start of a field are kept.
+    pub(crate) fn without_initial_space_skipping(mut self) -> Self {
+        self.skip_initial_space = false;
+        self
     }
 
     fn save_field(&mut self) {
@@ -151,7 +160,7 @@ impl CsvReader {
             self.state = State::EatCrnl;
         } else if c == '"' {
             self.state = State::InQuotedField;
-        } else if c == ' ' {
+        } else if c == ' ' && self.skip_initial_space {
             // `skipinitialspace`: ignore space at the start of a field.
         } else if c == self.delimiter {
             self.save_field();
@@ -343,6 +352,20 @@ pub fn parse_numeric(text: &str) -> Value {
         return Value::Float(f);
     }
     Value::Str(text.to_owned())
+}
+
+/// [`parse_numeric`] for text that is not needed again: a string that is not a number is kept, not copied.
+pub fn parse_numeric_owned(text: String) -> Value {
+    if !text.bytes().any(|b| b.is_ascii_digit()) {
+        return Value::Str(text);
+    }
+    if let Some(v) = py_int(&text) {
+        return v;
+    }
+    if let Some(f) = py_float(&text) {
+        return Value::Float(f);
+    }
+    Value::Str(text)
 }
 
 #[cfg(test)]

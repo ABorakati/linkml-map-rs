@@ -1,0 +1,3 @@
+upstream_error/ParserExceptionParser Error: syntax error at or near Q
+
+LINE #: CREATE OR REPLACE TABLE Order AS SELECT C//

@@ -1,0 +1,17 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    joins:
+      Order:
+        source_key: order_ref
+        lookup_key: id
+      j_Item:
+        source_key: item_ref
+        lookup_key: id
+        class_named: Item
+    slot_derivations:
+      id: null
+      out_a:
+        populated_from: id

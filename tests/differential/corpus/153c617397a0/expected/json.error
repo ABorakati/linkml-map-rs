@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "InvalidInputException",
+  "message": "Invalid Input Error: JSON transform error in file \"/tmp/dfz-40_la2mh/data/Person.json\", in record/value 1: Could not convert string '2020-01-01' to INT128\n If this error occurred during read_json, line/object number information is approximate\nTry increasing 'sample_size', reducing 'maximum_depth', specifying 'columns', 'format' or 'records' manually, setting 'ignore_errors' to true, or setting 'union_by_name' to true when reading multiple files with a different structure."
+}

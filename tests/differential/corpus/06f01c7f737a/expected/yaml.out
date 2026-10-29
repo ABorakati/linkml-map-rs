@@ -1,0 +1,8 @@
+id: a
+out_flag: true
+out_score: 1.0
+---
+id: b
+out_flag: false
+out_score: 2.5
+---

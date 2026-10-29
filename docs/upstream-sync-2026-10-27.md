@@ -392,6 +392,13 @@ Remaining, not modelled:
   with `int()` then `float()` (`_parse_numeric`); Rust coerces only columns whose schema range is
   numeric.
 
+- Closed (port/bigjoin): the DuckDB typing of a JSON primary table of the join engine (`join_rows.rs`): integers
+  beyond 64 bits (HUGEINT up to `2^64 - 1`, DOUBLE beyond), ISO date/time/timestamp/UUID strings, mixed columns,
+  vector-wise refinement and the 20,480-record sample, with a fixture recorded from the upstream venv's DuckDB
+  (`tests/differential/duckdb_cells.py`). Not modelled: `MAP` inference (200+ similar fields, or fields that mostly
+  appear in under a tenth of the sampled records), the spelling of numbers nested in a `JSON`-typed column, a
+  newline-delimited primary table.
+
 Suggested upstream issues (not filed):
 - `schema_mapper._derive_enum` and `transform_enum` crash on an explicit `permissible_value_derivations: null`
   (pydantic accepts the null; the `default_factory=dict` default only covers an absent field).
