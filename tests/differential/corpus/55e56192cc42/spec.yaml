@@ -1,0 +1,10 @@
+
+class_derivations:
+  M:
+    slot_derivations:
+      label: {sources: [name, alias]}
+  Agent:
+    mixins: [M]
+    populated_from: Person
+    slot_derivations:
+      id: {}

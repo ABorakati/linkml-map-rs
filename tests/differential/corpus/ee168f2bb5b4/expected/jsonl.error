@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "ValidationError",
+  "message": "1 validation error for TransformationSpecification\nclass_derivations.0.slot_derivations.label.sources.0\n  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]\n    For further information visit https://errors.pydantic.dev/2.14/v/string_type"
+}

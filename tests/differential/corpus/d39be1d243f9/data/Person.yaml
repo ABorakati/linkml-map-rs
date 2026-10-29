@@ -1,0 +1,5 @@
+- id: p1
+  alias: a
+- id: p2
+  nick: n
+  name: x

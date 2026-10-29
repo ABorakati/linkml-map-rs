@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "error",
+  "message": "writing output to -: transform error at row 0; class_derivation=Agent: transformation error in 'Agent.org': transformation error in 'OrgT.label': TransformationError: Column \"name\" is ambiguous — it exists in both the parent and nested source tables. Use dot notation (e.g., 'TableName.name') to disambiguate."
+}

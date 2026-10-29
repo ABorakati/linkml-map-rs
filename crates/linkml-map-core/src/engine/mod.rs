@@ -32,6 +32,7 @@ pub mod object_index;
 mod pivot;
 mod populated_from;
 mod source_slots;
+mod sources;
 pub mod units;
 pub use coerce::TargetCoercions;
 pub use content_id::ContentIds;
@@ -797,6 +798,7 @@ impl<'s> ObjectTransformer<'s> {
         // 1. constant `value:`
         // 2. `expr:`
         // 3. `populated_from:` (direct field copy + value_mappings)
+        // 3b. `sources:` (the one of several candidate source slots with a value)
         // 4. `class_derivations:` (nested object derivation — v0.6.0)
         // 5. implicit same-name copy
         //
@@ -841,8 +843,9 @@ impl<'s> ObjectTransformer<'s> {
             );
             let v = apply_aggregation(agg, raw, slot_name)?;
             (v, None)
-        } else if let Some(expr) = &slot_deriv.expr {
-            // 2. Expression.
+        } else if let Some(expr) = slot_deriv.expr.as_deref().filter(|e| !e.is_empty()) {
+            // 2. Expression. PARITY: `elif slot_derivation.expr:`, so `expr: ""` is
+            // skipped, as is `populated_from: ""` below.
             let v = self.eval_expr_for_slot(
                 expr,
                 source_map,
@@ -854,7 +857,11 @@ impl<'s> ObjectTransformer<'s> {
                 target_attrs,
             )?;
             (v, None)
-        } else if let Some(populated_from) = &slot_deriv.populated_from {
+        } else if let Some(populated_from) = slot_deriv
+            .populated_from
+            .as_deref()
+            .filter(|p| !p.is_empty())
+        {
             // 3. populated_from — direct field copy.
             // `_source_class` is a virtual slot that resolves to the source class
             // name itself, enabling value_mappings keyed by source class (#193).
@@ -902,7 +909,17 @@ impl<'s> ObjectTransformer<'s> {
                 mapped = apply_offset(off, mapped, source_map)?;
             }
             (mapped, ssd)
-        } else if slot_deriv.class_derivations.is_some() {
+        } else if let Some(sources) = slot_deriv.sources.as_deref().filter(|s| !s.is_empty()) {
+            // 3b. sources — the one candidate source slot the row has a value for.
+            // PARITY: `_resolve_sources` skips `_nullify_missing_values`, the mappings
+            // and the offset of the `populated_from` arm; only the range coercion
+            // below applies.
+            self.resolve_sources(slot_deriv, sources, source_map, source_type, row.3)?
+        } else if slot_deriv
+            .class_derivations
+            .as_ref()
+            .is_some_and(|c| !c.is_empty())
+        {
             // 4. class_derivations — nested target objects (v0.6.0; replaces the
             //    removed `object_derivations`). Recurse into each nested
             //    ClassDerivation, then decide multivalued/scalar from the TARGET
@@ -4269,8 +4286,9 @@ mod tests {
         assert_eq!(out["name"], Value::Null);
     }
 
-    // (v0.6.0) `sources` removed — the multi-source-single-wins behaviour no
-    // longer exists; slots use `populated_from` (single) instead.
+    // Slot-level `sources` (the one candidate source slot with a value) is covered
+    // by `tests/slot_sources.rs`; it is live only for inherited / nested slot
+    // derivations, which `induce_missing_values` leaves alone.
 
     // ── Test 13: enum mirror_source ───────────────────────────────────────────
 
@@ -4547,8 +4565,8 @@ mod tests {
         assert!(matches!(err, Error::NoClassDerivation { .. }));
     }
 
-    // (v0.6.0) class-level `sources` multi-source dispatch removed — cover
-    // multiple source classes with one ClassDerivation each (per upstream).
+    // Class-level `sources` multi-source dispatch is gone upstream (v0.6.0) — cover
+    // multiple source classes with one ClassDerivation each.
 
     // ── Test: _source_class virtual binding (#193) ────────────────────────────
 

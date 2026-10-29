@@ -81,6 +81,27 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
   digit 28 merge; it also raises `decimal.Overflow` above exponent 999999 and silently rounds below -1000026.
 - `--source-type X` with directory input forces `X` on every class derivation, so a second block over another table
   fails with "No such slot".
+- Slot-level `sources` is nearly dead code. `induce_missing_values` writes `populated_from = <slot name>` on every slot
+  derivation of the specification that sets none of `populated_from`, `expr`, `value` or `class_derivations`, and
+  `_derive_slot` tries `populated_from` before `sources`, so `sources: [a, b]` on an ordinary slot silently reads the
+  slot's own name (or, when the source class lacks it, fails with a bare `ValueError: No such slot ...` from
+  `derived_specification` that escapes the `TransformationError` wrapper). The arm runs only for slot derivations
+  induction never sees: those inherited through `is_a`/`mixins` (`_class_derivation_ancestors` reads the raw
+  specification, not the derived one), those inside nested `class_derivations`, and ones whose `populated_from` or
+  `expr` is `""`. The model still documents `sources` as "deprecated, use `populated_from`" while `populated_from`
+  cannot take a list (#193).
+- `_resolve_sources` does not check the `_AMBIGUOUS` sentinel that `_merge_rows` stores for a column both joined
+  tables have, as every `populated_from` path does. A single ambiguous source leaks the sentinel into the output: YAML
+  writes `!!python/object/apply:linkml_map.transformer.object_transformer._AmbiguousType []`, JSON raises `TypeError`,
+  CSV/TSV write `<AMBIGUOUS>`. It also skips `_nullify_missing_values`, `value_mappings`/`expression_mappings` and
+  `offset`, which the `populated_from` arm applies, and its debug message prints `slot_derivation.populated_from`
+  (always `None` there).
+- `induce_missing_values` tests `populated_from is None and expr is None and value is None` while `_derive_slot` tests
+  truthiness, so a slot derivation with `populated_from: ""` or `expr: ""` is never induced and then matches no arm
+  (`sources`, the implicit same-name copy).
+- `induce_missing_values` raises eagerly: a bare slot derivation (no `populated_from`/`expr`/`value`/`range`) the source
+  class lacks fails `derived_specification` with a bare `ValueError: No such slot ...` before any row, for an empty
+  table, for an `is_a` template no block reads, and outside the `TransformationError` wrapper that names the derivation.
 
 ## Join engine and lookup index
 

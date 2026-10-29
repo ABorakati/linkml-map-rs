@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Cannot coerce multiple values ['a', 'b']; class_derivation=Agent (from Person); slot_derivation=label"
+}

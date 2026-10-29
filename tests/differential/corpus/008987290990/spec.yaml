@@ -1,0 +1,16 @@
+id: https://example.org/spec
+title: fuzz spec
+class_derivations:
+  BaseT:
+    populated_from: Person
+    slot_derivations:
+      id: null
+      src_0:
+        sources:
+        - id
+  Agent:
+    is_a: BaseT
+    populated_from: Person
+    slot_derivations:
+      out_a:
+        populated_from: id

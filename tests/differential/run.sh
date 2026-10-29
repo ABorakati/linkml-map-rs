@@ -8,7 +8,7 @@
 #   --fuzz N          Hypothesis campaign of ~N generated cases; each distinct divergence is shrunk and written to corpus/
 #   --seed S          Hypothesis seed (default 1); with a fixed seed and no time budget a run is reproducible
 #   --time-budget T   stop the fuzz campaign after T seconds
-#   --profiles        comma list of generator profiles (all,core,awkward,enums,expr,joins,nested,multivalued,inherit,units,mint,yaml,tsv)
+#   --profiles        comma list of generator profiles (all,core,awkward,enums,expr,joins,nested,multivalued,inherit,units,mint,yaml,tsv,sources)
 #   --corpus DIR      where counterexamples go (default tests/differential/corpus)
 #   --known-from-corpus  do not re-report divergences whose signature is already in corpus/
 #   --avoid-known     do not generate inputs that hit divergences already reported as open (empty TSV cells, >64-bit ints, ...)

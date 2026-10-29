@@ -1,0 +1,10 @@
+addrs:
+- num: 3
+  street: Al
+id: p1
+---
+addrs:
+- num: 7
+  street: Bo
+id: p2
+---

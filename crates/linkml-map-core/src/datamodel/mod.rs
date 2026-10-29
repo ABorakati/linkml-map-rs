@@ -7,6 +7,8 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+mod reference_strings;
+
 fn deserialize_stringish_option<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -533,7 +535,11 @@ pub struct SlotDerivation {
     pub name: String,
 
     /// Deprecated upstream (use `populated_from`); accepted so legacy specs load.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "reference_strings::deserialize_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sources: Option<Vec<String>>,
 
     /// Deprecated upstream and ignored by the runtime; accepted so legacy specs load.
@@ -735,7 +741,11 @@ pub struct EnumDerivation {
     pub name: String,
 
     /// Deprecated upstream (use `populated_from`); accepted so legacy specs load.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "reference_strings::deserialize_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sources: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -884,7 +894,11 @@ pub struct ClassDerivation {
     pub name: String,
 
     /// Deprecated upstream (use `populated_from`); accepted so legacy specs load.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "reference_strings::deserialize_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub sources: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]

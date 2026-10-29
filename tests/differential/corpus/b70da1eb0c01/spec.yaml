@@ -1,0 +1,12 @@
+
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {}
+      addrs:
+        class_derivations:
+          Addr:
+            slot_derivations:
+              street: {sources: [name, alias]}
+              num: {sources: [age, years], range: integer}

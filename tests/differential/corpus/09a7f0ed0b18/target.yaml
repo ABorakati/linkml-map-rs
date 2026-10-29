@@ -1,0 +1,19 @@
+
+id: http://example.org/t
+name: t
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: http://example.org/
+default_prefix: ex
+imports: [linkml:types]
+classes:
+  Agent:
+    attributes:
+      id: {identifier: true}
+      addrs: {range: Addr, multivalued: true, inlined_as_list: true}
+      addr: {range: Addr, inlined: true}
+  Addr:
+    attributes:
+      street: {}
+      num: {range: integer}
+      other: {}

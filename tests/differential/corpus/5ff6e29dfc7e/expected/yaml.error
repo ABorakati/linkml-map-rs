@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "class": "TransformationError",
+  "message": "Multiple sources for label: {'name': <AMBIGUOUS>, 'onick': 'on1'}; class_derivation=OrgT (from Org); slot_derivation=label"
+}

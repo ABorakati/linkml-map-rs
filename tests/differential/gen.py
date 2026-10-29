@@ -3,8 +3,12 @@
 A *world* is rendered to files by :func:`write_world`, giving a :class:`harness.Case`.
 
 Feature flags (``feats``) switch generator families on so a campaign can focus on one area:
-``core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch``
+``core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch sources``
 (``joinvals``, outside ``ALL_FEATS``: the ``joins`` profile's extra values and JSON/CSV/TSV table inputs).
+
+``sources`` adds slot derivations with the deprecated slot-level ``sources:`` list (upstream ``_resolve_sources``). The arm is
+only reachable for slot derivations ``induce_missing_values`` leaves alone, so they are placed where that holds: nested
+``class_derivations``, a shared ``is_a`` base template, and own slots whose ``populated_from`` / ``expr`` is the empty string.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from hypothesis import strategies as st
 import harness as H
 
 ALL_FEATS = frozenset(
-    "core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch".split()
+    "core awkward enums nested joins multivalued expr inherit constants units mint typeof yamlraw rawtsv mismatch sources".split()
 )
 CLASS_NAMES = ["Person", "Order", "Item"]
 TGT_NAMES = ["Agent", "Record", "Row", "Entry"]
@@ -401,6 +405,8 @@ def build_block(draw, w_classes, enums, feats, src: str, has_target: bool, tgt_n
             kinds += ["nested"] * 3
         if "expr" in feats:
             kinds += ["hide"]
+        if "sources" in feats:
+            kinds += ["sources"] * (6 if nested_depth else 3)
         kind = draw(st.sampled_from(kinds))
         t = _build_tslot(draw, kind, i, srcslots, joinrefs, joins, w_classes, enums, feats, has_target, tgt_enums, enum_derivs,
                          used, nested_depth, src, tgt_name)
@@ -450,6 +456,9 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
             deriv["missing_values"] = draw(st.sampled_from([[""], ["a"], [-9, "99"], "b", ["0"], [1]]))
         mv = s.multivalued
         return TSlot(name, rng if rng else s.range if not has_target else None, multivalued=mv, deriv=deriv or None)
+    if kind == "sources":
+        return _sources_slot(draw, srcslots, classes, enums, feats, has_target, tname(draw(st.sampled_from(TGT_POOL))),
+                             raw=nested_depth > 0, used=used)
     if kind == "mapping":
         s = draw(st.sampled_from([x for x in scal if x.range in ("string", "MyStr", "integer", "boolean")] or scal))
         name = tname(draw(st.sampled_from(TGT_POOL)))
@@ -536,6 +545,44 @@ def _build_tslot(draw, kind, i, srcslots, joinrefs, joins, classes, enums, feats
     return None
 
 
+def _sources_slot(draw, srcslots, classes, enums, feats, has_target, name, raw: bool, used: set | None = None):
+    """A slot derivation with ``sources:`` (upstream ``_resolve_sources``: the one candidate with a value wins).
+
+    ``raw`` says the slot derivation is one ``induce_missing_values`` never rewrites (nested, or inherited); otherwise it is
+    an own slot, for which ``sources`` is dead unless ``populated_from`` / ``expr`` is the empty string (set but falsy).
+    """
+    cnames = [c.name for c in classes]
+    cand = [x for x in srcslots if x.range not in cnames and x.range not in enums] or [x for x in srcslots if x.range not in cnames]
+    if not cand:
+        return TSlot(name, "string", deriv={"value": "k"})
+    names = [x.name for x in cand]
+    srcs = draw(st.lists(st.sampled_from(names), min_size=1, max_size=3))
+    if draw(st.sampled_from([False] * 6 + [True])):
+        srcs.insert(draw(st.integers(0, len(srcs))), draw(st.sampled_from(["zzz", "Person.name", ""])))
+    first = next((x for x in cand if x.name == srcs[0]), cand[0])
+    deriv: dict = {"sources": srcs}
+    if not raw:
+        # `{}`: an own slot named after a source slot, so induction makes it `populated_from: <name>` and `sources` is dead.
+        # (Named otherwise it would fail in `induce_missing_values` before any row: an open divergence for an empty table.)
+        variant = draw(st.sampled_from(["dead"] * 2 + ["populated_from"] * 3 + ["expr"] * 3))
+        if variant == "dead" and used is not None and srcs[0] in names and srcs[0] not in used:
+            name = srcs[0]
+            used.add(name)
+        elif variant == "expr":
+            deriv["expr"] = ""
+        else:
+            deriv["populated_from"] = ""
+    if draw(st.sampled_from([False] * 6 + [True])):
+        deriv["range"] = draw(st.sampled_from(SCALARS))
+    if "awkward" in feats and draw(st.sampled_from([False, False, True])):
+        # none of these applies to `sources`
+        extra = draw(st.sampled_from([{"missing_values": [""]}, {"missing_values": ["a", 0]}, {"value_mappings": {"a": "X"}},
+                                      {"hide": True}]))
+        deriv.update(extra)
+    rng = draw(target_range(first.range, {}, feats)) if has_target else None
+    return TSlot(name, rng if rng else first.range if not has_target else None, multivalued=first.multivalued, deriv=deriv)
+
+
 def _enum_slot(draw, s, name, enums, feats, has_target, tgt_enums, enum_derivs, same):
     src_enum = s.range
     tgt_en = f"T{src_enum}"
@@ -597,11 +644,23 @@ def worlds(draw, feats=ALL_FEATS):
         # turn the first block's first slot into a shared base template
         b0 = blocks[0]
         base_slots = [b0.slots[0]]
+        if "sources" in feats and b0.populated_from and draw(st.booleans()):
+            # an inherited slot derivation is taken from the raw specification, so its `sources` is read
+            nm = f"src_{draw(st.integers(0, 2))}"
+            if nm not in {t.name for t in b0.slots}:
+                base_slots.append(_sources_slot(draw, _induced(classes, b0.populated_from), classes, enums, feats, has_target, nm,
+                                                raw=True))
         base = Block("BaseT", None if draw(st.booleans()) else b0.populated_from, base_slots)
         b0.slots = b0.slots[1:] or [TSlot("extra", "string" if has_target else None, deriv={"value": "e"})]
         b0.is_a = "BaseT"
         if draw(st.booleans()):
             base.populated_from = None
+        if base.populated_from:
+            # A base that reads a source class fails in `induce_missing_values` on a bare slot the class lacks, whether or not
+            # any block reads it (an open divergence); a `range` skips the lookup.
+            for t in base_slots[1:]:
+                if t.deriv and "sources" in t.deriv:
+                    t.deriv.setdefault("range", "string")
         blocks.insert(0, base)
     if len(blocks) >= 2 and draw(st.sampled_from([False, False, False, True])) and not any(b.is_a or b.name == "BaseT" for b in blocks):
         # two derivations for the same target class from different sources (list form)
