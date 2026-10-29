@@ -40,7 +40,7 @@ use linkml_map_core::{
     engine::LookupIndex,
     value::Value,
 };
-use linkml_map_io::{Format, load_all_with_numeric_hints, load_stream_with_numeric_hints};
+use linkml_map_io::{Format, load_all_with_numeric_hints};
 
 use crate::{CompiledPlan, DataLoader, driver::RowSegment, join_rows};
 
@@ -380,7 +380,8 @@ impl JoinEngine {
             let rows = join_rows::json_rows(rows)?;
             return Ok(futures::stream::iter(rows.into_iter().map(Ok)).boxed());
         }
-        load_stream_with_numeric_hints(&seg.file, seg.format, Default::default()).await
+        // PARITY: DuckDB's `read_csv_auto` keeps a field's leading spaces and drops a byte-order mark
+        linkml_map_io::loaders::load_stream_duckdb(&seg.file, seg.format).await
     }
 
     /// Whether `row` has a match in each join (a null or absent key has none).

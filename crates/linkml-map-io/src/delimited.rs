@@ -59,6 +59,8 @@ pub(crate) struct CsvReader {
     fields: Vec<String>,
     /// Characters have been fed since the last [`CsvReader::end_of_line`].
     dirty: bool,
+    /// `skipinitialspace`: upstream's loader sets it; DuckDB's reader does not.
+    skip_initial_space: bool,
 }
 
 impl CsvReader {
@@ -69,7 +71,14 @@ impl CsvReader {
             field: String::new(),
             fields: Vec::new(),
             dirty: false,
+            skip_initial_space: true,
         }
+    }
+
+    /// The reader of DuckDB's `read_csv_auto`: spaces at the start of a field are kept.
+    pub(crate) fn without_initial_space_skipping(mut self) -> Self {
+        self.skip_initial_space = false;
+        self
     }
 
     fn save_field(&mut self) {
@@ -151,7 +160,7 @@ impl CsvReader {
             self.state = State::EatCrnl;
         } else if c == '"' {
             self.state = State::InQuotedField;
-        } else if c == ' ' {
+        } else if c == ' ' && self.skip_initial_space {
             // `skipinitialspace`: ignore space at the start of a field.
         } else if c == self.delimiter {
             self.save_field();

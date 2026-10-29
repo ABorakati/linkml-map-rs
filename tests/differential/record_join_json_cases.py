@@ -83,6 +83,15 @@ CASES = {
 }
 
 
+# CSV primaries: read_csv_auto(all_varchar=true) infers no types, but keeps a field's leading spaces, drops a BOM
+CSV_CASES = {
+    "csv_leading_spaces": "id,age,score,flag,when,note,order_ref\na, 5 , 2.5 ,true, x ,  y,\n",
+    "csv_bom": "\ufeffid,age,score,flag,when,note,order_ref\na,1,2,true,x,y,\n",
+    "csv_big_and_typed_looking_text": "id,age,score,flag,when,note,order_ref\na,9223372036854775808,-9223372036854775809,true,2020-01-01T10:00:00Z,007,\n"
+    "b,18446744073709551616,1e3,false,10:00,7F0DCAD7-862E-5CEC-4D8E-A544EB9C736F,\n",
+}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", default=str(Path(__file__).resolve().parent / "corpus"))
@@ -105,6 +114,19 @@ def main() -> int:
                                       seed="record_join_json_cases.py")
             kinds = ",".join(sorted({r.kind for r in res}))
             print(f"{name:40} {dest.name} {kinds}")
+    for name, text in CSV_CASES.items():
+        with H.tmp_case_dir() as d:
+            for f, doc in (("schema.yaml", SCHEMA), ("target.yaml", TARGET), ("spec.yaml", SPEC)):
+                (d / f).write_text(yaml.safe_dump(doc, sort_keys=False))
+            (d / "data").mkdir()
+            (d / "data" / "Person.csv").write_bytes(text.encode())
+            (d / "data" / "Order.csv").write_text("id,name\no1,n1\n")
+            case = H.Case(root=str(d), schema="schema.yaml", spec="spec.yaml", input="data", source_type=None,
+                          target_schema="target.yaml", flags=["--unrestricted-eval"])
+            res = H.compare_case(case, "inproc")
+            dest = H.save_corpus_case(case, res, corpus, note=f"recorded by record_join_json_cases.py: {name}",
+                                      seed="record_join_json_cases.py")
+            print(f"{name:40} {dest.name} {','.join(sorted({r.kind for r in res}))}")
     return 0
 
 

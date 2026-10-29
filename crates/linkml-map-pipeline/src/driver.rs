@@ -323,7 +323,7 @@ async fn lookup_index_for(
         // says about the column (`"007"` reads as 7); the key itself is matched as
         // text. A JSON table keeps the types the loader gives it.
         if matches!(fmt, Format::Csv | Format::Tsv) {
-            let rows = load_all_with_numeric_hints(&file, fmt, Default::default())
+            let rows = linkml_map_io::loaders::load_all_duckdb(&file, fmt)
                 .await
                 .with_context(|| {
                     format!("loading joined table {table:?} from {}", file.display())
