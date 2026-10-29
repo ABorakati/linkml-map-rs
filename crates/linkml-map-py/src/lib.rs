@@ -116,6 +116,7 @@
 //! upstream Python's in-memory `ObjectTransformer`, which preserves native
 //! `date`/`datetime` objects untouched.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -128,7 +129,7 @@ use pyo3::types::{
 
 use linkml_map_core::{
     datamodel::TransformationSpecification,
-    engine::{CompiledExprs, LookupIndex, ObjectTransformer},
+    engine::{CompiledExprs, LookupIndex, ObjectIndex, ObjectTransformer},
     pyset::PySet as PySetOf,
     validate::{ValidationMessage, validate_spec_semantics},
     value::{Decimal, Value},
@@ -622,6 +623,47 @@ fn run_transform(
     strict: bool,
     unrestricted_eval: bool,
 ) -> PyResult<PyObject> {
+    run_transform_with(
+        py,
+        obj,
+        spec,
+        source_provider,
+        target_provider,
+        source_class,
+        lookup_index,
+        compiled_exprs,
+        strict,
+        unrestricted_eval,
+        FkIndex::Container,
+    )
+}
+
+/// Where the foreign-key [`ObjectIndex`] of a transform comes from.
+#[derive(Clone, Copy)]
+enum FkIndex<'a> {
+    /// Built from the object being transformed (`map_container`): the Rust-native
+    /// `transform` entry points, which take a whole container.
+    Container,
+    /// Upstream's `ObjectTransformer.object_index`: the one `index()` built from a container,
+    /// or none, in which case a foreign key stays its bare identifier.
+    Given(Option<&'a ObjectIndex>),
+}
+
+/// [`run_transform`] with the foreign-key index chosen by `fk`.
+#[allow(clippy::too_many_arguments)]
+fn run_transform_with(
+    py: Python<'_>,
+    obj: &Bound<'_, PyAny>,
+    spec: &TransformationSpecification,
+    source_provider: &SchemaViewProvider,
+    target_provider: Option<&SchemaViewProvider>,
+    source_class: Option<&str>,
+    lookup_index: Option<&Arc<LookupIndex>>,
+    compiled_exprs: Option<&CompiledExprs>,
+    strict: bool,
+    unrestricted_eval: bool,
+    fk: FkIndex<'_>,
+) -> PyResult<PyObject> {
     let input_value = py_to_value(py, obj)?;
 
     let mut engine = ObjectTransformer::new(
@@ -644,9 +686,14 @@ fn run_transform(
     // `map_container` builds a foreign-key ObjectIndex from the whole input
     // first, then maps — handling cross-row FK joins. For non-FK input the index
     // is empty and this is identical to `map_object`.
-    let result = engine
-        .map_container(&input_value, source_class)
-        .map_err(|e| PyValueError::new_err(format!("Transform error: {e}")))?;
+    let result = match fk {
+        FkIndex::Container => engine.map_container(&input_value, source_class),
+        FkIndex::Given(Some(index)) => {
+            engine.map_object_with_index(&input_value, source_class, index)
+        }
+        FkIndex::Given(None) => engine.map_object(&input_value, source_class),
+    }
+    .map_err(|e| PyValueError::new_err(format!("Transform error: {e}")))?;
 
     value_to_py(py, &result)
 }
@@ -688,6 +735,9 @@ struct PyTransformer {
     /// until the first registration; attached to the engine on every
     /// `transform` / `transform_many` / `map_object` call once present.
     lookup_index: Option<Arc<LookupIndex>>,
+    /// Upstream `ObjectTransformer.object_index`: set by `index()`, read by `map_object`.
+    /// `None` until then, and a foreign key stays its bare identifier.
+    object_index: RefCell<Option<ObjectIndex>>,
 }
 
 #[pymethods]
@@ -721,6 +771,7 @@ impl PyTransformer {
             strict,
             unrestricted_eval,
             lookup_index: None,
+            object_index: RefCell::new(None),
         })
     }
 
@@ -764,6 +815,7 @@ impl PyTransformer {
             strict,
             unrestricted_eval,
             lookup_index: None,
+            object_index: RefCell::new(None),
         })
     }
 
@@ -814,6 +866,7 @@ impl PyTransformer {
             strict,
             unrestricted_eval,
             lookup_index: None,
+            object_index: RefCell::new(None),
         })
     }
 
@@ -833,8 +886,53 @@ impl PyTransformer {
         )
     }
 
+    /// Upstream `ObjectTransformer.index(source_obj, target)`: index a container so that
+    /// `map_object` dereferences the foreign keys that point into it.
+    ///
+    /// `target` is the container's class; it defaults to the source class given to the
+    /// constructor, then to the schema's one tree-root class (upstream raises when there
+    /// is not exactly one).
+    #[pyo3(signature = (source_obj, target=None))]
+    fn index(
+        &self,
+        py: Python<'_>,
+        source_obj: Bound<'_, PyAny>,
+        target: Option<String>,
+    ) -> PyResult<()> {
+        let value = py_to_value(py, &source_obj)?;
+        let provider: &dyn linkml_map_core::schema::SchemaProvider = &self.source_provider;
+        let mut target = target.or_else(|| self.source_class.clone());
+        if target.is_none() && matches!(value, Value::Map(_)) {
+            // PARITY: `[target] = [c.name for c in all_classes().values() if c.tree_root]`.
+            let roots: Vec<String> = provider
+                .all_class_names()
+                .into_iter()
+                .filter(|name| provider.get_class(name).is_ok_and(|c| c.tree_root))
+                .collect();
+            match roots.as_slice() {
+                [root] => target = Some(root.clone()),
+                [] => {
+                    return Err(PyValueError::new_err(
+                        "not enough values to unpack (expected 1, got 0)",
+                    ));
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "too many values to unpack (expected 1)",
+                    ));
+                }
+            }
+        }
+        let engine = ObjectTransformer::new(self.spec.clone(), Some(provider), None);
+        *self.object_index.borrow_mut() = Some(engine.build_index(&value, target.as_deref()));
+        Ok(())
+    }
+
     /// Alias of [`transform`] matching the Python `ObjectTransformer.map_object`
     /// method name (lets the `linkml_map` shim forward calls 1:1).
+    ///
+    /// As upstream, foreign keys are dereferenced only through the index `index()` built: a
+    /// transformer never indexed leaves a foreign key as its bare identifier.
     #[pyo3(signature = (obj, source_type=None))]
     fn map_object(
         &self,
@@ -843,7 +941,8 @@ impl PyTransformer {
         source_type: Option<String>,
     ) -> PyResult<PyObject> {
         let source_class = source_type.as_deref().or(self.source_class.as_deref());
-        run_transform(
+        let index = self.object_index.borrow();
+        run_transform_with(
             py,
             &obj,
             &self.spec,
@@ -854,6 +953,7 @@ impl PyTransformer {
             Some(&self.compiled_exprs),
             self.strict,
             self.unrestricted_eval,
+            FkIndex::Given(index.as_ref()),
         )
     }
 

@@ -9,8 +9,8 @@ Drop-in for the common ``ObjectTransformer(specification=..., source_schemaview=
 Backed by the compiled ``linkml_map_rs`` extension (build with maturin).
 
 Covered: ``map_object``, ``create_transformer_specification``,
-``load_transformer_specification``, ``load_source_schema``, ``index`` (no-op —
-the Rust engine builds any FK index internally), ``strict``. NOT covered:
+``load_transformer_specification``, ``load_source_schema``, ``index`` (foreign keys
+are dereferenced only after it, as upstream), ``strict``. NOT covered:
 SchemaMapper, the inverter, Python/SQL compilers, JSON-schema validation,
 ``derived_specification``.
 
@@ -144,6 +144,7 @@ class ObjectTransformer:
         unrestricted_eval: bool = False,
     ) -> None:
         self._rust: Optional[Any] = None
+        self._index_args: Optional[tuple[Any, Optional[str]]] = None
         self.spec_messages: list[Any] = []
         self.unrestricted_eval = unrestricted_eval
         self.strict = strict
@@ -176,8 +177,16 @@ class ObjectTransformer:
         self.source_schemaview = SchemaView(os.fspath(path))
 
     def index(self, source_obj: Any, target: Optional[str] = None) -> None:
-        """No-op: the Rust engine builds any foreign-key index internally."""
-        return None
+        """Index a container, so that ``map_object`` dereferences the foreign keys into it.
+
+        Mirrors upstream: only a transformer that has been indexed dereferences a foreign
+        key (in ``{boss.label}`` expressions and ``populated_from: boss.label`` paths); one
+        that has not leaves it as its bare identifier. ``target`` is the container's class,
+        by default the schema's one tree-root class.
+        """
+        self._index_args = (source_obj, target)
+        self._ensure()
+        self._rust.index(source_obj, target)
 
     def _ensure(self) -> None:
         if self._rust is not None:
@@ -197,6 +206,9 @@ class ObjectTransformer:
             strict=self.strict,
             unrestricted_eval=self.unrestricted_eval,
         )
+        if self._index_args is not None:
+            # Upstream's index outlives a change of specification or schema.
+            self._rust.index(*self._index_args)
 
     def map_object(self, source_obj: Any, source_type: Optional[str] = None) -> Any:
         """Transform one object (dict) → dict. Schema/spec parsed once, then cached."""

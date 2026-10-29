@@ -359,6 +359,8 @@ def test_golden_native_transformer_matches_expected(case: GoldenCase) -> None:
         unrestricted_eval=case.unrestricted_eval,
     )
     input_obj = case.load_input()
+    # As `cli.py::_map_data_single`: a foreign key is dereferenced only through the index.
+    transformer.index(input_obj, source_type)
     actual = transformer.map_object(input_obj, source_type)
     expected = _json_bridge_normalize(case.load_expected())
 
@@ -390,6 +392,7 @@ def test_golden_shim_object_transformer_matches_expected(case: GoldenCase) -> No
         unrestricted_eval=case.unrestricted_eval,
     )
     input_obj = case.load_input()
+    ot.index(input_obj, source_type)  # as the CLI does; foreign keys resolve only through it
     actual = ot.map_object(input_obj, source_type)
     expected = _json_bridge_normalize(case.load_expected())
 
@@ -418,6 +421,7 @@ def test_golden_shim_specification_as_dict_matches_expected(case: GoldenCase) ->
     ot.create_transformer_specification(spec_dict)
 
     input_obj = case.load_input()
+    ot.index(input_obj, source_type)  # as the CLI does; foreign keys resolve only through it
     actual = ot.map_object(input_obj, source_type)
     expected = _json_bridge_normalize(case.load_expected())
 
@@ -605,11 +609,8 @@ class TestObjectTransformerShim:
         result = ot.map_object(case.load_input(), "Person")
         assert result == case.load_expected()
 
-    def test_index_is_noop(self) -> None:
-        """Upstream `.index(...)` builds an FK lookup index; the Rust engine
-        builds any FK index internally, so the shim's `.index` is a documented
-        no-op. Assert it doesn't raise and doesn't affect `.map_object`.
-        """
+    def test_index_does_not_change_a_spec_without_foreign_keys(self) -> None:
+        """`.index(...)` returns None and leaves a spec that reads no foreign key alone."""
         case = _measurements_case()
         ot = ObjectTransformer(
             source_schemaview=str(case.source_schema_path),
@@ -1287,3 +1288,86 @@ class TestNativePathArguments:
             Transformer.from_python(PERSONINFO_SRC_SCHEMA, pathlib.Path("/nonexistent/spec.yaml"))
         with pytest.raises(FileNotFoundError):
             Transformer.from_python(pathlib.Path("/nonexistent/schema.yaml"), PERSONINFO_TR)
+
+
+# ── foreign keys are dereferenced only through `.index()` (upstream) ──────────
+
+_FK_SCHEMA = """
+id: https://example.org/fk
+name: fk
+prefixes: {linkml: https://w3id.org/linkml/, ex: https://example.org/}
+default_prefix: ex
+imports: [linkml:types]
+classes:
+  Org:
+    attributes:
+      id: {range: string, identifier: true}
+      label: {range: string}
+  Person:
+    attributes:
+      id: {range: string, identifier: true}
+      org: {range: Org}
+  Container:
+    tree_root: true
+    attributes:
+      persons: {range: Person, multivalued: true, inlined: true}
+      orgs: {range: Org, multivalued: true, inlined: true}
+"""
+
+_FK_SPEC = """
+id: https://example.org/fk-spec
+class_derivations:
+  Agent:
+    populated_from: Person
+    slot_derivations:
+      id: {populated_from: id}
+      via_expr: {expr: "{org.label}"}
+      via_path: {populated_from: org.label}
+"""
+
+_FK_DATA = {
+    "persons": [{"id": "p1", "org": "o1"}],
+    "orgs": [{"id": "o1", "label": "Acme"}],
+}
+
+
+class TestForeignKeyIndex:
+    """Upstream dereferences a foreign key only on a transformer that has been indexed."""
+
+    @staticmethod
+    def _transformer() -> ObjectTransformer:
+        return ObjectTransformer(
+            specification=yaml.safe_load(_FK_SPEC),
+            source_schemaview=_FK_SCHEMA,
+        )
+
+    def test_indexed_container_resolves_expression_and_path(self) -> None:
+        ot = self._transformer()
+        ot.index(_FK_DATA, "Container")
+        assert ot.map_object(_FK_DATA["persons"][0], "Person") == {
+            "id": "p1",
+            "via_expr": "Acme",
+            "via_path": "Acme",
+        }
+
+    def test_unindexed_expression_raises_on_the_bare_identifier(self) -> None:
+        ot = self._transformer()
+        with pytest.raises(Exception, match="'str' object has no attribute 'label'"):
+            ot.map_object(_FK_DATA["persons"][0], "Person")
+
+    def test_unindexed_path_is_null(self) -> None:
+        spec = yaml.safe_load(_FK_SPEC)
+        del spec["class_derivations"]["Agent"]["slot_derivations"]["via_expr"]
+        ot = ObjectTransformer(specification=spec, source_schemaview=_FK_SCHEMA)
+        assert ot.map_object(_FK_DATA["persons"][0], "Person") == {"id": "p1", "via_path": None}
+
+    def test_index_survives_a_change_of_specification(self) -> None:
+        ot = self._transformer()
+        ot.index(_FK_DATA, "Container")
+        ot.strict = True  # discards the engine; upstream keeps `object_index`
+        assert ot.map_object(_FK_DATA["persons"][0], "Person")["via_expr"] == "Acme"
+
+    def test_index_without_target_needs_exactly_one_tree_root(self) -> None:
+        ot = self._transformer()
+        ot.index(_FK_DATA)  # the schema's one tree root is Container
+        assert ot.map_object(_FK_DATA["persons"][0], "Person")["via_path"] == "Acme"

@@ -103,10 +103,23 @@ class Transformer:
         stringified with ``str()``.
         """
         ...
+    def index(self, source_obj: dict[str, Any], target: str | None = ...) -> None:
+        """Index a container, as `ObjectTransformer.index`.
+
+        After it, `map_object` dereferences the foreign keys that point into the
+        container; without it a foreign key stays its bare identifier. `target` is
+        the container's class (default: the source class, then the one tree-root
+        class; `ValueError` when there is not exactly one).
+        """
+        ...
     def map_object(
         self, obj: dict[str, Any], source_type: str | None = ...
     ) -> dict[str, Any]:
-        """Alias of `transform` matching `ObjectTransformer.map_object`."""
+        """Alias of `transform` matching `ObjectTransformer.map_object`.
+
+        Like upstream, it dereferences foreign keys only through the index built
+        by `index`; `transform` and `transform_many` index the object they are given.
+        """
         ...
     def transform_many(self, objs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Transform a list of objects."""

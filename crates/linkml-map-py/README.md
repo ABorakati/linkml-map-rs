@@ -135,8 +135,10 @@ at construction.
 
 Covered: `ObjectTransformer(...)`, `.map_object()`,
 `.create_transformer_specification()`, `.load_transformer_specification()`,
-`.load_source_schema()`, `.index()` (no-op — the Rust engine builds any FK index
-internally), `.strict`, `.unrestricted_eval`, `load_specification()`.
+`.load_source_schema()`, `.index()` (as upstream, foreign keys are dereferenced only
+after it: in `{boss.label}` expressions and `populated_from: boss.label` paths; an
+unindexed transformer leaves a foreign key as its bare identifier), `.strict`,
+`.unrestricted_eval`, `load_specification()`.
 
 `unrestricted_eval` is real, as upstream, and defaults to `False`: the safe
 evaluator has no `src`, runs only the first statement of an `expr:` block and
