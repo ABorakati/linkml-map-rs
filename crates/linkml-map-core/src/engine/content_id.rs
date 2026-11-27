@@ -616,7 +616,7 @@ impl<'s> ObjectTransformer<'s> {
     /// The target class's identifier slot when `class_deriv` does not derive
     /// it, else `None`. Always `None` without a target schema. Mirrors
     /// `ObjectTransformer._underived_identifier`.
-    fn underived_identifier(&self, class_deriv: &ClassDerivation) -> Option<&str> {
+    pub(super) fn underived_identifier(&self, class_deriv: &ClassDerivation) -> Option<&str> {
         let id_slot = self.content_ids()?.identifier_slot(&class_deriv.name)?;
         let derived = class_deriv
             .slot_derivations

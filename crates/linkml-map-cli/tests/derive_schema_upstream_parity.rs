@@ -1,6 +1,6 @@
 //! `linkml-tr-rs derive-schema` writes exactly what upstream `linkml-map derive-schema` writes.
 //!
-//! `tests/derive_schema/expected/` holds the stdout of upstream linkml-map v0.6.0-rc1 for every
+//! `tests/derive_schema/expected/` holds the stdout of upstream linkml-map v0.6.0 for every
 //! (specification, source schema) pair listed in `tests/derive_schema/cases.json`: the vendored
 //! examples and golden fixtures, plus hand-written feature cases under
 //! `tests/derive_schema/inputs/` (copy directives, enum derivations, `overrides`, rewiring, ...).

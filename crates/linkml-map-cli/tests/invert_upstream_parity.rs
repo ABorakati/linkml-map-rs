@@ -1,6 +1,6 @@
 //! `linkml-tr-rs invert` writes exactly what upstream `linkml-map invert` writes.
 //!
-//! `tests/invert/expected/` holds the stdout of upstream linkml-map v0.6.0-rc1 for every
+//! `tests/invert/expected/` holds the stdout of upstream linkml-map v0.6.0 for every
 //! (specification, source schema, mode) triple listed in `tests/invert/cases.json`: the vendored
 //! examples, golden fixtures and exported compliance combos, hand-written feature cases under
 //! `tests/invert/inputs/` (every inverter branch), and Hypothesis-generated ones under

@@ -2,7 +2,7 @@
 """Regenerate `expected/`, the replay corpus for `invert`.
 
 Every (specification, source schema, mode) triple in `cases.json` is run through upstream
-`linkml-map invert` (v0.6.0-rc1). Its stdout is stored as `expected/<name>.yaml`; when
+`linkml-map invert` (v0.6.0). Its stdout is stored as `expected/<name>.yaml`; when
 upstream raises, the case is marked `"error"` with the exception type and message (the
 last lines of the traceback) and has no expected file. The replay test
 `crates/linkml-map-cli/tests/invert_upstream_parity.rs` runs `linkml-tr-rs invert` over

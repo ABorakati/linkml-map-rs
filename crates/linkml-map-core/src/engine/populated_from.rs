@@ -86,14 +86,20 @@ impl<'s> ObjectTransformer<'s> {
                     .unwrap_or(Value::Null),
                 None => self.resolve_join_value(table_name, field_path, ac, source_map)?,
             };
-            // PARITY: `_perform_join_resolution` looks the slot up with
-            // `field_path in context.sv.class_induced_slots(joined_class)`, but
-            // `class_induced_slots` returns `SlotDefinition` objects, never
-            // strings, so the test is always false and a joined value reaches
-            // `_derive_slot` with no source slot: no range, cardinality, datatype
-            // or enum coercion, whatever the target slot says. Matched here, not
-            // fixed.
-            return Ok((v, None));
+            // PARITY: object_transformer.py::_perform_join_resolution (0617b59, #402):
+            // the joined value's source slot is `induced_slot(field_path, joined_class)`
+            // when `joined_class` (`class_named`, else the join name) is a source class
+            // and `field_path in class_slots(joined_class)`; else none. With the slot,
+            // `_derive_slot` coerces the value to the target like any other.
+            let joined_class = ac
+                .class_named
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .unwrap_or(table_name);
+            return Ok((
+                v,
+                induced_slot_cow(self.source_schema, field_path, joined_class),
+            ));
         }
         if let Some(row) = merged.and_then(|m| m.table(table_name)) {
             // A table of the merged row: `rows_by_table[table].get(field)`.

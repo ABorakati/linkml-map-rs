@@ -675,11 +675,12 @@ impl<'s> ObjectTransformer<'s> {
         index: Option<&ObjectIndex>,
         class_derivation: Option<&ClassDerivation>,
     ) -> Result<Value> {
-        // Enum pass-through: if source_type is an enum, transform via enum derivation.
+        // Enum pass-through: if source_type is an enum, transform via enum derivation
+        // (or, with none, leave the value to the target enum).
         if let Some(ss) = self.source_schema
             && ss.has_enum(source_type)
         {
-            return self.transform_enum(source_obj, &[source_type.to_string()], source_obj);
+            return self.map_enum_value(source_obj, source_type);
         }
 
         // Scalar pass-through: if it's a known type, return as-is.
@@ -2061,23 +2062,22 @@ impl<'s> ObjectTransformer<'s> {
         }
 
         match source_range {
+            // `self.map_object(v, enum_name, ..)` per element.
             RangeKind::Enum(enum_name) => {
                 if source_slot.multivalued {
                     if let Value::List(items) = v {
                         let mapped: Result<Vec<Value>> = items
                             .iter()
-                            .map(|item| {
-                                self.transform_enum(item, std::slice::from_ref(enum_name), item)
-                            })
+                            .map(|item| self.map_enum_value(item, enum_name))
                             .collect();
                         return Ok(Value::List(mapped?));
                     }
                     // Scalar value on a multivalued enum slot: map then wrap in a
                     // one-element list (mirror of Python single→multivalued).
-                    let mapped = self.transform_enum(v, std::slice::from_ref(enum_name), v)?;
+                    let mapped = self.map_enum_value(v, enum_name)?;
                     return Ok(Value::List(vec![mapped]));
                 }
-                self.transform_enum(v, std::slice::from_ref(enum_name), v)
+                self.map_enum_value(v, enum_name)
             }
             RangeKind::Class(class_name) => {
                 let target_range_str = target_range.map(|s| s.to_string());
@@ -2333,16 +2333,15 @@ impl<'s> ObjectTransformer<'s> {
     /// Iterates `slot_deriv.class_derivations` (the v0.6.0 slot-level nested
     /// object map, one level flatter than the removed `object_derivations`) and
     /// recursively transforms `source_map` using each `ClassDerivation`.  The
-    /// resulting objects are collected into a `Vec`.
+    /// resulting objects are collected into a `Vec`; an object whose slots all
+    /// come out null (the minted id aside) is omitted.
     ///
     /// Cardinality is decided from the **target slot** (not the source), as
     /// Python does via `target_schemaview.induced_slot(slot, target_class)`:
-    /// - If `target_schema` is available and the induced target slot is
-    ///   `multivalued`, the whole `Vec` is returned as `Value::List`.
-    /// - If exactly one object was produced and the target slot is
-    ///   single-valued (or no target schema is loaded), the single object is
-    ///   returned directly.
-    /// - An empty `Vec` always yields `Value::Null`.
+    /// - If the induced target slot is `multivalued`, the whole `Vec` is
+    ///   returned as `Value::List` (`[]` when no object is left).
+    /// - Otherwise the first object is returned, or `Value::Null` when none is
+    ///   left.
     ///
     /// After collecting, `reshape_collection` is **not** called here — the
     /// `dictionary_key` / `cast_collection_as` path in `derive_slot` only
@@ -2396,10 +2395,8 @@ impl<'s> ObjectTransformer<'s> {
                     // (singular) or `[]` (multivalued) below — the target key is
                     // RETAINED with a null/empty value. This keeps "no joined row exists"
                     // distinguishable from "a joined row exists whose field is null",
-                    // and only `hide` ever removes the key. This supersedes the earlier
-                    // local #266 behaviour, which over-broadly dropped ANY hollow nested
-                    // object (including genuine same-table `{slot: null}` objects that
-                    // upstream retains).
+                    // and only `hide` ever removes the key. (A matched row whose object
+                    // derives only nulls is dropped further down, as of 09667a6.)
                     let Some(joined_row) =
                         self.resolve_joined_row(nested_source, source_map, merged, class_deriv)?
                     else {
@@ -2433,6 +2430,24 @@ impl<'s> ObjectTransformer<'s> {
                     merged,
                 )?,
             };
+            // PARITY: object_transformer.py::_derive_nested_objects (09667a6, refs #264).
+            // An object whose slots all come out None has no content and is left out,
+            // as None slot values are. A minted id hashes that content rather than
+            // adding to it, so the `_underived_identifier` key does not count. Like
+            // upstream's `all(...)` over an empty dict, an object with no keys at all is
+            // left out too.
+            if let Value::Map(m) = &nested {
+                let minted_id = self.underived_identifier(cls_deriv);
+                if m.iter()
+                    .all(|(k, v)| Some(k.as_str()) == minted_id || v.is_null())
+                {
+                    log::debug!(
+                        "Nested {:?} derived no values; emitting no object",
+                        cls_deriv.name
+                    );
+                    continue;
+                }
+            }
             derived.push(nested);
         }
 
@@ -2701,6 +2716,51 @@ impl<'s> ObjectTransformer<'s> {
         })
     }
 
+    /// The enum derivations that read values of `source_enum_name`: those whose
+    /// `populated_from` names it, or, with no `populated_from`, that are named
+    /// after it. Mirrors `Transformer._enum_derivations_from` (5123a84).
+    fn enum_derivations_from<'a>(
+        &'a self,
+        source_enum_name: &str,
+    ) -> impl Iterator<Item = (&'a String, &'a EnumDerivation)> {
+        self.spec
+            .enum_derivations
+            .iter()
+            .flatten()
+            .filter(move |(_, ed)| {
+                ed.populated_from.as_deref() == Some(source_enum_name)
+                    || (ed.populated_from.is_none() && ed.name == source_enum_name)
+            })
+    }
+
+    /// Mirror of `Transformer._get_enum_derivation`: the one enum derivation from
+    /// `source_enum_name`.
+    ///
+    /// PARITY: upstream raises `ValueError` unless exactly one derivation matches:
+    /// none and several both fail.
+    fn get_enum_derivation(&self, source_enum_name: &str) -> Result<(&str, &EnumDerivation)> {
+        let mut matching = self.enum_derivations_from(source_enum_name);
+        match (matching.next(), matching.next()) {
+            (Some((key, ed)), None) => Ok((key.as_str(), ed)),
+            _ => Err(Error::Python(format!(
+                "ValueError: Could not find what to derive from a source {source_enum_name}"
+            ))),
+        }
+    }
+
+    /// `map_object` on a value of the source enum `enum_name`.
+    ///
+    /// PARITY: object_transformer.py::map_object (5123a84, #391): with no enum
+    /// derivation from the enum, the value is returned unchanged, to be resolved
+    /// against the target enum like any string; otherwise it goes through
+    /// `transform_enum`.
+    fn map_enum_value(&self, v: &Value, enum_name: &str) -> Result<Value> {
+        if self.enum_derivations_from(enum_name).next().is_none() {
+            return Ok(v.clone());
+        }
+        self.transform_enum(v, std::slice::from_ref(&enum_name.to_owned()), v)
+    }
+
     /// Mirror of Python `transform_enum`.
     ///
     /// Iterates `enum_names` in order, tries expr evaluation then PV mappings,
@@ -2711,27 +2771,8 @@ impl<'s> ObjectTransformer<'s> {
         enum_names: &[String],
         source_obj: &Value,
     ) -> Result<Value> {
-        let no_enum_derivations = IndexMap::new();
-        let enum_derivations = self
-            .spec
-            .enum_derivations
-            .as_ref()
-            .unwrap_or(&no_enum_derivations);
-
         for enum_name in enum_names {
-            // PARITY: `Transformer._get_enum_derivation` raises `ValueError` unless exactly
-            // one derivation matches (`populated_from == enum` or, with no
-            // `populated_from`, `name == enum`): none and several both fail.
-            let mut matching = enum_derivations.iter().filter(|(_, ed)| {
-                ed.populated_from.as_deref() == Some(enum_name)
-                    || (ed.populated_from.is_none() && ed.name == *enum_name)
-            });
-            let enum_deriv = matching.next().filter(|_| matching.next().is_none());
-            let Some((ed_key, ed)) = enum_deriv.map(|(k, e)| (k.as_str(), e)) else {
-                return Err(Error::Python(format!(
-                    "ValueError: Could not find what to derive from a source {enum_name}"
-                )));
-            };
+            let (ed_key, ed) = self.get_enum_derivation(enum_name)?;
 
             // Expr evaluation on the enum level (rare).
             if let Some(expr) = &ed.expr {
@@ -6122,14 +6163,12 @@ mod tests {
         }
     }
 
-    /// #217 (a19eb095): a same-table nested object whose inner slot is null is
-    /// RETAINED with the key present (value `{first: null}`), and a scalar null
-    /// slot also stays present. Upstream `_derive_nested_objects` only collapses
-    /// a nested slot to null/[] on a genuine cross-table *join* miss; a
-    /// same-table hollow object is kept. (This corrects the earlier local #266
-    /// behaviour that omitted any hollow nested object.)
+    /// 09667a6 (refs #264): a same-table nested object whose slots all come out
+    /// null is omitted, so its single-valued slot is null; the key stays present
+    /// (only `hide` removes one), as does a scalar null slot. Before 09667a6
+    /// upstream kept the hollow `{first: null}` object (#217, a19eb095).
     #[test]
-    fn same_table_hollow_nested_object_is_retained() {
+    fn same_table_hollow_nested_object_is_omitted() {
         let schema = make_person_schema();
         let mut inner_slots: IndexMap<String, SlotDerivation> = IndexMap::new();
         inner_slots.insert(
@@ -6200,23 +6239,19 @@ mod tests {
         };
         let engine = ObjectTransformer::new(spec, Some(&schema), Some(&target));
 
-        // No `first` in source, same-table nested (no join miss) → nested object
-        // is retained as `{first: null}`; scalar null slot also stays present.
+        // No `first` in source, same-table nested (no join miss) → the nested
+        // object `{first: null}` is omitted, so `full_name` is null; the scalar
+        // null slot also stays present.
         let r = engine
             .map_object(&Value::Map(IndexMap::new()), Some("Person"))
             .unwrap();
         match &r {
             Value::Map(o) => {
-                assert!(
-                    o.contains_key("full_name"),
-                    "same-table hollow nested object retained"
+                assert_eq!(
+                    o.get("full_name"),
+                    Some(&Value::Null),
+                    "hollow nested object omitted, key kept"
                 );
-                match &o["full_name"] {
-                    Value::Map(inner) => {
-                        assert_eq!(inner["first"], Value::Null, "inner null slot stays present")
-                    }
-                    other => panic!("expected Map for full_name, got {other:?}"),
-                }
                 assert_eq!(o["note"], Value::Null, "scalar null stays present");
             }
             _ => panic!("expected map"),
@@ -7423,22 +7458,22 @@ mod upstream_errors {
         assert!(ok.is_ok(), "{ok:?}");
     }
 
-    /// `_get_enum_derivation` raises `ValueError` unless exactly one derivation matches
-    /// (corpus cases 7d8cef5c3417, 8ee12775ef35).
+    /// An enum-ranged source value with no enum derivation passes through `map_object`
+    /// unchanged (5123a84, #391; before it, corpus cases 7d8cef5c3417, 8ee12775ef35
+    /// raised). With derivations, `_get_enum_derivation` raises `ValueError` unless
+    /// exactly one matches.
     #[test]
     fn enum_ranged_slot_needs_exactly_one_enum_derivation() {
         let source = schema("Person", &["id"], true);
         let input = row(&[("id", "p1"), ("status", "A")]);
-        let msg = err_text(
+        let out = ObjectTransformer::new(
             spec_with("Agent", "Person", vec![pf("out", "status")]),
-            &source,
+            Some(&source),
             None,
-            &input,
-        );
-        assert!(
-            msg.contains("Could not find what to derive from a source Status"),
-            "{msg}"
-        );
+        )
+        .map_object(&input, Some("Person"))
+        .unwrap();
+        assert_eq!(out, row(&[("out", "A")]));
 
         let derivation = |name: &str| EnumDerivation {
             name: name.into(),

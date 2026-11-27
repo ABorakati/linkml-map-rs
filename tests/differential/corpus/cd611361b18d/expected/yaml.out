@@ -3,8 +3,5 @@ inner:
   out_a: self
 ---
 id: p2
-inner: {}
 ---
 id: p3
-inner: {}
----

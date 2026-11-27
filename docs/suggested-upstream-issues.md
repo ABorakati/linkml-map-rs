@@ -1,11 +1,12 @@
 # Suggested upstream issues (not filed)
 
-Upstream bugs and quirks found while porting `linkml/linkml-map` `v0.6.0-rc1` to Rust and fuzzing the two
-implementations against each other (October 2026). None has been filed. The Rust port reproduces each behaviour
+Upstream bugs and quirks found while porting `linkml/linkml-map` `v0.6.0-rc1` (October 2026) and `v0.6.0`
+(November 2026) to Rust and fuzzing the two implementations against each other. None has been filed. The Rust port reproduces each behaviour
 (marked `// PARITY:` in the code) unless a note says otherwise, so fixing one upstream means changing the port
 when we re-pin.
 
-The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md) has the porting context.
+The pin-drift reviews [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md) and
+[`upstream-sync-2026-11-26.md`](upstream-sync-2026-11-26.md) have the porting context.
 
 ## Security-relevant
 
@@ -102,6 +103,13 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
 - `induce_missing_values` raises eagerly: a bare slot derivation (no `populated_from`/`expr`/`value`/`range`) the source
   class lacks fails `derived_specification` with a bare `ValueError: No such slot ...` before any row, for an empty
   table, for an `is_a` template no block reads, and outside the `TransformationError` wrapper that names the derivation.
+- `_derive_nested_objects` (09667a6, `v0.6.0`) drops a nested object when `all(v is None for v in obj.values())`, and
+  `all()` over an empty dict is `True`. A nested class derivation that has no slot derivations, or only
+  `hide: true` ones, therefore silently produces nothing (a single-valued slot gets `None`, a multivalued one `[]`)
+  instead of `{}` or a message. Nothing tells the author that the derivation was dropped. Test the
+  dict for emptiness separately (or warn) so the intent of 09667a6 ("slots all come out `None`") does not also cover
+  "no visible slots". Found while porting 09667a6; reproduced against `v0.6.0`
+  (`crates/linkml-map-schemaview/tests/empty_nested_objects.rs::an_object_with_no_slots_or_only_hidden_ones_is_empty`).
 
 ## Foreign keys (`ObjectIndex`, `ProxyObject`)
 
@@ -144,9 +152,11 @@ The pin-drift review [`upstream-sync-2026-10-27.md`](upstream-sync-2026-10-27.md
   `_collect_joins` prints an unresolved key as `None` where the per-row path raises a different `ValueError`.
 - A table named after a SQL reserved word (for example `Order`) breaks the per-row `LookupIndex`, whose
   `CREATE TABLE` does not quote the name.
-- `_perform_join_resolution` tests `field_path in class_induced_slots(joined_class)`, comparing a string with
+- ~~`_perform_join_resolution` tests `field_path in class_induced_slots(joined_class)`, comparing a string with
   `SlotDefinition` objects, so it is always false and joined values are never range-, cardinality-, datatype- or
-  enum-coerced.
+  enum-coerced.~~ **Resolved upstream** by #403 (closes #402, `0617b59`, in `v0.6.0`): the test is now
+  `field_path in class_slots(joined_class)`, so joined values are coerced to the target like any other
+  `populated_from`. Ported; see [`upstream-sync-2026-11-26.md`](upstream-sync-2026-11-26.md).
 - `_resolve_joined_row` queries `lookup_index.lookup_row(table_name=<join alias>)`, so a join's `class_named` has no
   effect on which table is read: `transform_spec` registers `if join_name in data_loader` and the join engine reads
   `data_loader` under the join name too, so `joins: {org: {class_named: Org, ...}}` reads `org.tsv` and, with no

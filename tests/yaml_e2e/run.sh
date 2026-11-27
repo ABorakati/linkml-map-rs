@@ -2,7 +2,7 @@
 # End-to-end YAML parity: upstream `linkml-map` (PyYAML) vs the Rust CLI.
 #
 # Runs the same map-data / derive-schema invocations through both and requires
-# byte-identical YAML. Needs an environment with upstream linkml-map v0.6.0-rc1:
+# byte-identical YAML. Needs an environment with upstream linkml-map v0.6.0:
 #
 #   UPSTREAM=/path/to/venv/bin/linkml-map RUST=/path/to/linkml-tr-rs ./run.sh
 set -euo pipefail
@@ -33,7 +33,7 @@ check() { # name, upstream-output, rust-output
 "$RUST" map-data -T spec.yaml -s schema.yaml --source-type Record -o "$OUT/rs_obj.yaml" data.yaml
 check "map-data data.yaml -> yaml (dump_output)" "$OUT/up_obj.yaml" "$OUT/rs_obj.yaml"
 
-# Streamed TSV rows, YAML out: upstream `YAMLStreamWriter` (sorted keys, `---`).
+# Streamed TSV rows, YAML out: upstream `YAMLStreamWriter` (sorted keys, `---` between documents, none trailing).
 "$UPSTREAM" map-data -T spec.yaml -s schema.yaml --source-type Record -f yaml -o "$OUT/up_stream.yaml" data.tsv
 "$RUST" map-data -T spec.yaml -s schema.yaml --source-type Record -f yaml -o "$OUT/rs_stream.yaml" data.tsv
 check "map-data data.tsv -> yaml (YAMLStreamWriter)" "$OUT/up_stream.yaml" "$OUT/rs_stream.yaml"

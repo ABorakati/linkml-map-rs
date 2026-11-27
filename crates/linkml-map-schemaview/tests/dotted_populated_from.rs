@@ -1,10 +1,11 @@
 //! A dotted `populated_from` (`Class.slot`, `slot.sub`, `fk_slot.slot`) is coerced
 //! to the target slot like any other `populated_from`: upstream
 //! `ObjectTransformer._derive_slot` coerces whenever the resolution hands back a
-//! source slot, and every dotted path but a join does.
+//! source slot, and every dotted path does (a join path since 0.6.0, 0617b59).
 //!
 //! The expected values were produced by upstream `linkml-map` v0.6.0-rc1 on the same
-//! schemas, specs and rows (`tests/differential/corpus/dotted_*` replays the CLI cases).
+//! schemas, specs and rows (`tests/differential/corpus/dotted_*` replays the CLI cases);
+//! the join-path values by v0.6.0.
 
 use linkml_map_core::{
     datamodel::{TransformationSpecification, normalise_spec_json},
@@ -40,6 +41,7 @@ classes:
       id: {identifier: true}
       name: {}
       size: {}
+      kind: {range: Kind}
   Person:
     attributes:
       id: {identifier: true}
@@ -379,8 +381,10 @@ class_derivations:
         "Org",
         &[map(vec![
             ("id", s("o1")),
+            ("name", s("Acme")),
             ("size", s("5")),
             ("kind", s("b")),
+            ("extra", s("7")),
         ])],
         "id",
     );
@@ -395,11 +399,19 @@ class_derivations:
 }
 
 #[test]
-fn join_path_is_not_coerced() {
-    // PARITY: upstream's `_perform_join_resolution` finds no source slot (its
-    // `field_path in class_induced_slots(..)` compares a string with slot objects),
-    // so a joined value is never coerced. The same joins, run through the upstream
-    // CLI (`corpus/*` `joinenum` case), leave the enum value `b` unmapped.
-    assert_eq!(derive_join("num", "size", "integer"), s("5"));
-    assert_eq!(derive_join("kind", "kind", "TKind"), s("b"));
+fn join_path_is_coerced_to_the_target() {
+    // upstream 0.6.0 (0617b59, #402): `_perform_join_resolution` hands back the
+    // joined class's slot (`field_path in class_slots(joined_class)`), so a joined
+    // value is coerced like any other: `Org.size` ('5') with `range: integer` -> 5,
+    // and the `Kind` value `b` goes through the `TKind` enum derivation -> `y`.
+    assert_eq!(derive_join("num", "size", "integer"), Value::Int(5));
+    assert_eq!(derive_join("text", "name", "string"), s("Acme"));
+    assert_eq!(derive_join("kind", "kind", "TKind"), s("y"));
+}
+
+#[test]
+fn join_path_to_a_column_the_joined_class_lacks_is_not_coerced() {
+    // `extra` is in the joined row but not a slot of `Org`: no source slot, so the
+    // value reaches `_derive_slot` as it is.
+    assert_eq!(derive_join("num", "extra", "integer"), s("7"));
 }

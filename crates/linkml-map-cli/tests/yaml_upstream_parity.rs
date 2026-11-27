@@ -1,6 +1,6 @@
 //! YAML written by the CLI is byte-identical to upstream's PyYAML output.
 //!
-//! `tests/yaml_e2e/expected/` holds what upstream linkml-map v0.6.0-rc1
+//! `tests/yaml_e2e/expected/` holds what upstream linkml-map v0.6.0
 //! (`linkml-map map-data ...`) wrote for the inputs next to it; regenerate and
 //! compare against a live install with `tests/yaml_e2e/run.sh`. The data
 //! deliberately mixes strings PyYAML must quote (`yes`, `~`, `2024-01-01`,
@@ -47,7 +47,8 @@ fn single_object_yaml_matches_upstream() {
     assert_eq!(run_map_data("data.yaml", &[]), expected("data.yaml"));
 }
 
-/// Streamed rows: upstream `YAMLStreamWriter` (sorted keys, `---` per record).
+/// Streamed rows: upstream `YAMLStreamWriter` (sorted keys, `---` between
+/// records and none after the last, upstream e201702).
 #[test]
 fn streamed_yaml_matches_upstream() {
     assert_eq!(

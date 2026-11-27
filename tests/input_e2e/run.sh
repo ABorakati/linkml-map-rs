@@ -5,7 +5,8 @@
 #   UPSTREAM=/path/to/venv/bin/linkml-map RUST=/path/to/linkml-tr-rs ./run.sh
 #   REGEN=1 UPSTREAM=... ./run.sh        # rewrite expected/ from upstream
 #
-# Needs upstream linkml-map v0.6.0-rc1. The upstream outputs are committed under
+# Needs upstream linkml-map v0.6.0 (re-record on Linux, not Windows: see
+# tests/differential/README.md). The upstream outputs are committed under
 # expected/ and replayed without Python by
 # crates/linkml-map-cli/tests/input_e2e.rs; this script compares a live install
 # with the Rust CLI and is how expected/ was made.

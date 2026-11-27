@@ -47,8 +47,9 @@ A real fix only lands here once it has landed upstream and we re-pin.
 
 ## Upstream reference
 
-- Pinned upstream commit: **`v0.6.0-rc1`** tag (commits up through `1323cc8`).
-- Latest pin-drift review: [`docs/upstream-sync-2026-10-27.md`](docs/upstream-sync-2026-10-27.md)
+- Pinned upstream commit: **`v0.6.0`** tag (commits up through `0617b59`).
+- Latest pin-drift review: [`docs/upstream-sync-2026-11-26.md`](docs/upstream-sync-2026-11-26.md)
+- The weekly `upstream-drift` workflow reads the pin from `tests/differential/UPSTREAM_PIN`; bump that file with the pin.
 
 ## Architecture
 

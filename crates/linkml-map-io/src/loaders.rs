@@ -341,9 +341,10 @@ async fn read_text(path: &Path) -> Result<String> {
 
 /// The documents of a YAML text as `yaml.safe_load` builds them (see
 /// [`crate::yaml_load`]). One document is the data itself; a multi-document
-/// stream (what `YamlStreamWriter` emits: one document per record, each
-/// followed by `---`) yields every document in turn, and the empty document
-/// after a trailing `---` is not a record.
+/// stream (what `YamlStreamWriter` emits: one document per record, separated
+/// by `---`) yields every document in turn, and the empty document after a
+/// trailing `---` (what the stream writer emitted before upstream e201702) is
+/// not a record.
 ///
 /// PARITY (extension): `yaml.safe_load` rejects a multi-document stream
 /// (`ComposerError: expected a single document`); reading one back is useful

@@ -412,6 +412,9 @@ class ObjectTransformer(Transformer):
                     return self.compress_uri(source_obj)
             return source_obj
         if source_type in sv.all_enums():
+            # With no enum derivation, the value is resolved against the target enum like any string.
+            if not self._enum_derivations_from(source_type):
+                return source_obj
             return self.transform_enum(source_obj, [source_type], source_obj)
 
         source_obj_typed = None
@@ -974,7 +977,7 @@ class ObjectTransformer(Transformer):
         joined_class = context.class_deriv.joins[table_name].class_named or table_name
         source_class_slot = None
         if joined_class in context.sv.all_classes():
-            if field_path in context.sv.class_induced_slots(joined_class):
+            if field_path in context.sv.class_slots(joined_class):
                 source_class_slot = context.sv.induced_slot(field_path, joined_class)
         return v, source_class_slot
 
@@ -1080,6 +1083,9 @@ class ObjectTransformer(Transformer):
         synthesized during normalization), this method resolves the joined row
         and merges it with the parent row before passing it to ``map_object``.
 
+        A nested object whose slots all come out None is omitted. With no objects
+        left, a single-valued slot is None and a multivalued slot is ``[]``.
+
         :param slot_derivation: The slot derivation that declares nested class_derivations.
         :param source_obj: The current (parent) source row.
         :param target_type: Target class name for cardinality decisions.
@@ -1145,6 +1151,12 @@ class ObjectTransformer(Transformer):
                 target_type=cls_derivation.name,
                 class_derivation=cls_derivation,
             )
+            # An object with every slot None has no content; leave it out as None slot values are.
+            # A minted id hashes that content rather than adding to it, so it doesn't count.
+            minted_id = self._underived_identifier(cls_derivation)
+            if isinstance(nested_result, dict) and all(v is None for k, v in nested_result.items() if k != minted_id):
+                logger.debug("Nested %r derived no values; emitting no object", cls_derivation.name)
+                continue
             derived_objs.append(nested_result)
 
         # If the slot is multivalued, we assign the whole list

@@ -305,7 +305,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: linkml/linkml-map
-        ref: v0.6.0-rc1
+        ref: v0.6.0
         path: upstream/linkml-map
 
     - name: Setup Python
@@ -364,7 +364,7 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   # Expression-level differential fuzzing against upstream linkml-map.
   #
-  # Self-contained: upstream v0.6.0-rc1 goes into its OWN venv (never the venv
+  # Self-contained: upstream v0.6.0 goes into its OWN venv (never the venv
   # that runs the wheel-compat job, which must stay upstream-free), and the Rust
   # side is the `expr_oracle` example. Three checks:
   #   1. corpus replay: tests/differential/expr/corpus/*.jsonl against the stored
@@ -392,7 +392,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: linkml/linkml-map
-        ref: v0.6.0-rc1
+        ref: v0.6.0
         path: upstream/linkml-map
 
     - name: Setup uv

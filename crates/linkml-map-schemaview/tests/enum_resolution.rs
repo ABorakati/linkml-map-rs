@@ -20,12 +20,18 @@ prefixes: {linkml: 'https://w3id.org/linkml/'}
 default_prefix: enum_source
 default_range: string
 imports: [linkml:types]
+enums:
+  SourceSexEnum:
+    permissible_values:
+      F:
+      M:
 classes:
   Person:
     attributes:
       id: {identifier: true}
       gender: {}
       genders: {multivalued: true}
+      sex_code: {range: SourceSexEnum}
 ";
 
 /// Target schema with a given `enums:` body and a single enum-ranged `sex`
@@ -53,6 +59,7 @@ classes:
       sex_literal: {{range: SexEnum}}
       sex_expr: {{range: SexEnum}}
       sexes: {{range: SexEnum, multivalued: true}}
+      sex_from_code: {{range: SexEnum}}
 "
     )
 }
@@ -164,6 +171,22 @@ fn multivalued_resolves_each_element() {
     );
 }
 
+// setup_source_enum_without_enum_derivation (upstream 5123a84, #391)
+#[test]
+fn source_enum_without_enum_derivation_resolves_like_a_string() {
+    // An enum-ranged source slot with no enum derivation resolves like a string source.
+    let out = run(
+        SEX_ENUM,
+        "      sex_from_code:
+        populated_from: sex_code
+",
+        false,
+        &person(vec![("sex_code", s("M"))]),
+    )
+    .unwrap();
+    assert_eq!(get(&out, "sex_from_code"), s("OMOP:8507"));
+}
+
 const SEX_SLOT: &str = "      sex:\n        value: \"unknown\"\n";
 
 #[test]
@@ -256,4 +279,63 @@ fn open_enums_have_no_index() {
         assert!(sv.all_enum_names().iter().any(|e| e == "Dynamic"));
         assert!(enum_index(&sv, "Dynamic").is_none(), "{enum_yaml}");
     }
+}
+
+/// `run` with `enum_derivations_yaml` (the body of `enum_derivations:`) in the spec.
+fn run_with_enum_derivations(
+    enum_derivations_yaml: &str,
+    slot_yaml: &str,
+    row: &Value,
+) -> Result<Value, String> {
+    let yaml = format!(
+        "id: enum-resolution\nenum_derivations:\n{enum_derivations_yaml}class_derivations:\n  Agent:\n    populated_from: Person\n    slot_derivations:\n      id:\n        populated_from: id\n{slot_yaml}"
+    );
+    let mut obj: serde_json::Value = serde_yaml::from_str(&yaml).unwrap();
+    normalise_spec_json(&mut obj);
+    let sp: TransformationSpecification = serde_json::from_value(obj).unwrap();
+    let source = SchemaViewProvider::from_yaml_str(SOURCE_SCHEMA).unwrap();
+    let target = SchemaViewProvider::from_yaml_str(&target_schema(SEX_ENUM)).unwrap();
+    ObjectTransformer::new(sp, Some(&source), Some(&target))
+        .map_object(row, Some("Person"))
+        .map_err(|e| e.to_string())
+}
+
+const SEX_FROM_CODE: &str = "      sex_from_code:\n        populated_from: sex_code\n";
+
+#[test]
+fn an_enum_derivation_from_another_enum_does_not_count() {
+    // `_enum_derivations_from` only counts derivations reading the source enum.
+    let out = run_with_enum_derivations(
+        "  SexEnum:\n    populated_from: OtherEnum\n    mirror_source: true\n",
+        SEX_FROM_CODE,
+        &person(vec![("sex_code", s("M"))]),
+    )
+    .unwrap();
+    assert_eq!(get(&out, "sex_from_code"), s("OMOP:8507"));
+}
+
+#[test]
+fn an_enum_derivation_from_the_source_enum_still_applies() {
+    let out = run_with_enum_derivations(
+        "  SexEnum:\n    populated_from: SourceSexEnum\n    permissible_value_derivations:\n      \"OMOP:8532\": {populated_from: F}\n",
+        SEX_FROM_CODE,
+        &person(vec![("sex_code", s("F"))]),
+    )
+    .unwrap();
+    assert_eq!(get(&out, "sex_from_code"), s("OMOP:8532"));
+}
+
+#[test]
+fn several_enum_derivations_from_the_source_enum_raise() {
+    // PARITY: `_get_enum_derivation` still raises unless exactly one matches.
+    let err = run_with_enum_derivations(
+        "  E1:\n    populated_from: SourceSexEnum\n    mirror_source: true\n  E2:\n    populated_from: SourceSexEnum\n    mirror_source: true\n",
+        SEX_FROM_CODE,
+        &person(vec![("sex_code", s("M"))]),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("Could not find what to derive from a source SourceSexEnum"),
+        "{err}"
+    );
 }

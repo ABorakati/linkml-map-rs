@@ -1,5 +1,4 @@
 id: p1
-inner: {}
 ---
 id: p2
 inner:
@@ -8,4 +7,3 @@ inner:
 id: p3
 ---
 id: p4
----

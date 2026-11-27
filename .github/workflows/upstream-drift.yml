@@ -1,0 +1,160 @@
+name: Upstream drift
+
+# Weekly check of the port against upstream Python `linkml-map`.
+#
+#   pinned  the version in tests/differential/UPSTREAM_PIN (the one place the pin
+#           is read from by this workflow). MUST pass: it proves the stored
+#           expectations (examples sweep allow-list, differential corpus) still
+#           describe the pinned upstream.
+#   latest  the newest release on PyPI.
+#   main    upstream's default branch.
+#
+# A failing `latest` or `main` leg is DRIFT, not a regression of this repo: upstream
+# changed behaviour since the pin. The job summary lists what moved (sweep cells
+# that diverge, corpus cases whose upstream output changed) so the next pin bump
+# can start from it. See docs/upstream-sync-*.md for how a bump is done.
+#
+# Each leg runs two checks (both must be clean for the leg to pass):
+#   1. the examples sweep with its allow-list gate (run.sh --examples --fail-on-diff);
+#   2. the corpus check (rerecord_corpus.py --check): upstream re-run over every
+#      tests/differential/corpus case, compared with the stored expected/ bytes.
+# Upstream is installed from its own checkout's frozen lock into its OWN venv
+# (never the PyO3 compat venv, see CLAUDE.md).
+
+on:
+  schedule:
+    - cron: '43 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: drift (${{ matrix.upstream }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, latest, main]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Resolve the upstream ref
+      id: ref
+      run: |
+        case "${{ matrix.upstream }}" in
+          pinned) ref="$(tr -d '[:space:]' < tests/differential/UPSTREAM_PIN)" ;;
+          latest)
+            ver="$(curl -fsSL https://pypi.org/pypi/linkml-map/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')"
+            ref="v${ver}" ;;
+          main) ref=main ;;
+        esac
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+        echo "Upstream ref for ${{ matrix.upstream }}: $ref"
+
+    - name: Checkout upstream linkml-map
+      uses: actions/checkout@v4
+      with:
+        repository: linkml/linkml-map
+        ref: ${{ steps.ref.outputs.ref }}
+        path: upstream/linkml-map
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Install upstream linkml-map (frozen lock) + hypothesis into its own venv
+      working-directory: upstream/linkml-map
+      run: |
+        # `main` can have a lock that is out of date with its pyproject; fall back to a fresh resolve there.
+        uv sync --frozen || uv sync
+        uv pip install --python .venv/bin/python 'hypothesis==6.170.0'
+        .venv/bin/python -c "import linkml_map; print('upstream linkml-map', getattr(linkml_map, '__version__', '?'))"
+
+    - name: Setup Rust
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: Build the Rust CLI
+      run: cargo build --release -p linkml-map-cli
+
+    - name: Examples sweep (allow-list gate)
+      id: sweep
+      continue-on-error: true
+      env:
+        UPSTREAM_PY: ${{ github.workspace }}/upstream/linkml-map/.venv/bin/python
+        UPSTREAM_DIR: ${{ github.workspace }}/upstream/linkml-map
+        LINKML_TR_RS: ${{ github.workspace }}/target/release/linkml-tr-rs
+      run: |
+        set -o pipefail
+        tests/differential/run.sh --examples --fail-on-diff --report "$RUNNER_TEMP/examples_report.md" 2>&1 | tee "$RUNNER_TEMP/sweep.log"
+
+    - name: Corpus check (upstream re-run against stored expectations)
+      id: corpus
+      continue-on-error: true
+      env:
+        LINKML_TR_RS: ${{ github.workspace }}/target/release/linkml-tr-rs
+      run: |
+        set -o pipefail
+        upstream/linkml-map/.venv/bin/python tests/differential/rerecord_corpus.py --check \
+          --json "$RUNNER_TEMP/corpus_drift.json" 2>&1 | tee "$RUNNER_TEMP/corpus.log"
+
+    - name: Job summary
+      if: always()
+      run: |
+        {
+          echo "## Upstream drift: ${{ matrix.upstream }} (\`${{ steps.ref.outputs.ref }}\`)"
+          echo
+          echo "| check | result |"
+          echo "|---|---|"
+          echo "| examples sweep | ${{ steps.sweep.outcome }} |"
+          echo "| corpus check | ${{ steps.corpus.outcome }} |"
+          echo
+          if [ "${{ steps.sweep.outcome }}" != "success" ]; then
+            echo "### Examples sweep: cells that diverge and are not on the allow-list"
+            echo
+            echo '```'
+            # run.sh prints the new divergences before the non-zero exit; keep the tail of the log
+            tail -n 80 "$RUNNER_TEMP/sweep.log" 2>/dev/null || true
+            echo '```'
+            echo
+          fi
+          if [ "${{ steps.corpus.outcome }}" != "success" ]; then
+            echo "### Corpus: expectations that upstream no longer produces"
+            echo
+            echo '```'
+            head -n 200 "$RUNNER_TEMP/corpus.log" 2>/dev/null || true
+            echo '```'
+            echo
+          fi
+          if [ "${{ matrix.upstream }}" != "pinned" ]; then
+            echo "A failure here is **drift** in upstream, not a regression in this repository."
+          else
+            echo "The pinned leg must pass: a failure means the stored expectations no longer match the pinned upstream."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Fail the leg when a check failed
+      if: always() && (steps.sweep.outcome != 'success' || steps.corpus.outcome != 'success')
+      run: |
+        echo "::error::upstream ${{ matrix.upstream }} (${{ steps.ref.outputs.ref }}): sweep=${{ steps.sweep.outcome }} corpus=${{ steps.corpus.outcome }}"
+        exit 1
+
+    - name: Upload reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: upstream-drift-${{ matrix.upstream }}
+        path: |
+          ${{ runner.temp }}/examples_report.md
+          ${{ runner.temp }}/sweep.log
+          ${{ runner.temp }}/corpus.log
+          ${{ runner.temp }}/corpus_drift.json
+        if-no-files-found: ignore

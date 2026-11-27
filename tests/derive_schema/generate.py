@@ -2,7 +2,7 @@
 """Regenerate `expected/*.yaml`, the replay corpus for `derive-schema`.
 
 For every (specification, source schema) pair listed in `cases.json` this runs
-upstream `linkml-map derive-schema` (v0.6.0-rc1) and stores its stdout.
+upstream `linkml-map derive-schema` (v0.6.0) and stores its stdout.
 `crates/linkml-map-cli/tests/derive_schema_upstream_parity.rs` replays the same
 pairs through `linkml-tr-rs derive-schema` and asserts byte equality.
 

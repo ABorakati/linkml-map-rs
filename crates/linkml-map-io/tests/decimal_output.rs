@@ -97,10 +97,11 @@ async fn yaml_uses_fixed_plain_scalars() {
     assert!(text.contains("- -3.25\n"), "{text}");
     assert!(!text.contains('E'), "{text}");
     // Plain scalars: YAML reads them back as numbers.
-    // The stream is one document per record (`---` after each).
+    // The stream is one document per record (`---` between them, none after the
+    // last: upstream e201702).
+    assert!(!text.ends_with("---\n"), "{text}");
     let docs: Vec<serde_yaml_ng::Value> = text
         .split("---\n")
-        .filter(|d| !d.is_empty())
         .map(|d| serde_yaml_ng::from_str(d).unwrap())
         .collect();
     assert_eq!(docs.len(), 2, "{text}");
@@ -133,7 +134,7 @@ async fn single_object_yaml_matches_upstream_doctest() {
         vec![map(vec![("v", dec("52.30")), ("n", dec("52"))])],
     )
     .await;
-    assert_eq!(text, "n: 52\nv: 52.30\n---\n");
+    assert_eq!(text, "n: 52\nv: 52.30\n");
 }
 
 #[tokio::test]

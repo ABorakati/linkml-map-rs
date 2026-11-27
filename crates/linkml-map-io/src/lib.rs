@@ -508,7 +508,8 @@ mod tests {
             .unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text, "id: P:1\n---\nid: P:2\n---\n");
+        // `---` separates documents, with none after the last (upstream e201702).
+        assert_eq!(text, "id: P:1\n---\nid: P:2\n");
         let loaded = load_all(&path, Format::Yaml).await.unwrap();
         assert_eq!(loaded, original, "YAML stream round-trip mismatch");
     }

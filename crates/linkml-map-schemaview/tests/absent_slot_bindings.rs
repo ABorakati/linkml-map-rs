@@ -246,7 +246,9 @@ fn nested_class_derivations_use_their_own_source_class() {
                     "id": {"populated_from": "id"},
                     "inner": {"class_derivations": {"Inner": {
                         "populated_from": "Person",
-                        "slot_derivations": {"out": {"expr": "{age} + 1"}}
+                        // `tag` keeps the object: one whose slots are all None is
+                        // omitted (09667a6).
+                        "slot_derivations": {"out": {"expr": "{age} + 1"}, "tag": {"value": "t"}}
                     }}}
                 }
             }
@@ -266,6 +268,7 @@ classes:
   Inner:
     attributes:
       out: {range: integer}
+      tag: {}
   Agent:
     attributes:
       id: {identifier: true}

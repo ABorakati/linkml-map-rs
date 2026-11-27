@@ -1,6 +1,6 @@
 //! Input handling is byte-identical to upstream's.
 //!
-//! `tests/input_e2e/expected/` holds what upstream linkml-map v0.6.0-rc1
+//! `tests/input_e2e/expected/` holds what upstream linkml-map v0.6.0
 //! (`linkml-map map-data -f <format> ...`) wrote for every file in
 //! `tests/input_e2e/cases/`, in each output format; this replays the same
 //! invocations through the Rust CLI and requires identical bytes. Regenerate

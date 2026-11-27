@@ -10,15 +10,16 @@ to Rust under the "mirror upstream Python" doctrine.
 | Field          | Value                                                        |
 |----------------|--------------------------------------------------------------|
 | Upstream repo  | https://github.com/linkml/linkml-map                        |
-| Pinned commit  | `v0.6.0-rc1` tag (`1323cc8`)                                |
-| Fetch date     | 2026-06-24 (initial); 2026-07-07; 2026-07-25 (pin bump to `v0.5.3`); 2026-10-27 (pin bump to `v0.6.0-rc1`) |
+| Pinned commit  | `v0.6.0` tag (`0617b59`)                                    |
+| Fetch date     | 2026-06-24 (initial); 2026-07-07; 2026-07-25 (pin bump to `v0.5.3`); 2026-10-27 (pin bump to `v0.6.0-rc1`); 2026-11-26 (pin bump to `v0.6.0`) |
 
-Pin-drift history: see [`docs/upstream-sync-2026-10-27.md`](../../docs/upstream-sync-2026-10-27.md).
+Pin-drift history: see [`docs/upstream-sync-2026-11-26.md`](../../docs/upstream-sync-2026-11-26.md)
+(latest) and [`docs/upstream-sync-2026-10-27.md`](../../docs/upstream-sync-2026-10-27.md).
 
 ## Raw URL pattern
 
 ```
-https://raw.githubusercontent.com/linkml/linkml-map/1323cc8b73311c4774abac7337748d212ab76a32/src/linkml_map/<path>
+https://raw.githubusercontent.com/linkml/linkml-map/0617b5931875b13680c9c6779a2e33335b601aaf/src/linkml_map/<path>
 ```
 
 ## License
@@ -65,6 +66,14 @@ other twelve files were re-fetched and now match `1323cc8` byte for byte.
 `utils/expression_locations.py` were first vendored in the 2026-07-07 bump; see
 [`docs/upstream-sync-2026-07-07.md`](../../docs/upstream-sync-2026-07-07.md).
 
+### Re-fetched at the 2026-11-26 pin bump to `v0.6.0`
+
+All twenty files were compared with `0617b59`; three changed and were replaced:
+`transformer/object_transformer.py` (`09667a6` nested objects, `5123a84` enum
+pass-through, `0617b59` `class_slots` membership), `transformer/transformer.py`
+(`5123a84`) and `writers/output_streams.py` (`e201702` YAML document separators).
+The other seventeen match byte for byte. No file was added.
+
 ### Discovery note — inverter path
 
 The inverter module was discovered by querying the GitHub API tree at the pinned
@@ -74,13 +83,13 @@ not `transformer/`). The Rust port is in
 
 ### Files not present at pinned commit
 
-All twenty files in the table above exist at `1323cc8`. The only deliberate gaps
+All twenty files in the table above exist at `0617b59`. The only deliberate gaps
 are upstream modules that are **not vendored**, although some are mirrored by the
 Rust port: `validator.py`, `cli/cli.py`, `inference/inference.py`,
 `loaders/data_loaders.py`, `spec_scan.py`, `utils/spec_merge.py`,
 `utils/multi_file_transformer.py`, `session.py`, `transformer/join_engine.py`,
 `transformer/duckdb_transformer.py` and the `compiler/` package. Read them from an
-upstream checkout at `1323cc8` when porting.
+upstream checkout at `0617b59` when porting.
 
 ## Do NOT
 

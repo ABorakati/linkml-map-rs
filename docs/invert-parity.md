@@ -1,6 +1,6 @@
 # `invert` parity with upstream (2026-10-28)
 
-`linkml-tr-rs invert` writes byte-identical YAML to upstream `linkml-map invert` (v0.6.0-rc1), and fails
+`linkml-tr-rs invert` writes byte-identical YAML to upstream `linkml-map invert` (v0.6.0), and fails
 where upstream fails (exit status 1; the exception text for `NonInvertibleSpecificationError`,
 `AttributeError` and `ValueError` is reproduced on stderr).
 

@@ -523,13 +523,14 @@ fn null_slot_config(output: &str, output_format: &str) -> (MapDataConfig, tempfi
 }
 
 /// Streaming output drops null slots in JSON, JSONL and YAML, and writes stream YAML
-/// as a `---`-terminated document.  Port of upstream `test_writers_drop_null_slots`.
+/// as one document per record with no trailing `---` (upstream e201702).  Port of
+/// upstream `test_writers_drop_null_slots`.
 #[tokio::test]
 async fn test_stream_outputs_drop_null_slots() {
     for (file, format, want) in [
         ("out.jsonl", "jsonl", "{\"id\": \"P:2\"}\n"),
         ("out.json", "json", "[\n{\n  \"id\": \"P:2\"\n}\n]\n"),
-        ("out.yaml", "yaml", "id: P:2\n---\n"),
+        ("out.yaml", "yaml", "id: P:2\n"),
     ] {
         let (cfg, tmp) = null_slot_config(file, format);
         run_map_data_config(cfg).await.expect("map-data failed");

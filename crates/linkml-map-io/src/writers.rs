@@ -106,7 +106,7 @@ pub fn make_stream_writer(
     Ok(match format {
         Format::Json => Box::new(JsonStreamWriter::new()),
         Format::Jsonl => Box::new(JsonlStreamWriter),
-        Format::Yaml => Box::new(YamlStreamWriter),
+        Format::Yaml => Box::new(YamlStreamWriter::new()),
         Format::Tsv => Box::new(TabularStreamWriter::new('\t')),
         Format::Csv => Box::new(TabularStreamWriter::new(',')),
         // `table_name` only matters for DuckDB output; every other format ignores it.
@@ -213,20 +213,47 @@ pub fn jsonl_line(obj: &Value) -> Result<String, String> {
 // ─── YAML ────────────────────────────────────────────────────────────────────
 
 /// Mirror of `YAMLStreamWriter` without `key_name` (the CLI never sets one):
-/// each object is its own YAML document, followed by `---\n`.
-#[derive(Debug, Default)]
-pub struct YamlStreamWriter;
+/// each object is its own YAML document, with `---\n` *between* documents and
+/// none after the last.
+#[derive(Debug)]
+pub struct YamlStreamWriter {
+    /// Upstream `self._first_chunk`: no document has been written yet by this
+    /// writer instance.  Per writer, so it spans every chunk of the stream.
+    first_chunk: bool,
+}
+
+impl YamlStreamWriter {
+    /// A writer that has not emitted a document yet.
+    pub fn new() -> Self {
+        Self { first_chunk: true }
+    }
+}
+
+impl Default for YamlStreamWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl StreamWriter for YamlStreamWriter {
     fn write_chunk(&mut self, chunk: &[Value]) -> Result<String> {
         let mut out = String::new();
         for obj in chunk {
-            // PARITY: output_streams.py::YAMLStreamWriter.write_chunk —
-            // `dump_yaml(_strip_nulls(obj))`; `dump_yaml` is `yaml.dump` with its
-            // default `sort_keys=True`, so stream YAML is key-sorted (unlike
-            // `dump_output`, which passes `sort_keys=False`).
+            // PARITY: output_streams.py::YAMLStreamWriter.write_chunk (upstream
+            // e201702, "Separate YAML output documents instead of ending each with
+            // ---", linkml-map#400) — `---\n` is yielded *before* every document but
+            // the writer's first (`if not self._first_chunk`), so the stream has no
+            // trailing separator.  `_first_chunk` is per writer instance, so "first"
+            // is first in the whole stream, not per chunk; an empty chunk changes
+            // nothing (upstream returns early on `not chunk`, this loop is empty).
+            if !self.first_chunk {
+                out.push_str("---\n");
+            }
+            // PARITY: `dump_yaml(_strip_nulls(obj))`; `dump_yaml` is `yaml.dump`
+            // with its default `sort_keys=True`, so stream YAML is key-sorted
+            // (unlike `dump_output`, which passes `sort_keys=False`).
             dump_yaml_into(&mut out, &strip_nulls(obj), true);
-            out.push_str("---\n");
+            self.first_chunk = false;
         }
         Ok(out)
     }
@@ -992,8 +1019,7 @@ mod tests {
     #[tokio::test]
     async fn yaml_stream_drops_null_slots() {
         let text = render(Format::Yaml, &WriteOptions::default(), vec![null_row()]).await;
-        let doc: serde_json::Value =
-            serde_yaml_ng::from_str(text.trim_end_matches("---\n")).unwrap();
+        let doc: serde_json::Value = serde_yaml_ng::from_str(&text).unwrap();
         assert_eq!(Value::from(&doc), stripped_row());
     }
 
@@ -1040,7 +1066,8 @@ mod tests {
         );
     }
 
-    /// Upstream stream YAML: multi-document, `---` after each, keys sorted.
+    /// Upstream stream YAML: multi-document, `---` between documents (none after
+    /// the last, upstream e201702), keys sorted.
     #[tokio::test]
     async fn yaml_stream_layout_is_sorted_multi_document() {
         let rows = vec![
@@ -1048,11 +1075,51 @@ mod tests {
             v(r#"{"id": "b"}"#),
         ];
         let text = render(Format::Yaml, &WriteOptions::default(), rows).await;
-        assert_eq!(text, "age: 3\nid: a\nn:\n  b: 2\n  z: 1\n---\nid: b\n---\n");
+        assert_eq!(text, "age: 3\nid: a\nn:\n  b: 2\n  z: 1\n---\nid: b\n");
         assert_eq!(
             render(Format::Yaml, &WriteOptions::default(), vec![]).await,
             ""
         );
+        assert_eq!(
+            render(Format::Yaml, &WriteOptions::default(), vec![v(r#"{"id": "a"}"#)]).await,
+            "id: a\n"
+        );
+    }
+
+    /// Upstream's SAMPLE_DATA (`tests/test_writers/test_output_streams.py`).
+    fn sample_data() -> Vec<Value> {
+        vec![
+            v(r#"{"id": "P:001", "name": "Alice", "age": 30}"#),
+            v(r#"{"id": "P:002", "name": "Bob", "age": 25}"#),
+            v(r#"{"id": "P:003", "name": "Charlie", "age": 35}"#),
+        ]
+    }
+
+    /// Port of upstream `test_yaml_stream_writer_separates_documents_without_an_empty_one`
+    /// (e201702, linkml-map#400), both parametrisations: one chunk, and an empty chunk
+    /// followed by chunks split after the first record.  Each record is one YAML
+    /// document, with no empty document after the last.
+    #[test]
+    fn yaml_stream_writer_separates_documents_without_an_empty_one() {
+        let data = sample_data();
+        let one_chunk = vec![data.clone()];
+        let chunked = vec![vec![], data[..1].to_vec(), data[1..].to_vec()];
+        for (id, chunks) in [("one-chunk", one_chunk), ("chunked", chunked)] {
+            let mut writer = YamlStreamWriter::new();
+            let mut result = String::new();
+            for chunk in &chunks {
+                result.push_str(&writer.write_chunk(chunk).unwrap());
+            }
+            result.push_str(&writer.finalize().unwrap());
+            let loaded = crate::yaml_load::safe_load_all(&result).unwrap();
+            let as_json = |vs: &[Value]| -> Vec<serde_json::Value> {
+                vs.iter().map(|x| value_to_json(x).unwrap()).collect()
+            };
+            assert_eq!(as_json(&loaded), as_json(&data), "{id}: {result:?}");
+            // Byte-level: chunking moves no separator, and none trails the stream.
+            assert_eq!(result.matches("---\n").count(), data.len() - 1, "{id}");
+            assert!(!result.ends_with("---\n"), "{id}: {result:?}");
+        }
     }
 
     /// Upstream `dump_output` YAML: insertion order, nulls and empty containers dropped,

@@ -83,7 +83,7 @@ both_error: 28, match: 161, upstream_error: 9
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.011s throughput=89 rows/s
+rows_in=1 rows_out=1 elapsed=0.008s throughput=133 rows/s
 
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml unrestricted jsonl [upstream_error]
@@ -91,7 +91,7 @@ rows_in=1 rows_out=1 elapsed=0.011s throughput=89 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.054s throughput=19 rows/s
+rows_in=1 rows_out=1 elapsed=0.007s throughput=143 rows/s
 
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml unrestricted json [upstream_error]
@@ -99,7 +99,7 @@ rows_in=1 rows_out=1 elapsed=0.054s throughput=19 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.023s throughput=43 rows/s
+rows_in=1 rows_out=1 elapsed=0.007s throughput=136 rows/s
 
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml unrestricted jsonl [upstream_error]
@@ -107,7 +107,7 @@ rows_in=1 rows_out=1 elapsed=0.023s throughput=43 rows/s
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
 rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> - (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.007s throughput=134 rows/s
+rows_in=1 rows_out=1 elapsed=0.007s throughput=147 rows/s
 
 
 ### attic/transform-s1-to-s2.yaml derive-schema [upstream_error]
@@ -124,39 +124,37 @@ WARN: No such class Mapping
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmphfcirn5s/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.027
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmp1csogzuu/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.008s throughput=120 rows/s
+
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Container-001.yaml -o jsonl [upstream_error]
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmphl_fet35/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.00
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Container-001.yaml -> /tmp/tmp5xu7a0x1/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.008s throughput=125 rows/s
+
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml -o json [upstream_error]
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmpo6unbw3n/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.026s t
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmpryp4cb4r/rs.json (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.010s throughput=101 rows/s
+
 
 ### personinfo_basic/personinfo-to-agent.transform.yaml data/Person-001.yaml -o jsonl [upstream_error]
 
 upstream rc=1 TypeError: Object of type date is not JSON serializable
 
-rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmp0sgdaug5/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
-rows_in=1 rows_out=1 elapsed=0.006s 
+rust rc=0: linkml-tr-rs map-data: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/data/Person-001.yaml -> /tmp/tmpsjoz0ip1/rs.jsonl (spec: /home/user/upstream/linkml-map/tests/input/examples/personinfo_basic/transform/personinfo-to-agent.transform.yaml)
+rows_in=1 rows_out=1 elapsed=0.011s throughput=92 rows/s
+
 
 ## Cases captured from upstream's own test-suite
 
-224 distinct map_object invocations x 5 formats: both_error: 155, match: 935, rust_error: 30
+230 distinct map_object invocations x 5 formats: both_error: 155, match: 995
 
 | case | origin test | divergent formats |
 |---|---|---|
-| 2a3e4922c2fd | test_transformer/test_range_override.py::test_parse_expr_null_input_yields_none | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
-| 42175371c7cd | test_transformer/test_expr_strict_mode.py::test_schema_slot_absent_from_row_resolves_to_none[True] | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
-| 74055f70a60c | test_transformer/test_flatten_inlined.py::test_flatten_two_level_dotpath_null_propagation[env_broad_scale1-middle | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
-| a8c78e8ca56d | test_transformer/test_slot_derivation_features.py::test_slot_fn_with_unrestricted_eval | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
-| b18ac8678d14 | test_transformer/test_range_override.py::test_parse_string_into_object | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |
-| fec9877c167d | test_transformer/test_flatten_inlined.py::test_flatten_partial_quantity_value | yaml:RS-ERR json:RS-ERR jsonl:RS-ERR tsv:RS-ERR csv:RS-ERR |

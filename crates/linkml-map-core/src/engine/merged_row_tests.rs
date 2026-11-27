@@ -281,9 +281,11 @@ fn nested_within_nested_keeps_ancestor_tables_and_ambiguity() {
                  ol: {populated_from: Org.label}\n                      \
                  pl: {populated_from: Person.label}\n";
     // Without the set-based engine the level-two join reads `country_id` from the
-    // level-one merge, where it is ambiguous: no key, no row, no object.
+    // level-one merge, where it is ambiguous: no key, no row, no object -- and the
+    // level-one object, left as `{deep: null}`, has no content either, so it is
+    // omitted too (09667a6).
     let per_row = run(slots, false).unwrap();
-    assert_eq!(per_row, Value::Map(row(&[("deep", Value::Null)])));
+    assert_eq!(per_row, Value::Null);
     // With it, the joins were resolved from the primary row up front.
     let prejoined = run(slots, true).unwrap();
     assert_eq!(
